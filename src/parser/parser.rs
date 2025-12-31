@@ -1,7 +1,7 @@
 // Recursive Descent Parser
 
 use crate::lexer::{Token, TokenKind};
-use crate::parser::ast::{Expr, Stmt, Param, Arg};
+use crate::parser::ast::{Expr, Stmt, Param, Arg, UnpackPattern, ImportItem, ImportStmt};
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use std::rc::Rc;
@@ -26,7 +26,13 @@ impl Parser {
     }
 
     fn declaration(&mut self) -> Result<Stmt, LangError> {
-        if self.match_token(TokenKind::Global) {
+        if self.check(TokenKind::From) {
+            // from ml import ...
+            self.from_import_declaration()
+        } else if self.match_token(TokenKind::Import) {
+            // import ml, plot
+            self.simple_import_declaration()
+        } else if self.match_token(TokenKind::Global) {
             // global a = 5
             let global_line = self.previous().line;
             let name = self.consume(TokenKind::Identifier, "Expect variable name after 'global'")?.lexeme.clone();
@@ -42,9 +48,109 @@ impl Parser {
         }
     }
 
+    fn from_import_declaration(&mut self) -> Result<Stmt, LangError> {
+        let import_line = self.peek().line;
+        self.consume(TokenKind::From, "Expect 'from'")?;
+        let module = self.consume(TokenKind::Identifier, "Expect module name after 'from'")?.lexeme.clone();
+        self.consume(TokenKind::Import, "Expect 'import' after module name")?;
+        
+        let items = self.parse_import_items()?;
+        
+        Ok(Stmt::Import {
+            import_stmt: ImportStmt::From { module, items },
+            line: import_line,
+        })
+    }
+
+    fn simple_import_declaration(&mut self) -> Result<Stmt, LangError> {
+        let import_line = self.previous().line; // 'import' был уже потреблен
+        let mut modules = Vec::new();
+        loop {
+            let module = self.consume(TokenKind::Identifier, "Expect module name after 'import'")?.lexeme.clone();
+            modules.push(module);
+            
+            if !self.match_token(TokenKind::Comma) {
+                break;
+            }
+        }
+        
+        Ok(Stmt::Import {
+            import_stmt: ImportStmt::Modules(modules),
+            line: import_line,
+        })
+    }
+
+    fn parse_import_items(&mut self) -> Result<Vec<ImportItem>, LangError> {
+        let mut items = Vec::new();
+        
+        loop {
+            if self.match_token(TokenKind::Star) {
+                // import *
+                items.push(ImportItem::All);
+            } else if self.check(TokenKind::Identifier) {
+                let name = self.advance().lexeme.clone();
+                
+                // Проверяем, есть ли 'as' для алиаса
+                if self.match_token(TokenKind::As) {
+                    let alias = self.consume(TokenKind::Identifier, "Expect alias name after 'as'")?.lexeme.clone();
+                    items.push(ImportItem::Aliased { name, alias });
+                } else {
+                    items.push(ImportItem::Named(name));
+                }
+            } else {
+                return Err(LangError::ParseError {
+                    message: "Expect identifier or '*' in import list".to_string(),
+                    line: self.peek().line,
+                });
+            }
+            
+            if !self.match_token(TokenKind::Comma) {
+                break;
+            }
+        }
+        
+        Ok(items)
+    }
+
     fn variable_declaration(&mut self) -> Result<Stmt, LangError> {
         let let_line = self.previous().line;
         let name = self.consume(TokenKind::Identifier, "Expect variable name")?.lexeme.clone();
+        
+        // Проверяем, есть ли запятая после имени - это распаковка кортежа
+        if self.match_token(TokenKind::Comma) {
+            // Распаковка: let a, b, c = ...
+            let mut names = vec![name];
+            loop {
+                if self.match_token(TokenKind::Identifier) {
+                    names.push(self.previous().lexeme.clone());
+                } else {
+                    return Err(LangError::ParseError {
+                        message: "Expect variable name in unpack declaration".to_string(),
+                        line: self.peek().line,
+                    });
+                }
+                if !self.match_token(TokenKind::Comma) {
+                    break;
+                }
+            }
+            self.consume(TokenKind::Equal, "Expect '=' after variable list")?;
+            let value = self.expression()?;
+            // Для let statements с распаковкой создаем UnpackAssign выражение
+            // Но нам нужно сохранить это как Stmt::Let с особым значением
+            // Пока что создадим временное решение - используем первую переменную как имя
+            // и создадим UnpackAssign в value
+            return Ok(Stmt::Let {
+                name: names[0].clone(),
+                value: Expr::UnpackAssign {
+                    names,
+                    value: Box::new(value),
+                    line: let_line,
+                },
+                is_global: false,
+                line: let_line,
+            });
+        }
+        
         self.consume(TokenKind::Equal, "Expect '=' after variable name")?;
         let value = self.expression()?;
         Ok(Stmt::Let { name, value, is_global: false, line: let_line })
@@ -133,6 +239,7 @@ impl Parser {
             self.expression_statement()
         }
     }
+    
 
     fn if_statement(&mut self) -> Result<Stmt, LangError> {
         let if_line = self.previous().line;
@@ -187,25 +294,164 @@ impl Parser {
     fn for_statement(&mut self) -> Result<Stmt, LangError> {
         let for_line = self.previous().line;
         
-        // Парсим: for variable in iterable { body }
-        let variable = self.consume(TokenKind::Identifier, "Expect variable name after 'for'")?.lexeme.clone();
-        self.consume(TokenKind::In, "Expect 'in' after variable name")?;
+        // Парсим паттерн распаковки: for pattern in iterable { body }
+        // Поддерживаем: for x in, for x, y in, for (x, y) in, for [x, y] in, for x, _, y in
+        let pattern = self.parse_unpack_pattern()?;
+        self.consume(TokenKind::In, "Expect 'in' after unpack pattern")?;
         let iterable = self.expression()?;
         self.consume(TokenKind::LBrace, "Expect '{' before loop body")?;
         let body = self.block()?;
 
         Ok(Stmt::For {
-            variable,
+            pattern,
             iterable,
             body,
             line: for_line,
         })
     }
 
+    fn parse_unpack_pattern(&mut self) -> Result<Vec<UnpackPattern>, LangError> {
+        // Проверяем, есть ли группировка (скобки или квадратные скобки)
+        if self.match_token(TokenKind::LParen) {
+            // for (x, y) in или for (x, (y, z)) in
+            let pattern = self.parse_unpack_pattern_list()?;
+            self.consume(TokenKind::RParen, "Expect ')' after unpack pattern")?;
+            Ok(pattern)
+        } else if self.match_token(TokenKind::LBracket) {
+            // for [x, y] in
+            let pattern = self.parse_unpack_pattern_list()?;
+            self.consume(TokenKind::RBracket, "Expect ']' after unpack pattern")?;
+            Ok(pattern)
+        } else {
+            // for x, y, z in или for x in (обратная совместимость)
+            self.parse_unpack_pattern_list()
+        }
+    }
+
+    fn parse_unpack_pattern_list(&mut self) -> Result<Vec<UnpackPattern>, LangError> {
+        let mut patterns = Vec::new();
+        let mut has_variadic = false;
+        
+        loop {
+            // Проверяем, есть ли звездочка для variadic
+            let is_variadic = self.match_token(TokenKind::Star);
+            
+            // Парсим один элемент паттерна
+            if self.match_token(TokenKind::Identifier) {
+                let name = self.previous().lexeme.clone();
+                
+                if is_variadic {
+                    // Variadic переменная или wildcard
+                    if has_variadic {
+                        return Err(LangError::ParseError {
+                            message: "Only one variadic variable (*) allowed in unpack pattern".to_string(),
+                            line: self.previous().line,
+                        });
+                    }
+                    has_variadic = true;
+                    
+                    if name == "_" {
+                        // Variadic wildcard (*_)
+                        patterns.push(UnpackPattern::VariadicWildcard);
+                    } else {
+                        // Variadic переменная (*y)
+                        patterns.push(UnpackPattern::Variadic(name));
+                    }
+                } else {
+                    // Обычная переменная или wildcard
+                    if name == "_" {
+                        patterns.push(UnpackPattern::Wildcard);
+                    } else {
+                        patterns.push(UnpackPattern::Variable(name));
+                    }
+                }
+            } else if self.match_token(TokenKind::LParen) {
+                // Вложенная распаковка: (x, y)
+                // Variadic не поддерживается во вложенных паттернах на первом этапе
+                if is_variadic {
+                    return Err(LangError::ParseError {
+                        message: "Variadic unpacking (*) not supported in nested patterns".to_string(),
+                        line: self.previous().line,
+                    });
+                }
+                let nested = self.parse_unpack_pattern_list()?;
+                self.consume(TokenKind::RParen, "Expect ')' after nested unpack pattern")?;
+                patterns.push(UnpackPattern::Nested(nested));
+            } else if self.match_token(TokenKind::LBracket) {
+                // Вложенная распаковка: [x, y]
+                // Variadic не поддерживается во вложенных паттернах на первом этапе
+                if is_variadic {
+                    return Err(LangError::ParseError {
+                        message: "Variadic unpacking (*) not supported in nested patterns".to_string(),
+                        line: self.previous().line,
+                    });
+                }
+                let nested = self.parse_unpack_pattern_list()?;
+                self.consume(TokenKind::RBracket, "Expect ']' after nested unpack pattern")?;
+                patterns.push(UnpackPattern::Nested(nested));
+            } else {
+                // Ошибка: ожидается переменная, wildcard или вложенный паттерн
+                if is_variadic {
+                    return Err(LangError::ParseError {
+                        message: "Expect variable name after '*' in unpack pattern".to_string(),
+                        line: self.peek().line,
+                    });
+                }
+                return Err(LangError::ParseError {
+                    message: "Expect variable name, '_', '*', or nested pattern in unpack pattern".to_string(),
+                    line: self.peek().line,
+                });
+            }
+            
+            // Проверяем, есть ли еще элементы (запятая)
+            if !self.match_token(TokenKind::Comma) {
+                break;
+            }
+            
+            // Если уже есть variadic, нельзя добавлять больше элементов после него
+            if has_variadic {
+                return Err(LangError::ParseError {
+                    message: "Variadic variable (*) must be the last element in unpack pattern".to_string(),
+                    line: self.previous().line,
+                });
+            }
+        }
+        
+        if patterns.is_empty() {
+            return Err(LangError::ParseError {
+                message: "Unpack pattern cannot be empty".to_string(),
+                line: self.peek().line,
+            });
+        }
+        
+        Ok(patterns)
+    }
+
     fn return_statement(&mut self) -> Result<Stmt, LangError> {
         let return_line = self.previous().line;
         let value = if !self.check(TokenKind::Semicolon) && !self.check(TokenKind::RBrace) {
-            Some(self.expression()?)
+            // Парсим первое выражение
+            let first_expr = self.expression()?;
+            
+            // Проверяем, есть ли запятая - это означает множественный возврат
+            if self.match_token(TokenKind::Comma) {
+                // Множественный возврат: return a, b, c
+                let mut elements = vec![first_expr];
+                loop {
+                    // Проверяем, не конец ли выражения (semicolon или RBrace)
+                    if self.check(TokenKind::Semicolon) || self.check(TokenKind::RBrace) {
+                        break;
+                    }
+                    elements.push(self.expression()?);
+                    if !self.match_token(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                Some(Expr::TupleLiteral { elements, line: return_line })
+            } else {
+                // Одиночный возврат
+                Some(first_expr)
+            }
         } else {
             None
         };
@@ -331,6 +577,77 @@ impl Parser {
     }
 
     fn assignment(&mut self) -> Result<Expr, LangError> {
+        // Проверяем, не является ли это распаковкой кортежа БЕЗ let: x, y = ...
+        // Это нужно проверить ДО вызова or_expression(), чтобы избежать ошибки при парсинге запятой
+        // Используем peek() чтобы не потреблять токен
+        if !self.is_at_end() {
+            let token0 = self.peek();
+            if token0.kind == TokenKind::Identifier {
+                let saved_position = self.current;
+                if saved_position + 3 < self.tokens.len() {
+                    if self.tokens[saved_position + 1].kind == TokenKind::Comma
+                        && self.tokens[saved_position + 2].kind == TokenKind::Identifier
+                        && self.tokens[saved_position + 3].kind == TokenKind::Equal
+                    {
+                        // Проверяем, не находимся ли мы внутри вызова функции (внутри скобок)
+                        let mut paren_count = 0;
+                        let mut found_lparen = false;
+                        for i in (0..saved_position).rev() {
+                            match self.tokens[i].kind {
+                                TokenKind::RParen => paren_count += 1,
+                                TokenKind::LParen => {
+                                    if paren_count == 0 {
+                                        found_lparen = true;
+                                        break;
+                                    }
+                                    if paren_count > 0 {
+                                        paren_count -= 1;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        
+                        // Если мы внутри скобок, не проверяем распаковку
+                        if !found_lparen {
+                            // Проверяем, не является ли это именованным аргументом функции
+                            // Именованный аргумент: identifier, identifier = identifier
+                            let is_named_arg = saved_position + 4 < self.tokens.len()
+                                && self.tokens[saved_position + 4].kind == TokenKind::Identifier;
+                            
+                            if !is_named_arg {
+                                // Это распаковка - обрабатываем ее напрямую
+                                let line = token0.line;
+                                let mut names = Vec::new();
+                                
+                                // Собираем список переменных
+                                loop {
+                                    let name = self.consume(TokenKind::Identifier, "Expect variable name")?.lexeme.clone();
+                                    names.push(name);
+                                    
+                                    if !self.match_token(TokenKind::Comma) {
+                                        break;
+                                    }
+                                }
+                                
+                                // Потребляем =
+                                self.consume(TokenKind::Equal, "Expect '=' after variable list")?;
+                                
+                                // Парсим правую часть
+                                let value = self.assignment()?;
+                                
+                                return Ok(Expr::UnpackAssign {
+                                    names,
+                                    value: Box::new(value),
+                                    line,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         let expr = self.or_expression()?;
         
         // Проверяем операторы присваивания (+=, -=, *=, /=, //=, %=, **=)
@@ -359,10 +676,133 @@ impl Parser {
             });
         }
         
+        // Проверяем, является ли это распаковкой: a, b, c = ...
+        // Это должно быть обработано ДО проверки на =
+        if let Expr::Variable { name, .. } = &expr {
+            if self.check(TokenKind::Comma) {
+                // Сохраняем позицию для возможного отката
+                let saved_position = self.current;
+                
+                // Проверяем, не находимся ли мы внутри вызова функции (внутри скобок)
+                // Если мы внутри скобок, то это не распаковка, а часть списка аргументов
+                // Ищем открывающую скобку перед текущей позицией
+                let mut paren_count = 0;
+                let mut found_lparen = false;
+                for i in (0..saved_position).rev() {
+                    match self.tokens[i].kind {
+                        TokenKind::RParen => {
+                            paren_count += 1;
+                        }
+                        TokenKind::LParen => {
+                            if paren_count == 0 {
+                                // Нашли открывающую скобку - мы внутри скобок
+                                found_lparen = true;
+                                break;
+                            }
+                            if paren_count > 0 {
+                                paren_count -= 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                
+                // Если мы внутри скобок, не проверяем распаковку
+                // Это часть списка аргументов функции или группировки выражений
+                if found_lparen {
+                    return Ok(expr);
+                }
+                
+                // Если мы уже проверили, что мы внутри скобок, то дальше проверять не нужно
+                // Но если мы не внутри скобок, проверяем, не является ли это именованным аргументом функции
+                // Паттерн: identifier, identifier = identifier (где после = идет не вызов функции)
+                // Это именованные аргументы функции, а не распаковка
+                // Именованный аргумент: func(x=1, y=2) - после = идет значение (число, строка, идентификатор без скобок)
+                // Распаковка: x, y = swap(x, y) - после = идет вызов функции (идентификатор со скобками)
+                if saved_position + 3 < self.tokens.len() {
+                    let has_identifier_after_comma = self.tokens[saved_position + 1].kind == TokenKind::Identifier;
+                    let has_equal = self.tokens[saved_position + 2].kind == TokenKind::Equal;
+                    
+                    if has_identifier_after_comma && has_equal {
+                        // Если после запятой идет идентификатор и =, это может быть именованный аргумент или распаковка
+                        // Проверяем, является ли это именованным аргументом (после = идет значение, не вызов функции)
+                        // Именованный аргумент: после = идет значение без скобок
+                        // Распаковка: после = идет вызов функции (идентификатор со скобками)
+                        if saved_position + 3 < self.tokens.len() {
+                            let after_equal = &self.tokens[saved_position + 3];
+                            // Если после = идет НЕ идентификатор или идентификатор без скобок, это именованный аргумент
+                            let is_named_arg = after_equal.kind != TokenKind::Identifier
+                                || (saved_position + 4 >= self.tokens.len() || self.tokens[saved_position + 4].kind != TokenKind::LParen);
+                            
+                            if is_named_arg {
+                                // Это именованный аргумент функции, не распаковка - просто возвращаем выражение
+                                return Ok(expr);
+                            }
+                        }
+                    }
+                }
+                
+                // Это потенциальная распаковка: a, b, c = ...
+                // Упрощенная проверка: если после запятой идет идентификатор, а затем =, то это распаковка
+                // НО только если после = идет вызов функции (идентификатор со скобками)
+                if saved_position + 2 < self.tokens.len() {
+                    let has_identifier_after_comma = self.tokens[saved_position + 1].kind == TokenKind::Identifier;
+                    let has_equal_after_identifier = self.tokens[saved_position + 2].kind == TokenKind::Equal;
+                    
+                    if has_identifier_after_comma && has_equal_after_identifier {
+                        // Проверяем, что после = идет вызов функции (идентификатор со скобками)
+                        // Это отличает распаковку от именованного аргумента
+                        if saved_position + 3 < self.tokens.len() {
+                            let after_equal = &self.tokens[saved_position + 3];
+                            if after_equal.kind == TokenKind::Identifier {
+                                // Проверяем, есть ли после идентификатора скобка
+                                if saved_position + 4 < self.tokens.len() 
+                                    && self.tokens[saved_position + 4].kind == TokenKind::LParen {
+                                    // Это распаковка - обрабатываем ее
+                                    let mut names = vec![name.clone()];
+                                    self.advance(); // consume comma
+                                    
+                                    // Собираем список переменных
+                                    loop {
+                                        if self.match_token(TokenKind::Identifier) {
+                                            names.push(self.previous().lexeme.clone());
+                                        } else {
+                                            // Это не распаковка - восстанавливаем позицию
+                                            self.current = saved_position;
+                                            break;
+                                        }
+                                        if !self.match_token(TokenKind::Comma) {
+                                            break;
+                                        }
+                                    }
+                                    
+                                    // Проверяем, что после списка переменных идет =
+                                    if self.check(TokenKind::Equal) {
+                                        // Это действительно распаковка
+                                        self.consume(TokenKind::Equal, "Expect '=' after variable list")?;
+                                        let value = self.assignment()?;
+                                        return Ok(Expr::UnpackAssign {
+                                            names,
+                                            value: Box::new(value),
+                                            line: expr.line(),
+                                        });
+                                    } else {
+                                        // Это не распаковка - восстанавливаем позицию и возвращаем исходное выражение
+                                        self.current = saved_position;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
         // Обычное присваивание (=)
         if self.match_token(TokenKind::Equal) {
             let equal_line = self.previous().line;
             if let Expr::Variable { name, .. } = expr {
+                // Обычное присваивание одной переменной
                 let value = self.assignment()?;
                 return Ok(Expr::Assign {
                     name,
@@ -375,6 +815,7 @@ impl Parser {
                 line: equal_line,
             });
         }
+        
         Ok(expr)
     }
 
@@ -572,6 +1013,7 @@ impl Parser {
                     });
                 }
                 
+                
                 // Проверяем, является ли это именованным аргументом (identifier = expression)
                 // Сохраняем текущую позицию для проверки
                 let arg = if self.check(TokenKind::Identifier) {
@@ -591,9 +1033,10 @@ impl Parser {
                         let name = name_token.lexeme.clone();
                         self.consume(TokenKind::Equal, "Expect '=' after parameter name in named argument")?;
                         has_named = true;
+                        let value = self.expression()?;
                         Arg::Named {
                             name,
-                            value: self.expression()?,
+                            value,
                         }
                     } else {
                         // Позиционный аргумент
@@ -604,7 +1047,8 @@ impl Parser {
                                 line: self.peek().line,
                             });
                         }
-                        Arg::Positional(self.expression()?)
+                        let expr = self.expression()?;
+                        Arg::Positional(expr)
                     }
                 } else {
                     // Позиционный аргумент (не идентификатор)
@@ -695,12 +1139,51 @@ impl Parser {
         if self.match_token(TokenKind::Identifier) {
             let line = self.previous().line;
             let name = self.previous().lexeme.clone();
+            // Если после идентификатора идет запятая, а затем еще один идентификатор и =,
+            // то это распаковка. Но мы не можем обработать ее здесь, так как primary() возвращает только выражение.
+            // Проверка будет в assignment() после того, как мы вернем переменную.
+            // Однако, если мы здесь, значит идентификатор уже был потреблен, и self.current указывает на следующий токен.
+            // Поэтому проверка в assignment() должна работать, так как self.current указывает на запятую.
             return Ok(Expr::Variable { name, line });
         }
         if self.match_token(TokenKind::LParen) {
-            let expr = self.expression()?;
-            self.consume(TokenKind::RParen, "Expect ')' after expression")?;
-            return Ok(expr);
+            let paren_line = self.previous().line;
+            // Проверяем, является ли это кортежем или группировкой
+            // Если сразу закрывающая скобка - пустой кортеж
+            if self.check(TokenKind::RParen) {
+                self.consume(TokenKind::RParen, "Expect ')' after '('")?;
+                return Ok(Expr::TupleLiteral { elements: vec![], line: paren_line });
+            }
+            
+            // Парсим первое выражение
+            let first_expr = self.expression()?;
+            
+            if self.match_token(TokenKind::Comma) {
+                // Это кортеж: (expr1, expr2, ...) или (expr1,)
+                let mut elements = vec![first_expr];
+                loop {
+                    // Проверяем, не закрывающая ли скобка (для последнего элемента)
+                    if self.check(TokenKind::RParen) {
+                        break;
+                    }
+                    elements.push(self.expression()?);
+                    if !self.match_token(TokenKind::Comma) {
+                        break;
+                    }
+                }
+                self.consume(TokenKind::RParen, "Expect ')' after tuple elements")?;
+                return Ok(Expr::TupleLiteral { elements, line: paren_line });
+            } else if self.check(TokenKind::RParen) {
+                // Это группировка: (expr)
+                self.consume(TokenKind::RParen, "Expect ')' after expression")?;
+                return Ok(first_expr);
+            } else {
+                // Ошибка: ожидается либо запятая (кортеж), либо закрывающая скобка (группировка)
+                return Err(LangError::ParseError {
+                    message: "Expect ',' or ')' after expression in parentheses".to_string(),
+                    line: self.peek().line,
+                });
+            }
         }
         if self.match_token(TokenKind::LBracket) {
             return self.array_literal();

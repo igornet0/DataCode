@@ -222,8 +222,16 @@ impl Chunk {
                 output.push_str("RETURN\n");
                 offset + 1
             }
+            OpCode::MakeTuple(count) => {
+                output.push_str(&format!("MAKE_TUPLE {}\n", count));
+                offset + 1
+            }
             OpCode::MakeArray(count) => {
                 output.push_str(&format!("MAKE_ARRAY {}\n", count));
+                offset + 1
+            }
+            OpCode::MakeArrayDynamic => {
+                output.push_str("MAKE_ARRAY_DYNAMIC\n");
                 offset + 1
             }
             OpCode::GetArrayLength => {
@@ -270,6 +278,17 @@ impl Chunk {
             }
             OpCode::PopExceptionHandler => {
                 output.push_str("POP_EXCEPTION_HANDLER\n");
+                offset + 1
+            }
+            OpCode::Import(module_index) => {
+                let module_name = &self.constants[*module_index];
+                output.push_str(&format!("IMPORT {:4} '{}'\n", module_index, module_name.to_string()));
+                offset + 1
+            }
+            OpCode::ImportFrom(module_index, items_index) => {
+                let module_name = &self.constants[*module_index];
+                let items_array = &self.constants[*items_index];
+                output.push_str(&format!("IMPORT_FROM {:4} '{}' items={}\n", module_index, module_name.to_string(), items_array.to_string()));
                 offset + 1
             }
         }

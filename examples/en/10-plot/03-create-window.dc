@@ -1,0 +1,29 @@
+# Creating a window for drawing
+# Demonstration of creating a window with specified parameters
+
+# The plot.window(width, height, title) function creates a new window
+# Parameters:
+# - width: window width in pixels
+# - height: window height in pixels
+# - title: window title (string)
+
+let width = 800
+let height = 600
+let title = "My graphics window"
+
+# Create the window
+let window = plot.window(width, height, title)
+
+# Check that the window is created
+if window != null {
+    print("Window created successfully!")
+    print("Width: " + width)
+    print("Height: " + height)
+    print("Title: " + title)
+} else {
+    print("Error: failed to create window")
+}
+
+# Note: working with a window requires proper EventLoop setup
+# In the current version, the function may return null if EventLoop is not configured
+

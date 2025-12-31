@@ -7,8 +7,15 @@ pub mod semantic;
 pub mod bytecode;
 pub mod compiler;
 pub mod vm;
+
+#[path = "lib/websocket/mod.rs"]
 pub mod websocket;
+#[path = "lib/sqlite_export/mod.rs"]
 pub mod sqlite_export;
+#[path = "lib/ml/mod.rs"]
+pub mod ml;
+#[path = "lib/plot/mod.rs"]
+pub mod plot;
 
 // Публичный API для запуска интерпретатора
 pub use common::{error::LangError, value::Value};

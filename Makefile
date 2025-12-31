@@ -1,7 +1,7 @@
 # Makefile для DataCode
 # Удобные команды для сборки, тестирования и установки DataCode
 
-.PHONY: help build test run install uninstall clean dev release examples
+.PHONY: help build test run install update uninstall clean dev release examples build-metal build-cuda run-metal run-cuda
 
 # Цель по умолчанию
 help:
@@ -14,10 +14,18 @@ help:
 	@echo "  make run        - Запустить DataCode REPL"
 	@echo "  make dev        - Собрать и запустить в режиме разработки"
 	@echo ""
+	@echo "GPU поддержка:"
+	@echo "  make build-metal - Собрать с поддержкой Metal (macOS)"
+	@echo "  make build-cuda  - Собрать с поддержкой CUDA (Linux/Windows)"
+	@echo "  make run-metal   - Запустить с Metal (FILE=path/to/file.dc)"
+	@echo "  make run-cuda    - Запустить с CUDA (FILE=path/to/file.dc)"
+	@echo ""
 	@echo "Релиз:"
 	@echo "  make release    - Собрать DataCode в релизном режиме"
 	@echo "  make install    - Установить DataCode как глобальную команду"
+	@echo "  make update     - Обновить DataCode без полной установки (зависимости + пересборка + переустановка)"
 	@echo "  make uninstall  - Удалить глобальную команду DataCode"
+	@echo "  make app-bundle - Создать macOS app bundle с иконкой (только macOS)"
 	@echo ""
 	@echo "Примеры:"
 	@echo "  make examples      - Запустить все файлы примеров"
@@ -52,6 +60,16 @@ build:
 release:
 	@echo "🔨 Сборка DataCode (релизный режим)..."
 	cargo build --release
+
+# Сборка с поддержкой Metal (macOS)
+build-metal:
+	@echo "🔨 Сборка DataCode с поддержкой Metal (macOS)..."
+	cargo build --features metal
+
+# Сборка с поддержкой CUDA (Linux/Windows)
+build-cuda:
+	@echo "🔨 Сборка DataCode с поддержкой CUDA (Linux/Windows)..."
+	cargo build --features cuda
 
 # Запуск тестов
 test:
@@ -93,6 +111,24 @@ run:
 	@echo "🚀 Запуск DataCode REPL..."
 	cargo run
 
+# Запуск с поддержкой Metal (macOS)
+run-metal:
+	@if [ -z "$(FILE)" ]; then \
+		echo "❌ Укажите файл: make run-metal FILE=examples/en/10-mnist-mlp/mnist_mlp.dc"; \
+	else \
+		echo "🚀 Запуск $(FILE) с Metal GPU..."; \
+		cargo run --features metal -- $(FILE); \
+	fi
+
+# Запуск с поддержкой CUDA (Linux/Windows)
+run-cuda:
+	@if [ -z "$(FILE)" ]; then \
+		echo "❌ Укажите файл: make run-cuda FILE=examples/en/10-mnist-mlp/mnist_mlp.dc"; \
+	else \
+		echo "🚀 Запуск $(FILE) с CUDA GPU..."; \
+		cargo run --features cuda -- $(FILE); \
+	fi
+
 # Режим разработки (сборка + запуск)
 dev: build run
 
@@ -100,7 +136,55 @@ dev: build run
 install:
 	@echo "📦 Глобальная установка DataCode..."
 	@chmod +x install.sh
-	@./install.sh
+	@if [ "$$(uname)" = "Darwin" ]; then \
+		echo "🍎 macOS detected - will create app bundle after installation"; \
+		CREATE_APP_BUNDLE=1 ./install.sh; \
+	else \
+		./install.sh; \
+	fi
+
+# Обновление проекта без полной установки
+update:
+	@echo "🔄 Обновление DataCode..."
+	@echo ""
+	@echo "📦 Обновление зависимостей Cargo..."
+	@cargo update || (echo "❌ Ошибка: Не удалось обновить зависимости" && exit 1)
+	@echo ""
+	@if [ "$$(uname)" = "Darwin" ]; then \
+		echo "🍎 macOS detected - updating with Metal GPU support"; \
+		echo "🔨 Пересборка DataCode в релизном режиме с Metal..."; \
+		cargo build --release --features metal || (echo "❌ Ошибка: Не удалось собрать DataCode" && exit 1); \
+		echo "✅ Сборка завершена успешно"; \
+		echo ""; \
+		echo "📦 Переустановка DataCode..."; \
+		cargo install --path . --features metal --force || (echo "❌ Ошибка: Не удалось переустановить DataCode" && exit 1); \
+		echo "✅ DataCode обновлен успешно!"; \
+		echo ""; \
+		if [ -d "packaging/macos/DataCode.app" ]; then \
+			echo "🍎 Обновление macOS app bundle..."; \
+			chmod +x packaging/macos/build-app-bundle.sh; \
+			./packaging/macos/build-app-bundle.sh || echo "⚠️  Предупреждение: Не удалось обновить app bundle"; \
+		fi; \
+	elif [ "$$(uname)" = "Linux" ]; then \
+		echo "🐧 Linux detected - updating with CUDA GPU support"; \
+		echo "🔨 Пересборка DataCode в релизном режиме с CUDA..."; \
+		cargo build --release --features cuda || (echo "❌ Ошибка: Не удалось собрать DataCode" && exit 1); \
+		echo "✅ Сборка завершена успешно"; \
+		echo ""; \
+		echo "📦 Переустановка DataCode..."; \
+		cargo install --path . --features cuda --force || (echo "❌ Ошибка: Не удалось переустановить DataCode" && exit 1); \
+		echo "✅ DataCode обновлен успешно!"; \
+	else \
+		echo "🔨 Пересборка DataCode в релизном режиме..."; \
+		cargo build --release || (echo "❌ Ошибка: Не удалось собрать DataCode" && exit 1); \
+		echo "✅ Сборка завершена успешно"; \
+		echo ""; \
+		echo "📦 Переустановка DataCode..."; \
+		cargo install --path . --force || (echo "❌ Ошибка: Не удалось переустановить DataCode" && exit 1); \
+		echo "✅ DataCode обновлен успешно!"; \
+	fi
+	@echo ""
+	@echo "🎉 Обновление завершено!"
 
 # Удаление глобальной команды
 uninstall:
@@ -159,6 +243,12 @@ format:
 	@echo "✨ Форматирование кода..."
 	cargo fmt
 
+# Сборка macOS app bundle
+app-bundle:
+	@echo "🍎 Создание macOS app bundle..."
+	@chmod +x packaging/macos/build-app-bundle.sh
+	@./packaging/macos/build-app-bundle.sh
+
 # Показать информацию о проекте
 info:
 	@echo "🧠 Информация о проекте DataCode"
@@ -173,4 +263,4 @@ info:
 	@echo "  examples/      - Примеры .dc файлов"
 	@echo "  tests/         - Тестовые файлы"
 	@echo ""
-	@echo "🔧 Доступные цели: build, test, run, install, examples"
+	@echo "🔧 Доступные цели: build, test, run, install, examples, app-bundle"

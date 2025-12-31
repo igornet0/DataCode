@@ -1,0 +1,38 @@
+# Drawing an image in a window
+# Demonstration of drawing an image in a created window
+
+# Step 1: Load the image
+let image = plot.image("path/to/image.png")
+
+if image == null {
+    print("Error: failed to load image")
+    exit(1)
+}
+
+print("Image loaded")
+
+# Step 2: Create a window
+# You can use the image dimensions or specify your own
+let window_width = 1024
+let window_height = 768
+let window = plot.window(window_width, window_height, "Image Viewer")
+
+if window == null {
+    print("Error: failed to create window")
+    exit(1)
+}
+
+print("Window created")
+
+# Step 3: Draw the image in the window
+# The plot.draw(window, image) function displays the image in the window
+plot.draw(window, image)
+
+print("Image drawn in window")
+
+# Step 4: Wait for the window to close
+# The plot.wait(window) function blocks execution until the window is closed
+plot.wait(window)
+
+print("Window closed, program completed")
+

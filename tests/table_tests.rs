@@ -1055,6 +1055,179 @@ mod tests {
         }
     }
 
+    // ========== APPLY JOIN Tests ==========
+
+    #[test]
+    fn test_apply_join_basic() {
+        // Базовый тест с функцией, возвращающей таблицу
+        let source = r#"
+            fn expand_row(row) {
+                let id = row[0]
+                let name = row[1]
+                return table([[id * 10, name + "_1"], [id * 20, name + "_2"]], ["mult_id", "mult_name"])
+            }
+            let left = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+            let result = apply_join(left, expand_row)
+            len(result)
+        "#;
+        // Должно быть 4 строки: каждая строка left умножается на 2 строки из функции
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 4.0, "Expected 4 rows in apply_join"),
+            Ok(v) => panic!("Expected Number(4), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_apply_join_inner() {
+        // Inner join семантика (по умолчанию) - строки с Null не включаются
+        let source = r#"
+            fn filter_row(row) {
+                let id = row[0]
+                if id == 1 {
+                    return table([[id * 10]], ["mult_id"])
+                }
+            }
+            let left = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+            let result = apply_join(left, filter_row, "inner")
+            len(result)
+        "#;
+        // Должна быть только 1 строка (для id=1), строка с id=2 должна быть исключена
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 1.0, "Expected 1 row in inner apply_join"),
+            Ok(v) => panic!("Expected Number(1), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_apply_join_left() {
+        // Left join семантика - строки с Null включаются с NULL значениями
+        let source = r#"
+            fn filter_row(row) {
+                let id = row[0]
+                if id == 1 {
+                    return table([[id * 10]], ["mult_id"])
+                }
+            }
+            let left = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+            let result = apply_join(left, filter_row, "left")
+            len(result)
+        "#;
+        // Должно быть 2 строки: одна с результатом функции, одна с NULLs
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 2.0, "Expected 2 rows in left apply_join"),
+            Ok(v) => panic!("Expected Number(2), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_apply_join_empty_result() {
+        // Функция возвращает пустую таблицу
+        let source = r#"
+            fn empty_result(row) {
+                return table([], ["col"])
+            }
+            let left = table([[1, "Alice"]], ["id", "name"])
+            let result = apply_join(left, empty_result)
+            len(result)
+        "#;
+        // Должно быть 0 строк
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 0.0, "Expected 0 rows when function returns empty table"),
+            Ok(v) => panic!("Expected Number(0), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_apply_join_multiple_rows() {
+        // Функция возвращает несколько строк для одной входной строки
+        let source = r#"
+            fn expand(row) {
+                let count = row[0]
+                let data = []
+                let i = 0
+                while i < count {
+                    data = push(data, [i, "item_" + str(i)])
+                    i = i + 1
+                }
+                return table(data, ["idx", "item"])
+            }
+            let left = table([[3]], ["count"])
+            let result = apply_join(left, expand)
+            len(result)
+        "#;
+        // Должно быть 3 строки (функция возвращает 3 строки для count=3)
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 3.0, "Expected 3 rows from expand function"),
+            Ok(v) => panic!("Expected Number(3), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    // ========== ASOF JOIN with BY Tests ==========
+
+    #[test]
+    fn test_asof_join_with_by_single_column() {
+        // Группировка по одной колонке
+        let source = r#"
+            let left = table([[1, 10.0, "A"], [1, 20.0, "A"], [2, 15.0, "B"]], ["group", "time", "val"])
+            let right = table([[1, 12.0, "X"], [1, 18.0, "Y"], [2, 14.0, "Z"]], ["group", "time", "data"])
+            let result = asof_join(left, right, "time", "group")
+            len(result)
+        "#;
+        // Должно быть 3 строки (по одной для каждой строки left)
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 3.0, "Expected 3 rows in asof_join with by"),
+            Ok(v) => panic!("Expected Number(3), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_asof_join_with_by_multiple_columns() {
+        // Группировка по нескольким колонкам
+        let source = r#"
+            let left = table([[1, "A", 10.0], [1, "B", 20.0]], ["id", "region", "time"])
+            let right = table([[1, "A", 12.0], [1, "B", 18.0]], ["id", "region", "time"])
+            let result = asof_join(left, right, "time", ["id", "region"])
+            len(result)
+        "#;
+        // Должно быть 2 строки
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 2.0, "Expected 2 rows in asof_join with multiple by columns"),
+            Ok(v) => panic!("Expected Number(2), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_asof_join_with_by_no_matches() {
+        // Нет совпадений в группе
+        let source = r#"
+            let left = table([[1, 10.0], [2, 20.0]], ["group", "time"])
+            let right = table([[1, 5.0]], ["group", "time"])
+            let result = asof_join(left, right, "time", "group")
+            len(result)
+        "#;
+        // Должно быть 2 строки (обе из left, вторая с NULLs справа)
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 2.0, "Expected 2 rows (one matched, one with NULLs)"),
+            Ok(v) => panic!("Expected Number(2), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
     // ========== SUFFIXES Tests ==========
 
     #[test]

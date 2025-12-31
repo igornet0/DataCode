@@ -203,11 +203,36 @@ mod tests {
     }
 
     #[test]
-    fn test_type_error_string_multiply_number() {
-        assert_type_error(r#"
+    fn test_string_multiply_number() {
+        assert_string_result(r#"
+            let x = "-"
+            x * 10
+        "#, "----------");
+        assert_string_result(r#"
             let x = "hello"
-            x * 5
-        "#);
+            x * 3
+        "#, "hellohellohello");
+    }
+
+    #[test]
+    fn test_number_multiply_string() {
+        assert_string_result(r#"
+            let n = 5
+            n * "-"
+        "#, "-----");
+        assert_string_result(r#"
+            3 * "ab"
+        "#, "ababab");
+    }
+
+    #[test]
+    fn test_string_multiply_zero() {
+        assert_string_result(r#"
+            "hello" * 0
+        "#, "");
+        assert_string_result(r#"
+            0 * "hello"
+        "#, "");
     }
 
     #[test]
@@ -499,12 +524,9 @@ mod tests {
 
     #[test]
     fn test_string_number_incompatibility_arithmetic() {
-        // String и Number несовместимы в арифметических операциях (кроме конкатенации)
+        // String и Number несовместимы в арифметических операциях (кроме конкатенации и умножения)
         assert_type_error(r#"
             "10" - 5
-        "#);
-        assert_type_error(r#"
-            "10" * 5
         "#);
         assert_type_error(r#"
             "10" / 5
@@ -1323,6 +1345,398 @@ mod tests {
         // contains с неправильными типами
         let result = run_and_get_result("contains(123, \"hello\")");
         assert!(matches!(result, Ok(Value::Bool(false))), "contains with wrong types should return false");
+    }
+
+    // ========== Тесты кортежей (Tuple Tests) ==========
+
+    #[test]
+    fn test_tuple_creation() {
+        let source = "(1, 2, 3)";
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Tuple(tuple)) => {
+                let tuple_ref = tuple.borrow();
+                assert_eq!(tuple_ref.len(), 3, "Tuple should have 3 elements");
+                assert_eq!(tuple_ref[0], Value::Number(1.0));
+                assert_eq!(tuple_ref[1], Value::Number(2.0));
+                assert_eq!(tuple_ref[2], Value::Number(3.0));
+            }
+            Ok(v) => panic!("Expected Tuple, got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_tuple_with_different_types() {
+        let source = r#"(1, "hello", true)"#;
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Tuple(tuple)) => {
+                let tuple_ref = tuple.borrow();
+                assert_eq!(tuple_ref.len(), 3);
+                assert_eq!(tuple_ref[0], Value::Number(1.0));
+                assert_eq!(tuple_ref[1], Value::String("hello".to_string()));
+                assert_eq!(tuple_ref[2], Value::Bool(true));
+            }
+            Ok(v) => panic!("Expected Tuple, got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_tuple_indexing() {
+        let source = r#"
+            let t = (10, 20, 30)
+            t[0]
+        "#;
+        assert_number_result(source, 10.0);
+    }
+
+    #[test]
+    fn test_tuple_indexing_second_element() {
+        let source = r#"
+            let t = (10, 20, 30)
+            t[1]
+        "#;
+        assert_number_result(source, 20.0);
+    }
+
+    #[test]
+    fn test_tuple_indexing_last_element() {
+        let source = r#"
+            let t = (10, 20, 30)
+            t[2]
+        "#;
+        assert_number_result(source, 30.0);
+    }
+
+    #[test]
+    fn test_function_return_multiple_values() {
+        let source = r#"
+            fn test_arg(a, b) {
+                return a + b, a * b
+            }
+            test_arg(10, 2)
+        "#;
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Tuple(tuple)) => {
+                let tuple_ref = tuple.borrow();
+                assert_eq!(tuple_ref.len(), 2);
+                assert_eq!(tuple_ref[0], Value::Number(12.0)); // 10 + 2
+                assert_eq!(tuple_ref[1], Value::Number(20.0)); // 10 * 2
+            }
+            Ok(v) => panic!("Expected Tuple, got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_tuple_unpacking() {
+        let source = r#"
+            fn test_arg(a, b) {
+                return a + b, a * b
+            }
+            let c, d = test_arg(10, 2)
+            c + d
+        "#;
+        assert_number_result(source, 32.0); // 12 + 20
+    }
+
+    #[test]
+    fn test_tuple_unpacking_three_values() {
+        let source = r#"
+            fn get_values() {
+                return 1, 2, 3
+            }
+            let a, b, c = get_values()
+            a + b + c
+        "#;
+        assert_number_result(source, 6.0);
+    }
+
+    #[test]
+    fn test_tuple_unpacking_with_variables() {
+        let source = r#"
+            fn swap(a, b) {
+                return b, a
+            }
+            let x = 10
+            let y = 20
+            let x, y = swap(a=x, b=y)
+            x
+        "#;
+        assert_number_result(source, 20.0);
+    }
+
+    #[test]
+    fn test_tuple_unpacking_second_variable() {
+        let source = r#"
+            fn swap(a, b) {
+                return b, a
+            }
+            let x = 10
+            let y = 20
+            x, y = swap(x, y)
+            y
+        "#;
+        assert_number_result(source, 10.0);
+    }
+
+    #[test]
+    fn test_tuple_unpacking_with_named_arguments() {
+        let source = r#"
+            fn swap(a, b, c, d, g) {
+                return b + c + d + g, a
+            }
+            let x = 10
+            let y = 20
+            let x, y = swap(x, y, c=30, 
+                            d=40, g=50)
+            x
+        "#;
+        assert_number_result(source, 140.0);
+    }
+
+    #[test]
+    fn test_nested_tuples() {
+        let source = r#"
+            let t = ((1, 2), (3, 4))
+            t[0][0]
+        "#;
+        assert_number_result(source, 1.0);
+    }
+
+    #[test]
+    fn test_nested_tuples_second_level() {
+        let source = r#"
+            let t = ((1, 2), (3, 4))
+            t[0][1]
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_nested_tuples_second_group() {
+        let source = r#"
+            let t = ((1, 2), (3, 4))
+            t[1][0]
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_tuple_equality() {
+        let source = r#"
+            let t1 = (1, 2, 3)
+            let t2 = (1, 2, 3)
+            t1 == t2
+        "#;
+        // Note: tuples are compared by value, but we need to check if this works
+        // For now, just check that it doesn't crash
+        let result = run_and_get_result(source);
+        assert!(result.is_ok(), "Tuple equality should not crash");
+    }
+
+    #[test]
+    fn test_tuple_to_string() {
+        let source = r#"
+            let t = (1, 2, 3)
+            typeof(t)
+        "#;
+        assert_string_result(source, "tuple");
+    }
+
+    #[test]
+    fn test_tuple_in_expression() {
+        let source = r#"
+            let t = (10, 20)
+            t[0] + t[1]
+        "#;
+        assert_number_result(source, 30.0);
+    }
+
+    #[test]
+    fn test_tuple_return_from_function_and_unpack() {
+        let source = r#"
+            fn get_coords() {
+                return 5, 10
+            }
+            let x, y = get_coords()
+            x * y
+        "#;
+        assert_number_result(source, 50.0);
+    }
+
+    #[test]
+    fn test_tuple_with_expressions() {
+        let source = r#"
+            let a = 5
+            let b = 10
+            (a + b, a * b)
+        "#;
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Tuple(tuple)) => {
+                let tuple_ref = tuple.borrow();
+                assert_eq!(tuple_ref.len(), 2);
+                assert_eq!(tuple_ref[0], Value::Number(15.0)); // 5 + 10
+                assert_eq!(tuple_ref[1], Value::Number(50.0)); // 5 * 10
+            }
+            Ok(v) => panic!("Expected Tuple, got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_tuple_unpacking_in_loop() {
+        let source = r#"
+            fn get_pair(i) {
+                return i, i * 2
+            }
+            let sum = 0
+            let i = 1
+            while i <= 3 {
+                let a, b = get_pair(i)
+                sum = sum + a + b
+                i = i + 1
+            }
+            sum
+        "#;
+        // i=1: a=1, b=2, sum=3
+        // i=2: a=2, b=4, sum=9
+        // i=3: a=3, b=6, sum=18
+        assert_number_result(source, 18.0);
+    }
+
+    #[test]
+    fn test_tuple_single_element() {
+        // Single element in parentheses should be treated as grouping, not tuple
+        // But if we have a comma, it becomes a tuple
+        let source_tuple = "(42,)";
+        let result = run_and_get_result(source_tuple);
+        match result {
+            Ok(Value::Tuple(tuple)) => {
+                let tuple_ref = tuple.borrow();
+                assert_eq!(tuple_ref.len(), 1);
+                assert_eq!(tuple_ref[0], Value::Number(42.0));
+            }
+            Ok(v) => panic!("Expected Tuple, got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_tuple_empty() {
+        let source = "()";
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Tuple(tuple)) => {
+                let tuple_ref = tuple.borrow();
+                assert_eq!(tuple_ref.len(), 0, "Empty tuple should have 0 elements");
+            }
+            Ok(v) => panic!("Expected Tuple, got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_tuple_index_out_of_bounds() {
+        let source = r#"
+            let t = (1, 2, 3)
+            let result = 0
+            try {
+                result = t[5]
+            } catch IndexError e {
+                result = 999
+            }
+            result
+        "#;
+        assert_number_result(source, 999.0);
+    }
+
+    #[test]
+    fn test_tuple_negative_index_error() {
+        let source = r#"
+            let t = (1, 2, 3)
+            let result = 0
+            try {
+                result = t[-1]
+            } catch e {
+                result = 999
+            }
+            result
+        "#;
+        assert_number_result(source, 999.0);
+    }
+
+    #[test]
+    fn test_tuple_unpacking_wrong_count() {
+        // This should work - we unpack what we can
+        // But if tuple has fewer elements, we might get an error
+        let source = r#"
+            fn get_two() {
+                return 1, 2
+            }
+            try {
+                let a, b, c = get_two()
+                c
+            } catch e {
+                999
+            }
+        "#;
+        // This might cause an error or return null for c
+        let result = run_and_get_result(source);
+        // Just check it doesn't crash
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_tuple_in_array() {
+        let source = r#"
+            let arr = [(1, 2), (3, 4), (5, 6)]
+            arr[0][0]
+        "#;
+        assert_number_result(source, 1.0);
+    }
+
+    #[test]
+    fn test_tuple_from_function_call() {
+        let source = r#"
+            fn make_pair(a, b) {
+                return a, b
+            }
+            let p = make_pair(10, 20)
+            p[0] + p[1]
+        "#;
+        assert_number_result(source, 30.0);
+    }
+
+    #[test]
+    fn test_tuple_truthiness() {
+        let source = r#"
+            let t1 = (1, 2)
+            let t2 = ()
+            if t1 {
+                1
+            } else {
+                0
+            }
+        "#;
+        assert_number_result(source, 1.0);
+    }
+
+    #[test]
+    fn test_empty_tuple_truthiness() {
+        let source = r#"
+            let t = ()
+            if t {
+                1
+            } else {
+                0
+            }
+        "#;
+        assert_number_result(source, 0.0);
     }
 }
 

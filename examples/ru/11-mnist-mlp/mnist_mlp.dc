@@ -1,0 +1,102 @@
+#  Пример MNIST MLP
+#  Минимальная архитектура MLP для классификации цифр MNIST
+# 
+#  Архитектура:
+#  Вход(784) → Linear(128) + ReLU → Linear(10)
+# 
+#  Ожидаемая точность: 92-95% после обучения
+
+import ml
+
+#  Загрузка наборов данных MNIST
+print("Загрузка наборов данных MNIST...")
+dataset_train = ml.load_mnist("train")
+dataset_test = ml.load_mnist("test")
+
+print("Размер обучающего набора: ", ml.dataset_features(dataset_train).shape[0])
+print("Размер тестового набора: ", ml.dataset_features(dataset_test).shape[0])
+
+#  Создание архитектуры MLP: Linear(784, 128) → ReLU → Linear(128, 10)
+#  Примечание: Softmax встроен в операцию CrossEntropy loss, поэтому не нужен в Sequential
+
+#  Создание нейронной сети из Sequential
+model_path = path("model_mnist.nn")
+
+if model_path.exists {
+    print("Загрузка модели из - ", model_path)
+    model = ml.load(model_path)
+    print("Модель загружена из - ", model_path)
+} else {
+    print("Создание архитектуры MLP...")
+
+    #  Создание слоёв
+    layer1 = ml.layer.linear(784, 128)  #  Полносвязный слой: 784 → 128
+    layer2 = ml.layer.relu()            #  Активация ReLU
+    layer3 = ml.layer.linear(128, 10)   #  Полносвязный слой: 128 → 10 (логиты)
+
+    #  Создание контейнера Sequential (без softmax - он встроен в CrossEntropy loss)
+    layers = [layer1, layer2, layer3]
+    model_seq = ml.sequential(layers)
+
+    model = ml.neural_network(model_seq)
+    print("Модель успешно создана!")
+}
+
+# model.device("metal")
+# model.device("gpu")
+model.device("cpu")
+print("Устройство модели: ", model.get_device())
+
+#  Получение обучающих данных
+x_train = ml.dataset_features(dataset_train)
+print("max(x_train)=",max(x_train))
+print("min(x_train)=",min(x_train))
+y_train = ml.dataset_targets(dataset_train)
+print("Форма y_train:", ml.shape(y_train))
+
+#  Получение валидационных данных (используем тестовый набор для валидации в этом примере)
+x_val = ml.dataset_features(dataset_test)
+y_val = ml.dataset_targets(dataset_test)
+
+print("Форма x_val:", ml.shape(x_val))
+print("Форма y_val:", ml.shape(y_val))
+
+#  Параметры обучения
+epochs = 5
+
+batch_size = 120
+learning_rate = 0.0001
+
+print("Начало обучения...")
+print("Эпохи: ", epochs)
+print("Размер пакета: ", batch_size)
+print("Коэффициент обучения: ", learning_rate)
+
+#  Обучение модели с валидационными данными
+# loss_history = ml.nn_train(model, x_train, y_train, 
+#                            epochs, batch_size, learning_rate, 
+#                            "cross_entropy", x_val, y_val)
+
+loss_history = model.train(x_train, y_train, 
+                            epochs, batch_size, learning_rate,
+                            loss="cross_entropy", optimizer="Adam",
+                            x_val=x_val, y_val=y_val)
+
+print("Обучение завершено!")
+print("История потерь: ", loss_history)
+
+#  Оценка на тестовом наборе
+print("Оценка на тестовом наборе...")
+x_test = ml.dataset_features(dataset_test)
+y_test = ml.dataset_targets(dataset_test)
+
+#  Получение предсказаний
+predictions = ml.nn_forward(model, x_test)
+
+#  Вычисление точности (упрощённо - на практике нужно сравнивать предсказания с метками)
+print("Форма предсказаний: ", predictions.shape)
+print("Форма тестовых меток: ", y_test.shape)
+
+print("Пример обучения MNIST MLP завершён!")
+
+model.save(model_path)

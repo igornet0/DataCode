@@ -89,6 +89,60 @@ Table join operations:
 
 ---
 
+### 6. [ML Module](./ml/ml_module.md)
+
+Machine learning module for DataCode:
+
+- **Tensor operations** (12 functions) - working with tensors, operations on them
+- **Graph operations** (9 functions) - computation graph for automatic differentiation
+- **Linear Regression** (4 functions) - creating and training linear regression models
+- **Optimizers** (5 functions) - optimizers (SGD, Adam, etc.)
+- **Loss functions** (9 functions) - loss functions (MSE, Cross Entropy, MAE, etc.)
+- **Dataset functions** (5 functions) - working with datasets, loading MNIST
+- **Layer functions** (4 functions) - creating neural network layers
+- **Neural Network functions** (20 functions) - creating, training and saving neural networks
+- **Object methods** - methods of Tensor, NeuralNetwork, Dataset and other objects
+
+**📚 Usage examples:**
+- MNIST MLP: [`examples/en/11-mnist-mlp/`](../../examples/en/11-mnist-mlp/)
+- Training process: [Neural Network Training Flow](./ml/training_flow.md)
+- Model save format: [Model Save Format](./ml/model_save_format.md)
+
+---
+
+### 7. [Plot Module - Charts and Visualization](./plot/README.md)
+
+Complete description of the `plot` module for working with images and creating charts:
+
+- **Working with images** - loading, displaying, creating windows
+- **Creating charts** - bar charts, line charts, pie charts, heatmaps
+- **Subplots** - creating a grid of plots for simultaneous display
+- **Axis configuration** - axis labels, titles, visibility control
+- **Data types** - Image, Window, Figure, Axis
+
+**📚 Usage examples:**
+- Charts and visualization: [`examples/en/10-plot/`](../../examples/en/10-plot/)
+
+---
+
+### 8. [Text Rendering in Plot Module](./text_rendering.md)
+
+Detailed description of the text rendering system in the plot module:
+
+- **System architecture** - components and data flow
+- **Rendering process** - from font initialization to bitmap rendering
+- **Fontdue coordinate model** - baseline-oriented model
+- **Glyph caching** - performance optimization via FontAtlas
+- **Alpha blending** - text edge smoothing
+- **Implementation details** - DPI-aware rendering, monospace vs proportional fonts
+- **Common issues and solutions** - typical problems and solutions
+
+**📚 Technical documentation:**
+- Complete process description: [Text Rendering](./text_rendering.md)
+- Problem analysis: [`TEXT_RENDERING_ANALYSIS.md`](../../TEXT_RENDERING_ANALYSIS.md)
+
+---
+
 ## 🚀 Quick Start
 
 If you're just starting to learn DataCode, we recommend the following order:
@@ -143,6 +197,8 @@ All examples are organized in the [`examples/en/`](../../examples/en/) folder:
 - **[07-loops](../../examples/en/07-loops/)** - Loops and iterations
 - **[08-websocket](../../examples/en/08-websocket/)** - Working with WebSocket
 - **[09-data-model-creation](../../examples/en/09-data-model-creation/)** - Data model creation
+- **[10-plot](../../examples/en/10-plot/)** - Charts and visualization
+- **[11-mnist-mlp](../../examples/en/11-mnist-mlp/)** - MNIST MLP example
 
 **Complete example documentation:** [`examples/en/README.md`](../../examples/en/README.md)
 
@@ -168,7 +224,14 @@ docs/
     ├── data_types.md            # Data types
     ├── table_create_function.md # Working with tables
     ├── websocket_server.md      # WebSocket server
-    └── join_specification.md    # JOIN specification
+    ├── join_specification.md    # JOIN specification
+    ├── ml_module.md             # ML module (machine learning)
+    ├── text_rendering.md        # Text rendering in plot module
+    ├── plot/                    # Plot module documentation
+    │   └── README.md            # Plot module - charts and visualization
+    └── ml/                      # ML module documentation
+        ├── training_flow.md     # Neural network training flow
+        └── model_save_format.md # Model save format
 ```
 
 ---

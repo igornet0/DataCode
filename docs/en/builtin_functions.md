@@ -998,9 +998,48 @@ show_table(table_head(data, 10))
 
 ---
 
+## ML Module
+
+DataCode includes a powerful machine learning module `ml` that provides **68 functions** for working with tensors, creating and training neural networks, working with data, and much more.
+
+### Main ML Module Features:
+
+- **Tensor operations** (12 functions) - creating tensors, operations on them (addition, multiplication, matrix multiplication, etc.)
+- **Graph operations** (9 functions) - working with computation graph for automatic differentiation
+- **Linear Regression** (4 functions) - creating and training linear regression models
+- **Optimizers** (5 functions) - optimizers (SGD, Adam, etc.)
+- **Loss functions** (9 functions) - loss functions (MSE, Cross Entropy, MAE, etc.)
+- **Dataset functions** (5 functions) - working with datasets, loading MNIST
+- **Layer functions** (4 functions) - creating neural network layers (Linear, ReLU, Softmax, Flatten)
+- **Neural Network functions** (20 functions) - creating, training and saving neural networks
+
+### Using the ML Module:
+
+```datacode
+import ml
+
+# Creating a tensor
+t = ml.tensor([[1, 2], [3, 4]])
+
+# Creating a neural network
+layer1 = ml.layer.linear(784, 128)
+layer2 = ml.layer.relu()
+layer3 = ml.layer.linear(128, 10)
+model = ml.neural_network(ml.sequential([layer1, layer2, layer3]))
+
+# Training the model
+loss_history = model.train(x_train, y_train, 10, 32, 0.001, "cross_entropy")
+```
+
+**📚 Full documentation:** [DataCode ML Module](./ml/ml_module.md)
+
+---
+
 ## Summary
 
-DataCode provides **50 built-in functions**, organized into the following categories:
+DataCode provides **50 built-in functions** and **68 ML module functions**, organized into the following categories:
+
+### Built-in Functions (50):
 
 - **Utilities**: 3 functions (print, len, range)
 - **Type conversion**: 7 functions (int, float, bool, str, array, date, money)
@@ -1011,6 +1050,17 @@ DataCode provides **50 built-in functions**, organized into the following catego
 - **Arrays**: 8 functions (push, pop, unique, reverse, sort, sum, average, count)
 - **Tables**: 9 functions (table, read_file, table_info, table_head, table_tail, table_select, table_sort, table_where, show_table)
 
+### ML Module (68 functions):
+
+- **Tensor operations**: 12 functions
+- **Graph operations**: 9 functions
+- **Linear Regression**: 4 functions
+- **Optimizers**: 5 functions
+- **Loss functions**: 9 functions
+- **Dataset functions**: 5 functions
+- **Layer functions**: 4 functions
+- **Neural Network functions**: 20 functions
+
 All functions are fully integrated into the language and can be used in expressions, conditions, and loops.
 
 ---
@@ -1019,6 +1069,7 @@ All functions are fully integrated into the language and can be used in expressi
 
 - [Data Types](./data_types.md) - detailed description of DataCode data types
 - [Working with Tables](./table_create_function.md) - creating and working with tables
+- [ML Module](./ml/ml_module.md) - complete description of the machine learning module
 - [Usage Examples](../../examples/en/) - practical examples of all functions
 
 ---

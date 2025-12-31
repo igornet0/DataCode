@@ -1,0 +1,11 @@
+import plot
+
+x = ["Cheese", "Milk", "Vegetables", "Fruits", "Water"]
+y = [2,4,1,6,3]
+
+plot.xlabel("Category")
+plot.ylabel("Value")
+
+plot.bar(x, y)
+plot.show(title="My Chart")
+

@@ -1,0 +1,25 @@
+# Loading an image from a file
+# Demonstration of basic work with the plot module
+
+# The plot module is available as a global variable
+# The plot.image(path) function loads an image from a file
+
+# Load the image
+let img = plot.image("path/to/image.png")
+
+# Check that the image is loaded
+if img != null {
+    print("Image loaded successfully!")
+    print("Image size can be obtained through width and height properties")
+} else {
+    print("Error: failed to load image")
+    print("Make sure the file path is specified correctly")
+}
+
+# Examples of supported formats:
+# - PNG (.png)
+# - JPEG (.jpg, .jpeg)
+# - GIF (.gif)
+# - BMP (.bmp)
+# - and other formats supported by the image library
+

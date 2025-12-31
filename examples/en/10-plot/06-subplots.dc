@@ -1,0 +1,85 @@
+# Creating a subplots grid
+# Demonstration of using plot.subplots to create a grid of plots
+
+import plot, ml
+
+print("=== Example of working with subplots ===")
+print("")
+
+# Create a 3x3 grid to display 9 images
+# figsize sets the figure size in inches
+fig = plot.subplots(3, 3, figsize=(10, 10))
+
+print("Created 3x3 subplots grid")
+print("")
+
+# Example: load MNIST data for demonstration
+# In real usage, you can load your own images
+print("Loading data for demonstration...")
+data = ml.load_mnist("test")
+
+# Collect the first 9 images
+images = []
+labels = []
+count = 0
+
+for x, y in data {
+    push(images, x)
+    push(labels, y)
+    count += 1
+    if count >= 9 {
+        break
+    }
+}
+
+print("Loaded " + str(count) + " images")
+print("")
+
+# Fill each subplot with an image
+# Access to axes: fig.axes[row][col]
+for i in range(9) {
+    # Calculate position in the grid
+    row = i // 3  # Integer division to get the row
+    col = i % 3   # Remainder to get the column
+    
+    # Get the axis by coordinates
+    axis = fig.axes[row][col]
+    
+    # Display the image in this axis
+    # imshow accepts an image (tensor or Image) and optionally cmap
+    axis.imshow(images[i], cmap='gray')
+    
+    # Set the title for each subplot
+    # The title can contain information about the image
+    axis.set_title("Label: " + str(labels[i]))
+    
+    # Hide the axes (remove coordinate lines)
+    axis.axis('off')
+}
+
+print("All images added to subplots")
+print("")
+
+# Apply tight_layout for automatic padding adjustment
+# This makes the subplots arrangement more neat
+plot.tight_layout(fig)
+
+print("Applied tight_layout")
+print("")
+
+# Display the figure in a window
+# plot.show can accept a figure and an optional window title
+plot.show(fig, title="Example of using subplots - 9 images")
+
+print("Window closed")
+print("")
+print("=== Example completed ===")
+
+# Notes:
+# 1. plot.subplots(rows, cols, figsize=(width, height)) creates a subplots grid
+# 2. Access to axes: fig.axes[row][col] - two-dimensional array of axes
+# 3. axis.imshow(image, cmap='gray') displays the image in the axis
+# 4. axis.set_title(title) sets the title for the axis
+# 5. axis.axis('off') hides coordinate axes, axis.axis('on') shows them
+# 6. plot.tight_layout(fig) automatically adjusts padding between subplots
+# 7. plot.show(fig, title="...") displays the figure in a window with the specified title

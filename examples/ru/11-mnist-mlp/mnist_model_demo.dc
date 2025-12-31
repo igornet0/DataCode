@@ -1,0 +1,40 @@
+import ml, plot
+
+model_path = path("model_mnist.nn")
+
+if !model_path.exists {
+    throw "Ошибка загрузки модели из " + str(model_path)
+}
+
+print("Загрузка модели из - ", model_path)
+model = ml.load(model_path)
+
+#ml.model_info(model)
+ml.model_info(model, verbose=true)
+
+data = ml.load_mnist("test")
+images = []
+labels = []
+count = 0 
+
+for x, y in data {
+    push(images, x)
+    push(labels, y)
+    count += 1
+    if count >= 9 {
+        break
+    }
+}
+
+fig = plot.subplots(3, 3, figsize=(10, 10))
+
+for i in range(9) {
+    row = i // 3
+    col = i % 3
+    predict = model(images[i])
+    fig.axes[row][col].imshow(images[i], cmap='gray')
+    fig.axes[row][col].set_title("y: " + str(labels[i]) + " предсказание: " + str(predict.max_idx()[0]))
+    fig.axes[row][col].axis('off')
+}
+plot.tight_layout(fig)
+plot.show(fig, title="Отображение предсказаний для 9 изображений")

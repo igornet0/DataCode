@@ -125,18 +125,11 @@ impl Lexer {
             }
             '/' => {
                 if self.match_char('/') {
-                    // Проверяем, это комментарий или оператор //
+                    // Оператор // (целочисленное деление) или //=
                     if self.match_char('=') {
                         // Оператор //=
                         let token = self.make_token(TokenKind::SlashSlashEqual);
                         return Ok(token);
-                    } else if self.peek() == '/' || self.peek() == '\n' || self.is_at_end() {
-                        // Комментарий до конца строки (//)
-                        while self.peek() != '\n' && !self.is_at_end() {
-                            self.advance();
-                        }
-                        // Продолжаем поиск следующего токена
-                        return self.next_token();
                     } else {
                         // Оператор // (целочисленное деление)
                         let token = self.make_token(TokenKind::SlashSlash);
@@ -331,6 +324,9 @@ impl Lexer {
             "catch" => TokenKind::Catch,
             "throw" => TokenKind::Throw,
             "cache" => TokenKind::Cache,
+            "import" => TokenKind::Import,
+            "from" => TokenKind::From,
+            "as" => TokenKind::As,
             _ => TokenKind::Identifier,
         }
     }

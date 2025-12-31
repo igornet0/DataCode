@@ -25,6 +25,34 @@ pub enum Arg {
     Named { name: String, value: Expr }, // Именованный аргумент
 }
 
+/// Паттерн распаковки для циклов for
+#[derive(Debug, Clone)]
+pub enum UnpackPattern {
+    Variable(String),           // Обычная переменная (x)
+    Wildcard,                   // Пропуск значения (_)
+    Variadic(String),           // Variadic переменная (*y) - получает остаток элементов
+    VariadicWildcard,           // Variadic wildcard (*_) - пропуск остатка
+    Nested(Vec<UnpackPattern>), // Вложенная распаковка ((x, y), [x, y])
+}
+
+/// Элемент импорта в from-import
+#[derive(Debug, Clone)]
+pub enum ImportItem {
+    Named(String),              // load_mnist
+    Aliased { name: String, alias: String }, // window as wd
+    All,                       // *
+}
+
+/// Тип импорта
+#[derive(Debug, Clone)]
+pub enum ImportStmt {
+    Modules(Vec<String>),      // import ml, plot
+    From {                     // from ml import load_mnist, *
+        module: String,
+        items: Vec<ImportItem>,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub enum Expr {
     Literal {
@@ -46,6 +74,11 @@ pub enum Expr {
         value: Box<Expr>,
         line: usize,
     },
+    UnpackAssign {
+        names: Vec<String>,
+        value: Box<Expr>,
+        line: usize,
+    },
     Binary {
         left: Box<Expr>,
         op: TokenKind,
@@ -63,6 +96,10 @@ pub enum Expr {
         line: usize,
     },
     ArrayLiteral {
+        elements: Vec<Expr>,
+        line: usize,
+    },
+    TupleLiteral {
         elements: Vec<Expr>,
         line: usize,
     },
@@ -91,10 +128,12 @@ impl Expr {
             Expr::Variable { line, .. } => *line,
             Expr::Assign { line, .. } => *line,
             Expr::AssignOp { line, .. } => *line,
+            Expr::UnpackAssign { line, .. } => *line,
             Expr::Binary { line, .. } => *line,
             Expr::Unary { line, .. } => *line,
             Expr::Call { line, .. } => *line,
             Expr::ArrayLiteral { line, .. } => *line,
+            Expr::TupleLiteral { line, .. } => *line,
             Expr::ArrayIndex { line, .. } => *line,
             Expr::Property { line, .. } => *line,
             Expr::MethodCall { line, .. } => *line,
@@ -126,8 +165,8 @@ pub enum Stmt {
         line: usize,
     },
     For {
-        variable: String,        // Имя переменной (x)
-        iterable: Expr,          // Выражение-итерируемое (array или переменная)
+        pattern: Vec<UnpackPattern>, // Паттерн распаковки (может быть один элемент для обратной совместимости)
+        iterable: Expr,              // Выражение-итерируемое (array или переменная)
         body: Vec<Stmt>,
         line: usize,
     },
@@ -158,6 +197,10 @@ pub enum Stmt {
         value: Expr,
         line: usize,
     },
+    Import {
+        import_stmt: ImportStmt,
+        line: usize,
+    },
 }
 
 impl Stmt {
@@ -174,6 +217,7 @@ impl Stmt {
             Stmt::Continue { line, .. } => *line,
             Stmt::Try { line, .. } => *line,
             Stmt::Throw { line, .. } => *line,
+            Stmt::Import { line, .. } => *line,
         }
     }
 }

@@ -1,0 +1,420 @@
+# Скрипт загрузки всех данных из model_data и создания SQLite базы данных
+# Использование: datacode загрузка_данных_модели.dc --build_model
+
+print("============================================================")
+print("Загрузка данных из model_data")
+print("============================================================")
+print()
+
+# Базовый путь к данным
+let base_path = getcwd() / "model_data"
+let docs_path = base_path / "docs"
+
+print("📂 Загрузка справочников...")
+# Инициализируем переменные как null на случай ошибок загрузки
+global product_catalog = null
+global regions = null
+global employees = null
+
+# Загружаем справочники
+try {
+    product_catalog = read_file(docs_path / "product_catalog.csv")
+    print("  ✓ Загружено продуктов: ", len(product_catalog))
+} catch e {
+    print("  ⚠️  Ошибка загрузки product_catalog.csv: ", e)
+}
+
+try {
+    regions = read_file(docs_path / "regions.csv")
+    print("  ✓ Загружено регионов: ", len(regions))
+} catch e {
+    print("  ⚠️  Ошибка загрузки regions.csv: ", e)
+}
+
+try {
+    employees = read_file(docs_path / "employees.csv")
+    print("  ✓ Загружено сотрудников: ", len(employees))
+} catch e {
+    print("  ⚠️  Ошибка загрузки employees.csv: ", e)
+}
+print()
+
+# Используем встроенную функцию merge_tables из DataCode
+
+print("📊 Загрузка ежемесячных данных...")
+
+# Собираем все ежемесячные данные
+let all_sales_tables = []
+let all_inventory_tables = []
+let all_refunds_tables = []
+let all_marketing_tables = []
+
+# Обрабатываем каждую директорию года
+for year_dir in list_files(base_path) {
+    # Пропускаем файлы и служебные директории
+    if year_dir.name != "docs" and !contains(year_dir.name, ".") {
+        # Получаем список месяцев в году        
+        print("  🔍 Год ", year_dir.name)
+        # Обрабатываем каждую директорию месяца
+        for month_dir in sort(list_files(year_dir)) {
+            if !month_dir.is_dir {
+                continue
+            }
+            # Пропускаем квартальные директории и файлы
+            print("     🔍 Месяц ", month_dir.name)
+            if !contains(month_dir.name, "quarter_") {
+                # month_dir должно быть "01", "02", ..., "12"
+                for file in list_files(month_dir) {
+                    # Пропускаем квартальные директории и файлы с расширениями (кроме CSV)
+                    if contains(file.name, "quarter_") or (contains(file.name, ".") and !contains(file.name, ".csv")) {
+                        print("         ⚠️  Пропущен (квартальная директория или не CSV файл): ", file.name)
+                    } else {
+                        print("         🔍 файл ", file.name)
+                        try {
+                            let data = read_file(file)
+                            if contains(file.name, "sales") {
+                                try {
+                                    all_sales_tables = push(all_sales_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Ошибка загрузки ", file, ": ", e)
+                                }
+                            } else if contains(file.name, "inventory") {
+                                try {
+                                    all_inventory_tables = push(all_inventory_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Ошибка загрузки ", file, ": ", e)
+                                }
+                            } else if contains(file.name, "marketing_spend") {
+                                try {
+                                    all_marketing_tables = push(all_marketing_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Ошибка загрузки ", file, ": ", e)
+                                }
+                            } else if contains(file.name, "refunds") {
+                                try {
+                                    all_refunds_tables = push(all_refunds_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Ошибка загрузки ", file, ": ", e)
+                                }
+                            }
+                        } catch e {
+                            print("  ⚠️  Ошибка file ", file, ": ", e)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+print("  ✓ Загружено файлов sales: ", len(all_sales_tables))
+print("  ✓ Загружено файлов inventory: ", len(all_inventory_tables))
+print("  ✓ Загружено файлов refunds: ", len(all_refunds_tables))
+print("  ✓ Загружено файлов marketing: ", len(all_marketing_tables))
+print()
+
+# Объединяем все ежемесячные таблицы
+print("🔗 Объединение ежемесячных данных...")
+print("  Объединение sales (", len(all_sales_tables), " таблиц)...")
+global sales_all = merge_tables(all_sales_tables)
+print("  Объединение inventory (", len(all_inventory_tables), " таблиц)...")
+global inventory_all = merge_tables(all_inventory_tables)
+print("  Объединение refunds (", len(all_refunds_tables), " таблиц)...")
+global refunds_all = merge_tables(all_refunds_tables)
+print("  Объединение marketing (", len(all_marketing_tables), " таблиц)...")
+global marketing_spend_all = merge_tables(all_marketing_tables)
+
+if sales_all != null {
+    print("  ✓ Объединено продаж: ", len(sales_all))
+}
+if inventory_all != null {
+    print("  ✓ Объединено инвентаря: ", len(inventory_all))
+}
+if refunds_all != null {
+    print("  ✓ Объединено возвратов: ", len(refunds_all))
+}
+if marketing_spend_all != null {
+    print("  ✓ Объединено маркетинга: ", len(marketing_spend_all))
+}
+print()
+
+# Загружаем квартальные данные
+print("📈 Загрузка квартальных агрегатов...")
+let all_financial_summary_tables = []
+let all_regional_summary_tables = []
+let all_product_summary_tables = []
+let all_employee_performance_tables = []
+
+# Обрабатываем каждую директорию года для квартальных данных
+for year_dir in list_files(base_path) {
+    # Пропускаем файлы и служебные директории
+    if year_dir.name != "docs" and year_dir.is_dir {
+
+        print("  🔍 Год ", year_dir.name)
+        
+        # Ищем квартальные директории внутри месячных директорий
+        for month_dir in sort(list_files(year_dir)) {
+            if !month_dir.is_dir {
+                continue
+            }
+
+            # Ищем квартальные директории внутри месячной директории
+            for item in list_files(month_dir) {
+                if contains(item.name, "quarter_") {
+                    print("     🔍 Месяц ", month_dir.name)
+                    # Получаем список файлов в квартальной директории
+                    let quarter_files = null
+                    try {
+                        quarter_files = list_files(item)
+                    } catch e {
+                        # Ошибка при получении списка файлов в квартальной директории
+                        print("  ⚠️  Ошибка доступа к квартальной директории ", item, ": ", e)
+                        quarter_files = null
+                    }
+                    
+                    if quarter_files != null {
+                        # Обрабатываем каждый файл в квартальной директории
+                        for quarter_file in quarter_files {
+                            print("         🔍 файл ", quarter_file.name)
+                            let data = read_file(quarter_file)
+
+                            # Определяем тип файла по имени и загружаем
+                            if contains(quarter_file.name, "financial_summary_") {
+                                try {
+                                    all_financial_summary_tables = push(all_financial_summary_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Ошибка загрузки ", quarter_file, ": ", e)
+                                }
+                            }
+                            
+                            if contains(quarter_file.name, "regional_summary_") {
+                                try {
+                                    all_regional_summary_tables = push(all_regional_summary_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Ошибка загрузки ", quarter_file, ": ", e)
+                                }
+                            }
+                            
+                            if contains(quarter_file.name, "product_summary_") {
+                                try {
+                                    all_product_summary_tables = push(all_product_summary_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Ошибка загрузки ", quarter_file, ": ", e)
+                                }
+                            }
+                            
+                            if contains(quarter_file.name, "employee_performance_") {
+                                try {
+                                    all_employee_performance_tables = push(all_employee_performance_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Ошибка загрузки ", quarter_file, ": ", e)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+print("  ✓ Загружено файлов financial_summary: ", len(all_financial_summary_tables))
+print("  ✓ Загружено файлов regional_summary: ", len(all_regional_summary_tables))
+print("  ✓ Загружено файлов product_summary: ", len(all_product_summary_tables))
+print("  ✓ Загружено файлов employee_performance: ", len(all_employee_performance_tables))
+print()
+
+# Объединяем квартальные таблицы
+print("🔗 Объединение квартальных данных...")
+global financial_summary_all = merge_tables(all_financial_summary_tables)
+global regional_summary_all = merge_tables(all_regional_summary_tables)
+global product_summary_all = merge_tables(all_product_summary_tables)
+global employee_performance_all = merge_tables(all_employee_performance_tables)
+
+if financial_summary_all != null {
+    print("  ✓ Объединено финансовых сводов: ", len(financial_summary_all))
+}
+if regional_summary_all != null {
+    print("  ✓ Объединено региональных сводов: ", len(regional_summary_all))
+}
+if product_summary_all != null {
+    print("  ✓ Объединено продуктовых сводов: ", len(product_summary_all))
+}
+if employee_performance_all != null {
+    print("  ✓ Объединено отчетов по сотрудникам: ", len(employee_performance_all))
+}
+print()
+
+# Создание связей между таблицами
+print("🔗 Создание связей между таблицами...")
+let relations_created = 0
+
+# Функция для безопасного создания связи
+fn create_relation(table1, col1, table2, col2, relation_name) {
+    try {
+        let headers1 = table1.columns
+        let headers2 = table2.columns
+
+        if col1 in headers1 and col2 in headers2 {
+            relate(table1[col1], table2[col2])
+            print("  ✓ ", relation_name)
+            return true
+        } else {
+            print("  ⚠️  ", relation_name, " - колонки не найдены")
+            return false
+        }
+    } catch e {
+        print("  ✗ ", relation_name, " - ошибка: ", e)
+        return false
+    }
+}
+
+# Связи справочников с ежемесячными данными
+if sales_all != null {
+    if product_catalog != null {
+        if create_relation(product_catalog, "product_id", sales_all, "product_id", "product_catalog.product_id ↔ sales_all.product_id") {
+            relations_created = relations_created + 1
+        }
+    }
+    
+    if regions != null {
+        if create_relation(regions, "region_code", sales_all, "region", "regions.region_code ↔ sales_all.region") {
+            relations_created = relations_created + 1
+        }
+    }
+    
+    if employees != null {
+        if create_relation(employees, "employee_id", sales_all, "employee_id", "employees.employee_id ↔ sales_all.employee_id") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+if inventory_all != null {
+    if product_catalog != null {
+        if create_relation(product_catalog, "product_id", inventory_all, "product_id", "product_catalog.product_id ↔ inventory_all.product_id") {
+            relations_created = relations_created + 1
+        }
+    }
+    
+    if regions != null {
+        if create_relation(regions, "region_code", inventory_all, "region", "regions.region_code ↔ inventory_all.region") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+if refunds_all != null {
+    if sales_all != null {
+        if create_relation(sales_all, "transaction_id", refunds_all, "transaction_id", "sales_all.transaction_id ↔ refunds_all.transaction_id") {
+            relations_created = relations_created + 1
+        }
+    }
+    
+    if product_catalog != null {
+        if create_relation(product_catalog, "product_id", refunds_all, "product_id", "product_catalog.product_id ↔ refunds_all.product_id") {
+            relations_created = relations_created + 1
+        }
+    }
+    
+    if regions != null {
+        if create_relation(regions, "region_code", refunds_all, "region", "regions.region_code ↔ refunds_all.region") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+if marketing_spend_all != null {
+    if regions != null {
+        if create_relation(regions, "region_code", marketing_spend_all, "region", "regions.region_code ↔ marketing_spend_all.region") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+# Связи с квартальными агрегатами
+if product_summary_all != null {
+    if product_catalog != null {
+        if create_relation(product_catalog, "product_id", product_summary_all, "product_id", "product_catalog.product_id ↔ product_summary_all.product_id") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+if regional_summary_all != null {
+    if regions != null {
+        if create_relation(regions, "region_code", regional_summary_all, "region", "regions.region_code ↔ regional_summary_all.region") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+if employee_performance_all != null {
+    if employees != null {
+        if create_relation(employees, "employee_id", employee_performance_all, "employee_id", "employees.employee_id ↔ employee_performance_all.employee_id") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+print("  ✓ Создано связей: ", relations_created)
+print()
+
+# Проверка: вызов relate() напрямую для диагностики
+if product_catalog != null and sales_all != null {
+    print("🔍 Диагностика: Прямой вызов relate()...")
+    try {
+        relate(product_catalog["product_id"], sales_all["product_id"])
+        print("  ✓ relate() вызван успешно")
+    } catch e {
+        print("  ✗ Ошибка при вызове relate(): ", e)
+    }
+}
+print()
+
+print("============================================================")
+print("✅ Загрузка данных завершена!")
+print("============================================================")
+print()
+print("📊 Итоговая статистика:")
+print("  • Справочники:")
+if product_catalog != null {
+    print("    - product_catalog: ", len(product_catalog), " строк")
+}
+if regions != null {
+    print("    - regions: ", len(regions), " строк")
+}
+if employees != null {
+    print("    - employees: ", len(employees), " строк")
+}
+print("  • Ежемесячные данные:")
+if sales_all != null {
+    print("    - sales_all: ", len(sales_all), " строк")
+}
+if inventory_all != null {
+    print("    - inventory_all: ", len(inventory_all), " строк")
+}
+if refunds_all != null {
+    print("    - refunds_all: ", len(refunds_all), " строк")
+}
+if marketing_spend_all != null {
+    print("    - marketing_spend_all: ", len(marketing_spend_all), " строк")
+}
+print("  • Квартальные агрегаты:")
+if financial_summary_all != null {
+    print("    - financial_summary_all: ", len(financial_summary_all), " строк")
+}
+if regional_summary_all != null {
+    print("    - regional_summary_all: ", len(regional_summary_all), " строк")
+}
+if product_summary_all != null {
+    print("    - product_summary_all: ", len(product_summary_all), " строк")
+}
+if employee_performance_all != null {
+    print("    - employee_performance_all: ", len(employee_performance_all), " строк")
+}
+print("  • Связи между таблицами:")
+print("    - Создано связей: ", relations_created)
+print()
+print("💡 Для экспорта в SQLite используйте: datacode загрузка_данных_модели.dc --build_model")
+print()

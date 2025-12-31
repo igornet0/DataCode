@@ -1,0 +1,75 @@
+# DataCode Example Script
+# This file demonstrates various DataCode features
+
+# Variables
+x = 42
+name = 'DataCode'
+is_active = true
+numbers = [1, 2, 3, 4, 5]
+
+# Print statements
+print('Hello, ' + name + '!')
+print('x =', x)
+print('is_active =', is_active)
+
+# Conditional statements
+if x > 40 do
+    print('x is greater than 40')
+else
+    print('x is not greater than 40')
+endif
+
+# Functions
+fn greet(name) {
+    return 'Hello, ' + name + '!'
+}
+
+fn calculate_sum(numbers) {
+    let total = 0
+    for num in numbers {
+        total = total + num
+    }
+    return total
+}
+
+# Function calls
+print(greet('World'))
+print('Sum of numbers:', calculate_sum(numbers))
+
+# Loops
+print('Numbers:')
+for num in numbers {
+    print('  -', num)
+}
+
+# Built-in functions
+path = getcwd() / 'data'
+files = list_files(path)
+
+print('Current directory:', getcwd())
+print('Files found:', len(files))
+
+# Table operations
+data = [
+    [1, 'Alice', 25],
+    [2, 'Bob', 30],
+    [3, 'Charlie', 35]
+]
+headers = ['id', 'name', 'age']
+table = table(data, headers)
+
+show_table(table)
+
+# Filter operations
+young_people = table_where(table, 'age', '<', 30)
+print('Young people:')
+show_table(young_people)
+
+# Error handling
+try{
+    local result = read_file('nonexistent.txt')
+    print('File read:', result)
+} catch e {
+    print('Error reading file:', e)
+}
+

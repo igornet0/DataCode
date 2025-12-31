@@ -1,6 +1,6 @@
 // Компилятор AST → Bytecode
 
-use crate::parser::ast::{Expr, Stmt, Arg};
+use crate::parser::ast::{Expr, Stmt, Arg, UnpackPattern, ImportStmt, ImportItem};
 use crate::bytecode::{Chunk, OpCode, Function, CapturedVar};
 use crate::common::error::LangError;
 use crate::common::value::Value;
@@ -463,6 +463,39 @@ impl Compiler {
                 Some(vec!["left".to_string(), "right".to_string(), "on".to_string(), "type".to_string(), "suffixes".to_string()])
             },
             
+            // Module methods
+            "show" => Some(vec!["image".to_string(), "title".to_string()]),
+            
+            // ML functions
+            "nn_train" => Some(vec![
+                "nn".to_string(),  // Model object (first parameter, added separately for method calls)
+                "x".to_string(),
+                "y".to_string(),
+                "epochs".to_string(),
+                "batch_size".to_string(),
+                "learning_rate".to_string(),
+                "loss".to_string(),
+                "optimizer".to_string(),
+                "x_val".to_string(),
+                "y_val".to_string(),
+            ]),
+            "nn_train_sh" => Some(vec![
+                "nn".to_string(),  // Model object (first parameter, added separately for method calls)
+                "x".to_string(),
+                "y".to_string(),
+                "epochs".to_string(),
+                "batch_size".to_string(),
+                "learning_rate".to_string(),
+                "loss".to_string(),
+                "optimizer".to_string(),
+                "monitor".to_string(),
+                "patience".to_string(),
+                "min_delta".to_string(),
+                "restore_best".to_string(),
+                "x_val".to_string(),
+                "y_val".to_string(),
+            ]),
+            
             // Функция не найдена или не поддерживает именованные аргументы
             _ => None,
         }
@@ -476,8 +509,156 @@ impl Compiler {
         let stmt_line = stmt.line();
         self.current_line = stmt_line;
         match stmt {
+            Stmt::Import { import_stmt, line } => {
+                match import_stmt {
+                    ImportStmt::Modules(modules) => {
+                        // import ml, plot
+                        for module in modules {
+                            // Import statements are handled at runtime by the VM
+                            // We compile them as a special opcode that the VM will handle
+                            // Store the module name as a constant and emit Import opcode
+                            let module_index = self.chunk.add_constant(Value::String(module.clone()));
+                            self.chunk.write_with_line(OpCode::Import(module_index), *line);
+                            
+                            // Register the module name in globals so subsequent uses are recognized
+                            // This allows the compiler to know about the module even though it's loaded at runtime
+                            if !self.globals.contains_key(module) {
+                                let global_index = self.globals.len();
+                                self.globals.insert(module.clone(), global_index);
+                                self.chunk.global_names.insert(global_index, module.clone());
+                            }
+                        }
+                    }
+                    ImportStmt::From { module, items } => {
+                        // from ml import load_mnist, *
+                        // Создаем массив элементов импорта в константах
+                        use std::rc::Rc;
+                        use std::cell::RefCell;
+                        let mut item_strings = Vec::new();
+                        for item in items {
+                            match item {
+                                ImportItem::Named(name) => {
+                                    item_strings.push(Value::String(name.clone()));
+                                }
+                                ImportItem::Aliased { name, alias } => {
+                                    // Формат: "name:alias"
+                                    item_strings.push(Value::String(format!("{}:{}", name, alias)));
+                                }
+                                ImportItem::All => {
+                                    item_strings.push(Value::String("*".to_string()));
+                                }
+                            }
+                        }
+                        let items_array = Value::Array(Rc::new(RefCell::new(item_strings)));
+                        let items_index = self.chunk.add_constant(items_array);
+                        
+                        // Store the module name as a constant
+                        let module_index = self.chunk.add_constant(Value::String(module.clone()));
+                        self.chunk.write_with_line(OpCode::ImportFrom(module_index, items_index), *line);
+                        
+                        // Register the module name in globals
+                        if !self.globals.contains_key(module) {
+                            let global_index = self.globals.len();
+                            self.globals.insert(module.clone(), global_index);
+                            self.chunk.global_names.insert(global_index, module.clone());
+                        }
+                        
+                        // Register imported item names in globals for from-import
+                        for item in items {
+                            match item {
+                                ImportItem::Named(name) => {
+                                    if !self.globals.contains_key(name) {
+                                        let global_index = self.globals.len();
+                                        self.globals.insert(name.clone(), global_index);
+                                        self.chunk.global_names.insert(global_index, name.clone());
+                                    }
+                                }
+                                ImportItem::Aliased { alias, .. } => {
+                                    if !self.globals.contains_key(alias) {
+                                        let global_index = self.globals.len();
+                                        self.globals.insert(alias.clone(), global_index);
+                                        self.chunk.global_names.insert(global_index, alias.clone());
+                                    }
+                                }
+                                ImportItem::All => {
+                                    // All items will be imported at runtime, we can't register them here
+                                    // But we need to handle this case in VM
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             Stmt::Let { name, value, is_global, line } => {
                 self.current_line = *line;
+                // Проверяем, является ли value UnpackAssign (распаковка кортежа)
+                if let Expr::UnpackAssign { names, value: tuple_value, .. } = value {
+                    // Распаковка кортежа в let statement
+                    self.compile_expr(tuple_value)?;
+                    
+                    // Сохраняем кортеж во временную переменную
+                    let tuple_temp = self.declare_local(&format!("__tuple_temp_{}", line));
+                    self.chunk.write_with_line(OpCode::StoreLocal(tuple_temp), *line);
+                    
+                    // Для каждой переменной извлекаем элемент кортежа и сохраняем
+                    for (index, var_name) in names.iter().enumerate() {
+                        // Загружаем кортеж
+                        self.chunk.write_with_line(OpCode::LoadLocal(tuple_temp), *line);
+                        // Загружаем индекс
+                        let index_const = self.chunk.add_constant(Value::Number(index as f64));
+                        self.chunk.write_with_line(OpCode::Constant(index_const), *line);
+                        // Получаем элемент по индексу
+                        self.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                        
+                        // Сохраняем в переменную
+                        if *is_global {
+                            // Глобальная переменная
+                            let global_index = if let Some(&idx) = self.globals.get(var_name) {
+                                idx
+                            } else {
+                                let idx = self.globals.len();
+                                self.globals.insert(var_name.clone(), idx);
+                                idx
+                            };
+                            self.chunk.global_names.insert(global_index, var_name.clone());
+                            self.chunk.explicit_global_names.insert(global_index, var_name.clone());
+                            self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                        } else {
+                            // Локальная переменная
+                            if let Some(local_index) = self.resolve_local(var_name) {
+                                self.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
+                            } else if self.current_function.is_some() {
+                                let var_index = self.declare_local(var_name);
+                                self.chunk.write_with_line(OpCode::StoreLocal(var_index), *line);
+                            } else {
+                                // На верхнем уровне - проверяем, есть ли глобальная переменная
+                                if let Some(&global_index) = self.globals.get(var_name) {
+                                    // Глобальная переменная найдена - обновляем
+                                    self.chunk.global_names.insert(global_index, var_name.clone());
+                                    self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                                } else {
+                                    // Новая глобальная переменная на верхнем уровне
+                                    let global_index = self.globals.len();
+                                    self.globals.insert(var_name.clone(), global_index);
+                                    self.chunk.global_names.insert(global_index, var_name.clone());
+                                    self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // Загружаем последнее значение на стек
+                    if let Some(last_name) = names.last() {
+                        if let Some(local_index) = self.resolve_local(last_name) {
+                            self.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                        } else if let Some(&global_index) = self.globals.get(last_name) {
+                            self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                        }
+                    }
+                    return Ok(());
+                }
+                
+                // Обычное присваивание
                 self.compile_expr(value)?;
                 // Не клонируем автоматически - переменные должны разделять ссылки на массивы/таблицы/объекты
                 // Клонирование происходит только при явном вызове .clone()
@@ -611,7 +792,7 @@ impl Compiler {
                 // Условие уже удалено JumpIfFalse при выходе из цикла
                 self.loop_contexts.pop();
             }
-            Stmt::For { variable, iterable, body, line } => {
+            Stmt::For { pattern, iterable, body, line } => {
                 self.current_line = *line;
                 
                 // Начинаем новую область видимости для переменных цикла
@@ -632,8 +813,28 @@ impl Compiler {
                 self.chunk.write_with_line(OpCode::Constant(zero_index), *line);
                 self.chunk.write_with_line(OpCode::StoreLocal(index_local), *line);
                 
-                // Объявляем переменную-итератор
-                let var_local = self.declare_local(variable);
+                // Проверяем, является ли это простым случаем (одна переменная без распаковки)
+                let is_simple_case = pattern.len() == 1 && matches!(pattern[0], UnpackPattern::Variable(_));
+                
+                // Подсчитываем количество переменных (не wildcard) для проверки
+                let expected_count = if is_simple_case {
+                    0 // Не распаковываем, просто присваиваем
+                } else {
+                    self.count_unpack_variables(pattern)
+                };
+                
+                // Объявляем переменные из паттерна распаковки
+                let var_locals = if is_simple_case {
+                    // Простой случай: одна переменная
+                    if let UnpackPattern::Variable(name) = &pattern[0] {
+                        let index = self.declare_local(name);
+                        vec![Some(index)]
+                    } else {
+                        vec![None]
+                    }
+                } else {
+                    self.declare_unpack_pattern_variables(pattern, *line)?
+                };
                 
                 // Создаем метки для цикла
                 let loop_start_label = self.create_label();
@@ -661,8 +862,16 @@ impl Compiler {
                 self.chunk.write_with_line(OpCode::LoadLocal(index_local), *line);
                 self.chunk.write_with_line(OpCode::GetArrayElement, *line);
                 
-                // Сохраняем элемент в переменную-итератор
-                self.chunk.write_with_line(OpCode::StoreLocal(var_local), *line);
+                // Распаковываем элемент в переменные (или просто присваиваем для простого случая)
+                // Элемент находится на стеке
+                if is_simple_case {
+                    // Простой случай: просто сохраняем элемент в переменную
+                    if let Some(local_index) = var_locals[0] {
+                        self.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
+                    }
+                } else {
+                    self.compile_unpack_pattern(pattern, &var_locals, expected_count, *line)?;
+                }
                 
                 // Создаем контекст цикла
                 let loop_context = LoopContext {
@@ -787,18 +996,12 @@ impl Compiler {
                 // (захваченные из родительских функций)
                 let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                 let captured_vars = self.find_captured_variables(body, &parent_locals_snapshot, &param_names);
-                
-                #[cfg(debug_assertions)]
-                eprintln!("[DEBUG COMPILER] Function '{}' captured {} variables: {:?}", 
-                    name, captured_vars.len(), captured_vars);
+        
                 
                 // Создаем локальные слоты для захваченных переменных (перед параметрами)
                 // Эти слоты будут заполнены значениями из родительских функций при вызове
                 let mut captured_vars_info = Vec::new();
                 
-                #[cfg(debug_assertions)]
-                eprintln!("[DEBUG COMPILER] Compiling function '{}', parent_locals_snapshot has {} scopes", 
-                    name, parent_locals_snapshot.len());
                 
                 for var_name in &captured_vars {
                     let local_slot_index = self.declare_local(var_name);
@@ -813,19 +1016,12 @@ impl Compiler {
                     // parent_locals_snapshot[0] - самый внешний предок (например, outer)
                     // parent_locals_snapshot[n-1] - ближайший родитель (например, middle)
                     
-                    #[cfg(debug_assertions)]
-                    eprintln!("[DEBUG COMPILER] Looking for captured var '{}' in {} parent scopes", 
-                        var_name, parent_locals_snapshot.len());
                     
                     for (depth, scope) in parent_locals_snapshot.iter().rev().enumerate() {
                         if let Some(&slot_idx) = scope.get(var_name) {
                             parent_slot_index = Some(slot_idx);
                             // depth = 0 означает ближайший родитель, depth = 1 означает дедушку и т.д.
                             ancestor_depth = depth;
-                            
-                            #[cfg(debug_assertions)]
-                            eprintln!("[DEBUG COMPILER] Found '{}' at depth {} (ancestor_depth={}), slot={}", 
-                                var_name, depth, ancestor_depth, slot_idx);
                             
                             break;
                         }
@@ -842,10 +1038,6 @@ impl Compiler {
                     }
                     
                     let parent_slot = parent_slot_index.unwrap();
-                    
-                    #[cfg(debug_assertions)]
-                    eprintln!("[DEBUG COMPILER] Captured var '{}': parent_slot={}, local_slot={}, ancestor_depth={}", 
-                        var_name, parent_slot, local_slot_index, ancestor_depth);
                     
                     captured_vars_info.push(CapturedVar {
                         name: var_name.clone(),
@@ -868,11 +1060,11 @@ impl Compiler {
                     self.compile_stmt(stmt)?;
                 }
                 
-                // Если функция не вернула значение, добавляем неявный return null
+                // Если функция не вернула значение явно, добавляем неявный return
+                // который вернет последнее значение на стеке (если есть) или null
                 if self.chunk.code.is_empty() || 
                    !matches!(self.chunk.code.last(), Some(OpCode::Return)) {
-                    let const_index = self.chunk.add_constant(Value::Null);
-                    self.chunk.write_with_line(OpCode::Constant(const_index), *line);
+                    // Не добавляем Constant(Null) - просто возвращаем то, что на стеке
                     self.chunk.write_with_line(OpCode::Return, *line);
                 }
                 
@@ -979,20 +1171,29 @@ impl Compiler {
                     let mut resolved = vec![None; param_names.len()];
                     let mut positional_count = 0;
                     
+                    // Для методов объектов (например, nn_train), первый параметр - это объект,
+                    // который не передается в args метода, поэтому пропускаем позицию 0
+                    let start_position = if (function_name == "nn_train" || function_name == "nn_train_sh") && !param_names.is_empty() && param_names[0] == "nn" {
+                        1  // Пропускаем первый параметр "nn" (объект метода)
+                    } else {
+                        0
+                    };
+                    
                     // Обрабатываем аргументы
                     for arg in args {
                         match arg {
                             Arg::Positional(expr) => {
-                                if positional_count >= param_names.len() {
+                                let target_position = start_position + positional_count;
+                                if target_position >= param_names.len() {
                                     return Err(LangError::ParseError {
                                         message: format!(
                                             "Function '{}' takes at most {} arguments but {} positional arguments were provided",
-                                            function_name, param_names.len(), positional_count + 1
+                                            function_name, param_names.len() - start_position, positional_count + 1
                                         ),
                                         line,
                                     });
                                 }
-                                resolved[positional_count] = Some(Arg::Positional(expr.clone()));
+                                resolved[target_position] = Some(Arg::Positional(expr.clone()));
                                 positional_count += 1;
                             }
                             Arg::Named { name, value } => {
@@ -1184,10 +1385,77 @@ impl Compiler {
                     self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
                     self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
                 } else {
-                    // Переменная не найдена ни локально, ни глобально - создаем новую локальную переменную
-                    let index = self.declare_local(name);
-                    self.chunk.write_with_line(OpCode::StoreLocal(index), *line);
-                    self.chunk.write_with_line(OpCode::LoadLocal(index), *line);
+                    // Переменная не найдена ни локально, ни глобально
+                    if self.current_function.is_some() {
+                        // Мы находимся внутри функции - создаем локальную переменную
+                        let index = self.declare_local(name);
+                        self.chunk.write_with_line(OpCode::StoreLocal(index), *line);
+                        self.chunk.write_with_line(OpCode::LoadLocal(index), *line);
+                    } else {
+                        // На верхнем уровне - создаем новую глобальную переменную
+                        let global_index = self.globals.len();
+                        self.globals.insert(name.clone(), global_index);
+                        self.chunk.global_names.insert(global_index, name.clone());
+                        self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                        self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                    }
+                }
+            }
+            Expr::UnpackAssign { names, value, line } => {
+                // Распаковка кортежа: a, b, c = tuple_expr
+                // Компилируем правую часть (должна вернуть кортеж)
+                self.compile_expr(value)?;
+                
+                // Сохраняем кортеж во временную переменную, чтобы можно было извлекать элементы
+                let tuple_temp = self.declare_local(&format!("__tuple_temp_{}", line));
+                self.chunk.write_with_line(OpCode::StoreLocal(tuple_temp), *line);
+                
+                // Для каждой переменной извлекаем элемент кортежа и сохраняем
+                for (index, name) in names.iter().enumerate() {
+                    // Загружаем кортеж
+                    self.chunk.write_with_line(OpCode::LoadLocal(tuple_temp), *line);
+                    // Загружаем индекс
+                    let index_const = self.chunk.add_constant(Value::Number(index as f64));
+                    self.chunk.write_with_line(OpCode::Constant(index_const), *line);
+                    // Получаем элемент по индексу
+                    self.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                    
+                    // Сохраняем в переменную
+                    // Проверяем, находимся ли мы в контексте let statement (по имени первой переменной)
+                    // Если это let statement, нужно объявить все переменные
+                    if let Some(local_index) = self.resolve_local(name) {
+                        // Локальная переменная найдена - обновляем
+                        self.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
+                    } else if self.current_function.is_some() {
+                        // Мы находимся внутри функции - создаем локальную переменную
+                        let var_index = self.declare_local(name);
+                        self.chunk.write_with_line(OpCode::StoreLocal(var_index), *line);
+                    } else {
+                        // На верхнем уровне - проверяем, есть ли глобальная переменная
+                        if let Some(&global_index) = self.globals.get(name) {
+                            // Глобальная переменная найдена - обновляем
+                            self.chunk.global_names.insert(global_index, name.clone());
+                            self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                        } else {
+                            // Новая глобальная переменная на верхнем уровне
+                            let global_index = self.globals.len();
+                            self.globals.insert(name.clone(), global_index);
+                            self.chunk.global_names.insert(global_index, name.clone());
+                            self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                        }
+                    }
+                }
+                
+                // Удаляем временную переменную кортежа
+                // (она будет автоматически удалена при выходе из области видимости)
+                
+                // Загружаем последнее значение на стек (для возврата результата)
+                if let Some(last_name) = names.last() {
+                    if let Some(local_index) = self.resolve_local(last_name) {
+                        self.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                    } else if let Some(&global_index) = self.globals.get(last_name) {
+                        self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                    }
                 }
             }
             Expr::AssignOp { name, op, value, line } => {
@@ -1384,6 +1652,7 @@ impl Compiler {
                     // Это позволит проверить переменную во время выполнения
                     let global_index = self.globals.len();
                     self.globals.insert(name.clone(), global_index);
+                    self.chunk.global_names.insert(global_index, name.clone());
                     self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
                 }
             }
@@ -1523,10 +1792,17 @@ impl Compiler {
                         let constant_index = self.chunk.add_constant(Value::Function(function_index));
                         self.chunk.write_with_line(OpCode::Constant(constant_index), self.current_line);
                     } else {
-                        return Err(LangError::ParseError {
-                            message: format!("Function '{}' not found", name),
-                            line: self.current_line,
-                        });
+                        // Функция не найдена - это может быть функция, импортированная через import *
+                        // Регистрируем её как глобальную переменную для разрешения во время выполнения
+                        let global_index = if let Some(&idx) = self.globals.get(name) {
+                            idx
+                        } else {
+                            let idx = self.globals.len();
+                            self.globals.insert(name.clone(), idx);
+                            self.chunk.global_names.insert(idx, name.clone());
+                            idx
+                        };
+                        self.chunk.write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
                     }
                 }
                 
@@ -1569,6 +1845,16 @@ impl Compiler {
                 // Создаем массив из элементов на стеке
                 let arity = elements.len();
                 self.chunk.write_with_line(OpCode::MakeArray(arity), *line);
+            }
+            Expr::TupleLiteral { elements, line } => {
+                // Компилируем каждый элемент кортежа
+                for element in elements {
+                    self.compile_expr(element)?;
+                }
+                // Создаем кортеж из элементов на стеке
+                // Используем MakeArray, но в VM будем создавать Tuple
+                let arity = elements.len();
+                self.chunk.write_with_line(OpCode::MakeTuple(arity), *line);
             }
             Expr::ArrayIndex { array, index, line } => {
                 // Компилируем выражение массива (оно должно быть на стеке первым)
@@ -1743,14 +2029,245 @@ impl Compiler {
                         });
                     }
                 } else {
-                    // Для других методов пока не поддерживаем
-                    return Err(LangError::ParseError {
-                        message: format!("Method '{}' is not supported", method),
-                        line: *line,
-                    });
+                    // Общий случай: метод может быть нативной функцией или обычной функцией в объекте
+                    // Объект уже на стеке. Нужно получить свойство (метод) и вызвать его.
+                    // Для обычных объектов: получаем свойство объекта
+                    // Сначала сохраняем объект во временную переменную
+                    let temp_object_slot = self.declare_local("__method_object");
+                    self.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
+                    
+                    // Проверяем, является ли это методом объекта (например, axis.imshow)
+                    // или функцией модуля (например, ml.load_mnist)
+                    // Методы объектов (Axis) нуждаются в объекте как первом аргументе,
+                    // а функции модулей (ml, plot) - нет
+                    // Определяем это по имени метода
+                    let is_axis_method = matches!(method.as_str(), "imshow" | "set_title" | "axis");
+                    let is_nn_method = matches!(method.as_str(), "device" | "get_device" | "save" | "train" | "train_sh");
+                    let is_layer_method = matches!(method.as_str(), "freeze" | "unfreeze");
+                    
+                    if is_nn_method {
+                        // Для методов device, get_device и save на NeuralNetwork, вызываем соответствующие нативные функции
+                        // Загружаем объект первым
+                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+                        
+                        // Определяем имя функции в ml модуле
+                        let function_name = if method == "device" {
+                            "nn_set_device"
+                        } else if method == "get_device" {
+                            "nn_get_device"
+                        } else if method == "save" {
+                            "nn_save"
+                        } else if method == "train" {
+                            "nn_train"
+                        } else if method == "train_sh" {
+                            "nn_train_sh"
+                        } else {
+                            return Err(LangError::ParseError {
+                                message: format!("Unknown NeuralNetwork method: {}", method),
+                                line: *line,
+                            });
+                        };
+                        
+                        // Определяем фактическое количество аргументов для Call инструкции
+                        let actual_arg_count = if method == "get_device" {
+                            if !args.is_empty() {
+                                return Err(LangError::ParseError {
+                                    message: "get_device() takes no arguments".to_string(),
+                                    line: *line,
+                                });
+                            }
+                            0
+                        } else if method == "train" {
+                            // Разрешаем именованные аргументы для train метода
+                            // Используем resolve_function_args для правильного маппинга именованных аргументов
+                            let resolved_args = match self.resolve_function_args("nn_train", args, None, *line) {
+                                Ok(resolved) => resolved,
+                                Err(e) => return Err(e),
+                            };
+                            
+                            // Компилируем разрешенные аргументы в правильном порядке
+                            for arg in &resolved_args {
+                                match arg {
+                                    Arg::Positional(expr) => self.compile_expr(expr)?,
+                                    Arg::Named { value, .. } => self.compile_expr(value)?,
+                                }
+                            }
+                            
+                            // Используем количество разрешенных аргументов
+                            resolved_args.len()
+                        } else if method == "train_sh" {
+                            // Разрешаем именованные аргументы для train_sh метода
+                            let resolved_args = match self.resolve_function_args("nn_train_sh", args, None, *line) {
+                                Ok(resolved) => resolved,
+                                Err(e) => return Err(e),
+                            };
+                            
+                            // Компилируем разрешенные аргументы в правильном порядке
+                            for arg in &resolved_args {
+                                match arg {
+                                    Arg::Positional(expr) => self.compile_expr(expr)?,
+                                    Arg::Named { value, .. } => self.compile_expr(value)?,
+                                }
+                            }
+                            
+                            // Используем количество разрешенных аргументов
+                            resolved_args.len()
+                        } else {
+                            // Для device и save компилируем аргументы
+                            // device(device_string) или save(path_string)
+                            if args.len() != 1 {
+                                return Err(LangError::ParseError {
+                                    message: format!("{}() takes exactly 1 argument", method),
+                                    line: *line,
+                                });
+                            }
+                            for arg in args {
+                                match arg {
+                                    Arg::Positional(expr) => self.compile_expr(expr)?,
+                                    Arg::Named { value, .. } => self.compile_expr(value)?,
+                                }
+                            }
+                            args.len()
+                        };
+                        
+                        // Теперь на стеке: [object, arg_1] (для device/save), [object, arg_1, arg_2, ...] (для train) или [object] (для get_device)
+                        
+                        // Загружаем функцию из ml модуля
+                        if let Some(&ml_index) = self.globals.get("ml") {
+                            self.chunk.write_with_line(OpCode::LoadGlobal(ml_index), *line);
+                            let method_name_index = self.chunk.add_constant(Value::String(function_name.to_string()));
+                            self.chunk.write_with_line(OpCode::Constant(method_name_index), *line);
+                            self.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                            // Теперь на стеке: [object, arg_1, ..., NativeFunction]
+                            // При вызове Call: pop N раз, reverse -> функция получает [object, arg_1, ...] в правильном порядке
+                            self.chunk.write_with_line(OpCode::Call(actual_arg_count + 1), *line);
+                        } else {
+                            return Err(LangError::ParseError {
+                                message: "ml module not found".to_string(),
+                                line: *line,
+                            });
+                        }
+                    } else if is_axis_method {
+                        // Для методов Axis компилируем аргументы сразу (они не поддерживают именованные аргументы через разрешение)
+                        for arg in args {
+                            match arg {
+                                Arg::Positional(expr) => self.compile_expr(expr)?,
+                                Arg::Named { value, .. } => self.compile_expr(value)?,
+                            }
+                        }
+                        // Теперь на стеке: [arg_n, ..., arg_1]
+                        // Для методов Axis: нужно изменить порядок аргументов так, чтобы объект был первым
+                        // Удаляем текущие аргументы со стека
+                        for _ in 0..args.len() {
+                             self.chunk.write_with_line(OpCode::Pop, *line);
+                        }
+                        
+                        // Загружаем объект первым
+                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+                        // Теперь на стеке: [object]
+                        
+                        // Компилируем аргументы в нормальном порядке (они будут после объекта)
+                        for arg in args {
+                            match arg {
+                                Arg::Positional(expr) => self.compile_expr(expr)?,
+                                Arg::Named { value, .. } => self.compile_expr(value)?,
+                            }
+                        }
+                        // Теперь на стеке: [object, arg_1, ..., arg_n]
+                        
+                        // Получаем свойство объекта по имени метода
+                        // Загружаем объект еще раз для получения метода
+                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+                        // Теперь на стеке: [object, arg_1, ..., arg_n, object]
+                        
+                        let method_name_index = self.chunk.add_constant(Value::String(method.clone()));
+                        self.chunk.write_with_line(OpCode::Constant(method_name_index), *line);
+                        self.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                        // Теперь на стеке: [object, arg_1, ..., arg_n, NativeFunction]
+                        
+                        // Вызываем метод
+                        self.chunk.write_with_line(OpCode::Call(args.len() + 1), *line);
+                    } else if is_layer_method {
+                        // Для методов Layer (freeze, unfreeze) компилируем аргументы сразу
+                        // Эти методы не принимают аргументов, кроме самого layer
+                        if !args.is_empty() {
+                            return Err(LangError::ParseError {
+                                message: format!("layer.{}() takes no arguments", method),
+                                line: *line,
+                            });
+                        }
+                        
+                        // Загружаем объект первым
+                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+                        // Теперь на стеке: [object]
+                        
+                        // Получаем свойство объекта по имени метода
+                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+                        // Теперь на стеке: [object, object]
+                        
+                        let method_name_index = self.chunk.add_constant(Value::String(method.clone()));
+                        self.chunk.write_with_line(OpCode::Constant(method_name_index), *line);
+                        self.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                        // Теперь на стеке: [object, NativeFunction]
+                        
+                        // При вызове Call(1): pop 1 раз, reverse -> функция получает [object] в правильном порядке
+                        self.chunk.write_with_line(OpCode::Call(1), *line);
+                    } else {
+                            // Для функций модулей: получаем метод, не добавляем объект
+                            // Пытаемся разрешить именованные аргументы
+                            let resolved_args = match self.resolve_function_args(method, args, None, *line) {
+                                Ok(resolved) => {
+                                    resolved
+                                }
+                                Err(e) => {
+                                    // Проверяем, является ли это ошибкой "not supported"
+                                    let error_msg = match &e {
+                                        LangError::ParseError { message, .. } => message,
+                                        _ => "",
+                                    };
+                                    
+                                    if error_msg.contains("not supported") || error_msg.contains("Named arguments are not supported") {
+                                        // Fallback: компилируем аргументы как есть (именованные аргументы будут преобразованы в объекты)
+                                        args.iter().map(|a| match a {
+                                            Arg::Positional(e) => Arg::Positional(e.clone()),
+                                            Arg::Named { value, .. } => Arg::Positional(value.clone()),
+                                        }).collect()
+                                    } else {
+                                        return Err(e);
+                                    }
+                                }
+                            };
+                            
+                            // Компилируем разрешенные аргументы
+                            for arg in &resolved_args {
+                                match arg {
+                                    Arg::Positional(expr) => self.compile_expr(expr)?,
+                                    Arg::Named { .. } => {
+                                        return Err(LangError::ParseError {
+                                            message: format!("Unexpected named argument in resolved args for method '{}'", method),
+                                            line: *line,
+                                        });
+                                    }
+                                }
+                            }
+                            // Теперь на стеке: [arg_n, ..., arg_1]
+                            
+                            // Загружаем объект обратно для получения метода
+                            self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+                            // Теперь на стеке: [arg_n, ..., arg_1, object]
+                            
+                            // Получаем свойство объекта по имени метода
+                            let method_name_index = self.chunk.add_constant(Value::String(method.clone()));
+                            self.chunk.write_with_line(OpCode::Constant(method_name_index), *line);
+                            self.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                            // Теперь на стеке: [arg_n, ..., arg_1, NativeFunction]
+                            
+                            // Вызываем функцию без объекта как первого аргумента
+                            self.chunk.write_with_line(OpCode::Call(resolved_args.len()), *line);
+                        }
+                    }
                 }
             }
-        }
         Ok(())
     }
 
@@ -1768,7 +2285,9 @@ impl Compiler {
             OpCode::LoadLocal(_) | OpCode::StoreLocal(_) => 2, // 1 байт opcode + 1 байт индекс
             OpCode::LoadGlobal(_) | OpCode::StoreGlobal(_) => 2, // 1 байт opcode + 1 байт индекс
             OpCode::Call(_) => 2, // 1 байт opcode + 1 байт количество аргументов
-            OpCode::MakeArray(_) => 2, // 1 байт opcode + 1 байт количество элементов
+            OpCode::MakeArray(_) => 2, // 1 байт opcode + 1 байт размер
+            OpCode::MakeTuple(_) => 2, // 1 байт opcode + 1 байт размер
+            OpCode::MakeArrayDynamic => 1, // 1 байт opcode (размер на стеке) 1 байт opcode + 1 байт количество элементов
             OpCode::BeginTry(_) => 2, // 1 байт opcode + 1 байт индекс обработчика
             OpCode::Catch(Some(_)) => 2, // 1 байт opcode + 1 байт тип ошибки
             OpCode::Catch(None) => 1, // 1 байт opcode
@@ -2088,6 +2607,250 @@ impl Compiler {
         }
         None
     }
+
+    /// Подсчитывает количество фиксированных переменных (не wildcard, не variadic) в паттерне распаковки
+    /// Для вложенных паттернов считает только переменные текущего уровня (вложенный паттерн = 1 элемент)
+    fn count_unpack_variables(&self, pattern: &[UnpackPattern]) -> usize {
+        let mut count = 0;
+        for pat in pattern {
+            match pat {
+                UnpackPattern::Variable(_) => count += 1,
+                UnpackPattern::Wildcard => {}, // Wildcard не считается
+                UnpackPattern::Variadic(_) | UnpackPattern::VariadicWildcard => {
+                    // Variadic не считается в фиксированных переменных
+                }
+                UnpackPattern::Nested(_) => count += 1, // Вложенный паттерн считается как один элемент
+            }
+        }
+        count
+    }
+    
+
+    /// Объявляет переменные из паттерна распаковки и возвращает их локальные индексы
+    fn declare_unpack_pattern_variables(&mut self, pattern: &[UnpackPattern], line: usize) -> Result<Vec<Option<usize>>, LangError> {
+        let mut var_locals = Vec::new();
+        for pat in pattern {
+            match pat {
+                UnpackPattern::Variable(name) => {
+                    let index = self.declare_local(name);
+                    var_locals.push(Some(index));
+                }
+                UnpackPattern::Wildcard => {
+                    // Wildcard не создает переменную
+                    var_locals.push(None);
+                }
+                UnpackPattern::Variadic(name) => {
+                    // Variadic переменная создает переменную
+                    let index = self.declare_local(name);
+                    var_locals.push(Some(index));
+                }
+                UnpackPattern::VariadicWildcard => {
+                    // Variadic wildcard не создает переменную
+                    var_locals.push(None);
+                }
+                UnpackPattern::Nested(nested) => {
+                    // Рекурсивно обрабатываем вложенные паттерны
+                    let nested_locals = self.declare_unpack_pattern_variables(nested, line)?;
+                    var_locals.extend(nested_locals);
+                }
+            }
+        }
+        Ok(var_locals)
+    }
+
+    /// Компилирует код для распаковки значения в переменные
+    /// Предполагается, что значение находится на вершине стека
+    fn compile_unpack_pattern(&mut self, pattern: &[UnpackPattern], var_locals: &[Option<usize>], expected_count: usize, line: usize) -> Result<(), LangError> {
+        // Сохраняем элемент во временную переменную
+        let temp_local = self.declare_local("__unpack_temp");
+        self.chunk.write_with_line(OpCode::StoreLocal(temp_local), line);
+        
+        // Проверяем минимальную длину элемента (M >= N_fixed)
+        // Загружаем элемент
+        self.chunk.write_with_line(OpCode::LoadLocal(temp_local), line);
+        // Получаем длину
+        self.chunk.write_with_line(OpCode::GetArrayLength, line);
+        // Загружаем минимальную требуемую длину (N_fixed)
+        let n_fixed_const = self.chunk.add_constant(Value::Number(expected_count as f64));
+        self.chunk.write_with_line(OpCode::Constant(n_fixed_const), line);
+        // Сравниваем: length < N_fixed?
+        self.chunk.write_with_line(OpCode::Less, line);
+        
+        // Если length >= N_fixed, пропускаем ошибку
+        let skip_error_label = self.create_label();
+        self.emit_jump(true, skip_error_label)?;
+        
+        // Выбрасываем ошибку: длина меньше минимально требуемой
+        let error_msg = format!("Unpack pattern requires at least {} elements, but got array with length less than {}", expected_count, expected_count);
+        let error_msg_index = self.chunk.add_constant(Value::String(error_msg));
+        self.chunk.write_with_line(OpCode::Constant(error_msg_index), line);
+        self.chunk.write_with_line(OpCode::Throw(None), line);
+        
+        // Метка для пропуска ошибки
+        self.mark_label(skip_error_label);
+        
+        // Распаковываем значения
+        // var_locals соответствует структуре pattern, итерируем их вместе
+        let mut var_index = 0;
+        self.compile_unpack_pattern_recursive(pattern, var_locals, &mut var_index, temp_local, line)?;
+        
+        Ok(())
+    }
+
+    /// Собирает имена переменных из паттерна распаковки
+    fn collect_unpack_pattern_variables(&self, pattern: &[UnpackPattern], vars: &mut std::collections::HashSet<String>) {
+        for pat in pattern {
+            match pat {
+                UnpackPattern::Variable(name) => {
+                    vars.insert(name.clone());
+                }
+                UnpackPattern::Wildcard => {}
+                UnpackPattern::Variadic(name) => {
+                    vars.insert(name.clone());
+                }
+                UnpackPattern::VariadicWildcard => {}
+                UnpackPattern::Nested(nested) => {
+                    self.collect_unpack_pattern_variables(nested, vars);
+                }
+            }
+        }
+    }
+
+    /// Рекурсивно компилирует распаковку вложенных паттернов
+    fn compile_unpack_pattern_recursive(&mut self, pattern: &[UnpackPattern], var_locals: &[Option<usize>], var_index: &mut usize, source_local: usize, line: usize) -> Result<(), LangError> {
+        // Находим позицию variadic в паттерне (если есть)
+        let variadic_pos = pattern.iter().position(|p| matches!(p, UnpackPattern::Variadic(_) | UnpackPattern::VariadicWildcard));
+        
+        // Обрабатываем фиксированные переменные до variadic
+        let end_pos = variadic_pos.unwrap_or(pattern.len());
+        for (i, pat) in pattern[..end_pos].iter().enumerate() {
+            match pat {
+                UnpackPattern::Variable(_) => {
+                    // Получаем значение по индексу
+                    self.chunk.write_with_line(OpCode::LoadLocal(source_local), line);
+                    let index_const = self.chunk.add_constant(Value::Number(*var_index as f64));
+                    self.chunk.write_with_line(OpCode::Constant(index_const), line);
+                    self.chunk.write_with_line(OpCode::GetArrayElement, line);
+                    
+                    // Сохраняем в переменную
+                    if let Some(local_index) = var_locals.get(i).and_then(|&x| x) {
+                        self.chunk.write_with_line(OpCode::StoreLocal(local_index), line);
+                    }
+                    *var_index += 1;
+                }
+                UnpackPattern::Wildcard => {
+                    // Получаем значение, но не сохраняем (просто удаляем со стека)
+                    self.chunk.write_with_line(OpCode::LoadLocal(source_local), line);
+                    let index_const = self.chunk.add_constant(Value::Number(*var_index as f64));
+                    self.chunk.write_with_line(OpCode::Constant(index_const), line);
+                    self.chunk.write_with_line(OpCode::GetArrayElement, line);
+                    self.chunk.write_with_line(OpCode::Pop, line); // Удаляем значение
+                    *var_index += 1;
+                }
+                UnpackPattern::Variadic(_) | UnpackPattern::VariadicWildcard => {
+                    // Не должно быть здесь, так как мы обрабатываем только до variadic
+                    unreachable!("Variadic should be handled separately");
+                }
+                UnpackPattern::Nested(nested) => {
+                    // Для вложенной распаковки нужно получить элемент и рекурсивно распаковать
+                    self.chunk.write_with_line(OpCode::LoadLocal(source_local), line);
+                    let index_const = self.chunk.add_constant(Value::Number(*var_index as f64));
+                    self.chunk.write_with_line(OpCode::Constant(index_const), line);
+                    self.chunk.write_with_line(OpCode::GetArrayElement, line);
+                    
+                    // Сохраняем вложенный элемент во временную переменную
+                    let nested_temp = self.declare_local("__unpack_nested_temp");
+                    self.chunk.write_with_line(OpCode::StoreLocal(nested_temp), line);
+                    
+                    // Упрощенный подход: для вложенных паттернов создаем новые локальные переменные
+                    let nested_var_locals = self.declare_unpack_pattern_variables(nested, line)?;
+                    let mut nested_var_index = 0;
+                    self.compile_unpack_pattern_recursive(nested, &nested_var_locals, &mut nested_var_index, nested_temp, line)?;
+                    
+                    *var_index += 1;
+                }
+            }
+        }
+        
+        // Обрабатываем variadic (если есть)
+        if let Some(pos) = variadic_pos {
+            let variadic_pattern = &pattern[pos];
+            match variadic_pattern {
+                UnpackPattern::Variadic(_) => {
+                    // Создаем массив из оставшихся элементов
+                    // 1. Вычисляем count = length - var_index
+                    self.chunk.write_with_line(OpCode::LoadLocal(source_local), line);
+                    self.chunk.write_with_line(OpCode::GetArrayLength, line);
+                    let var_index_const = self.chunk.add_constant(Value::Number(*var_index as f64));
+                    self.chunk.write_with_line(OpCode::Constant(var_index_const), line);
+                    self.chunk.write_with_line(OpCode::Sub, line);
+                    // Теперь на стеке: count
+                    
+                    // Сохраняем count во временную переменную
+                    let count_temp = self.declare_local("__variadic_count");
+                    self.chunk.write_with_line(OpCode::StoreLocal(count_temp), line);
+                    
+                    // 2. Загружаем элементы от length-1 до var_index (в обратном порядке индексов)
+                    // чтобы они были на стеке в правильном порядке для MakeArrayDynamic
+                    let loop_start_label = self.create_label();
+                    let loop_end_label = self.create_label();
+                    let loop_index_temp = self.declare_local("__variadic_loop_idx");
+                    
+                    // Начинаем с length-1
+                    self.chunk.write_with_line(OpCode::LoadLocal(source_local), line);
+                    self.chunk.write_with_line(OpCode::GetArrayLength, line);
+                    let one_const = self.chunk.add_constant(Value::Number(1.0));
+                    self.chunk.write_with_line(OpCode::Constant(one_const), line);
+                    self.chunk.write_with_line(OpCode::Sub, line);
+                    self.chunk.write_with_line(OpCode::StoreLocal(loop_index_temp), line);
+                    
+                    // Начало цикла
+                    self.mark_label(loop_start_label);
+                    
+                    // Проверяем условие: loop_index >= var_index
+                    self.chunk.write_with_line(OpCode::LoadLocal(loop_index_temp), line);
+                    self.chunk.write_with_line(OpCode::Constant(var_index_const), line);
+                    self.chunk.write_with_line(OpCode::GreaterEqual, line);
+                    
+                    // Если условие false, выходим из цикла
+                    self.emit_jump(true, loop_end_label)?;
+                    
+                    // Загружаем элемент по индексу loop_index
+                    self.chunk.write_with_line(OpCode::LoadLocal(source_local), line);
+                    self.chunk.write_with_line(OpCode::LoadLocal(loop_index_temp), line);
+                    self.chunk.write_with_line(OpCode::GetArrayElement, line);
+                    
+                    // Декрементируем loop_index
+                    self.chunk.write_with_line(OpCode::LoadLocal(loop_index_temp), line);
+                    self.chunk.write_with_line(OpCode::Constant(one_const), line);
+                    self.chunk.write_with_line(OpCode::Sub, line);
+                    self.chunk.write_with_line(OpCode::StoreLocal(loop_index_temp), line);
+                    
+                    // Переход к началу цикла
+                    self.emit_loop(loop_start_label)?;
+                    
+                    // Конец цикла
+                    self.mark_label(loop_end_label);
+                    
+                    // 3. Создаем массив динамически: загружаем count и используем MakeArrayDynamic
+                    self.chunk.write_with_line(OpCode::LoadLocal(count_temp), line);
+                    self.chunk.write_with_line(OpCode::MakeArrayDynamic, line);
+                    
+                    // 4. Сохраняем в variadic переменную
+                    if let Some(local_index) = var_locals.get(pos).and_then(|&x| x) {
+                        self.chunk.write_with_line(OpCode::StoreLocal(local_index), line);
+                    }
+                }
+                UnpackPattern::VariadicWildcard => {
+                    // Variadic wildcard: пропускаем оставшиеся элементы
+                    // Ничего не делаем, элементы уже пропущены
+                }
+                _ => {}
+            }
+        }
+        
+        Ok(())
+    }
     
     /// Находит все переменные, используемые в выражениях и statements
     fn find_used_variables_in_expr(&self, expr: &Expr) -> std::collections::HashSet<String> {
@@ -2098,6 +2861,12 @@ impl Compiler {
             }
             Expr::Assign { name, value, .. } => {
                 vars.insert(name.clone());
+                vars.extend(self.find_used_variables_in_expr(value));
+            }
+            Expr::UnpackAssign { names, value, .. } => {
+                for name in names {
+                    vars.insert(name.clone());
+                }
                 vars.extend(self.find_used_variables_in_expr(value));
             }
             Expr::Binary { left, right, .. } => {
@@ -2120,6 +2889,11 @@ impl Compiler {
                 }
             }
             Expr::ArrayLiteral { elements, .. } => {
+                for elem in elements {
+                    vars.extend(self.find_used_variables_in_expr(elem));
+                }
+            }
+            Expr::TupleLiteral { elements, .. } => {
                 for elem in elements {
                     vars.extend(self.find_used_variables_in_expr(elem));
                 }
@@ -2153,6 +2927,9 @@ impl Compiler {
     fn find_used_variables_in_stmt(&self, stmt: &Stmt) -> std::collections::HashSet<String> {
         let mut vars = std::collections::HashSet::new();
         match stmt {
+            Stmt::Import { .. } => {
+                // Import statements don't use variables
+            }
             Stmt::Let { value, .. } => {
                 vars.extend(self.find_used_variables_in_expr(value));
             }
@@ -2237,9 +3014,9 @@ impl Compiler {
                         declared_vars.insert(name.clone());
                     }
                 }
-                Stmt::For { variable, body, .. } => {
-                    // Переменная цикла for объявляется локально
-                    declared_vars.insert(variable.clone());
+                Stmt::For { pattern, body, .. } => {
+                    // Переменные цикла for объявляются локально
+                    self.collect_unpack_pattern_variables(pattern, &mut declared_vars);
                     // Рекурсивно проверяем тело цикла
                     declared_vars.extend(self.find_locally_declared_variables(body));
                 }
@@ -2307,10 +3084,6 @@ impl Compiler {
         // но найдены в родительских областях видимости
         let mut captured = Vec::new();
         
-        #[cfg(debug_assertions)]
-        eprintln!("[DEBUG COMPILER] find_captured_variables: used_vars = {:?}, locally_declared = {:?}, self.locals.len() = {}, parent_locals.len() = {}", 
-            used_vars, locally_declared, self.locals.len(), parent_locals.len());
-        
         for var_name in &used_vars {
             // Проверяем, найдена ли переменная в текущей области видимости функции
             // (только в последней области, которая была создана для этой функции)
@@ -2319,24 +3092,15 @@ impl Compiler {
                 .map(|scope| scope.contains_key(var_name))
                 .unwrap_or(false);
             
-            #[cfg(debug_assertions)]
-            eprintln!("[DEBUG COMPILER] Checking var '{}': found_in_current_scope = {}", var_name, found_in_current_scope);
-            
             if !found_in_current_scope {
                 // Проверяем, найдена ли переменная в родительских областях видимости
                 let found_in_parent = parent_locals.iter().any(|scope| scope.contains_key(var_name));
-                
-                #[cfg(debug_assertions)]
-                eprintln!("[DEBUG COMPILER] Checking var '{}': found_in_parent = {}", var_name, found_in_parent);
-                
+            
                 if found_in_parent {
                     captured.push(var_name.clone());
                 }
             }
         }
-        
-        #[cfg(debug_assertions)]
-        eprintln!("[DEBUG COMPILER] find_captured_variables result: {:?}", captured);
         
         captured
     }
@@ -2346,6 +3110,7 @@ impl Compiler {
         match expr {
             Expr::Literal { value, .. } => Ok(Some(value.clone())),
             Expr::ArrayLiteral { .. } => Ok(None), // Не можем вычислить во время компиляции
+            Expr::TupleLiteral { .. } => Ok(None), // Не можем вычислить во время компиляции
             Expr::Property { .. } => Ok(None), // Не можем вычислить во время компиляции
             Expr::MethodCall { .. } => Ok(None), // Не можем вычислить во время компиляции
             Expr::Binary { left, op, right, .. } => {
@@ -2372,10 +3137,25 @@ impl Compiler {
                             }
                         }
                         TokenKind::Star => {
-                            if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
-                                Ok(Some(Value::Number(n1 * n2)))
-                            } else {
-                                Ok(None)
+                            match (&l, &r) {
+                                (Value::Number(n1), Value::Number(n2)) => Ok(Some(Value::Number(n1 * n2))),
+                                (Value::String(s), Value::Number(n)) => {
+                                    let count = *n as i64;
+                                    if count <= 0 {
+                                        Ok(Some(Value::String(String::new())))
+                                    } else {
+                                        Ok(Some(Value::String(s.repeat(count as usize))))
+                                    }
+                                }
+                                (Value::Number(n), Value::String(s)) => {
+                                    let count = *n as i64;
+                                    if count <= 0 {
+                                        Ok(Some(Value::String(String::new())))
+                                    } else {
+                                        Ok(Some(Value::String(s.repeat(count as usize))))
+                                    }
+                                }
+                                _ => Ok(None),
                             }
                         }
                         TokenKind::Slash => {

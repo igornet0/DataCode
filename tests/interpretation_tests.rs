@@ -372,8 +372,25 @@ mod tests {
     }
 
     #[test]
-    fn test_type_error_string_multiply_number() {
-        assert_error(r#""hello" * 5"#);
+    fn test_string_multiply_number() {
+        assert_string_result(r#""-" * 10"#, "----------");
+        assert_string_result(r#""hello" * 3"#, "hellohellohello");
+        assert_string_result(r#""ab" * 5"#, "ababababab");
+    }
+
+    #[test]
+    fn test_number_multiply_string() {
+        assert_string_result(r#"5 * "-""#, "-----");
+        assert_string_result(r#"3 * "hello""#, "hellohellohello");
+        assert_string_result(r#"2 * "test""#, "testtest");
+    }
+
+    #[test]
+    fn test_string_multiply_zero_or_negative() {
+        assert_string_result(r#""hello" * 0"#, "");
+        assert_string_result(r#""hello" * -5"#, "");
+        assert_string_result(r#"0 * "hello""#, "");
+        assert_string_result(r#"-3 * "hello""#, "");
     }
 
     #[test]

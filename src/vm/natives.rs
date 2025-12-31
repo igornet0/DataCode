@@ -2,6 +2,8 @@
 
 use crate::common::value::Value;
 use crate::common::table::Table;
+use crate::vm::vm::VM_CALL_CONTEXT;
+use crate::common::error::LangError;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -39,6 +41,28 @@ pub fn take_primary_keys() -> Vec<(*const RefCell<Table>, String)> {
         primary_keys.clear();
         result
     })
+}
+
+/// Вызвать пользовательскую функцию из нативной функции
+/// Использует thread-local storage для доступа к VM
+pub fn call_user_function(function_index: usize, args: &[Value]) -> Result<Value, LangError> {
+    // Извлекаем указатель и сразу освобождаем заимствование контекста
+    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| {
+        let ctx_ref = ctx.borrow();
+        *ctx_ref
+    });
+    
+    if let Some(vm_ptr) = vm_ptr {
+        unsafe {
+            let vm = &mut *vm_ptr;
+            vm.call_function_by_index(function_index, args)
+        }
+    } else {
+        Err(LangError::runtime_error(
+            "Cannot call user function: VM context not available".to_string(),
+            0,
+        ))
+    }
 }
 
 /// Нативная функция для создания связи между колонками таблиц
@@ -173,6 +197,10 @@ pub fn native_len(args: &[Value]) -> Value {
                     Value::Null
                 }
             },
+            Value::Dataset(dataset) => {
+                let batch_size = dataset.borrow().batch_size();
+                Value::Number(batch_size as f64)
+            },
             _ => Value::Null,
         }
     } else {
@@ -303,8 +331,49 @@ pub fn native_str(args: &[Value]) -> Value {
 }
 
 pub fn native_array(args: &[Value]) -> Value {
-    // Создаем массив из всех аргументов
-    Value::Array(Rc::new(RefCell::new(args.to_vec())))
+    // Если передан один аргумент и это тензор, преобразуем его в массив чисел
+    if args.len() == 1 {
+        if let Value::Tensor(tensor) = &args[0] {
+            let tensor_ref = tensor.borrow();
+            match tensor_ref.to_cpu() {
+                Ok(cpu_tensor) => {
+                    let data_values: Vec<Value> = cpu_tensor.data.iter()
+                        .map(|&d| Value::Number(d as f64))
+                        .collect();
+                    return Value::Array(Rc::new(RefCell::new(data_values)));
+                }
+                Err(_) => {
+                    // Если не удалось преобразовать в CPU, возвращаем пустой массив
+                    return Value::Array(Rc::new(RefCell::new(Vec::new())));
+                }
+            }
+        }
+    }
+    
+    // Если передано несколько аргументов, преобразуем тензоры в массивы
+    let mut result = Vec::new();
+    for arg in args {
+        if let Value::Tensor(tensor) = arg {
+            let tensor_ref = tensor.borrow();
+            match tensor_ref.to_cpu() {
+                Ok(cpu_tensor) => {
+                    let data_values: Vec<Value> = cpu_tensor.data.iter()
+                        .map(|&d| Value::Number(d as f64))
+                        .collect();
+                    result.push(Value::Array(Rc::new(RefCell::new(data_values))));
+                }
+                Err(_) => {
+                    // Если не удалось преобразовать в CPU, добавляем пустой массив
+                    result.push(Value::Array(Rc::new(RefCell::new(Vec::new()))));
+                }
+            }
+        } else {
+            // Для не-тензоров добавляем как есть
+            result.push(arg.clone());
+        }
+    }
+    
+    Value::Array(Rc::new(RefCell::new(result)))
 }
 
 pub fn native_date(args: &[Value]) -> Value {
@@ -437,6 +506,7 @@ pub fn native_typeof(args: &[Value]) -> Value {
             }
         }
         Value::Array(_) => "array",
+        Value::Tuple(_) => "tuple",
         Value::Path(_) => "path",
         Value::Table(_) => "table",
         Value::Object(_) => "object",
@@ -444,6 +514,24 @@ pub fn native_typeof(args: &[Value]) -> Value {
         Value::Null => "null",
         Value::Function(_) => "function",
         Value::NativeFunction(_) => "function",
+        Value::Tensor(_) => "tensor",
+        Value::Graph(_) => "graph",
+        Value::LinearRegression(_) => "linear_regression",
+        Value::SGD(_) => "sgd",
+        Value::Momentum(_) => "momentum",
+        Value::NAG(_) => "nag",
+        Value::Adagrad(_) => "adagrad",
+        Value::RMSprop(_) => "rmsprop",
+        Value::Adam(_) => "adam",
+        Value::AdamW(_) => "adamw",
+        Value::Dataset(_) => "dataset",
+        Value::NeuralNetwork(_) => "neural_network",
+        Value::Sequential(_) => "sequential",
+        Value::Layer(_) => "layer",
+        Value::Window(_) => "window",
+        Value::Image(_) => "image",
+        Value::Figure(_) => "figure",
+        Value::Axis(_) => "axis",
     };
     Value::String(type_name.to_string())
 }
@@ -512,11 +600,30 @@ pub fn native_isinstance(args: &[Value]) -> Value {
         }
         Value::Path(_) => type_name_lower == "path",
         Value::Array(_) => type_name_lower == "array" || type_name_lower == "list",
+        Value::Tuple(_) => type_name_lower == "tuple",
         Value::Table(_) => type_name_lower == "table",
         Value::Object(_) => type_name_lower == "object" || type_name_lower == "dict" || type_name_lower == "dictionary",
         Value::ColumnReference { .. } => type_name_lower == "column",
         Value::Null => type_name_lower == "null" || type_name_lower == "none",
         Value::Function(_) | Value::NativeFunction(_) => type_name_lower == "function",
+        Value::Tensor(_) => type_name_lower == "tensor",
+        Value::Graph(_) => type_name_lower == "graph",
+        Value::LinearRegression(_) => type_name_lower == "linear_regression",
+        Value::SGD(_) => type_name_lower == "sgd",
+        Value::Momentum(_) => type_name_lower == "momentum",
+        Value::NAG(_) => type_name_lower == "nag",
+        Value::Adagrad(_) => type_name_lower == "adagrad",
+        Value::RMSprop(_) => type_name_lower == "rmsprop",
+        Value::Adam(_) => type_name_lower == "adam",
+        Value::AdamW(_) => type_name_lower == "adamw",
+        Value::Dataset(_) => type_name_lower == "dataset",
+        Value::NeuralNetwork(_) => type_name_lower == "neural_network",
+        Value::Sequential(_) => type_name_lower == "sequential",
+        Value::Layer(_) => type_name_lower == "layer",
+        Value::Window(_) => type_name_lower == "window",
+        Value::Image(_) => type_name_lower == "image",
+        Value::Figure(_) => type_name_lower == "figure",
+        Value::Axis(_) => type_name_lower == "axis",
     };
     
     Value::Bool(matches)
@@ -667,6 +774,14 @@ pub fn native_abs(args: &[Value]) -> Value {
         return Value::Number(0.0);
     }
     
+    // Check if first argument is a tensor
+    if let Value::Tensor(tensor) = &args[0] {
+        let tensor_ref = tensor.borrow();
+        let result = tensor_ref.abs();
+        return Value::Tensor(std::rc::Rc::new(std::cell::RefCell::new(result)));
+    }
+    
+    // Handle number (original behavior)
     match &args[0] {
         Value::Number(n) => Value::Number(n.abs()),
         _ => Value::Null,
@@ -678,6 +793,16 @@ pub fn native_sqrt(args: &[Value]) -> Value {
         return Value::Number(0.0);
     }
     
+    // Check if first argument is a tensor
+    if let Value::Tensor(tensor) = &args[0] {
+        let tensor_ref = tensor.borrow();
+        match tensor_ref.sqrt() {
+            Ok(result) => return Value::Tensor(std::rc::Rc::new(std::cell::RefCell::new(result))),
+            Err(_) => return Value::Null,
+        }
+    }
+    
+    // Handle number (original behavior)
     match &args[0] {
         Value::Number(n) => {
             if *n < 0.0 {
@@ -713,6 +838,22 @@ pub fn native_min(args: &[Value]) -> Value {
         return Value::Null;
     }
     
+    // Check if first argument is a tensor
+    if let Value::Tensor(tensor) = &args[0] {
+        let tensor_ref = tensor.borrow();
+        match tensor_ref.to_cpu() {
+            Ok(cpu_tensor) => {
+                if cpu_tensor.data.is_empty() {
+                    return Value::Null;
+                }
+                let min_val = cpu_tensor.data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+                return Value::Number(min_val as f64);
+            }
+            Err(_) => return Value::Null,
+        }
+    }
+    
+    // Handle multiple number arguments (original behavior)
     let mut min_val: Option<f64> = None;
     
     for arg in args {
@@ -741,6 +882,22 @@ pub fn native_max(args: &[Value]) -> Value {
         return Value::Null;
     }
     
+    // Check if first argument is a tensor
+    if let Value::Tensor(tensor) = &args[0] {
+        let tensor_ref = tensor.borrow();
+        match tensor_ref.to_cpu() {
+            Ok(cpu_tensor) => {
+                if cpu_tensor.data.is_empty() {
+                    return Value::Null;
+                }
+                let max_val = cpu_tensor.data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                return Value::Number(max_val as f64);
+            }
+            Err(_) => return Value::Null,
+        }
+    }
+    
+    // Handle multiple number arguments (original behavior)
     let mut max_val: Option<f64> = None;
     
     for arg in args {
@@ -769,6 +926,14 @@ pub fn native_round(args: &[Value]) -> Value {
         return Value::Number(0.0);
     }
     
+    // Check if first argument is a tensor
+    if let Value::Tensor(tensor) = &args[0] {
+        let tensor_ref = tensor.borrow();
+        let result = tensor_ref.round();
+        return Value::Tensor(std::rc::Rc::new(std::cell::RefCell::new(result)));
+    }
+    
+    // Handle number (original behavior)
     match &args[0] {
         Value::Number(n) => {
             // Стандартное округление: к ближайшему целому
@@ -1040,6 +1205,14 @@ pub fn native_sum(args: &[Value]) -> Value {
         return Value::Number(0.0);
     }
     
+    // Check if first argument is a tensor
+    if let Value::Tensor(tensor) = &args[0] {
+        let tensor_ref = tensor.borrow();
+        let sum = tensor_ref.sum();
+        return Value::Number(sum as f64);
+    }
+    
+    // Handle array (original behavior)
     let arr = match &args[0] {
         Value::Array(a) => a,
         _ => return Value::Number(0.0),
@@ -1068,6 +1241,14 @@ pub fn native_average(args: &[Value]) -> Value {
         return Value::Number(0.0);
     }
     
+    // Check if first argument is a tensor
+    if let Value::Tensor(tensor) = &args[0] {
+        let tensor_ref = tensor.borrow();
+        let mean = tensor_ref.mean();
+        return Value::Number(mean as f64);
+    }
+    
+    // Handle array (original behavior)
     let arr = match &args[0] {
         Value::Array(a) => a,
         _ => return Value::Number(0.0),
@@ -1096,6 +1277,14 @@ pub fn native_count(args: &[Value]) -> Value {
         return Value::Number(0.0);
     }
     
+    // Check if first argument is a tensor
+    if let Value::Tensor(tensor) = &args[0] {
+        let tensor_ref = tensor.borrow();
+        let count = tensor_ref.total_size();
+        return Value::Number(count as f64);
+    }
+    
+    // Handle array (original behavior)
     match &args[0] {
         Value::Array(arr) => Value::Number(arr.borrow().len() as f64),
         _ => Value::Number(0.0),
@@ -1107,6 +1296,27 @@ pub fn native_any(args: &[Value]) -> Value {
         return Value::Bool(false);
     }
     
+    // Check if first argument is a tensor
+    if let Value::Tensor(tensor) = &args[0] {
+        let tensor_ref = tensor.borrow();
+        match tensor_ref.to_cpu() {
+            Ok(cpu_tensor) => {
+                if cpu_tensor.data.is_empty() {
+                    return Value::Bool(false);
+                }
+                // Check if there's at least one non-zero element
+                for &val in cpu_tensor.data.iter() {
+                    if val != 0.0 {
+                        return Value::Bool(true);
+                    }
+                }
+                return Value::Bool(false);
+            }
+            Err(_) => return Value::Bool(false),
+        }
+    }
+    
+    // Handle array (original behavior)
     let arr = match &args[0] {
         Value::Array(a) => a,
         _ => return Value::Bool(false),
@@ -1134,6 +1344,27 @@ pub fn native_all(args: &[Value]) -> Value {
         return Value::Bool(false);
     }
     
+    // Check if first argument is a tensor
+    if let Value::Tensor(tensor) = &args[0] {
+        let tensor_ref = tensor.borrow();
+        match tensor_ref.to_cpu() {
+            Ok(cpu_tensor) => {
+                if cpu_tensor.data.is_empty() {
+                    return Value::Bool(false);
+                }
+                // Check if all elements are non-zero
+                for &val in cpu_tensor.data.iter() {
+                    if val == 0.0 {
+                        return Value::Bool(false);
+                    }
+                }
+                return Value::Bool(true);
+            }
+            Err(_) => return Value::Bool(false),
+        }
+    }
+    
+    // Handle array (original behavior)
     let arr = match &args[0] {
         Value::Array(a) => a,
         _ => return Value::Bool(false),
@@ -1846,6 +2077,90 @@ fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
         (_, Value::Null) => std::cmp::Ordering::Greater,
         _ => a.to_string().cmp(&b.to_string()),
     }
+}
+
+// Вспомогательная функция для выполнения ASOF join для одной группы
+fn asof_join_single_group(
+    left_rows: &[Vec<Value>],
+    right_rows: &[Vec<Value>],
+    left_time_idx: usize,
+    right_time_idx: usize,
+    direction: &str,
+    null_right_row: &[Value],
+) -> Vec<Vec<Value>> {
+    let mut result = Vec::new();
+    
+    // Сортируем правую таблицу по времени (для эффективного поиска)
+    let mut right_indices: Vec<usize> = (0..right_rows.len()).collect();
+    right_indices.sort_by(|&a, &b| {
+        let time_a = &right_rows[a][right_time_idx];
+        let time_b = &right_rows[b][right_time_idx];
+        compare_values(time_a, time_b)
+    });
+    
+    for left_row in left_rows {
+        let left_time = &left_row[left_time_idx];
+        
+        // Ищем ближайшую строку в правой таблице
+        let mut best_match: Option<usize> = None;
+        let mut best_diff: Option<f64> = None;
+        
+        for &right_idx in &right_indices {
+            let right_row = &right_rows[right_idx];
+            let right_time = &right_row[right_time_idx];
+            
+            // Вычисляем разницу времени (упрощенная версия - только для чисел)
+            let diff = match (left_time, right_time) {
+                (Value::Number(l), Value::Number(r)) => {
+                    let diff_val = match direction {
+                        "backward" => *l - *r,  // left_time >= right_time
+                        "forward" => *r - *l,   // right_time >= left_time
+                        "nearest" => (*l - *r).abs(),
+                        _ => *l - *r,
+                    };
+                    Some(diff_val)
+                }
+                _ => None,
+            };
+            
+            if let Some(d) = diff {
+                let matches_direction = match direction {
+                    "backward" => d >= 0.0,
+                    "forward" => d >= 0.0,
+                    "nearest" => true,
+                    _ => d >= 0.0,
+                };
+                
+                if matches_direction {
+                    let should_update = match best_diff {
+                        None => true,
+                        Some(bd) => match direction {
+                            "nearest" => d < bd,
+                            _ => d < bd,
+                        },
+                    };
+                    
+                    if should_update {
+                        best_match = Some(right_idx);
+                        best_diff = Some(d);
+                    }
+                }
+            }
+        }
+        
+        if let Some(right_idx) = best_match {
+            let mut new_row = left_row.clone();
+            new_row.extend_from_slice(&right_rows[right_idx]);
+            result.push(new_row);
+        } else {
+            // Нет совпадения - добавляем строку с NULL справа (для left join семантики)
+            let mut new_row = left_row.clone();
+            new_row.extend_from_slice(null_right_row);
+            result.push(new_row);
+        }
+    }
+    
+    result
 }
 
 pub fn native_show_table(args: &[Value]) -> Value {
@@ -3325,23 +3640,147 @@ pub fn native_zip_join(args: &[Value]) -> Value {
 
 // APPLY JOIN / LATERAL JOIN - для каждой строки left вызывает функцию
 // apply_join(left: Table, fn: Function, type: "inner" | "left" = "inner") -> Table
-pub fn native_apply_join(_args: &[Value]) -> Value {
-    if _args.len() < 2 {
+pub fn native_apply_join(args: &[Value]) -> Value {
+    if args.len() < 2 {
         return Value::Null;
     }
 
-    let _left_table = match &_args[0] {
+    let left_table = match &args[0] {
         Value::Table(t) => t.borrow().clone(),
         _ => return Value::Null,
     };
 
-    // Функция должна быть передана как Value::Function
-    // Но в текущей реализации функции не могут быть переданы как значения напрямую
-    // Это требует дополнительной инфраструктуры
-    // Пока возвращаем Null с предупреждением
-    // TODO: Реализовать поддержку функций как значений для apply_join
+    // Извлекаем функцию из аргументов
+    let function_index = match &args[1] {
+        Value::Function(idx) => *idx,
+        _ => {
+            // Если функция не передана, возвращаем Null
+            return Value::Null;
+        }
+    };
+
+    // Извлекаем тип JOIN (по умолчанию "inner")
+    let join_type = if args.len() > 2 {
+        match &args[2] {
+            Value::String(s) => s.as_str(),
+            _ => "inner",
+        }
+    } else {
+        "inner"
+    };
+
+    // Получаем доступ к VM через thread-local storage
+    // Сохраняем указатель на VM, чтобы восстановить контекст после вызовов нативных функций
+    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| {
+        let ctx_ref = ctx.borrow();
+        *ctx_ref
+    });
     
-    Value::Null
+    let mut result_rows = Vec::new();
+    let mut result_headers = Vec::new();
+
+    // Создаем заголовки результата (начнем с заголовков левой таблицы)
+    result_headers.extend_from_slice(&left_table.headers);
+
+    // Отслеживаем максимальное количество колонок правой таблицы для корректной обработки NULLs
+    let mut max_right_columns = 0;
+    let mut has_seen_table = false;
+
+    // Для каждой строки левой таблицы вызываем функцию
+    for left_row in &left_table.rows {
+        // Восстанавливаем контекст перед каждым вызовом, так как он мог быть очищен
+        // при вызове нативных функций внутри пользовательской функции
+        if let Some(vm_ptr) = vm_ptr {
+            VM_CALL_CONTEXT.with(|ctx| {
+                *ctx.borrow_mut() = Some(vm_ptr);
+            });
+        }
+        
+        // Вызываем функцию с аргументом - массив значений строки
+        let row_array = Value::Array(Rc::new(RefCell::new(left_row.clone())));
+        let function_result = match call_user_function(function_index, &[row_array]) {
+            Ok(result) => result,
+            Err(_e) => {
+                // Если произошла ошибка при вызове функции, пропускаем строку для inner join
+                // или добавляем с NULLs для left join
+                if join_type == "left" {
+                    let new_row = left_row.clone();
+                    // Добавим NULL значения позже, когда узнаем количество колонок
+                    result_rows.push(new_row);
+                }
+                continue;
+            }
+        };
+        
+
+        match function_result {
+            Value::Table(right_table) => {
+                let right_table_ref = right_table.borrow();
+                has_seen_table = true;
+                
+                // Обновляем максимальное количество колонок
+                if right_table_ref.headers.len() > max_right_columns {
+                    max_right_columns = right_table_ref.headers.len();
+                }
+                
+                // Если заголовки результата еще не установлены полностью, добавляем заголовки правой таблицы
+                if result_headers.len() == left_table.headers.len() {
+                    // Проверяем конфликты имен колонок
+                    let left_headers_set: std::collections::HashSet<String> = 
+                        left_table.headers.iter().cloned().collect();
+                    let mut right_headers = Vec::new();
+                    for header in &right_table_ref.headers {
+                        if left_headers_set.contains(header) {
+                            right_headers.push(format!("right_{}", header));
+                        } else {
+                            right_headers.push(header.clone());
+                        }
+                    }
+                    result_headers.extend_from_slice(&right_headers);
+                }
+
+                // Для каждой строки в результате функции добавляем комбинацию left_row + right_row
+                for right_row in &right_table_ref.rows {
+                    let mut new_row = left_row.clone();
+                    new_row.extend_from_slice(right_row);
+                    result_rows.push(new_row);
+                }
+            }
+            Value::Null => {
+                // Если функция вернула Null и это left join, добавляем строку с NULLs
+                if join_type == "left" {
+                    let new_row = left_row.clone();
+                    result_rows.push(new_row);
+                }
+            }
+            _ => {
+                // Если функция вернула что-то другое, игнорируем для inner join
+                // или добавляем с NULLs для left join
+                if join_type == "left" {
+                    let new_row = left_row.clone();
+                    result_rows.push(new_row);
+                }
+            }
+        }
+    }
+
+    // Если это left join и были строки без правой части, добавляем NULL значения
+    if join_type == "left" && !has_seen_table && max_right_columns == 0 {
+        // Если мы не видели ни одной таблицы, но есть строки с NULLs,
+        // нужно добавить заголовки для правой части (пустые)
+        // Но мы не знаем, какие заголовки должны быть, поэтому оставляем как есть
+    } else if join_type == "left" && max_right_columns > 0 {
+        // Добавляем NULL значения для строк, которые не имеют правой части
+        // Находим строки, которые короче ожидаемого (left + right колонки)
+        let expected_length = left_table.headers.len() + max_right_columns;
+        for row in &mut result_rows {
+            while row.len() < expected_length {
+                row.push(Value::Null);
+            }
+        }
+    }
+
+    Value::Table(Rc::new(RefCell::new(Table::from_data(result_rows, Some(result_headers)))))
 }
 
 // ASOF JOIN - временное соединение
@@ -3547,10 +3986,61 @@ pub fn native_asof_join(args: &[Value]) -> Value {
         }
     } else {
         // Есть группировка - группируем по by колонкам
-        // Упрощенная реализация: для каждой группы выполняем ASOF join
-        // TODO: Реализовать полную поддержку группировки
-        // Пока возвращаем пустую таблицу
-        return Value::Table(Rc::new(RefCell::new(Table::from_data(result_rows, Some(result_headers)))));
+        // Создаем HashMap для группировки данных
+        
+        // Получаем индексы by колонок
+        let mut by_indices_left = Vec::new();
+        let mut by_indices_right = Vec::new();
+        
+        for by_col in &by_columns {
+            if let Some(idx) = left_table.headers.iter().position(|h| h == by_col) {
+                by_indices_left.push(idx);
+            } else {
+                return Value::Null; // Колонка не найдена
+            }
+            if let Some(idx) = right_table.headers.iter().position(|h| h == by_col) {
+                by_indices_right.push(idx);
+            } else {
+                return Value::Null; // Колонка не найдена
+            }
+        }
+        
+        // Группируем левую таблицу по by колонкам
+        let mut left_groups: std::collections::HashMap<Vec<Value>, Vec<Vec<Value>>> = std::collections::HashMap::new();
+        for row in &left_table.rows {
+            let key: Vec<Value> = by_indices_left.iter().map(|&idx| row[idx].clone()).collect();
+            left_groups.entry(key).or_insert_with(Vec::new).push(row.clone());
+        }
+        
+        // Группируем правую таблицу по by колонкам
+        let mut right_groups: std::collections::HashMap<Vec<Value>, Vec<Vec<Value>>> = std::collections::HashMap::new();
+        for row in &right_table.rows {
+            let key: Vec<Value> = by_indices_right.iter().map(|&idx| row[idx].clone()).collect();
+            right_groups.entry(key).or_insert_with(Vec::new).push(row.clone());
+        }
+        
+        // Для каждой группы в левой таблице выполняем ASOF join
+        for (group_key, left_group_rows) in left_groups {
+            if let Some(right_group_rows) = right_groups.get(&group_key) {
+                // Выполняем ASOF join для этой группы
+                let group_results = asof_join_single_group(
+                    &left_group_rows,
+                    right_group_rows,
+                    left_time_idx,
+                    right_time_idx,
+                    direction,
+                    &null_right_row,
+                );
+                result_rows.extend(group_results);
+            } else {
+                // Группы нет в правой таблице - добавляем строки с NULLs (для left join семантики)
+                for left_row in left_group_rows {
+                    let mut new_row = left_row.clone();
+                    new_row.extend_from_slice(&null_right_row);
+                    result_rows.push(new_row);
+                }
+            }
+        }
     }
 
     Value::Table(Rc::new(RefCell::new(Table::from_data(result_rows, Some(result_headers)))))

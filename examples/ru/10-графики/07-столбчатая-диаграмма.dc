@@ -1,0 +1,11 @@
+import plot
+
+x = ["Сыр", "Молоко", "Овощи", "Фрукты", "Вода"]
+y = [2,4,1,6,3]
+
+plot.xlabel("Категория")
+plot.ylabel("Значение")
+
+plot.bar(x, y)
+plot.show(title="Мой график")
+

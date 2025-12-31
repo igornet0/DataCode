@@ -568,14 +568,32 @@ mod tests {
     }
 
     #[test]
-    fn test_type_error_in_multiplication() {
+    fn test_string_multiplication() {
         let source = r#"
-            let x = "hello"
-            x * 5
+            let x = "-"
+            x * 10
         "#;
         let result = run_and_get_result(source);
-        // Должна быть ошибка типа (нельзя умножать строку на число)
-        assert!(result.is_err());
+        match result {
+            Ok(Value::String(s)) => {
+                assert_eq!(s, "----------", "Expected '----------', got '{}'", s);
+            }
+            Ok(v) => panic!("Expected String('----------'), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+        
+        let source = r#"
+            let x = "hello"
+            x * 3
+        "#;
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::String(s)) => {
+                assert_eq!(s, "hellohellohello", "Expected 'hellohellohello', got '{}'", s);
+            }
+            Ok(v) => panic!("Expected String('hellohellohello'), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
     }
 
     #[test]

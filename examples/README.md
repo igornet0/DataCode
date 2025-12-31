@@ -40,6 +40,8 @@ Examples are organized by topics, progressing from simple to complex:
 - **07-циклы / Loops** - Loop constructs / Конструкции циклов
 - **08-websocket** - WebSocket server examples / Примеры WebSocket сервера
 - **09-создание модели данных / Data Model Creation** - Building data models / Создание моделей данных
+- **10-графики / Plot** - Plots and visualization / Графики и визуализация
+- **11-mnist-mlp** - MNIST MLP example / Пример MNIST MLP
 
 ## 🚀 Quick Start / Быстрый старт
 
@@ -52,47 +54,47 @@ To run an example, use one of the following commands:
 ```bash
 # Using cargo (development mode)
 # Используя cargo (режим разработки)
-cargo run examples/ru/01-основы/hello.dc
+cargo run examples/ru/01-основы/привет.dc
 
 # Using global installation (if installed)
 # Используя глобальную установку (если установлено)
-datacode examples/ru/01-основы/hello.dc
+datacode examples/ru/01-основы/привет.dc
 ```
 
 ### Recommended Learning Path / Рекомендуемый путь обучения
 
 1. **Start with basics / Начните с основ**:
    ```bash
-   cargo run examples/ru/01-основы/hello.dc
-   cargo run examples/ru/01-основы/variables.dc
+   cargo run examples/ru/01-основы/привет.dc
+   cargo run examples/ru/01-основы/переменные.dc
    ```
 
 2. **Learn syntax / Изучите синтаксис**:
    ```bash
-   cargo run examples/ru/02-синтаксис/conditionals.dc
-   cargo run examples/ru/02-синтаксис/expressions.dc
+   cargo run examples/ru/02-синтаксис/условия.dc
+   cargo run examples/ru/02-синтаксис/выражения.dc
    ```
 
 3. **Master functions / Освойте функции**:
    ```bash
-   cargo run examples/ru/05-функции/simple_functions.dc
-   cargo run examples/ru/05-функции/recursion.dc
+   cargo run examples/ru/05-функции/простые_функции.dc
+   cargo run examples/ru/05-функции/рекурсия.dc
    ```
 
 4. **Study loops / Изучите циклы**:
    ```bash
-   cargo run examples/ru/07-циклы/while_loops.dc
-   cargo run examples/ru/07-циклы/for_loops.dc
+   cargo run examples/ru/07-циклы/циклы_while.dc
+   cargo run examples/ru/07-циклы/циклы_for.dc
    ```
 
 5. **Advanced techniques / Продвинутые техники**:
    ```bash
-   cargo run examples/ru/04-продвинутые/complex.dc
+   cargo run examples/ru/04-продвинутые/комплексный.dc
    ```
 
 6. **Full demonstration / Полная демонстрация**:
    ```bash
-   cargo run examples/ru/06-демонстрации/showcase.dc
+   cargo run examples/ru/06-демонстрации/демонстрация.dc
    ```
 
 ## 📖 Documentation / Документация

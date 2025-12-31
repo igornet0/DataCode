@@ -1,0 +1,56 @@
+# Full example of working with the plot module
+# Demonstration of all capabilities of the module for working with images
+
+print("=== Example of working with the plot module ===")
+print("")
+
+# Example 1: Quick image viewing
+print("Example 1: Quick image viewing")
+print("Using plot.show() for automatic image display")
+# plot.show("path/to/image.png")
+
+print("")
+
+# Example 2: Loading and checking an image
+print("Example 2: Loading an image")
+let img = plot.image("path/to/image.png")
+
+if img != null {
+    print("✓ Image loaded successfully")
+} else {
+    print("✗ Image loading error")
+}
+
+print("")
+
+# Example 3: Creating a window with specified parameters
+print("Example 3: Creating a window")
+let window = plot.window(800, 600, "Test window")
+
+if window != null {
+    print("✓ Window created successfully")
+    
+    # If there is an image, draw it
+    if img != null {
+        print("Drawing image in window...")
+        plot.draw(window, img)
+        print("✓ Image drawn")
+        
+        # Wait for the window to close
+        print("Waiting for window to close...")
+        plot.wait(window)
+        print("✓ Window closed")
+    }
+} else {
+    print("✗ Window creation error")
+}
+
+print("")
+print("=== Example completed ===")
+
+# Notes:
+# 1. All functions of the plot module work with file paths (strings)
+# 2. Standard image formats are supported (PNG, JPEG, GIF, BMP, etc.)
+# 3. The plot.wait() and plot.show() functions block program execution
+# 4. The image is automatically centered in the window if it is smaller than the window size
+

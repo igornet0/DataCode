@@ -1,6 +1,6 @@
 // Разрешение переменных и подготовка к компиляции
 
-use crate::parser::ast::{Expr, Stmt, Param, Arg};
+use crate::parser::ast::{Expr, Stmt, Param, Arg, UnpackPattern};
 use crate::common::error::LangError;
 use crate::semantic::scope::Scope;
 
@@ -32,6 +32,10 @@ impl Resolver {
 
     fn resolve_stmt(&mut self, stmt: &Stmt) -> Result<(), LangError> {
         match stmt {
+            Stmt::Import { .. } => {
+                // Import statements don't need variable resolution
+                // They are handled at runtime by the VM
+            }
             Stmt::Let { name, value, is_global, .. } => {
                 self.resolve_expr(value)?;
                 // Глобальные переменные не добавляются в локальные области видимости
@@ -82,13 +86,12 @@ impl Resolver {
             Stmt::Continue { .. } => {
                 // continue не требует разрешения переменных
             }
-            Stmt::For { variable, iterable, body, .. } => {
+            Stmt::For { pattern, iterable, body, .. } => {
                 // Начинаем новую область видимости для цикла for
                 self.begin_scope();
                 
-                // Объявляем переменную-итератор
-                self.declare(variable);
-                self.define(variable);
+                // Объявляем переменные из паттерна распаковки
+                self.declare_unpack_pattern(pattern);
                 
                 // Разрешаем итерируемое выражение
                 self.resolve_expr(iterable)?;
@@ -185,6 +188,17 @@ impl Resolver {
                     self.resolve_expr(element)?;
                 }
             }
+            Expr::TupleLiteral { elements, .. } => {
+                for element in elements {
+                    self.resolve_expr(element)?;
+                }
+            }
+            Expr::UnpackAssign { names, value, .. } => {
+                self.resolve_expr(value)?;
+                for name in names {
+                    self.resolve_local(expr, name);
+                }
+            }
             Expr::ArrayIndex { array, index, .. } => {
                 self.resolve_expr(array)?;
                 self.resolve_expr(index)?;
@@ -267,6 +281,32 @@ impl Resolver {
         // Разрешение локальной переменной
         // Реальная логика будет в компиляторе
         // Переменная будет найдена компилятором при генерации байт-кода
+    }
+
+    fn declare_unpack_pattern(&mut self, pattern: &[UnpackPattern]) {
+        for pat in pattern {
+            match pat {
+                UnpackPattern::Variable(name) => {
+                    self.declare(name);
+                    self.define(name);
+                }
+                UnpackPattern::Wildcard => {
+                    // Wildcard не создает переменную
+                }
+                UnpackPattern::Variadic(name) => {
+                    // Variadic переменная создает переменную
+                    self.declare(name);
+                    self.define(name);
+                }
+                UnpackPattern::VariadicWildcard => {
+                    // Variadic wildcard не создает переменную
+                }
+                UnpackPattern::Nested(nested) => {
+                    // Рекурсивно обрабатываем вложенные паттерны
+                    self.declare_unpack_pattern(nested);
+                }
+            }
+        }
     }
 }
 

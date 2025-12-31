@@ -12,6 +12,7 @@ Basic examples to start learning:
 - `variables.dc` - Working with variables
 - `arithmetic.dc` - Arithmetic operations
 - `strings.dc` - Working with strings
+- `global_local.dc` - Global and local variables
 
 ### 🔧 [02-syntax](02-syntax/) - Syntax Constructs
 Language syntax examples:
@@ -55,6 +56,26 @@ Building database models from CSV files:
 - `03-create-relations.dc` - Creating relations between tables
 - `04-load-quarterly-data.dc` - Loading quarterly aggregated data
 - `05-table-joins.dc` - Table JOIN operations (inner, left, right, full, cross, semi, anti)
+- `load_model_data.dc` - Complete example loading all data and creating SQLite database
+
+### 🎨 [10-plot](10-plot/) - Plots and Visualization
+Working with the `plot` module for loading and displaying images, as well as creating charts:
+- `01-load-image.dc` - Loading an image from a file
+- `02-show-image.dc` - Quick image viewing
+- `03-create-window.dc` - Creating a window for drawing
+- `04-draw-image.dc` - Drawing an image in a window
+- `05-full-example.dc` - Comprehensive example of working with the plot module
+- `06-subplots.dc` - Creating a subplots grid
+- `07-bar-chart.dc` - Creating a bar chart
+- `08-heatmap.dc` - Creating a heatmap
+- `09-line-chart.dc` - Creating a line chart
+- `10-pie-chart.dc` - Creating a pie chart
+
+### 🧠 [11-mnist-mlp](11-mnist-mlp/) - MNIST MLP Example
+Training a Multi-Layer Perceptron (MLP) on the MNIST dataset:
+- `mnist_mlp.dc` - Complete MLP training example
+- `mnist_model_demo.dc` - Model demonstration
+- `mnist_mlp_sh.dc` - Shell script example
 
 ## 🚀 Quick Start
 
@@ -101,7 +122,21 @@ Building database models from CSV files:
    cargo run examples/en/09-data-model-creation/05-table-joins.dc
    ```
 
-8. **Complete demonstration**:
+8. **Plots and visualization**:
+   ```bash
+   cargo run examples/en/10-plot/01-load-image.dc
+   cargo run examples/en/10-plot/07-bar-chart.dc
+   cargo run examples/en/10-plot/09-line-chart.dc
+   cargo run examples/en/10-plot/10-pie-chart.dc
+   cargo run examples/en/10-plot/08-heatmap.dc
+   ```
+
+9. **MNIST MLP example**:
+   ```bash
+   cargo run examples/en/11-mnist-mlp/mnist_mlp.dc
+   ```
+
+10. **Complete demonstration**:
    ```bash
    cargo run examples/en/06-demonstrations/showcase.dc
    ```

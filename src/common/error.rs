@@ -219,17 +219,11 @@ impl std::fmt::Display for LangError {
             LangError::SemanticError { message, line } => {
                 write!(f, "[Semantic Error] Line {}: {}", line, message)
             }
-            LangError::RuntimeError { message, line, stack_trace, error_type } => {
+            LangError::RuntimeError { message, line, stack_trace: _, error_type } => {
                 if let Some(et) = error_type {
                     write!(f, "[{}] Line {}: {}", et.name(), line, message)?;
                 } else {
                     write!(f, "[Runtime Error] Line {}: {}", line, message)?;
-                }
-                if !stack_trace.is_empty() {
-                    write!(f, "\nStack trace:")?;
-                    for (i, entry) in stack_trace.iter().enumerate() {
-                        write!(f, "\n  {}: {} at line {}", i + 1, entry.function_name, entry.line)?;
-                    }
                 }
                 Ok(())
             }

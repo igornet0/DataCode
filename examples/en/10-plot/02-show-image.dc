@@ -1,0 +1,19 @@
+# Displaying an image in a window
+# Convenient plot.show() function for quick image viewing
+
+# The plot.show(path) function automatically:
+# 1. Loads the image
+# 2. Creates a window with the image dimensions
+# 3. Displays the image in the window
+# 4. Waits for the user to close the window
+
+# Simple example - show an image
+print("Opening image...")
+plot.show("path/to/image.png")
+
+# After closing the window, the program will continue execution
+print("Window closed, program completed")
+
+# Note: the plot.show() function blocks program execution
+# until the user closes the window
+

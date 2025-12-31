@@ -1,6 +1,6 @@
 [package]
 name = "data-code"
-version = "2.0.0"
+version = "2.1.0"
 edition = "2021"
 description = "ДатаКод - Interactive Programming Language for fast data processing"
 license = "MIT"
@@ -8,6 +8,12 @@ authors = ["Igor <igornet0@users.noreply.github.com>"]
 repository = "https://github.com/igornet0/DataCode"
 keywords = ["programming-language", "interpreter", "repl", "data-processing"]
 categories = ["command-line-utilities", "development-tools"]
+
+[features]
+default = []
+gpu = ["candle-core"]
+cuda = ["gpu", "candle-core/cuda"]
+metal = ["gpu", "candle-core/metal"]
 
 [lib]
 name = "data_code"
@@ -28,15 +34,15 @@ calamine = "0.28.0"
 rustyline = "14.0"
 glob = "0.3"
 regex = "1.10"
-rand = "0.8"
+# rand is not used directly - removed to avoid version conflicts with candle-core dependencies
 
-# Фаза 3: Векторизация и параллелизм (упрощенная версия)
+# Векторизация и параллелизм (упрощенная версия)
 rayon = "1.8"
 
-# Фаза 4: Оптимизация I/O и встроенных функций
+# Оптимизация I/O и встроенных функций
 memmap2 = "0.9"    # Для memory-mapped файлов
 
-# Фаза 5: Профилирование и инструментирование
+# Профилирование и инструментирование
 lazy_static = "1.4"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -48,3 +54,18 @@ base64 = "0.22"
 
 # SQLite экспорт для модели данных
 rusqlite = { version = "0.30", features = ["bundled"] }
+
+# Plot module dependencies
+winit = "0.29"
+image = "0.24"
+softbuffer = "0.4"
+raw-window-handle = "0.6"
+fontdue = "0.7"
+
+# Progress bar for ML training
+indicatif = "0.17"
+
+# GPU support for ML (optional)
+# Using git version to avoid bf16/f16 rand compatibility issues in published versions
+# If git version doesn't work, try: version = "0.3.3"
+candle-core = { git = "https://github.com/huggingface/candle", branch = "main", optional = true, default-features = false }

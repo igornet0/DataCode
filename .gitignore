@@ -21,10 +21,12 @@ target
 node_modules
 
 datacode-syntax
+packaging/macos/DataCode.app/Contents/MacOS/datacode
 .datacode_history
 model_data.zip
 *.db
 temp_sessions/
+*.nn
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

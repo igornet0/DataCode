@@ -1,0 +1,102 @@
+#  MNIST MLP Example
+#  Minimal MLP architecture for MNIST digit classification
+# 
+#  Architecture:
+#  Input(784) → Linear(128) + ReLU → Linear(10)
+# 
+#  Expected accuracy: 92-95% after training
+
+import ml
+
+#  Load MNIST datasets
+print("Loading MNIST datasets...")
+dataset_train = ml.load_mnist("train")
+dataset_test = ml.load_mnist("test")
+
+print("Train dataset size: ", ml.dataset_features(dataset_train).shape[0])
+print("Test dataset size: ", ml.dataset_features(dataset_test).shape[0])
+
+#  Create MLP architecture: Linear(784, 128) → ReLU → Linear(128, 10)
+#  Note: Softmax is fused into CrossEntropy loss operation, so we don't need it in Sequential
+
+#  Create Neural Network from Sequential
+model_path = path("model_mnist.nn")
+
+if model_path.exists {
+    print("Loading model from - ", model_path)
+    model = ml.load(model_path)
+    print("Model load from - ", model_path)
+} else {
+    print("Creating MLP architecture...")
+
+    #  Create layers
+    layer1 = ml.layer.linear(784, 128)  #  Dense layer: 784 → 128
+    layer2 = ml.layer.relu()            #  ReLU activation
+    layer3 = ml.layer.linear(128, 10)   #  Dense layer: 128 → 10 (logits)
+
+    #  Create Sequential container (no softmax - it's fused in CrossEntropy loss)
+    layers = [layer1, layer2, layer3]
+    model_seq = ml.sequential(layers)
+
+    model = ml.neural_network(model_seq)
+    print("Model created successfully!")
+}
+
+# model.device("metal")
+# model.device("gpu")
+model.device("cpu")
+print("Model device: ", model.get_device())
+
+#  Get training data
+x_train = ml.dataset_features(dataset_train)
+print("max(x_train)=",max(x_train))
+print("min(x_train)=",min(x_train))
+y_train = ml.dataset_targets(dataset_train)
+print("y_train shape:", ml.shape(y_train))
+
+#  Get validation data (using test set for validation in this example)
+x_val = ml.dataset_features(dataset_test)
+y_val = ml.dataset_targets(dataset_test)
+
+print("x_val shape:", ml.shape(x_val))
+print("y_val shape:", ml.shape(y_val))
+
+#  Training parameters
+epochs = 5
+
+batch_size = 120
+learning_rate = 0.0001
+
+print("Starting training...")
+print("Epochs: ", epochs)
+print("Batch size: ", batch_size)
+print("Learning rate: ", learning_rate)
+
+#  Train the model with validation data
+# loss_history = ml.nn_train(model, x_train, y_train, 
+#                            epochs, batch_size, learning_rate, 
+#                            "cross_entropy", x_val, y_val)
+
+loss_history = model.train(x_train, y_train, 
+                            epochs, batch_size, learning_rate,
+                            loss="cross_entropy", optimizer="Adam",
+                            x_val=x_val, y_val=y_val)
+
+print("Training completed!")
+print("Loss history: ", loss_history)
+
+#  Evaluate on test set
+print("Evaluating on test set...")
+x_test = ml.dataset_features(dataset_test)
+y_test = ml.dataset_targets(dataset_test)
+
+#  Make predictions
+predictions = ml.nn_forward(model, x_test)
+
+#  Calculate accuracy (simplified - in practice you'd compare predictions with labels)
+print("Predictions shape: ", predictions.shape)
+print("Test labels shape: ", y_test.shape)
+
+print("MNIST MLP training example completed!")
+
+model.save(model_path)

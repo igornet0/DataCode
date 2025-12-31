@@ -16,6 +16,9 @@ pub enum TokenKind {
     True,
     False,
     Null,
+    Import,
+    From,
+    As,
 
     // Литералы
     Identifier,

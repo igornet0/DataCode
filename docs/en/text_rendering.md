@@ -284,11 +284,3 @@ The text rendering system in the plot module uses modern approaches:
 
 Key point: correct baseline calculation via `horizontal_line_metrics()` ensures proper alignment of all characters regardless of their individual metrics.
 
-
-
-
-
-
-
-
-

@@ -149,7 +149,7 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         
         // Функции с опциональными параметрами
         "table" => Some(vec!["data".to_string(), "headers".to_string()]),
-        "read_file" => Some(vec!["path".to_string(), "header_row".to_string(), "sheet_name".to_string()]),
+        "read_file" => Some(vec!["path".to_string(), "header_row".to_string(), "sheet_name".to_string(), "header".to_string()]),
         "table_head" => Some(vec!["table".to_string(), "n".to_string()]),
         "table_tail" => Some(vec!["table".to_string(), "n".to_string()]),
         "table_select" => Some(vec!["table".to_string(), "cols".to_string()]),

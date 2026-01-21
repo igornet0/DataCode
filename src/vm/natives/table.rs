@@ -160,6 +160,164 @@ fn read_xlsx_file(path: &PathBuf, header_row: usize, sheet_name: Option<&str>) -
     Ok(Table::from_data(rows, Some(headers)))
 }
 
+/// Применяет фильтр header к таблице
+/// Если header - массив, фильтрует колонки (оставляет только указанные)
+/// Если header - словарь, переименовывает колонки
+fn apply_header_filter(table: Table, header_arg: Option<&Value>) -> Table {
+    let header_arg = match header_arg {
+        Some(v) => v,
+        None => return table,
+    };
+
+    match header_arg {
+        Value::Array(cols_arr) => {
+            // Фильтруем колонки: оставляем только указанные в массиве
+            let cols_arr_ref = cols_arr.borrow();
+            let mut selected_cols = Vec::new();
+            
+            // Извлекаем имена колонок из массива
+            for col_val in cols_arr_ref.iter() {
+                match col_val {
+                    Value::String(s) => selected_cols.push(s.clone()),
+                    _ => {
+                        // Игнорируем не-строковые значения
+                        continue;
+                    }
+                }
+            }
+            
+            if selected_cols.is_empty() {
+                return table;
+            }
+            
+            // Создаем индексы колонок для выборки
+            let mut col_indices = Vec::new();
+            let mut new_headers = Vec::new();
+            
+            for col_name in &selected_cols {
+                if let Some(idx) = table.headers.iter().position(|h| h == col_name) {
+                    col_indices.push(idx);
+                    new_headers.push(col_name.clone());
+                }
+                // Игнорируем несуществующие колонки
+            }
+            
+            if col_indices.is_empty() {
+                return table;
+            }
+            
+            // Создаем новые строки только с выбранными колонками
+            let mut new_rows = Vec::new();
+            for row in &table.rows {
+                let mut new_row = Vec::new();
+                for &idx in &col_indices {
+                    if idx < row.len() {
+                        new_row.push(row[idx].clone());
+                    } else {
+                        new_row.push(Value::Null);
+                    }
+                }
+                new_rows.push(new_row);
+            }
+            
+            Table::from_data(new_rows, Some(new_headers))
+        }
+        Value::Object(rename_map) => {
+            // Переименовываем колонки согласно словарю
+            let mut new_headers = Vec::new();
+            
+            for old_header in &table.headers {
+                if let Some(new_name_val) = rename_map.get(old_header) {
+                    match new_name_val {
+                        Value::String(new_name) => {
+                            // Переименовываем
+                            new_headers.push(new_name.clone());
+                        }
+                        Value::Null => {
+                            // Оставляем оригинальное имя
+                            new_headers.push(old_header.clone());
+                        }
+                        _ => {
+                            // Игнорируем некорректные значения, оставляем оригинальное имя
+                            new_headers.push(old_header.clone());
+                        }
+                    }
+                } else {
+                    // Колонка не указана в словаре - оставляем как есть
+                    new_headers.push(old_header.clone());
+                }
+            }
+            
+            // Создаем новую таблицу с переименованными заголовками
+            // Данные остаются теми же, меняются только заголовки
+            Table::from_data(table.rows.clone(), Some(new_headers))
+        }
+        _ => {
+            // Некорректный тип - возвращаем таблицу без изменений
+            table
+        }
+    }
+}
+
+/// Извлекает аргументы для read_file, определяя их по типу, а не только по позиции
+/// Возвращает (header_row, sheet_name, header_arg)
+fn extract_read_file_args(args: &[Value]) -> (usize, Option<String>, Option<&Value>) {
+    let mut header_row = 0;
+    let mut sheet_name: Option<String> = None;
+    let mut header_arg: Option<&Value> = None;
+    
+    // Ищем header - это Array или Object (может быть на любой позиции после path)
+    for arg in args.iter().skip(1) {
+        if matches!(arg, Value::Array(_) | Value::Object(_)) {
+            header_arg = Some(arg);
+            break;
+        }
+    }
+    
+    // Определяем header_row и sheet_name по позиции и типу
+    // Исключаем header из проверки
+    if args.len() > 1 {
+        // Проверяем, является ли args[1] header
+        let is_header_1 = matches!(&args[1], Value::Array(_) | Value::Object(_));
+        
+        if !is_header_1 {
+            match &args[1] {
+                Value::Number(n) => {
+                    // args[1] - это header_row
+                    header_row = *n as usize;
+                    
+                    // Проверяем args[2] для sheet_name
+                    if args.len() > 2 {
+                        let is_header_2 = matches!(&args[2], Value::Array(_) | Value::Object(_));
+                        if !is_header_2 {
+                            if let Value::String(s) = &args[2] {
+                                sheet_name = Some(s.clone());
+                            }
+                        }
+                    }
+                }
+                Value::String(s) => {
+                    // args[1] - это sheet_name
+                    sheet_name = Some(s.clone());
+                }
+                _ => {}
+            }
+        } else {
+            // args[1] - это header, проверяем args[2] для sheet_name
+            if args.len() > 2 {
+                let is_header_2 = matches!(&args[2], Value::Array(_) | Value::Object(_));
+                if !is_header_2 {
+                    if let Value::String(s) = &args[2] {
+                        sheet_name = Some(s.clone());
+                    }
+                }
+            }
+        }
+    }
+    
+    (header_row, sheet_name, header_arg)
+}
+
 pub fn native_read_file(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Null;
@@ -171,6 +329,9 @@ pub fn native_read_file(args: &[Value]) -> Value {
         Value::String(s) => PathBuf::from(s),
         _ => return Value::Null,
     };
+    
+    // Извлекаем аргументы по типу
+    let (header_row, sheet_name, header_arg) = extract_read_file_args(args);
     
     let file_path_str = file_path.to_string_lossy().to_string();
 
@@ -208,7 +369,8 @@ pub fn native_read_file(args: &[Value]) -> Value {
                                     match read_csv_file(&temp_file) {
                                         Ok(table) => {
                                             let _ = fs::remove_file(&temp_file);
-                                            return Value::Table(Rc::new(RefCell::new(table)));
+                                            let filtered_table = apply_header_filter(table, header_arg);
+                                            return Value::Table(Rc::new(RefCell::new(filtered_table)));
                                         }
                                         Err(_) => {
                                             let _ = fs::remove_file(&temp_file);
@@ -224,33 +386,11 @@ pub fn native_read_file(args: &[Value]) -> Value {
                             let temp_file = std::env::temp_dir().join(format!("datacode_smb_{}.xlsx", std::process::id()));
                             if let Ok(mut file) = fs::File::create(&temp_file) {
                                 if file.write_all(&content).is_ok() {
-                                    let header_row = if args.len() > 1 {
-                                        match &args[1] {
-                                            Value::Number(n) => *n as usize,
-                                            _ => 0,
-                                        }
-                                    } else {
-                                        0
-                                    };
-                                    
-                                    let sheet_name = if args.len() > 2 {
-                                        match &args[2] {
-                                            Value::String(s) => Some(s.clone()),
-                                            _ => None,
-                                        }
-                                    } else if args.len() > 1 {
-                                        match &args[1] {
-                                            Value::String(s) => Some(s.clone()),
-                                            _ => None,
-                                        }
-                                    } else {
-                                        None
-                                    };
-                                    
                                     match read_xlsx_file(&temp_file, header_row, sheet_name.as_deref()) {
                                         Ok(table) => {
                                             let _ = fs::remove_file(&temp_file);
-                                            return Value::Table(Rc::new(RefCell::new(table)));
+                                            let filtered_table = apply_header_filter(table, header_arg);
+                                            return Value::Table(Rc::new(RefCell::new(filtered_table)));
                                         }
                                         Err(_) => {
                                             let _ = fs::remove_file(&temp_file);
@@ -316,7 +456,10 @@ pub fn native_read_file(args: &[Value]) -> Value {
             "csv" => {
                 // Читаем CSV файл
                 match read_csv_file(&resolved_path) {
-                    Ok(table) => Value::Table(Rc::new(RefCell::new(table))),
+                    Ok(table) => {
+                        let filtered_table = apply_header_filter(table, header_arg);
+                        Value::Table(Rc::new(RefCell::new(filtered_table)))
+                    },
                     Err(e) => {
                         use crate::websocket::set_native_error;
                         set_native_error(format!("Error reading CSV file: {}", e));
@@ -326,31 +469,11 @@ pub fn native_read_file(args: &[Value]) -> Value {
             }
             "xlsx" => {
                 // Читаем XLSX файл
-                let header_row = if args.len() > 1 {
-                    match &args[1] {
-                        Value::Number(n) => *n as usize,
-                        _ => 0,
-                    }
-                } else {
-                    0
-                };
-                
-                let sheet_name = if args.len() > 2 {
-                    match &args[2] {
-                        Value::String(s) => Some(s.clone()),
-                        _ => None,
-                    }
-                } else if args.len() > 1 {
-                    match &args[1] {
-                        Value::String(s) => Some(s.clone()),
-                        _ => None,
-                    }
-                } else {
-                    None
-                };
-
                 match read_xlsx_file(&resolved_path, header_row, sheet_name.as_deref()) {
-                    Ok(table) => Value::Table(Rc::new(RefCell::new(table))),
+                    Ok(table) => {
+                        let filtered_table = apply_header_filter(table, header_arg);
+                        Value::Table(Rc::new(RefCell::new(filtered_table)))
+                    },
                     Err(e) => {
                         use crate::websocket::set_native_error;
                         set_native_error(format!("Error reading XLSX file: {}", e));

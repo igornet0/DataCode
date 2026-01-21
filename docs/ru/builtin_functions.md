@@ -831,7 +831,7 @@ table([[1, 2, 3], [4, 5, 6]])  # Без заголовков
 
 ---
 
-### `read_file(path)` / `read_file(path, header_row)` / `read_file(path, sheet_name="sheet_name")` / `read_file(path, header_row, sheet_name)`
+### `read_file(path)` / `read_file(path, header_row)` / `read_file(path, sheet_name="sheet_name")` / `read_file(path, header_row, sheet_name)` / `read_file(path, header_row, sheet_name, header)`
 
 Читает файл и возвращает таблицу (для CSV/XLSX) или строку (для TXT).
 
@@ -839,6 +839,9 @@ table([[1, 2, 3], [4, 5, 6]])  # Без заголовков
 - `path` (path | string) - путь к файлу
 - `header_row` (number, опционально) - номер строки с заголовками (0-based, по умолчанию 0)
 - `sheet_name` (string, опционально) - имя листа для XLSX файлов (по умолчанию первый лист)
+- `header` (array | object, опционально) - фильтр колонок или переименование:
+  - Если массив: список имен колонок для загрузки (будут загружены только указанные колонки)
+  - Если словарь: соответствие оригинальных имен колонок новым именам (используйте `null` для сохранения оригинального имени)
 
 **Возвращает:** 
 - `table` - для CSV и XLSX файлов
@@ -852,13 +855,24 @@ read_file("report.xlsx", "Sales")
 read_file("data.csv", 2)
 read_file(path("report.xlsx"), 1, "DataSheet")
 read_file(path("notes.txt"))  # Возвращает строку
+
+# Загрузка только указанных колонок
+sample_table = read_file(path("sample.csv"), header_row=0, header=["Name", "Age", "City", "Salary"])
+
+# Переименование колонок при загрузке
+sample_table = read_file(path("sample.csv"), header_row=0, header={"Name": "Name_A", "Age": null, "City": null, "Salary": null})
+
+# Комбинация с sheet_name для XLSX
+data = read_file(path("report.xlsx"), header_row=1, sheet_name="Data", header=["ID", "Value"])
 ```
 
 **Примечания:**
 - Для CSV файлов автоматически определяется тип данных
 - Для XLSX файлов можно указать конкретный лист
 - Для XLSX файлов можно указать строку с заголовками (если она не первая)
-- Порядок аргументов: `read_file(path, header_row, sheet_name)`
+- Порядок аргументов: `read_file(path, header_row, sheet_name, header)`
+- Когда `header` - массив, загружаются только указанные колонки (несуществующие колонки игнорируются)
+- Когда `header` - словарь, колонки переименовываются согласно соответствию (колонки, не указанные в словаре, сохраняют оригинальные имена)
 
 ---
 

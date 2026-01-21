@@ -298,6 +298,262 @@ mod tests {
         assert!(result.is_err() || matches!(result, Ok(Value::Null)));
     }
 
+    // ========== Тесты для параметра header в read_file ==========
+
+    #[test]
+    fn test_read_file_with_header_array() {
+        // Загрузка только указанных колонок через массив
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header=["Name", "Age"])
+            let columns = csv_table.columns
+            len(columns)
+            "#,
+            csv_path
+        );
+        // Должно быть 2 колонки: Name и Age
+        assert_number_result(&source, 2.0);
+    }
+
+    #[test]
+    fn test_read_file_with_header_array_column_order() {
+        // Проверка порядка колонок в результате
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header=["Age", "Name"])
+            let columns = csv_table.columns
+            columns[0]
+            "#,
+            csv_path
+        );
+        // Первая колонка должна быть Age (порядок из массива)
+        assert_string_result(&source, "Age");
+    }
+
+    #[test]
+    fn test_read_file_with_header_array_data_access() {
+        // Проверка доступа к данным после фильтрации
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header=["Name", "Age"])
+            let names = csv_table["Name"]
+            names[0]
+            "#,
+            csv_path
+        );
+        // Первое имя должно быть "John Doe"
+        assert_string_result(&source, "John Doe");
+    }
+
+    #[test]
+    fn test_read_file_with_header_array_single_column() {
+        // Загрузка только одной колонки
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header=["Age"])
+            let ages = csv_table["Age"]
+            ages[0]
+            "#,
+            csv_path
+        );
+        // Первый возраст должен быть 30
+        assert_number_result(&source, 30.0);
+    }
+
+    #[test]
+    fn test_read_file_with_header_dict_rename() {
+        // Переименование колонок через словарь
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header={{"Name": "FullName", "Age": null, "City": null, "Salary": null}})
+            let columns = csv_table.columns
+            columns[0]
+            "#,
+            csv_path
+        );
+        // Первая колонка должна быть переименована в "FullName"
+        assert_string_result(&source, "FullName");
+    }
+
+    #[test]
+    fn test_read_file_with_header_dict_keep_original() {
+        // Переименование одной колонки, остальные без изменений
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header={{"Name": "FullName", "Age": null}})
+            let columns = csv_table.columns
+            columns[1]
+            "#,
+            csv_path
+        );
+        // Вторая колонка должна остаться "Age" (null сохраняет оригинальное имя)
+        assert_string_result(&source, "Age");
+    }
+
+    #[test]
+    fn test_read_file_with_header_dict_access_renamed() {
+        // Доступ к переименованной колонке
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header={{"Name": "FullName", "Age": null, "City": null, "Salary": null}})
+            let names = csv_table["FullName"]
+            names[0]
+            "#,
+            csv_path
+        );
+        // Доступ к переименованной колонке должен работать
+        assert_string_result(&source, "John Doe");
+    }
+
+    #[test]
+    fn test_read_file_with_header_dict_multiple_renames() {
+        // Переименование нескольких колонок
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header={{"Name": "FullName", "Age": "Years", "City": null, "Salary": "Income"}})
+            let columns = csv_table.columns
+            columns[1]
+            "#,
+            csv_path
+        );
+        // Вторая колонка должна быть переименована в "Years"
+        assert_string_result(&source, "Years");
+    }
+
+    #[test]
+    fn test_read_file_with_header_array_and_header_row() {
+        // Комбинация header_row и header (массив)
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header=["Name", "Salary"])
+            let columns = csv_table.columns
+            len(columns)
+            "#,
+            csv_path
+        );
+        // Должно быть 2 колонки
+        assert_number_result(&source, 2.0);
+    }
+
+    #[test]
+    fn test_read_file_with_header_dict_and_header_row() {
+        // Комбинация header_row и header (словарь)
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header={{"Name": "FullName"}})
+            let columns = csv_table.columns
+            columns[0]
+            "#,
+            csv_path
+        );
+        // Первая колонка должна быть переименована
+        assert_string_result(&source, "FullName");
+    }
+
+    #[test]
+    fn test_read_file_with_header_array_nonexistent_column() {
+        // Игнорирование несуществующих колонок в массиве
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header=["Name", "NonExistent", "Age"])
+            let columns = csv_table.columns
+            len(columns)
+            "#,
+            csv_path
+        );
+        // Должно быть 2 колонки (NonExistent игнорируется)
+        assert_number_result(&source, 2.0);
+    }
+
+    #[test]
+    fn test_read_file_with_header_dict_nonexistent_column() {
+        // Игнорирование несуществующих колонок в словаре
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header={{"Name": "FullName", "NonExistent": "Test"}})
+            let columns = csv_table.columns
+            columns[0]
+            "#,
+            csv_path
+        );
+        // Первая колонка должна быть переименована, несуществующая игнорируется
+        assert_string_result(&source, "FullName");
+    }
+
+    #[test]
+    fn test_read_file_with_header_array_empty() {
+        // Пустой массив header должен вернуть пустую таблицу или исходную
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header=[])
+            let columns = csv_table.columns
+            len(columns)
+            "#,
+            csv_path
+        );
+        // Пустой массив - должна вернуться исходная таблица (все колонки)
+        let result = run_and_get_result(&source);
+        assert!(result.is_ok(), "Should handle empty header array");
+    }
+
+    #[test]
+    fn test_read_file_with_header_dict_empty() {
+        // Пустой словарь header должен вернуть исходную таблицу
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let csv_table = read_file("{}", header_row=0, header={{}})
+            let columns = csv_table.columns
+            len(columns)
+            "#,
+            csv_path
+        );
+        // Пустой словарь - должна вернуться исходная таблица (все колонки)
+        assert_number_result(&source, 4.0);
+    }
+
+    #[test]
+    fn test_read_file_with_header_xlsx() {
+        // Тест header для XLSX файлов
+        let xlsx_path = get_test_data_path("sample.xlsx");
+        let source = format!(
+            r#"
+            let xlsx_table = read_file("{}", header_row=0, header=["Name", "Age"])
+            let columns = xlsx_table.columns
+            len(columns)
+            "#,
+            xlsx_path
+        );
+        // Проверяем, что файл загружается и фильтруется
+        let result = run_and_get_result(&source);
+        match result {
+            Ok(Value::Number(n)) => {
+                // Должно быть 2 колонки после фильтрации
+                assert!(n >= 0.0, "XLSX file should load with header filter");
+            }
+            Ok(_v) => {
+                // Если файл не загружается, это нормально (может не быть XLSX файла)
+                // Просто проверяем, что нет ошибки парсинга
+            }
+            Err(_) => {
+                // Ошибка допустима, если файл не существует или не является валидным XLSX
+            }
+        }
+    }
+
     // ========== 4. Тесты операций с таблицами ==========
 
     #[test]

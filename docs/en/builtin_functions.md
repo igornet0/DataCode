@@ -831,7 +831,7 @@ table([[1, 2, 3], [4, 5, 6]])  # Without headers
 
 ---
 
-### `read_file(path)` / `read_file(path, header_row)` / `read_file(path, sheet_name="sheet_name")` / `read_file(path, header_row, sheet_name)`
+### `read_file(path)` / `read_file(path, header_row)` / `read_file(path, sheet_name="sheet_name")` / `read_file(path, header_row, sheet_name)` / `read_file(path, header_row, sheet_name, header)`
 
 Reads a file and returns a table (for CSV/XLSX) or string (for TXT).
 
@@ -839,6 +839,9 @@ Reads a file and returns a table (for CSV/XLSX) or string (for TXT).
 - `path` (path | string) - path to file
 - `header_row` (number, optional) - row number with headers (0-based, default 0)
 - `sheet_name` (string, optional) - sheet name for XLSX files (default first sheet)
+- `header` (array | object, optional) - column filter or rename mapping:
+  - If array: list of column names to load (only these columns will be included)
+  - If object: dictionary mapping original column names to new names (use `null` to keep original name)
 
 **Returns:** 
 - `table` - for CSV and XLSX files
@@ -852,13 +855,24 @@ read_file("report.xlsx", "Sales")
 read_file("data.csv", 2)
 read_file(path("report.xlsx"), 1, "DataSheet")
 read_file(path("notes.txt"))  # Returns string
+
+# Load only specific columns
+sample_table = read_file(path("sample.csv"), header_row=0, header=["Name", "Age", "City", "Salary"])
+
+# Rename columns during load
+sample_table = read_file(path("sample.csv"), header_row=0, header={"Name": "Name_A", "Age": null, "City": null, "Salary": null})
+
+# Combine with sheet_name for XLSX
+data = read_file(path("report.xlsx"), header_row=1, sheet_name="Data", header=["ID", "Value"])
 ```
 
 **Notes:**
 - For CSV files, data types are automatically detected
 - For XLSX files, you can specify a specific sheet
 - For XLSX files, you can specify the header row (if it's not the first)
-- Argument order: `read_file(path, header_row, sheet_name)`
+- Argument order: `read_file(path, header_row, sheet_name, header)`
+- When `header` is an array, only specified columns are loaded (non-existent columns are ignored)
+- When `header` is an object, columns are renamed according to the mapping (columns not in the mapping keep their original names)
 
 ---
 

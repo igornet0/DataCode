@@ -1,6 +1,6 @@
 [package]
 name = "data-code"
-version = "2.1.1"
+version = "2.1.2"
 edition = "2021"
 description = "ДатаКод - Interactive Programming Language for fast data processing"
 license = "MIT"

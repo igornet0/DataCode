@@ -1,5 +1,6 @@
 # Displaying an image in a window
 # Convenient plot.show() function for quick image viewing
+import plot
 
 # The plot.show(path) function automatically:
 # 1. Loads the image

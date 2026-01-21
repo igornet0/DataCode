@@ -1,6 +1,6 @@
 [package]
 name = "data-code"
-version = "2.1.0"
+version = "2.1.1"
 edition = "2021"
 description = "ДатаКод - Interactive Programming Language for fast data processing"
 license = "MIT"
@@ -11,9 +11,9 @@ categories = ["command-line-utilities", "development-tools"]
 
 [features]
 default = []
-gpu = ["candle-core"]
-cuda = ["gpu", "candle-core/cuda"]
-metal = ["gpu", "candle-core/metal"]
+gpu = ["candle-core", "candle-nn"]
+cuda = ["gpu", "candle-core/cuda", "candle-nn/cuda"]
+metal = ["gpu", "candle-core/metal", "candle-nn/metal"]
 
 [lib]
 name = "data_code"
@@ -24,26 +24,18 @@ name = "datacode"
 path = "src/main.rs"
 
 [dependencies]
-lapin = "2"
+# Async runtime for WebSocket server
 tokio = { version = "1", features = ["full"] }
 futures-util = "0.3"
-anyhow = "1.0.98"
+
+# Date/time utilities
 chrono = "0.4.41"
+
+# File format support
 csv = "1.3.1"
 calamine = "0.28.0"
-rustyline = "14.0"
-glob = "0.3"
-regex = "1.10"
-# rand is not used directly - removed to avoid version conflicts with candle-core dependencies
 
-# Векторизация и параллелизм (упрощенная версия)
-rayon = "1.8"
-
-# Оптимизация I/O и встроенных функций
-memmap2 = "0.9"    # Для memory-mapped файлов
-
-# Профилирование и инструментирование
-lazy_static = "1.4"
+# Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
@@ -59,13 +51,19 @@ rusqlite = { version = "0.30", features = ["bundled"] }
 winit = "0.29"
 image = "0.24"
 softbuffer = "0.4"
-raw-window-handle = "0.6"
 fontdue = "0.7"
 
 # Progress bar for ML training
 indicatif = "0.17"
 
+# ndarray for tensor operations
+ndarray = "0.15"
+
+# Профилирование и инструментирование (используется в ml_old)
+lazy_static = "1.4"
+
 # GPU support for ML (optional)
 # Using git version to avoid bf16/f16 rand compatibility issues in published versions
 # If git version doesn't work, try: version = "0.3.3"
-candle-core = { git = "https://github.com/huggingface/candle", branch = "main", optional = true, default-features = false }
+candle-core = { version = "0.9", default-features = false, optional = true }
+candle-nn   = { version = "0.9", default-features = false, optional = true }

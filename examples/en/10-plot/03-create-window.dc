@@ -1,5 +1,6 @@
 # Creating a window for drawing
 # Demonstration of creating a window with specified parameters
+import plot
 
 # The plot.window(width, height, title) function creates a new window
 # Parameters:

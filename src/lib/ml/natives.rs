@@ -9,7 +9,6 @@ use crate::ml::loss::{mse_loss, binary_cross_entropy_loss,
                       mae_loss, huber_loss, hinge_loss, kl_divergence, smooth_l1_loss,
                       categorical_cross_entropy_loss};
 use crate::ml::dataset::Dataset;
-use crate::ml::layer::Sequential;
 use crate::ml::device::Device;
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -836,7 +835,7 @@ pub fn native_sgd_step(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    let param_ids_array = match &args[2] {
+    let param_ids = match &args[2] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut param_ids = Vec::new();
@@ -857,10 +856,35 @@ pub fn native_sgd_step(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    match optimizer.borrow().step(&mut graph.borrow_mut(), &param_ids_array) {
-        Ok(_) => Value::Null,
-        Err(_) => Value::Null,
+    // Get learning rate from optimizer
+    let lr = optimizer.borrow().lr;
+    
+    // Update parameters in Graph
+    let mut graph_ref = graph.borrow_mut();
+    
+    for &node_id in &param_ids {
+        // Get gradient for this parameter
+        let grad = match graph_ref.get_gradient(node_id) {
+            Ok(g) => g,
+            Err(_) => continue, // Skip if no gradient
+        };
+        
+        // Get current parameter value
+        let param = match graph_ref.get_output(node_id) {
+            Ok(p) => p,
+            Err(_) => continue, // Skip if no value
+        };
+        
+        // SGD update: param_new = param_old - lr * grad
+        use crate::ml::ops;
+        let update = ops::scalar_mul(&grad, -lr);
+        let new_param = ops::add(&param, &update);
+        
+        // Update parameter value in Graph
+        graph_ref.nodes[node_id].value = Some(new_param);
     }
+    
+    Value::Null
 }
 
 /// Zero gradients in the graph (convenience function)
@@ -943,7 +967,7 @@ pub fn native_adam(args: &[Value]) -> Value {
         1e-8
     };
 
-    match Adam::new_with_params(learning_rate, beta1, beta2, epsilon) {
+    match Adam::with_params(learning_rate, beta1, beta2, epsilon) {
         Ok(optimizer) => Value::Adam(Rc::new(RefCell::new(optimizer))),
         Err(_) => Value::Null,
     }
@@ -966,7 +990,7 @@ pub fn native_adam_step(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    let param_ids_array = match &args[2] {
+    let param_ids = match &args[2] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut param_ids = Vec::new();
@@ -987,10 +1011,126 @@ pub fn native_adam_step(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    match optimizer.borrow_mut().step(&mut graph.borrow_mut(), &param_ids_array) {
-        Ok(_) => Value::Null,
-        Err(_) => Value::Null,
+    // Get optimizer parameters
+    let mut opt_ref = optimizer.borrow_mut();
+    let lr = opt_ref.lr;
+    let beta1 = opt_ref.beta1;
+    let beta2 = opt_ref.beta2;
+    let epsilon = opt_ref.epsilon;
+    
+    // Increment step count
+    opt_ref.step_count += 1;
+    let t = opt_ref.step_count as f32;
+    
+    // Bias correction coefficients: 1 - beta^t
+    let bias_correction1 = 1.0 - beta1.powf(t);
+    let bias_correction2 = 1.0 - beta2.powf(t);
+    
+    // Update parameters in Graph
+    let mut graph_ref = graph.borrow_mut();
+    use crate::ml::ops;
+    const MAX_GRAD_NORM: f32 = 1.0; // Gradient clipping threshold
+    
+    for &node_id in &param_ids {
+        // Get gradient for this parameter
+        let grad = match graph_ref.get_gradient(node_id) {
+            Ok(g) => g,
+            Err(_) => continue, // Skip if no gradient
+        };
+        
+        // Get current parameter value
+        let param = match graph_ref.get_output(node_id) {
+            Ok(p) => p,
+            Err(_) => continue, // Skip if no value
+        };
+        
+        // Check gradient for NaN and Inf
+        let grad_arr = grad.data();
+        let mut has_nan = false;
+        let mut grad_norm_sq = 0.0;
+        for val in grad_arr.iter() {
+            if val.is_nan() || val.is_infinite() {
+                has_nan = true;
+                break;
+            }
+            grad_norm_sq += val * val;
+        }
+        
+        // Skip update if gradient contains NaN or Inf
+        if has_nan {
+            continue;
+        }
+        
+        // Gradient clipping
+        let grad_norm = grad_norm_sq.sqrt();
+        let clipped_grad = if grad_norm > MAX_GRAD_NORM {
+            ops::scalar_mul(&grad, MAX_GRAD_NORM / grad_norm)
+        } else {
+            grad.clone()
+        };
+        
+        // Initialize moments if needed and get references
+        let grad_shape = grad.shape().to_vec();
+        let m_old = opt_ref.graph_m.entry(node_id).or_insert_with(|| {
+            Tensor::zeros(grad_shape.clone())
+        }).clone();
+        let v_old = opt_ref.graph_v.entry(node_id).or_insert_with(|| {
+            Tensor::zeros(grad_shape)
+        }).clone();
+        
+        // Update moments
+        // m_t = beta1 * m_{t-1} + (1 - beta1) * g_t
+        let m_scaled = ops::scalar_mul(&m_old, beta1);
+        let m_grad = ops::scalar_mul(&clipped_grad, 1.0 - beta1);
+        let m_new = ops::add(&m_scaled, &m_grad);
+        
+        // v_t = beta2 * v_{t-1} + (1 - beta2) * g_t^2
+        let grad_squared = ops::mul(&clipped_grad, &clipped_grad);
+        let v_scaled = ops::scalar_mul(&v_old, beta2);
+        let v_grad = ops::scalar_mul(&grad_squared, 1.0 - beta2);
+        let v_new = ops::add(&v_scaled, &v_grad);
+        
+        // Bias correction
+        // m_hat = m_t / (1 - beta1^t)
+        let m_hat = ops::scalar_div(&m_new, bias_correction1);
+        // v_hat = v_t / (1 - beta2^t)
+        let v_hat = ops::scalar_div(&v_new, bias_correction2);
+        
+        // Compute update: param = param - lr * m_hat / (sqrt(v_hat) + epsilon)
+        let v_hat_sqrt = ops::sqrt(&v_hat);
+        // Create epsilon tensor of the same shape
+        let epsilon_tensor = Tensor::from_slice(
+            &vec![epsilon; v_hat_sqrt.numel()],
+            v_hat_sqrt.shape()
+        );
+        let v_hat_sqrt_eps = ops::add(&v_hat_sqrt, &epsilon_tensor);
+        let update_ratio = ops::div(&m_hat, &v_hat_sqrt_eps);
+        let update = ops::scalar_mul(&update_ratio, -lr);
+        
+        // Compute new parameter value
+        let new_param = ops::add(&param, &update);
+        
+        // Check result for NaN before updating
+        let new_param_arr = new_param.data();
+        let mut has_nan_result = false;
+        for val in new_param_arr.iter() {
+            if val.is_nan() || val.is_infinite() {
+                has_nan_result = true;
+                break;
+            }
+        }
+        
+        // Update only if result is valid
+        if !has_nan_result {
+            // Update parameter value in Graph
+            graph_ref.nodes[node_id].value = Some(new_param);
+            // Update moments in optimizer
+            opt_ref.graph_m.insert(node_id, m_new);
+            opt_ref.graph_v.insert(node_id, v_new);
+        }
     }
+    
+    Value::Null
 }
 
 /// Compute MSE loss
@@ -1365,7 +1505,7 @@ pub fn native_linear_layer(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    match crate::ml::layer::Linear::new(in_features, out_features) {
+    match crate::ml::layer::Linear::new(in_features, out_features, true) {
         Ok(linear) => {
             let layer_id = crate::ml::layer::add_layer_to_registry(Box::new(linear));
             Value::Layer(layer_id)
@@ -1415,48 +1555,18 @@ pub fn native_layer_call(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    // Create a graph for this forward pass
-    let mut graph = crate::ml::graph::Graph::new();
+    // Convert Tensor to Variable (without requires_grad for inference)
+    use crate::ml::autograd::Variable;
+    let input_var = Variable::new(input_tensor, false);
     
-    // Add input node
-    let input_node_id = graph.add_input();
-    graph.nodes[input_node_id].value = Some(input_tensor.clone());
-    
-    // Call layer forward - this will initialize parameters for Linear layers
-    match crate::ml::layer::forward_layer(layer_id, input_node_id, &mut graph) {
-        Ok(output_node_id) => {
-            // Prepare inputs for graph forward
-            // The order must match graph.input_nodes
-            let mut input_tensors = Vec::new();
-            for &node_id in &graph.input_nodes {
-                if node_id == input_node_id {
-                    // This is the actual input tensor
-                    input_tensors.push(input_tensor.clone());
-                } else {
-                    // This should be a parameter node (for Linear layers)
-                    // Parameters are initialized during forward_layer call and stored in graph.nodes[node_id].value
-                    if let Some(param_value) = &graph.nodes[node_id].value {
-                        input_tensors.push(param_value.clone());
-                    } else {
-                        // If parameter node has no value, try to get from layer registry
-                        // This should not happen if forward_layer worked correctly, but handle it gracefully
-                        return Value::Null;
-                    }
-                }
-            }
-            
-            // Execute forward pass
-            match graph.forward(input_tensors) {
-                Ok(_) => {
-                    match graph.get_output(output_node_id) {
-                        Ok(output) => Value::Tensor(Rc::new(RefCell::new(output))),
-                        Err(_) => Value::Null,
-                    }
-                }
-                Err(_) => Value::Null,
-            }
+    // Call layer forward with Variable
+    match crate::ml::layer::forward_layer_var(layer_id, input_var) {
+        Some(output_var) => {
+            // Extract Tensor from Variable
+            let output_tensor = output_var.data.borrow().clone();
+            Value::Tensor(Rc::new(RefCell::new(output_tensor)))
         }
-        Err(_) => Value::Null,
+        None => Value::Null,
     }
 }
 
@@ -1483,10 +1593,14 @@ pub fn native_sequential(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    match Sequential::new(layers_array) {
-        Ok(seq) => Value::Sequential(Rc::new(RefCell::new(seq))),
-        Err(_) => Value::Null,
-    }
+    // Convert layer_ids to Sequential
+    // Create Sequential with layer_ids - layers will be accessed from registry when needed
+    use crate::ml::layer::Sequential;
+    let seq = Sequential {
+        layers: vec![],  // Empty - parameters() will get layers from registry via layer_ids
+        layer_ids: layers_array,
+    };
+    Value::Sequential(Rc::new(RefCell::new(seq)))
 }
 
 /// Add a layer to Sequential container
@@ -1564,14 +1678,13 @@ pub fn native_nn_forward(args: &[Value]) -> Value {
             }
         }
         Value::Sequential(s) => {
-            match s.borrow_mut().forward(x.clone()) {
-                Ok(output) => Value::Tensor(Rc::new(RefCell::new(output))),
-                Err(e) => {
-                    use crate::websocket::set_native_error;
-                    set_native_error(format!("Sequential forward failed: {}", e));
-                    Value::Null
-                }
-            }
+            // Convert Tensor to Variable
+            use crate::ml::autograd::Variable;
+            let input_var = Variable::new(x.clone(), false);
+            let output_var = s.borrow().forward(input_var);
+            // Extract Tensor from Variable
+            let output_tensor = output_var.data.borrow().clone();
+            Value::Tensor(Rc::new(RefCell::new(output_tensor)))
         }
         Value::LinearRegression(lr) => {
             match lr.borrow().forward(&x) {
@@ -1932,11 +2045,37 @@ pub fn native_nn_train(args: &[Value]) -> Value {
     };
 
     match result {
-        Ok((loss_history, _accuracy_history)) => {
-            // Return loss_history for backward compatibility
-            // accuracy_history is available but not returned in the current API
+        Ok((loss_history, accuracy_history, val_loss_history, val_accuracy_history)) => {
+            // Return object with all metrics (similar to train_sh)
+            use std::collections::HashMap;
+            let mut obj = HashMap::new();
+            
+            // Convert loss array
             let loss_values: Vec<Value> = loss_history.iter().map(|&v| Value::Number(v as f64)).collect();
-            Value::Array(Rc::new(RefCell::new(loss_values)))
+            obj.insert("loss".to_string(), Value::Array(Rc::new(RefCell::new(loss_values))));
+            
+            // Convert accuracy array
+            let acc_values: Vec<Value> = accuracy_history.iter().map(|&v| Value::Number(v as f64)).collect();
+            obj.insert("acc".to_string(), Value::Array(Rc::new(RefCell::new(acc_values))));
+            
+            // Convert val_loss array (check if validation data was provided)
+            let has_val = !val_loss_history.is_empty() && val_loss_history.iter().any(|&v| v > 0.0);
+            if has_val {
+                let val_loss_values: Vec<Value> = val_loss_history.iter().map(|&v| Value::Number(v as f64)).collect();
+                obj.insert("val_loss".to_string(), Value::Array(Rc::new(RefCell::new(val_loss_values))));
+            } else {
+                obj.insert("val_loss".to_string(), Value::Null);
+            }
+            
+            // Convert val_acc array
+            if has_val {
+                let val_acc_values: Vec<Value> = val_accuracy_history.iter().map(|&v| Value::Number(v as f64)).collect();
+                obj.insert("val_acc".to_string(), Value::Array(Rc::new(RefCell::new(val_acc_values))));
+            } else {
+                obj.insert("val_acc".to_string(), Value::Null);
+            }
+            
+            Value::Object(obj)
         }
         Err(e) => {
             // Set error message for VM to handle
@@ -2240,8 +2379,10 @@ pub fn native_ml_get_device(_args: &[Value]) -> Value {
 
 /// Set device for neural network
 /// nn_set_device(nn, device_str) -> device_name
-/// Automatically falls back to CPU if GPU device is requested but not available
+/// Uses BackendRegistry for two-level checking (compile-time + runtime)
 pub fn native_nn_set_device(args: &[Value]) -> Value {
+    use crate::ml::backend_registry::BackendRegistry;
+    
     if args.len() != 2 {
         return Value::Null;
     }
@@ -2256,30 +2397,110 @@ pub fn native_nn_set_device(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    match Device::from_str(device_str) {
-        Ok(device) => {
-            nn.borrow_mut().set_device(device.clone());
-            Value::String(device.name().to_string())
+    let registry = BackendRegistry::detect();
+
+    // Handle "auto" mode
+    let device_str = if device_str == "auto" {
+        registry.auto_select()
+    } else {
+        device_str
+    };
+
+    // Two-level checking: registry first, then Device::from_str
+    match device_str {
+        "cpu" => {
+            let cpu_device = Device::Cpu;
+            nn.borrow_mut().set_device(cpu_device.clone());
+            Value::String(cpu_device.name().to_string())
         }
-        Err(e) => {
-            // Auto-fallback to CPU if GPU device is requested but not available
-            if device_str == "metal" || device_str == "cuda" || device_str == "gpu" {
-                // Fallback to CPU and print warning
-                use crate::websocket::set_native_error;
-                let warning_msg = format!(
-                    "GPU device '{}' not available ({}). Falling back to CPU.",
-                    device_str, e
+        "metal" => {
+            if !registry.metal {
+                let available = registry.available_devices();
+                let error_msg = format!(
+                    "Metal backend недоступен на этой системе. Доступные устройства: {:?}",
+                    available
                 );
-                set_native_error(warning_msg);
-                let cpu_device = Device::Cpu;
-                nn.borrow_mut().set_device(cpu_device.clone());
-                Value::String(cpu_device.name().to_string())
-            } else {
-                // For other errors (unknown device names), return error
                 use crate::websocket::set_native_error;
-                set_native_error(format!("Failed to set device '{}' on neural network: {}", device_str, e));
+                set_native_error(error_msg.clone());
+                eprintln!("{}", error_msg);
+                return Value::Null;
+            }
+
+            #[cfg(feature = "metal")]
+            {
+                match Device::from_str("metal") {
+                    Ok(device) => {
+                        nn.borrow_mut().set_device(device.clone());
+                        Value::String(device.name().to_string())
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Не удалось создать Metal устройство: {}", e);
+                        use crate::websocket::set_native_error;
+                        set_native_error(error_msg.clone());
+                        eprintln!("{}", error_msg);
+                        Value::Null
+                    }
+                }
+            }
+
+            #[cfg(not(feature = "metal"))]
+            {
+                let error_msg = "Metal backend не включён при сборке интерпретатора. Пересоберите с --features metal".to_string();
+                use crate::websocket::set_native_error;
+                set_native_error(error_msg.clone());
+                eprintln!("{}", error_msg);
                 Value::Null
             }
+        }
+        "cuda" | "gpu" => {
+            if !registry.cuda {
+                let available = registry.available_devices();
+                let error_msg = format!(
+                    "CUDA backend недоступен на этой системе. Доступные устройства: {:?}",
+                    available
+                );
+                use crate::websocket::set_native_error;
+                set_native_error(error_msg.clone());
+                eprintln!("{}", error_msg);
+                return Value::Null;
+            }
+
+            #[cfg(feature = "cuda")]
+            {
+                match Device::from_str("cuda") {
+                    Ok(device) => {
+                        nn.borrow_mut().set_device(device.clone());
+                        Value::String(device.name().to_string())
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Не удалось создать CUDA устройство: {}", e);
+                        use crate::websocket::set_native_error;
+                        set_native_error(error_msg.clone());
+                        eprintln!("{}", error_msg);
+                        Value::Null
+                    }
+                }
+            }
+
+            #[cfg(not(feature = "cuda"))]
+            {
+                let error_msg = "CUDA backend не включён при сборке интерпретатора. Пересоберите с --features cuda".to_string();
+                use crate::websocket::set_native_error;
+                set_native_error(error_msg.clone());
+                eprintln!("{}", error_msg);
+                Value::Null
+            }
+        }
+        _ => {
+            let available = registry.available_devices();
+            let error_msg = format!(
+                "Неизвестное устройство '{}'. Доступные: {:?}",
+                device_str, available
+            );
+            use crate::websocket::set_native_error;
+            set_native_error(error_msg.clone());
+            eprintln!("{}", error_msg);
+            Value::Null
         }
     }
 }
@@ -2298,6 +2519,20 @@ pub fn native_nn_get_device(args: &[Value]) -> Value {
 
     let device = nn.borrow().get_device();
     Value::String(device.name().to_string())
+}
+
+/// Get list of available devices
+/// ml.devices() -> ["cpu", "metal"]
+pub fn native_devices(_args: &[Value]) -> Value {
+    use crate::ml::backend_registry::BackendRegistry;
+    use std::rc::Rc;
+    use std::cell::RefCell;
+    
+    let registry = BackendRegistry::detect();
+    let devices = registry.available_devices();
+    Value::Array(Rc::new(RefCell::new(
+        devices.into_iter().map(|s| Value::String(s.to_string())).collect()
+    )))
 }
 
 /// Validate neural network model
@@ -2335,11 +2570,10 @@ pub fn native_ml_validate_model(args: &[Value]) -> Value {
         return Value::Bool(false);
     }
 
-    // Check if graph is valid
-    let graph = sequential.graph();
-    if graph.nodes.is_empty() {
+    // Check if sequential has layers
+    if sequential.layers.is_empty() {
         use crate::websocket::set_native_error;
-        set_native_error("Model validation failed: Graph has no nodes".to_string());
+        set_native_error("Model validation failed: Sequential has no layers".to_string());
         return Value::Bool(false);
     }
 
@@ -2639,6 +2873,9 @@ pub fn native_ml_model_info(args: &[Value]) -> Value {
                         if let Some(ref val_acc) = stage.val_accuracy_history {
                             stage_obj["val_accuracy_history"] = serde_json::json!(val_acc);
                         }
+                        if let Some(ref lr_history) = stage.lr_history {
+                            stage_obj["lr_history"] = serde_json::json!(lr_history);
+                        }
                         stages_json.push(stage_obj);
                     }
                     json_obj["training"] = serde_json::json!({
@@ -2671,39 +2908,17 @@ pub fn native_ml_model_info(args: &[Value]) -> Value {
                 
                 // Add parameter statistics
                 let mut param_stats = Vec::new();
-                let graph = sequential.graph();
                 let mut layer_idx = 0;
                 for &layer_id in layer_ids.iter() {
                     let layer_stats = with_layer(layer_id, |layer| {
-                        let params = layer.parameters();
+                        let params = layer.parameters_var();
                         if params.len() >= 2 {
                             // Linear layer with weights and bias
-                            let weight_node_id = params[0].0;
-                            let bias_node_id = params[1].0;
+                            // Get weight tensor from Variable
+                            let weight_tensor = params[0].data.borrow().clone();
                             
-                            // Get weight tensor - handle placeholder node ID (usize::MAX)
-                            let weight_tensor = if weight_node_id == usize::MAX {
-                                // Node ID not initialized - use initial tensor value
-                                params[0].1.to_cpu().unwrap_or_else(|_| params[0].1.clone())
-                            } else {
-                                // Try to get current values from graph
-                                graph.get_output(weight_node_id)
-                                    .ok()
-                                    .or_else(|| params[0].1.to_cpu().ok())
-                                    .unwrap_or_else(|| params[0].1.clone())
-                            };
-                            
-                            // Get bias tensor - handle placeholder node ID (usize::MAX)
-                            let bias_tensor = if bias_node_id == usize::MAX {
-                                // Node ID not initialized - use initial tensor value
-                                params[1].1.to_cpu().unwrap_or_else(|_| params[1].1.clone())
-                            } else {
-                                // Try to get current values from graph
-                                graph.get_output(bias_node_id)
-                                    .ok()
-                                    .or_else(|| params[1].1.to_cpu().ok())
-                                    .unwrap_or_else(|| params[1].1.clone())
-                            };
+                            // Get bias tensor from Variable
+                            let bias_tensor = params[1].data.borrow().clone();
                             
                             let weight_cpu = weight_tensor.to_cpu().unwrap_or_else(|_| weight_tensor);
                             let bias_cpu = bias_tensor.to_cpu().unwrap_or_else(|_| bias_tensor);
@@ -2890,6 +3105,16 @@ pub fn native_ml_model_info(args: &[Value]) -> Value {
                             }
                         }
                         
+                        if let Some(ref lr_history) = stage.lr_history {
+                            if !lr_history.is_empty() {
+                                let lr_str = lr_history.iter()
+                                    .map(|v| format!("{:.6}", v))
+                                    .collect::<Vec<_>>()
+                                    .join(", ");
+                                println!("  Learning Rate: [{}] ({} values)", lr_str, lr_history.len());
+                            }
+                        }
+                        
                         println!();
                     }
                     
@@ -2953,52 +3178,33 @@ pub fn native_ml_model_info(args: &[Value]) -> Value {
                 println!();
                 println!("Parameter Statistics:");
                 println!("--------------------------------------------------------------------------");
-                let graph = sequential.graph();
                 let mut layer_idx = 0;
                 for &layer_id in layer_ids.iter() {
                     let layer_stats = with_layer(layer_id, |layer| {
-                        let params = layer.parameters();
+                        let params = layer.parameters_var();
                         if params.len() >= 2 {
                             // Linear layer with weights and bias
-                            let weight_node_id = params[0].0;
-                            let bias_node_id = params[1].0;
+                            // Get weight tensor from Variable
+                            let weight_tensor = params[0].data.borrow().clone();
                             
-                            // Get weight tensor - handle placeholder node ID (usize::MAX)
-                            let weight_tensor = if weight_node_id == usize::MAX {
-                                // Node ID not initialized - use initial tensor value
-                                params[0].1.to_cpu().unwrap_or_else(|_| params[0].1.clone())
-                            } else {
-                                // Try to get current values from graph
-                                graph.get_output(weight_node_id)
-                                    .ok()
-                                    .or_else(|| params[0].1.to_cpu().ok())
-                                    .unwrap_or_else(|| params[0].1.clone())
-                            };
-                            
-                            // Get bias tensor - handle placeholder node ID (usize::MAX)
-                            let bias_tensor = if bias_node_id == usize::MAX {
-                                // Node ID not initialized - use initial tensor value
-                                params[1].1.to_cpu().unwrap_or_else(|_| params[1].1.clone())
-                            } else {
-                                // Try to get current values from graph
-                                graph.get_output(bias_node_id)
-                                    .ok()
-                                    .or_else(|| params[1].1.to_cpu().ok())
-                                    .unwrap_or_else(|| params[1].1.clone())
-                            };
+                            // Get bias tensor from Variable
+                            let bias_tensor = params[1].data.borrow().clone();
                             
                             let weight_cpu = weight_tensor.to_cpu().unwrap_or_else(|_| weight_tensor);
                             let bias_cpu = bias_tensor.to_cpu().unwrap_or_else(|_| bias_tensor);
                             
-                            let weight_min = weight_cpu.data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-                            let weight_max = weight_cpu.data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                            let weight_mean = weight_cpu.data.iter().sum::<f32>() / weight_cpu.data.len() as f32;
-                            let weight_count = weight_cpu.data.len();
+                            let weight_data = weight_cpu.data();
+                            let bias_data = bias_cpu.data();
                             
-                            let bias_min = bias_cpu.data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
-                            let bias_max = bias_cpu.data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
-                            let bias_mean = bias_cpu.data.iter().sum::<f32>() / bias_cpu.data.len() as f32;
-                            let bias_count = bias_cpu.data.len();
+                            let weight_min = weight_data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+                            let weight_max = weight_data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                            let weight_mean = weight_data.iter().sum::<f32>() / weight_data.len() as f32;
+                            let weight_count = weight_data.len();
+                            
+                            let bias_min = bias_data.iter().fold(f32::INFINITY, |a, &b| a.min(b));
+                            let bias_max = bias_data.iter().fold(f32::NEG_INFINITY, |a, &b| a.max(b));
+                            let bias_mean = bias_data.iter().sum::<f32>() / bias_data.len() as f32;
+                            let bias_count = bias_data.len();
                             
                             Some((layer_idx, weight_min, weight_max, weight_mean, weight_count, bias_min, bias_max, bias_mean, bias_count))
                         } else {

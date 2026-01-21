@@ -1,5 +1,6 @@
 # Loading an image from a file
 # Demonstration of basic work with the plot module
+import plot
 
 # The plot module is available as a global variable
 # The plot.image(path) function loads an image from a file

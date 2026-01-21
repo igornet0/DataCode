@@ -95,7 +95,7 @@ print()
 # ========== 7. For loops ==========
 print("7. For loops:")
 let sum_for = 0
-for (let i = 1; i <= 5; i = i + 1) {
+for i in range(1, 6) {
     sum_for = sum_for + i
 }
 print("  Sum of numbers from 1 to 5 =", sum_for)
@@ -104,8 +104,8 @@ print()
 # ========== 8. Nested loops ==========
 print("8. Nested loops:")
 print("  Multiplication table 3x3:")
-for (let i = 1; i <= 3; i = i + 1) {
-    for (let j = 1; j <= 3; j = j + 1) {
+for i in range(1, 4) {
+    for j in range(1, 4) {
         print("    ", i, "*", j, "=", i * j)
     }
 }
@@ -116,7 +116,7 @@ print("9. Complex calculations:")
 
 fn calculate_sum_of_squares(n) {
     let sum = 0
-    for (let i = 1; i <= n; i = i + 1) {
+    for i in range(1, n+1) {
         sum = sum + i * i
     }
     return sum
@@ -132,12 +132,8 @@ fn is_prime(n) {
     if n < 2 {
         return false
     }
-    if n == 2 {
-        return true
-    }
-    for (let i = 2; i < n; i = i + 1) {
-        let quotient = n / i
-        if quotient * i == n {
+    for i in range(2, n) {
+        if n % i == 0 {
             return false
         }
     }
@@ -145,8 +141,8 @@ fn is_prime(n) {
 }
 
 fn count_primes_up_to(n) {
-    let count = 0
-    for (let i = 2; i <= n; i = i + 1) {
+    count = 0
+    for i in range(2, n+1) {
         if is_prime(i) {
             count = count + 1
         }
@@ -155,7 +151,7 @@ fn count_primes_up_to(n) {
 }
 
 print("  Prime numbers up to 20:")
-for (let i = 2; i <= 20; i = i + 1) {
+for i in range(2, 21) {
     if is_prime(i) {
         print("    ", i)
     }

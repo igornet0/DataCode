@@ -14,6 +14,7 @@ pub struct Renderer {
     font: Option<Font>,
     scale_factor: f32,
     atlas: FontAtlas,
+    window_ref: &'static winit::window::Window, // Keep reference to window for recreating surface
 }
 
 impl Renderer {
@@ -40,7 +41,78 @@ impl Renderer {
             font,
             scale_factor,
             atlas: FontAtlas::new(),
+            window_ref,
         })
+    }
+    
+    /// Update scale factor from window (called on resize or DPI change)
+    pub fn update_scale_factor(&mut self, window: &Window) {
+        let window_ref: &'static winit::window::Window = unsafe {
+            std::mem::transmute(&window.window_handle)
+        };
+        self.scale_factor = window_ref.scale_factor() as f32;
+    }
+    
+    /// Get current scale factor (for debugging)
+    pub fn get_scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+    
+    /// Force buffer resize by recreating surface if needed
+    /// This ensures the buffer is updated to the new window size
+    /// Note: softbuffer may not auto-resize, so we need to recreate surface
+    pub fn ensure_buffer_resized(&mut self) -> Result<(u32, u32), softbuffer::SoftBufferError> {
+        // Get current window size
+        let window_size = self.window_ref.inner_size();
+        let expected_width = window_size.width;
+        let expected_height = window_size.height;
+        
+        // Check current buffer size
+        let buffer = self.surface.buffer_mut()?;
+        let current_width = buffer.width().get();
+        let current_height = buffer.height().get();
+        
+        // If buffer size doesn't match window size, we need to recreate surface
+        // softbuffer doesn't automatically resize the buffer, so we recreate the surface
+        if current_width != expected_width || current_height != expected_height {
+            // Recreate surface to match new window size
+            let new_surface = Surface::new(&self._context, self.window_ref)?;
+            self.surface = new_surface;
+            
+            // Get new buffer size
+            let new_buffer = self.surface.buffer_mut()?;
+            let new_width = new_buffer.width().get();
+            let new_height = new_buffer.height().get();
+            Ok((new_width, new_height))
+        } else {
+            Ok((current_width, current_height))
+        }
+    }
+    
+    /// Get current buffer size (for debugging)
+    pub fn get_buffer_size(&mut self) -> Result<(u32, u32), softbuffer::SoftBufferError> {
+        let buffer = self.surface.buffer_mut()?;
+        Ok((buffer.width().get(), buffer.height().get()))
+    }
+    
+    /// Calculate adaptive margins based on window size
+    /// Returns (left, right, top, bottom) margins
+    /// Uses percentage of window size with minimum values for small windows
+    fn calculate_adaptive_margins(scale_factor: f32, buffer_width: u32, buffer_height: u32) -> (u32, u32, u32, u32) {
+        // Calculate margins as percentage of window size, with minimum values
+        // Left margin: 12% of width, minimum 150px (for y-axis labels)
+        let left_margin = ((buffer_width as f32 * 0.12).max(150.0) * scale_factor).min(buffer_width as f32 * 0.25) as u32;
+        
+        // Right margin: 3% of width, minimum 30px
+        let right_margin = ((buffer_width as f32 * 0.03).max(30.0) * scale_factor).min(buffer_width as f32 * 0.1) as u32;
+        
+        // Top margin: 5% of height, minimum 50px (for title)
+        let top_margin = ((buffer_height as f32 * 0.05).max(50.0) * scale_factor).min(buffer_height as f32 * 0.15) as u32;
+        
+        // Bottom margin: 8% of height, minimum 70px (for x-axis labels)
+        let bottom_margin = ((buffer_height as f32 * 0.08).max(70.0) * scale_factor).min(buffer_height as f32 * 0.2) as u32;
+        
+        (left_margin, right_margin, top_margin, bottom_margin)
     }
 
     pub fn draw_image(&mut self, image: &Image, _window: &Window) -> Result<(), softbuffer::SoftBufferError> {
@@ -54,15 +126,6 @@ impl Renderer {
         let buffer_width = buffer.width().get();
         let buffer_height = buffer.height().get();
 
-        // Calculate scale factor (same as used when creating window)
-        let scale = if image_width <= 100 && image_height <= 100 {
-            10
-        } else if image_width <= 200 && image_height <= 200 {
-            5
-        } else {
-            4
-        };
-
         // Dark gray background (like matplotlib: rgb(30, 30, 30))
         // BGRA format: 0xAABBGGRR
         let bg_color = 0xFF1E1E1E; // Dark gray
@@ -70,11 +133,35 @@ impl Renderer {
             *pixel = bg_color;
         }
 
-        // Calculate scaled image dimensions
-        let scaled_width = image_width * scale;
-        let scaled_height = image_height * scale;
+        // Calculate adaptive scale to fit image in window while maintaining aspect ratio
+        // Leave small margins (2% on each side) for better appearance
+        let margin_factor = 0.96;
+        let available_width = (buffer_width as f32 * margin_factor) as u32;
+        let available_height = (buffer_height as f32 * margin_factor) as u32;
+        
+        // Calculate scale factors for width and height
+        let scale_x = available_width as f32 / image_width as f32;
+        let scale_y = available_height as f32 / image_height as f32;
+        
+        // Use minimum scale to ensure image fits in both dimensions (maintain aspect ratio)
+        // But ensure minimum scale for very small images
+        let min_base_scale = if image_width <= 100 && image_height <= 100 {
+            10.0
+        } else if image_width <= 200 && image_height <= 200 {
+            5.0
+        } else {
+            4.0
+        };
+        
+        let adaptive_scale = scale_x.min(scale_y);
+        let scale_f = adaptive_scale.max(min_base_scale);
+        let scale = scale_f as usize;
 
-        // Center the scaled image in the buffer (maintain 1:1 aspect ratio)
+        // Calculate scaled image dimensions
+        let scaled_width = (image_width as f32 * scale_f) as u32;
+        let scaled_height = (image_height as f32 * scale_f) as u32;
+
+        // Center the scaled image in the buffer (maintain aspect ratio)
         let offset_x = if scaled_width < buffer_width {
             (buffer_width - scaled_width) / 2
         } else {
@@ -152,18 +239,31 @@ impl Renderer {
         let buffer_width = buffer.width().get();
         let buffer_height = buffer.height().get();
 
-        // Calculate base scale factor (same as used when creating window)
-        let base_scale = if image_width <= 100 && image_height <= 100 {
-            10
+        // Calculate adaptive base scale to fit image in window while maintaining aspect ratio
+        // Leave small margins (2% on each side) for better appearance
+        let margin_factor = 0.96;
+        let available_width = (buffer_width as f32 * margin_factor) as u32;
+        let available_height = (buffer_height as f32 * margin_factor) as u32;
+        
+        // Calculate scale factors for width and height
+        let scale_x = available_width as f32 / image_width as f32;
+        let scale_y = available_height as f32 / image_height as f32;
+        
+        // Use minimum scale to ensure image fits in both dimensions (maintain aspect ratio)
+        // But ensure minimum scale for very small images
+        let min_base_scale = if image_width <= 100 && image_height <= 100 {
+            10.0
         } else if image_width <= 200 && image_height <= 200 {
-            5
+            5.0
         } else {
-            4
+            4.0
         };
+        
+        let adaptive_base_scale = scale_x.min(scale_y).max(min_base_scale);
 
         // Apply zoom to scale
-        let effective_scale = (base_scale as f32 * view_state.zoom) as usize;
-        let effective_scale_f = base_scale as f32 * view_state.zoom;
+        let effective_scale = (adaptive_base_scale * view_state.zoom) as usize;
+        let effective_scale_f = adaptive_base_scale * view_state.zoom;
 
         // Dark gray background (like matplotlib: rgb(30, 30, 30))
         // BGRA format: 0xAABBGGRR
@@ -270,8 +370,9 @@ impl Renderer {
             *pixel = bg_color;
         }
 
-        // Calculate cell dimensions with padding
-        let padding = 10u32; // Padding between cells
+        // Calculate cell dimensions with adaptive padding
+        // Padding scales with window size but has minimum value
+        let padding = ((buffer_width.min(buffer_height) as f32 * 0.01).max(8.0) * self.scale_factor).min(20.0) as u32;
         let cols_u32 = cols as u32;
         let rows_u32 = rows as u32;
         let cell_width = (buffer_width - padding * (cols_u32 + 1)) / cols_u32;
@@ -952,6 +1053,9 @@ impl Renderer {
             }
         }
 
+        // Save scale_factor before mutable borrow
+        let scale_factor = self.scale_factor;
+
         let mut buffer = self.surface.buffer_mut()?;
         let buffer_width = buffer.width().get();
         let buffer_height = buffer.height().get();
@@ -962,11 +1066,9 @@ impl Renderer {
             *pixel = bg_color;
         }
 
-        // Calculate plot area with margins for labels
-        let left_margin = 200; // Space for y-axis label and numbers (increased from 150)
-        let right_margin = 40;
-        let top_margin = 60; // Space for title
-        let bottom_margin = 80; // Space for x-axis label and numbers
+        // Calculate plot area with adaptive margins for labels
+        let (left_margin, right_margin, top_margin, bottom_margin) = 
+            Self::calculate_adaptive_margins(scale_factor, buffer_width, buffer_height);
         let plot_width = buffer_width.saturating_sub(left_margin + right_margin);
         let plot_height = buffer_height.saturating_sub(top_margin + bottom_margin);
         let plot_x = left_margin;
@@ -1421,6 +1523,9 @@ impl Renderer {
             }
         }
 
+        // Save scale_factor before mutable borrow
+        let scale_factor = self.scale_factor;
+
         let mut buffer = self.surface.buffer_mut()?;
         let buffer_width = buffer.width().get();
         let buffer_height = buffer.height().get();
@@ -1431,11 +1536,11 @@ impl Renderer {
             *pixel = bg_color;
         }
 
-        // Calculate plot area with margins for labels
-        let left_margin = 200; // Space for y-axis label and numbers
-        let right_margin = 40;
-        let top_margin = 60; // Space for title
-        let bottom_margin = 100; // Space for x-axis label and category labels (increased for text)
+        // Calculate plot area with adaptive margins for labels
+        let (left_margin, right_margin, top_margin, bottom_margin) = 
+            Self::calculate_adaptive_margins(scale_factor, buffer_width, buffer_height);
+        // Increase bottom margin for bar charts to accommodate category labels
+        let bottom_margin = bottom_margin.max((buffer_height as f32 * 0.1).max(90.0) as u32);
         let plot_width = buffer_width.saturating_sub(left_margin + right_margin);
         let plot_height = buffer_height.saturating_sub(top_margin + bottom_margin);
         let plot_x = left_margin;
@@ -1479,11 +1584,13 @@ impl Renderer {
         let (first_x_labels, _, _) = &bars[0];
         let num_categories = first_x_labels.len();
 
-        // Calculate bar width and spacing
-        let bar_spacing = 10; // Space between bars
+        // Calculate bar width and spacing (adaptive based on plot width)
+        let bar_spacing = ((plot_width_usize as f32 * 0.01).max(8.0) * self.scale_factor).min(20.0) as usize; // Adaptive spacing
         let total_bar_width = plot_width_usize.saturating_sub((num_categories - 1) * bar_spacing);
         let bar_width = if num_categories > 0 {
-            (total_bar_width / num_categories).max(5).min(100) // Min 5px, max 100px per bar
+            // Adaptive bar width: min 5px, max 10% of plot width per bar
+            let max_bar_width = ((plot_width_usize as f32 / num_categories as f32) * 0.8).min(100.0) as usize;
+            (total_bar_width / num_categories).max(5).min(max_bar_width)
         } else {
             20
         };
@@ -1900,6 +2007,9 @@ impl Renderer {
             }
         }
 
+        // Save scale_factor before mutable borrow
+        let scale_factor = self.scale_factor;
+
         let mut buffer = self.surface.buffer_mut()?;
         let buffer_width = buffer.width().get();
         let buffer_height = buffer.height().get();
@@ -1919,11 +2029,11 @@ impl Renderer {
             return Ok(());
         }
 
-        // Calculate plot area with margins
-        let left_margin = 40;
-        let right_margin = 40;
-        let top_margin = 60; // Space for title
-        let bottom_margin = 100; // Space for legend
+        // Calculate plot area with adaptive margins (pie charts need less margin)
+        let left_margin = ((buffer_width as f32 * 0.03).max(30.0) * scale_factor) as u32;
+        let right_margin = ((buffer_width as f32 * 0.03).max(30.0) * scale_factor) as u32;
+        let top_margin = ((buffer_height as f32 * 0.05).max(50.0) * scale_factor) as u32;
+        let bottom_margin = ((buffer_height as f32 * 0.1).max(90.0) * scale_factor) as u32; // Space for legend
         let plot_width = buffer_width.saturating_sub(left_margin + right_margin);
         let plot_height = buffer_height.saturating_sub(top_margin + bottom_margin);
         let plot_x = left_margin;
@@ -3251,6 +3361,9 @@ impl Renderer {
             }
         }
 
+        // Save scale_factor before mutable borrow
+        let scale_factor = self.scale_factor;
+
         let mut buffer = self.surface.buffer_mut()?;
         let buffer_width = buffer.width().get();
         let buffer_height = buffer.height().get();
@@ -3283,11 +3396,11 @@ impl Renderer {
             1.0
         };
 
-        // Calculate plot area with margins
-        let left_margin = 200; // Space for y-axis label
-        let right_margin = 80; // Space for colorbar
-        let top_margin = 60; // Space for title
-        let bottom_margin = 80; // Space for x-axis label
+        // Calculate plot area with adaptive margins (heatmap needs space for colorbar)
+        let left_margin = ((buffer_width as f32 * 0.12).max(150.0) * scale_factor).min(buffer_width as f32 * 0.25) as u32;
+        let right_margin = ((buffer_width as f32 * 0.08).max(70.0) * scale_factor).min(buffer_width as f32 * 0.15) as u32; // Space for colorbar
+        let top_margin = ((buffer_height as f32 * 0.05).max(50.0) * scale_factor).min(buffer_height as f32 * 0.15) as u32;
+        let bottom_margin = ((buffer_height as f32 * 0.08).max(70.0) * scale_factor).min(buffer_height as f32 * 0.2) as u32;
         let plot_width = buffer_width.saturating_sub(left_margin + right_margin);
         let plot_height = buffer_height.saturating_sub(top_margin + bottom_margin);
         let plot_x = left_margin;

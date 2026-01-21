@@ -145,6 +145,44 @@ impl Device {
             Device::Metal(_) => "metal",
         }
     }
+    
+    /// Synchronize GPU operations (force command buffer completion)
+    /// This helps prevent command buffer accumulation and memory fragmentation
+    /// For Metal/CUDA, this forces all pending operations to complete before returning
+    /// 
+    /// OPTIMIZATION: Simplified synchronization method using a single minimal operation
+    /// This is more efficient than multiple operations while still ensuring command buffers are flushed
+    pub fn synchronize(&self) -> Result<(), String> {
+        #[cfg(feature = "gpu")]
+        {
+            match self {
+                Device::Cpu => Ok(()), // No-op for CPU
+                Device::Cuda(d) | Device::Metal(d) => {
+                    // Force synchronization by performing a minimal operation that requires completion
+                    // This ensures all pending command buffers are flushed
+                    // For Metal, this helps free accumulated command buffers
+                    // OPTIMIZATION: Use single operation instead of multiple to reduce overhead
+                    use candle_core::DType;
+                    
+                    // Create a minimal tensor and perform a simple operation
+                    // This forces Metal to flush all pending command buffers
+                    let sync_tensor = candle_core::Tensor::zeros((1,), DType::F32, d)
+                        .map_err(|e| format!("Failed to create sync tensor: {}", e))?;
+                    
+                    // Perform a simple operation that requires completion
+                    // This is sufficient to flush command buffers with minimal overhead
+                    let _ = sync_tensor.add(&sync_tensor)
+                        .map_err(|e| format!("Failed to synchronize GPU: {}", e))?;
+                    
+                    Ok(())
+                }
+            }
+        }
+        #[cfg(not(feature = "gpu"))]
+        {
+            Ok(())
+        }
+    }
 }
 
 impl PartialEq for Device {

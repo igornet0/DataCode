@@ -61,6 +61,7 @@ pub enum TokenKind {
     Comma,    // ,
     Semicolon, // ;
     Dot,      // .
+    Colon,    // :
 
     // Ключевые слова для циклов
     In,       // in
@@ -68,7 +69,8 @@ pub enum TokenKind {
     // Ключевые слова для обработки исключений
     Try,      // try
     Catch,    // catch
-    Throw,    // throw 
+    Throw,    // throw
+    Finally,  // finally 
 
     // Аннотации
     At,       // @

@@ -91,7 +91,7 @@ pub fn export_to_sqlite(vm: &Vm, output_path: &str) -> Result<(), String> {
 }
 
 /// Получить все таблицы из глобальных переменных VM
-fn get_global_tables(vm: &Vm) -> Result<HashMap<String, Rc<RefCell<Table>>>, String> {
+pub fn get_global_tables(vm: &Vm) -> Result<HashMap<String, Rc<RefCell<Table>>>, String> {
     let mut tables = HashMap::new();
     let globals = vm.get_globals();
     let explicit_global_names = vm.get_explicit_global_names();

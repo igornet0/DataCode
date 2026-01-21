@@ -768,6 +768,149 @@ mod tests {
     }
 
     #[test]
+    fn test_right_join_basic() {
+        let source = r#"
+            let users = table([[1, "Alice"], [2, "Bob"], [3, "Charlie"]], ["id", "name"])
+            let orders = table([[1, 100], [3, 300], [5, 500]], ["user_id", "amount"])
+            let result = right_join(users, orders, "id", "user_id")
+            len(result)
+        "#;
+        // Должно быть 3 строки: все заказы, заказ с user_id=5 без пользователя
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 3.0, "Expected 3 rows in right join"),
+            Ok(v) => panic!("Expected Number(3), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_full_join_basic() {
+        let source = r#"
+            let users = table([[1, "Alice"], [2, "Bob"], [3, "Charlie"]], ["id", "name"])
+            let orders = table([[1, 100], [3, 300], [5, 500]], ["user_id", "amount"])
+            let result = full_join(users, orders, "id", "user_id")
+            len(result)
+        "#;
+        // Должно быть 4 строки: все пользователи и все заказы
+        // Alice с заказом, Bob без заказа, Charlie с заказом, заказ с user_id=5 без пользователя
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 4.0, "Expected 4 rows in full join"),
+            Ok(v) => panic!("Expected Number(4), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_full_join_with_two_string_args() {
+        // Тест для исправленной функции full_join с двумя отдельными строковыми аргументами
+        let source = r#"
+            let users = table([[1, "Alice"], [2, "Bob"], [4, "Diana"]], ["id", "name"])
+            let orders = table([[101, 1, 150.00], [102, 1, 200.50], [103, 3, 75.25], [104, 5, 300.00]], ["order_id", "user_id", "amount"])
+            let result = full_join(users, orders, "id", "user_id")
+            len(result)
+        "#;
+        // Должно быть 6 строк: все пользователи и все заказы
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 6.0, "Expected 6 rows in full join with two string args"),
+            Ok(v) => panic!("Expected Number(6), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_join_universal_function_with_array() {
+        // Тест для универсальной функции join() с массивом из двух строк
+        let source = r#"
+            let users = table([[1, "Alice"], [2, "Bob"], [3, "Charlie"]], ["id", "name"])
+            let orders = table([[1, 100], [1, 200], [3, 300]], ["user_id", "amount"])
+            let result = join(users, orders, ["id", "user_id"], "inner")
+            len(result)
+        "#;
+        // Должно быть 3 строки: Alice с двумя заказами, Charlie с одним
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 3.0, "Expected 3 rows in universal join with array"),
+            Ok(v) => panic!("Expected Number(3), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_join_universal_function_left() {
+        // Тест для универсальной функции join() с типом "left"
+        let source = r#"
+            let users = table([[1, "Alice"], [2, "Bob"], [3, "Charlie"]], ["id", "name"])
+            let orders = table([[1, 100], [3, 300]], ["user_id", "amount"])
+            let result = join(users, orders, ["id", "user_id"], "left")
+            len(result)
+        "#;
+        // Должно быть 3 строки: все пользователи, Bob без заказов
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 3.0, "Expected 3 rows in universal join with left type"),
+            Ok(v) => panic!("Expected Number(3), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_join_universal_function_full() {
+        // Тест для универсальной функции join() с типом "full"
+        let source = r#"
+            let users = table([[1, "Alice"], [2, "Bob"], [3, "Charlie"]], ["id", "name"])
+            let orders = table([[1, 100], [3, 300], [5, 500]], ["user_id", "amount"])
+            let result = join(users, orders, ["id", "user_id"], "full")
+            len(result)
+        "#;
+        // Должно быть 4 строки: все пользователи и все заказы
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 4.0, "Expected 4 rows in universal join with full type"),
+            Ok(v) => panic!("Expected Number(4), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_join_universal_function_right() {
+        // Тест для универсальной функции join() с типом "right"
+        let source = r#"
+            let users = table([[1, "Alice"], [2, "Bob"], [3, "Charlie"]], ["id", "name"])
+            let orders = table([[1, 100], [3, 300], [5, 500]], ["user_id", "amount"])
+            let result = join(users, orders, ["id", "user_id"], "right")
+            len(result)
+        "#;
+        // Должно быть 3 строки: все заказы, заказ с user_id=5 без пользователя
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 3.0, "Expected 3 rows in universal join with right type"),
+            Ok(v) => panic!("Expected Number(3), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_right_join_with_two_string_args() {
+        // Тест для right_join с двумя отдельными строковыми аргументами
+        let source = r#"
+            let users = table([[1, "Alice"], [2, "Bob"], [4, "Diana"]], ["id", "name"])
+            let orders = table([[101, 1, 150.00], [102, 1, 200.50], [103, 3, 75.25], [104, 5, 300.00]], ["order_id", "user_id", "amount"])
+            let result = right_join(users, orders, "id", "user_id")
+            len(result)
+        "#;
+        // Должно быть 4 строки: все заказы
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 4.0, "Expected 4 rows in right join with two string args"),
+            Ok(v) => panic!("Expected Number(4), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
     fn test_cross_join_basic() {
         let source = r#"
             let table1 = table([[1], [2]], ["col1"])

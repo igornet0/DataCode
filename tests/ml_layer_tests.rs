@@ -2,52 +2,24 @@
 // Tests verify that each layer can accept a tensor and return a processed tensor
 
 use data_code::ml::tensor::Tensor;
-use data_code::ml::graph::Graph;
+use data_code::ml::autograd::requires_grad;
 use data_code::ml::layer::{Layer, Linear, ReLU, Softmax};
 
 /// Helper function to call a layer with an input tensor
-/// Creates a graph, adds input, calls layer.forward(), executes graph, and returns output
+/// Creates a Variable from input, calls layer.forward(), and returns output tensor
 fn call_layer(layer: &dyn Layer, input: Tensor) -> Result<Tensor, String> {
-    let mut graph = Graph::new();
+    // Create Variable from input tensor
+    let input_var = requires_grad(input);
     
-    // Add input node
-    let input_node = graph.add_input();
+    // Call layer.forward() - returns Rc<Variable>
+    let output_var = layer.forward_var(input_var);
     
-    // Call layer.forward() to build the computation graph
-    // This will initialize parameters for Linear layers
-    let output_node = layer.forward(input_node, &mut graph)?;
-    
-    // Collect all input tensors needed for graph.forward()
-    // The order must match graph.input_nodes
-    let mut input_tensors = Vec::new();
-    
-    // Iterate through all input nodes in the graph
-    for &node_id in &graph.input_nodes {
-        if node_id == input_node {
-            // This is the actual input tensor
-            input_tensors.push(input.clone());
-        } else {
-            // This should be a parameter node (for Linear layers)
-            // Get the value from the graph node (set during layer.forward())
-            if let Some(param_value) = &graph.nodes[node_id].value {
-                input_tensors.push(param_value.clone());
-            } else {
-                // Try to get from layer.parameters() as fallback
-                let params = layer.parameters();
-                if let Some((_, param_tensor)) = params.iter().find(|(id, _)| *id == node_id) {
-                    input_tensors.push(param_tensor.clone());
-                } else {
-                    return Err(format!("Input node {} has no value set", node_id));
-                }
-            }
-        }
-    }
-    
-    // Execute forward pass
-    graph.forward(input_tensors)?;
-    
-    // Get output
-    graph.get_output(output_node)
+    // Extract tensor from Variable - clone the data to avoid borrow checker issues
+    let output_tensor = {
+        let borrowed = output_var.data.borrow();
+        borrowed.clone()
+    };
+    Ok(output_tensor)
 }
 
 // ============================================================================
@@ -57,7 +29,7 @@ fn call_layer(layer: &dyn Layer, input: Tensor) -> Result<Tensor, String> {
 #[test]
 fn test_linear_layer_forward_1d() {
     // Test Linear layer with 1D input [batch_size=1, in_features=10]
-    let layer = Linear::new(10, 2).unwrap();
+    let layer = Linear::new(10, 2, true).unwrap();
     
     // Create input tensor [1, 10] (batch_size=1, features=10)
     let input = Tensor::ones(vec![1, 10]);
@@ -78,7 +50,7 @@ fn test_linear_layer_forward_1d() {
 #[test]
 fn test_linear_layer_forward_2d() {
     // Test Linear layer with 2D input [batch_size=3, in_features=5]
-    let layer = Linear::new(5, 3).unwrap();
+    let layer = Linear::new(5, 3, true).unwrap();
     
     // Create input tensor [3, 5] (batch_size=3, features=5)
     let input = Tensor::ones(vec![3, 5]);
@@ -93,7 +65,7 @@ fn test_linear_layer_forward_2d() {
 #[test]
 fn test_linear_layer_output_shape() {
     // Test that Linear layer produces correct output shape
-    let layer = Linear::new(8, 4).unwrap();
+    let layer = Linear::new(8, 4, true).unwrap();
     
     let input = Tensor::zeros(vec![2, 8]);
     let output = call_layer(&layer, input).unwrap();
@@ -106,32 +78,23 @@ fn test_linear_layer_output_shape() {
 #[test]
 fn test_linear_layer_parameters() {
     // Test that Linear layer has parameters (weight and bias)
-    let layer = Linear::new(5, 3).unwrap();
-    
-    // Before forward pass, parameters should exist but node_ids might be None
-    // After forward pass, parameters should be initialized in the graph
-    let mut graph = Graph::new();
-    let input_node = graph.add_input();
-    
-    // Call forward to initialize parameters
-    let _output_node = layer.forward(input_node, &mut graph).unwrap();
+    let layer = Linear::new(5, 3, true).unwrap();
     
     // Check that parameters exist
-    let params = layer.parameters();
+    let params = layer.parameters_var();
     assert_eq!(params.len(), 2); // weight and bias
     
     // Check parameter shapes
-    // Weight: [in_features, out_features] = [5, 3]
-    // Bias: [1, out_features] = [1, 3]
-    let (weight_node_id, weight_tensor) = &params[0];
-    let (bias_node_id, bias_tensor) = &params[1];
+    // Weight: [out_features, in_features] = [3, 5]
+    // Bias: [out_features] = [3]
+    let weight_var = &params[0];
+    let bias_var = &params[1];
     
-    assert_eq!(weight_tensor.shape, vec![5, 3]);
-    assert_eq!(bias_tensor.shape, vec![1, 3]);
+    let weight_tensor = weight_var.data.borrow();
+    let bias_tensor = bias_var.data.borrow();
     
-    // Node IDs should be set after forward pass
-    assert!(weight_node_id < &graph.nodes.len());
-    assert!(bias_node_id < &graph.nodes.len());
+    assert_eq!(weight_tensor.shape, vec![3, 5]);
+    assert_eq!(bias_tensor.shape, vec![3]);
 }
 
 // ============================================================================
@@ -312,7 +275,7 @@ fn test_softmax_layer_output_shape() {
 #[test]
 fn test_layer_chain() {
     // Test chaining layers: Linear → ReLU → Softmax
-    let linear = Linear::new(10, 5).unwrap();
+    let linear = Linear::new(10, 5, true).unwrap();
     let relu = ReLU;
     let softmax = Softmax;
     
@@ -371,19 +334,19 @@ fn test_linear_layer_with_batch() {
     // that are specific to a graph instance
     
     // Batch size 1
-    let layer1 = Linear::new(4, 2).unwrap();
+    let layer1 = Linear::new(4, 2, true).unwrap();
     let input1 = Tensor::ones(vec![1, 4]);
     let output1 = call_layer(&layer1, input1).unwrap();
     assert_eq!(output1.shape, vec![1, 2]);
     
     // Batch size 3
-    let layer3 = Linear::new(4, 2).unwrap();
+    let layer3 = Linear::new(4, 2, true).unwrap();
     let input3 = Tensor::ones(vec![3, 4]);
     let output3 = call_layer(&layer3, input3).unwrap();
     assert_eq!(output3.shape, vec![3, 2]);
     
     // Batch size 10
-    let layer10 = Linear::new(4, 2).unwrap();
+    let layer10 = Linear::new(4, 2, true).unwrap();
     let input10 = Tensor::ones(vec![10, 4]);
     let output10 = call_layer(&layer10, input10).unwrap();
     assert_eq!(output10.shape, vec![10, 2]);

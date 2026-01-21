@@ -1,5 +1,6 @@
 # Drawing an image in a window
 # Demonstration of drawing an image in a created window
+import plot
 
 # Step 1: Load the image
 let image = plot.image("path/to/image.png")

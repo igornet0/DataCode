@@ -101,7 +101,7 @@ impl Resolver {
                 
                 self.end_scope();
             }
-            Stmt::Try { try_block, catch_blocks, else_block, .. } => {
+            Stmt::Try { try_block, catch_blocks, else_block, finally_block, .. } => {
                 // Разрешаем try блок
                 self.resolve_stmt_block(try_block)?;
                 
@@ -120,6 +120,11 @@ impl Resolver {
                 // Разрешаем else блок (если есть)
                 if let Some(ref else_block) = else_block {
                     self.resolve_stmt_block(else_block)?;
+                }
+                
+                // Разрешаем finally блок (если есть)
+                if let Some(ref finally_block) = finally_block {
+                    self.resolve_stmt_block(finally_block)?;
                 }
             }
             Stmt::Throw { value, .. } => {
@@ -186,6 +191,11 @@ impl Resolver {
             Expr::ArrayLiteral { elements, .. } => {
                 for element in elements {
                     self.resolve_expr(element)?;
+                }
+            }
+            Expr::ObjectLiteral { pairs, .. } => {
+                for (_, value) in pairs {
+                    self.resolve_expr(value)?;
                 }
             }
             Expr::TupleLiteral { elements, .. } => {

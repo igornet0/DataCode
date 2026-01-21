@@ -10,6 +10,7 @@ pub struct ExceptionHandlerInfo {
     pub error_types: Vec<Option<usize>>, // Типы ошибок для каждого catch (None для catch всех)
     pub error_var_slots: Vec<Option<usize>>, // Слоты для переменных ошибок
     pub else_ip: Option<usize>,          // IP начала else блока
+    pub finally_ip: Option<usize>,       // IP начала finally блока
     pub stack_height: usize,             // Высота стека при входе в try
 }
 
@@ -224,6 +225,10 @@ impl Chunk {
             }
             OpCode::MakeTuple(count) => {
                 output.push_str(&format!("MAKE_TUPLE {}\n", count));
+                offset + 1
+            }
+            OpCode::MakeObject(pair_count) => {
+                output.push_str(&format!("MAKE_OBJECT {}\n", pair_count));
                 offset + 1
             }
             OpCode::MakeArray(count) => {

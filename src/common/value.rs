@@ -236,7 +236,7 @@ impl Value {
             }
             Value::SGD(sgd) => {
                 let opt = sgd.borrow();
-                format!("<sgd: lr={}>", opt.learning_rate)
+                format!("<sgd: lr={}>", opt.lr)
             }
             Value::Momentum(momentum) => {
                 let opt = momentum.borrow();
@@ -256,7 +256,7 @@ impl Value {
             }
             Value::Adam(adam) => {
                 let opt = adam.borrow();
-                format!("<adam: lr={}, beta1={}, beta2={}>", opt.learning_rate, opt.beta1, opt.beta2)
+                format!("<adam: lr={}, beta1={}, beta2={}>", opt.lr, opt.beta1, opt.beta2)
             }
             Value::AdamW(adamw) => {
                 let opt = adamw.borrow();

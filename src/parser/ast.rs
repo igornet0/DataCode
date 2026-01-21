@@ -99,6 +99,10 @@ pub enum Expr {
         elements: Vec<Expr>,
         line: usize,
     },
+    ObjectLiteral {
+        pairs: Vec<(String, Expr)>,
+        line: usize,
+    },
     TupleLiteral {
         elements: Vec<Expr>,
         line: usize,
@@ -133,6 +137,7 @@ impl Expr {
             Expr::Unary { line, .. } => *line,
             Expr::Call { line, .. } => *line,
             Expr::ArrayLiteral { line, .. } => *line,
+            Expr::ObjectLiteral { line, .. } => *line,
             Expr::TupleLiteral { line, .. } => *line,
             Expr::ArrayIndex { line, .. } => *line,
             Expr::Property { line, .. } => *line,
@@ -191,6 +196,7 @@ pub enum Stmt {
         try_block: Vec<Stmt>,
         catch_blocks: Vec<CatchBlock>,
         else_block: Option<Vec<Stmt>>,
+        finally_block: Option<Vec<Stmt>>,
         line: usize,
     },
     Throw {

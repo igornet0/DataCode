@@ -1,22 +1,25 @@
 // Tests for MNIST MLP architecture
 
 use data_code::ml::tensor::Tensor;
-use data_code::ml::layer::{Linear, ReLU, Softmax, Sequential, add_layer_to_registry};
+use data_code::ml::layer::{Linear, ReLU, Softmax, Sequential};
 use data_code::ml::model::NeuralNetwork;
 use data_code::ml::loss::sparse_softmax_cross_entropy_loss;
 
 #[test]
 fn test_single_linear_layer() {
     // Test a single Linear layer first
-    let linear = Linear::new(10, 5).unwrap();
-    let layer_id = add_layer_to_registry(Box::new(linear));
+    let linear = Linear::new(10, 5, true).unwrap();
     
-    let mut sequential = Sequential::new(vec![layer_id]).unwrap();
+    use data_code::ml::layer::LayerType;
+    let sequential = Sequential::new(vec![LayerType::Linear(linear)]);
     
     let input_data = vec![0.1; 2 * 10];
     let input = Tensor::new(input_data, vec![2, 10]).unwrap();
     
-    let output = sequential.forward(input).unwrap();
+    use data_code::ml::autograd::Variable;
+    let input_var = Variable::new(input, false);
+    let output_var = sequential.forward(input_var);
+    let output = output_var.data.borrow().clone();
     
     assert_eq!(output.shape, vec![2, 5]);
     
@@ -28,15 +31,16 @@ fn test_single_linear_layer() {
 #[test]
 fn test_mlp_forward_pass() {
     // Create MLP: Linear(784, 128) → ReLU → Linear(128, 10)
-    let linear1 = Linear::new(784, 128).unwrap();
+    let linear1 = Linear::new(784, 128, true).unwrap();
     let relu = ReLU;
-    let linear2 = Linear::new(128, 10).unwrap();
+    let linear2 = Linear::new(128, 10, true).unwrap();
     
-    let layer1_id = add_layer_to_registry(Box::new(linear1));
-    let layer2_id = add_layer_to_registry(Box::new(relu));
-    let layer3_id = add_layer_to_registry(Box::new(linear2));
-    
-    let mut sequential = Sequential::new(vec![layer1_id, layer2_id, layer3_id]).unwrap();
+    use data_code::ml::layer::LayerType;
+    let sequential = Sequential::new(vec![
+        LayerType::Linear(linear1),
+        LayerType::ReLU(relu),
+        LayerType::Linear(linear2),
+    ]);
     
     // Create synthetic input: batch of 2 samples, each with 784 features
     // Use smaller values to avoid overflow
@@ -44,7 +48,10 @@ fn test_mlp_forward_pass() {
     let input = Tensor::new(input_data, vec![2, 784]).unwrap();
     
     // Forward pass
-    let output = sequential.forward(input).unwrap();
+    use data_code::ml::autograd::Variable;
+    let input_var = Variable::new(input, false);
+    let output_var = sequential.forward(input_var);
+    let output = output_var.data.borrow().clone();
     
     // Check output shape: [batch_size, 10]
     assert_eq!(output.shape, vec![2, 10]);
@@ -68,24 +75,28 @@ fn test_mlp_forward_pass() {
 #[test]
 fn test_mlp_with_softmax() {
     // Create MLP: Linear(784, 128) → ReLU → Linear(128, 10) → Softmax
-    let linear1 = Linear::new(784, 128).unwrap();
+    let linear1 = Linear::new(784, 128, true).unwrap();
     let relu = ReLU;
-    let linear2 = Linear::new(128, 10).unwrap();
+    let linear2 = Linear::new(128, 10, true).unwrap();
     let softmax = Softmax;
     
-    let layer1_id = add_layer_to_registry(Box::new(linear1));
-    let layer2_id = add_layer_to_registry(Box::new(relu));
-    let layer3_id = add_layer_to_registry(Box::new(linear2));
-    let layer4_id = add_layer_to_registry(Box::new(softmax));
-    
-    let mut sequential = Sequential::new(vec![layer1_id, layer2_id, layer3_id, layer4_id]).unwrap();
+    use data_code::ml::layer::LayerType;
+    let sequential = Sequential::new(vec![
+        LayerType::Linear(linear1),
+        LayerType::ReLU(relu),
+        LayerType::Linear(linear2),
+        LayerType::Softmax(softmax),
+    ]);
     
     // Create synthetic input
     let input_data = vec![0.5; 2 * 784];
     let input = Tensor::new(input_data, vec![2, 784]).unwrap();
     
     // Forward pass
-    let output = sequential.forward(input).unwrap();
+    use data_code::ml::autograd::Variable;
+    let input_var = Variable::new(input, false);
+    let output_var = sequential.forward(input_var);
+    let output = output_var.data.borrow().clone();
     
     // Check output shape: [batch_size, 10]
     assert_eq!(output.shape, vec![2, 10]);
@@ -102,17 +113,18 @@ fn test_mlp_with_softmax() {
 #[test]
 fn test_mlp_training_step() {
     // Create MLP: Linear(784, 128) → ReLU → Linear(128, 10) → Softmax
-    let linear1 = Linear::new(784, 128).unwrap();
+    let linear1 = Linear::new(784, 128, true).unwrap();
     let relu = ReLU;
-    let linear2 = Linear::new(128, 10).unwrap();
+    let linear2 = Linear::new(128, 10, true).unwrap();
     let softmax = Softmax;
     
-    let layer1_id = add_layer_to_registry(Box::new(linear1));
-    let layer2_id = add_layer_to_registry(Box::new(relu));
-    let layer3_id = add_layer_to_registry(Box::new(linear2));
-    let layer4_id = add_layer_to_registry(Box::new(softmax));
-    
-    let sequential = Sequential::new(vec![layer1_id, layer2_id, layer3_id, layer4_id]).unwrap();
+    use data_code::ml::layer::LayerType;
+    let sequential = Sequential::new(vec![
+        LayerType::Linear(linear1),
+        LayerType::ReLU(relu),
+        LayerType::Linear(linear2),
+        LayerType::Softmax(softmax),
+    ]);
     let mut nn = NeuralNetwork::new(sequential).unwrap();
     
     // Create small synthetic dataset: 10 samples
@@ -125,7 +137,7 @@ fn test_mlp_training_step() {
     let y = Tensor::new(labels_data, vec![batch_size, 1]).unwrap();
     
     // Train for a few epochs
-    let (loss_history, _accuracy_history) = nn.train(&x, &y, 3, batch_size, 0.01, "sparse_cross_entropy", None, None, None).unwrap();
+    let (loss_history, _accuracy_history, _val_loss_history, _val_accuracy_history) = nn.train(&x, &y, 3, batch_size, 0.01, "sparse_cross_entropy", None, None, None).unwrap();
     
     // Check that we got loss values
     assert_eq!(loss_history.len(), 3);
@@ -140,17 +152,18 @@ fn test_mlp_training_step() {
 #[test]
 fn test_mlp_loss_decreases() {
     // Create MLP: Linear(784, 128) → ReLU → Linear(128, 10) → Softmax
-    let linear1 = Linear::new(784, 128).unwrap();
+    let linear1 = Linear::new(784, 128, true).unwrap();
     let relu = ReLU;
-    let linear2 = Linear::new(128, 10).unwrap();
+    let linear2 = Linear::new(128, 10, true).unwrap();
     let softmax = Softmax;
     
-    let layer1_id = add_layer_to_registry(Box::new(linear1));
-    let layer2_id = add_layer_to_registry(Box::new(relu));
-    let layer3_id = add_layer_to_registry(Box::new(linear2));
-    let layer4_id = add_layer_to_registry(Box::new(softmax));
-    
-    let sequential = Sequential::new(vec![layer1_id, layer2_id, layer3_id, layer4_id]).unwrap();
+    use data_code::ml::layer::LayerType;
+    let sequential = Sequential::new(vec![
+        LayerType::Linear(linear1),
+        LayerType::ReLU(relu),
+        LayerType::Linear(linear2),
+        LayerType::Softmax(softmax),
+    ]);
     let mut nn = NeuralNetwork::new(sequential).unwrap();
     
     // Create synthetic dataset: 20 samples
@@ -163,7 +176,7 @@ fn test_mlp_loss_decreases() {
     let y = Tensor::new(labels_data, vec![batch_size, 1]).unwrap();
     
     // Train for 5 epochs
-    let (loss_history, _accuracy_history) = nn.train(&x, &y, 5, batch_size, 0.01, "sparse_cross_entropy", None, None, None).unwrap();
+    let (loss_history, _accuracy_history, _val_loss_history, _val_accuracy_history) = nn.train(&x, &y, 5, batch_size, 0.01, "sparse_cross_entropy", None, None, None).unwrap();
     
     assert_eq!(loss_history.len(), 5);
     

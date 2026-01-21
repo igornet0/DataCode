@@ -5,39 +5,28 @@ use crate::bytecode::{Chunk, OpCode, Function, CapturedVar};
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use crate::lexer::TokenKind;
-
-// Структура для отслеживания обработчиков исключений
-#[derive(Clone)]
-struct ExceptionHandler {
-    catch_ips: Vec<usize>,           // IP начала каждого catch блока
-    error_types: Vec<Option<usize>>, // Типы ошибок для каждого catch (None для catch всех)
-    error_var_slots: Vec<Option<usize>>, // Слоты для переменных ошибок
-    else_ip: Option<usize>,          // IP начала else блока
-    stack_height: usize,            // Высота стека при входе в try
-}
-
-// Структура для отслеживания контекста циклов
-struct LoopContext {
-    continue_label: usize,   // Метка для continue (начало следующей итерации или инкремент)
-    break_label: usize,      // Метка для break (конец цикла)
-}
+use crate::compiler::natives;
+use crate::compiler::scope::ScopeManager;
+use crate::compiler::labels::LabelManager;
+use crate::compiler::context::{ExceptionHandler, LoopContext};
+use crate::compiler::constant_fold;
+use crate::compiler::expr;
+use crate::compiler::stmt;
+use crate::compiler::unpack;
+use crate::compiler::closure;
+use crate::compiler::args;
 
 pub struct Compiler {
     chunk: Chunk,
     functions: Vec<Function>,
     function_names: Vec<String>, // Имена функций для поиска
     current_function: Option<usize>, // Индекс текущей компилируемой функции
-    globals: std::collections::HashMap<String, usize>, // Глобальные переменные и функции
-    locals: Vec<std::collections::HashMap<String, usize>>, // Локальные переменные для каждой функции (стек областей видимости)
-    local_count: usize, // Счетчик локальных переменных в текущей функции
+    scope: ScopeManager, // Управление областями видимости
+    labels: LabelManager, // Управление метками и jump-инструкциями
     current_line: usize, // Текущий номер строки (для отладки и ошибок)
     exception_handlers: Vec<ExceptionHandler>, // Стек обработчиков исключений
     error_type_table: Vec<String>, // Таблица типов ошибок для текущей функции
     loop_contexts: Vec<LoopContext>, // Стек контекстов циклов для break/continue
-    // Система меток для эталонного алгоритма апгрейда jump-инструкций
-    label_counter: usize, // Счетчик для генерации уникальных ID меток
-    labels: std::collections::HashMap<usize, usize>, // Маппинг label_id -> индекс инструкции
-    pending_jumps: Vec<(usize, usize, bool)>, // (индекс_инструкции, label_id, is_conditional)
 }
 
 impl Compiler {
@@ -47,253 +36,20 @@ impl Compiler {
             functions: Vec::new(),
             function_names: Vec::new(),
             current_function: None,
-            globals: std::collections::HashMap::new(),
-            locals: Vec::new(),
-            local_count: 0,
+            scope: ScopeManager::new(),
+            labels: LabelManager::new(),
             current_line: 0,
             exception_handlers: Vec::new(),
             error_type_table: Vec::new(),
             loop_contexts: Vec::new(),
-            label_counter: 0,
-            labels: std::collections::HashMap::new(),
-            pending_jumps: Vec::new(),
         };
         compiler.register_natives();
         compiler
     }
 
-    // Получить индекс типа ошибки в таблице типов
-    fn get_error_type_index(&mut self, error_type_name: &str) -> usize {
-        // Ищем в существующей таблице
-        if let Some(index) = self.error_type_table.iter().position(|s| s == error_type_name) {
-            return index;
-        }
-        // Добавляем новый тип
-        let index = self.error_type_table.len();
-        self.error_type_table.push(error_type_name.to_string());
-        index
-    }
 
     fn register_natives(&mut self) {
-        // Регистрируем нативные функции как глобальные переменные
-        // Порядок должен соответствовать порядку в VM::register_native_globals()
-        let print_index = self.globals.len();
-        self.globals.insert("print".to_string(), print_index);
-        
-        let len_index = self.globals.len();
-        self.globals.insert("len".to_string(), len_index);
-        
-        let range_index = self.globals.len();
-        self.globals.insert("range".to_string(), range_index);
-        
-        let int_index = self.globals.len();
-        self.globals.insert("int".to_string(), int_index);
-        
-        let float_index = self.globals.len();
-        self.globals.insert("float".to_string(), float_index);
-        
-        let bool_index = self.globals.len();
-        self.globals.insert("bool".to_string(), bool_index);
-        
-        let str_index = self.globals.len();
-        self.globals.insert("str".to_string(), str_index);
-        
-        let array_index = self.globals.len();
-        self.globals.insert("array".to_string(), array_index);
-        
-        let typeof_index = self.globals.len();
-        self.globals.insert("typeof".to_string(), typeof_index);
-        
-        let isinstance_index = self.globals.len();
-        self.globals.insert("isinstance".to_string(), isinstance_index);
-        
-        let date_index = self.globals.len();
-        self.globals.insert("date".to_string(), date_index);
-        
-        let money_index = self.globals.len();
-        self.globals.insert("money".to_string(), money_index);
-        
-        let path_index = self.globals.len();
-        self.globals.insert("path".to_string(), path_index);
-        
-        let path_name_index = self.globals.len();
-        self.globals.insert("path_name".to_string(), path_name_index);
-        
-        let path_parent_index = self.globals.len();
-        self.globals.insert("path_parent".to_string(), path_parent_index);
-        
-        let path_exists_index = self.globals.len();
-        self.globals.insert("path_exists".to_string(), path_exists_index);
-        
-        let path_is_file_index = self.globals.len();
-        self.globals.insert("path_is_file".to_string(), path_is_file_index);
-        
-        let path_is_dir_index = self.globals.len();
-        self.globals.insert("path_is_dir".to_string(), path_is_dir_index);
-        
-        let path_extension_index = self.globals.len();
-        self.globals.insert("path_extension".to_string(), path_extension_index);
-        
-        let path_stem_index = self.globals.len();
-        self.globals.insert("path_stem".to_string(), path_stem_index);
-        
-        let path_len_index = self.globals.len();
-        self.globals.insert("path_len".to_string(), path_len_index);
-        
-        // Математические функции
-        let abs_index = self.globals.len();
-        self.globals.insert("abs".to_string(), abs_index);
-        
-        let sqrt_index = self.globals.len();
-        self.globals.insert("sqrt".to_string(), sqrt_index);
-        
-        let pow_index = self.globals.len();
-        self.globals.insert("pow".to_string(), pow_index);
-        
-        let min_index = self.globals.len();
-        self.globals.insert("min".to_string(), min_index);
-        
-        let max_index = self.globals.len();
-        self.globals.insert("max".to_string(), max_index);
-        
-        let round_index = self.globals.len();
-        self.globals.insert("round".to_string(), round_index);
-        
-        // Строковые функции
-        let upper_index = self.globals.len();
-        self.globals.insert("upper".to_string(), upper_index);
-        
-        let lower_index = self.globals.len();
-        self.globals.insert("lower".to_string(), lower_index);
-        
-        let trim_index = self.globals.len();
-        self.globals.insert("trim".to_string(), trim_index);
-        
-        let split_index = self.globals.len();
-        self.globals.insert("split".to_string(), split_index);
-        
-        let join_index = self.globals.len();
-        self.globals.insert("join".to_string(), join_index);
-        
-        let contains_index = self.globals.len();
-        self.globals.insert("contains".to_string(), contains_index);
-        
-        // Функции массивов
-        let push_index = self.globals.len();
-        self.globals.insert("push".to_string(), push_index);
-        
-        let pop_index = self.globals.len();
-        self.globals.insert("pop".to_string(), pop_index);
-        
-        let unique_index = self.globals.len();
-        self.globals.insert("unique".to_string(), unique_index);
-        
-        let reverse_index = self.globals.len();
-        self.globals.insert("reverse".to_string(), reverse_index);
-        
-        let sort_index = self.globals.len();
-        self.globals.insert("sort".to_string(), sort_index);
-        
-        let sum_index = self.globals.len();
-        self.globals.insert("sum".to_string(), sum_index);
-        
-        let average_index = self.globals.len();
-        self.globals.insert("average".to_string(), average_index);
-        
-        let count_index = self.globals.len();
-        self.globals.insert("count".to_string(), count_index);
-        
-        let any_index = self.globals.len();
-        self.globals.insert("any".to_string(), any_index);
-        
-        let all_index = self.globals.len();
-        self.globals.insert("all".to_string(), all_index);
-        
-        // Функции для работы с таблицами
-        let table_index = self.globals.len();
-        self.globals.insert("table".to_string(), table_index);
-        
-        let read_file_index = self.globals.len();
-        self.globals.insert("read_file".to_string(), read_file_index);
-        
-        let table_info_index = self.globals.len();
-        self.globals.insert("table_info".to_string(), table_info_index);
-        
-        let table_head_index = self.globals.len();
-        self.globals.insert("table_head".to_string(), table_head_index);
-        
-        let table_tail_index = self.globals.len();
-        self.globals.insert("table_tail".to_string(), table_tail_index);
-        
-        let table_select_index = self.globals.len();
-        self.globals.insert("table_select".to_string(), table_select_index);
-        
-        let table_sort_index = self.globals.len();
-        self.globals.insert("table_sort".to_string(), table_sort_index);
-        
-        let table_where_index = self.globals.len();
-        self.globals.insert("table_where".to_string(), table_where_index);
-        
-        let show_table_index = self.globals.len();
-        self.globals.insert("show_table".to_string(), show_table_index);
-
-        let merge_tables_index = self.globals.len();
-        self.globals.insert("merge_tables".to_string(), merge_tables_index);
-
-        let now_index = self.globals.len();
-        self.globals.insert("now".to_string(), now_index);
-
-        let getcwd_index = self.globals.len();
-        self.globals.insert("getcwd".to_string(), getcwd_index);
-
-        let list_files_index = self.globals.len();
-        self.globals.insert("list_files".to_string(), list_files_index);
-
-        // JOIN операции
-        let inner_join_index = self.globals.len();
-        self.globals.insert("inner_join".to_string(), inner_join_index);
-
-        let left_join_index = self.globals.len();
-        self.globals.insert("left_join".to_string(), left_join_index);
-
-        let right_join_index = self.globals.len();
-        self.globals.insert("right_join".to_string(), right_join_index);
-
-        let full_join_index = self.globals.len();
-        self.globals.insert("full_join".to_string(), full_join_index);
-
-        let cross_join_index = self.globals.len();
-        self.globals.insert("cross_join".to_string(), cross_join_index);
-
-        let semi_join_index = self.globals.len();
-        self.globals.insert("semi_join".to_string(), semi_join_index);
-
-        let anti_join_index = self.globals.len();
-        self.globals.insert("anti_join".to_string(), anti_join_index);
-
-        let zip_join_index = self.globals.len();
-        self.globals.insert("zip_join".to_string(), zip_join_index);
-
-        let asof_join_index = self.globals.len();
-        self.globals.insert("asof_join".to_string(), asof_join_index);
-
-        let apply_join_index = self.globals.len();
-        self.globals.insert("apply_join".to_string(), apply_join_index);
-
-        let join_on_index = self.globals.len();
-        self.globals.insert("join_on".to_string(), join_on_index);
-
-        let table_suffixes_index = self.globals.len();
-        self.globals.insert("table_suffixes".to_string(), table_suffixes_index);
-
-        let relate_index = self.globals.len();
-        self.globals.insert("relate".to_string(), relate_index);
-
-        let primary_key_index = self.globals.len();
-        self.globals.insert("primary_key".to_string(), primary_key_index);
-
-        let concat_table_index = self.globals.len();
-        self.globals.insert("concat".to_string(), concat_table_index);
+        natives::register_natives(&mut self.scope.globals);
     }
 
     pub fn compile(&mut self, statements: &[Stmt]) -> Result<Chunk, LangError> {
@@ -314,11 +70,11 @@ impl Compiler {
         self.end_scope();
         
         // Эталонный алгоритм апгрейда jump-инструкций: стабилизация layout и финализация
-        self.stabilize_layout()?;
-        self.finalize_jumps()?;
+        self.labels.stabilize_layout(&mut self.chunk, self.current_line)?;
+        self.labels.finalize_jumps(&mut self.chunk, self.current_line)?;
         
         // Очищаем метки после финализации главного скрипта
-        self.clear_labels();
+        self.labels.clear();
         
         Ok(self.chunk.clone())
     }
@@ -346,8 +102,8 @@ impl Compiler {
                     self.functions.push(function);
                     self.function_names.push(name.clone());
                     // Регистрируем функцию в глобальной таблице
-                    let global_index = self.globals.len();
-                    self.globals.insert(name.clone(), global_index);
+                    let global_index = self.scope.globals.len();
+                    self.scope.globals.insert(name.clone(), global_index);
                     
                     // Рекурсивно собираем функции из тела этой функции
                     self.collect_all_functions(body)?;
@@ -391,121 +147,33 @@ impl Compiler {
         self.functions
     }
 
-    /// Возвращает имена параметров для нативной функции, если она поддерживает именованные аргументы
-    /// None возвращается для функций с переменным числом аргументов (print, min, max, array)
-    fn get_native_function_params(&self, function_name: &str) -> Option<Vec<String>> {
-        match function_name {
-            // Функции с переменным числом аргументов - именованные аргументы не поддерживаются
-            "print" | "min" | "max" | "array" => None,
-            
-            // Функции с одним параметром
-            "len" => Some(vec!["value".to_string()]),
-            "int" => Some(vec!["value".to_string()]),
-            "float" => Some(vec!["value".to_string()]),
-            "bool" => Some(vec!["value".to_string()]),
-            "str" => Some(vec!["value".to_string()]),
-            "typeof" => Some(vec!["value".to_string()]),
-            "date" => Some(vec!["value".to_string()]),
-            "path" => Some(vec!["value".to_string()]),
-            "path_name" => Some(vec!["path".to_string()]),
-            "path_parent" => Some(vec!["path".to_string()]),
-            "path_exists" => Some(vec!["path".to_string()]),
-            "path_is_file" => Some(vec!["path".to_string()]),
-            "path_is_dir" => Some(vec!["path".to_string()]),
-            "path_extension" => Some(vec!["path".to_string()]),
-            "path_stem" => Some(vec!["path".to_string()]),
-            "path_len" => Some(vec!["path".to_string()]),
-            "abs" => Some(vec!["n".to_string()]),
-            "sqrt" => Some(vec!["n".to_string()]),
-            "round" => Some(vec!["n".to_string()]),
-            "upper" => Some(vec!["str".to_string()]),
-            "lower" => Some(vec!["str".to_string()]),
-            "trim" => Some(vec!["str".to_string()]),
-            "pop" => Some(vec!["array".to_string()]),
-            "unique" => Some(vec!["array".to_string()]),
-            "reverse" => Some(vec!["array".to_string()]),
-            "sort" => Some(vec!["array".to_string()]),
-            "sum" => Some(vec!["array".to_string()]),
-            "average" => Some(vec!["array".to_string()]),
-            "count" => Some(vec!["array".to_string()]),
-            "table_info" => Some(vec!["table".to_string()]),
-            "show_table" => Some(vec!["table".to_string()]),
-            "now" => Some(vec![]),
-            "getcwd" => Some(vec![]),
-            
-            // Функции с двумя параметрами
-            "range" => Some(vec!["start".to_string(), "end".to_string(), "step".to_string()]),
-            "pow" => Some(vec!["base".to_string(), "exp".to_string()]),
-            "split" => Some(vec!["str".to_string(), "delim".to_string()]),
-            "join" => Some(vec!["array".to_string(), "delim".to_string()]),
-            "contains" => Some(vec!["str".to_string(), "substr".to_string()]),
-            "push" => Some(vec!["array".to_string(), "item".to_string()]),
-            "isinstance" => Some(vec!["value".to_string(), "type".to_string()]),
-            "money" => Some(vec!["amount".to_string(), "format".to_string()]),
-            "list_files" => Some(vec!["path".to_string()]),
-            
-            // Функции с опциональными параметрами
-            "table" => Some(vec!["data".to_string(), "headers".to_string()]),
-            "read_file" => Some(vec!["path".to_string(), "header_row".to_string(), "sheet_name".to_string()]),
-            "table_head" => Some(vec!["table".to_string(), "n".to_string()]),
-            "table_tail" => Some(vec!["table".to_string(), "n".to_string()]),
-            "table_select" => Some(vec!["table".to_string(), "cols".to_string()]),
-            "table_sort" => Some(vec!["table".to_string(), "col".to_string(), "asc".to_string()]),
-            "table_where" => Some(vec!["table".to_string(), "col".to_string(), "op".to_string(), "value".to_string()]),
-            "merge_tables" => Some(vec!["tables".to_string(), "mode".to_string()]),
-            "cross_join" => Some(vec!["left".to_string(), "right".to_string()]),
-            "table_suffixes" => Some(vec!["left".to_string(), "right".to_string(), "left_suffix".to_string(), "right_suffix".to_string()]),
-            "relate" => Some(vec!["col1".to_string(), "col2".to_string()]),
-            "primary_key" => Some(vec!["col".to_string()]),
-            
-            // JOIN функции - они все имеют одинаковую структуру (left, right, on, type?, suffixes?)
-            "inner_join" | "left_join" | "right_join" | "full_join" | "semi_join" | "anti_join" | "zip_join" | "asof_join" | "join_on" | "apply_join" => {
-                Some(vec!["left".to_string(), "right".to_string(), "on".to_string(), "type".to_string(), "suffixes".to_string()])
-            },
-            
-            // Module methods
-            "show" => Some(vec!["image".to_string(), "title".to_string()]),
-            
-            // ML functions
-            "nn_train" => Some(vec![
-                "nn".to_string(),  // Model object (first parameter, added separately for method calls)
-                "x".to_string(),
-                "y".to_string(),
-                "epochs".to_string(),
-                "batch_size".to_string(),
-                "learning_rate".to_string(),
-                "loss".to_string(),
-                "optimizer".to_string(),
-                "x_val".to_string(),
-                "y_val".to_string(),
-            ]),
-            "nn_train_sh" => Some(vec![
-                "nn".to_string(),  // Model object (first parameter, added separately for method calls)
-                "x".to_string(),
-                "y".to_string(),
-                "epochs".to_string(),
-                "batch_size".to_string(),
-                "learning_rate".to_string(),
-                "loss".to_string(),
-                "optimizer".to_string(),
-                "monitor".to_string(),
-                "patience".to_string(),
-                "min_delta".to_string(),
-                "restore_best".to_string(),
-                "x_val".to_string(),
-                "y_val".to_string(),
-            ]),
-            
-            // Функция не найдена или не поддерживает именованные аргументы
-            _ => None,
-        }
-    }
 
     fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), LangError> {
         self.compile_stmt_with_pop(stmt, true)
     }
 
     fn compile_stmt_with_pop(&mut self, stmt: &Stmt, pop_value: bool) -> Result<(), LangError> {
+        let mut ctx = self.create_context();
+        stmt::compile_stmt(&mut ctx, stmt, pop_value)
+    }
+
+    fn create_context(&mut self) -> crate::compiler::context::CompilationContext {
+        crate::compiler::context::CompilationContext {
+            chunk: &mut self.chunk,
+            scope: &mut self.scope,
+            labels: &mut self.labels,
+            functions: &mut self.functions,
+            function_names: &mut self.function_names,
+            current_function: self.current_function,
+            current_line: &mut self.current_line,
+            exception_handlers: &mut self.exception_handlers,
+            error_type_table: &mut self.error_type_table,
+            loop_contexts: &mut self.loop_contexts,
+        }
+    }
+
+    #[allow(dead_code)]
+    fn compile_stmt_with_pop_old(&mut self, stmt: &Stmt, pop_value: bool) -> Result<(), LangError> {
         let stmt_line = stmt.line();
         self.current_line = stmt_line;
         match stmt {
@@ -522,9 +190,9 @@ impl Compiler {
                             
                             // Register the module name in globals so subsequent uses are recognized
                             // This allows the compiler to know about the module even though it's loaded at runtime
-                            if !self.globals.contains_key(module) {
-                                let global_index = self.globals.len();
-                                self.globals.insert(module.clone(), global_index);
+                            if !self.scope.globals.contains_key(module) {
+                                let global_index = self.scope.globals.len();
+                                self.scope.globals.insert(module.clone(), global_index);
                                 self.chunk.global_names.insert(global_index, module.clone());
                             }
                         }
@@ -557,9 +225,9 @@ impl Compiler {
                         self.chunk.write_with_line(OpCode::ImportFrom(module_index, items_index), *line);
                         
                         // Register the module name in globals
-                        if !self.globals.contains_key(module) {
-                            let global_index = self.globals.len();
-                            self.globals.insert(module.clone(), global_index);
+                        if !self.scope.globals.contains_key(module) {
+                            let global_index = self.scope.globals.len();
+                            self.scope.globals.insert(module.clone(), global_index);
                             self.chunk.global_names.insert(global_index, module.clone());
                         }
                         
@@ -567,16 +235,16 @@ impl Compiler {
                         for item in items {
                             match item {
                                 ImportItem::Named(name) => {
-                                    if !self.globals.contains_key(name) {
-                                        let global_index = self.globals.len();
-                                        self.globals.insert(name.clone(), global_index);
+                                    if !self.scope.globals.contains_key(name) {
+                                        let global_index = self.scope.globals.len();
+                                        self.scope.globals.insert(name.clone(), global_index);
                                         self.chunk.global_names.insert(global_index, name.clone());
                                     }
                                 }
                                 ImportItem::Aliased { alias, .. } => {
-                                    if !self.globals.contains_key(alias) {
-                                        let global_index = self.globals.len();
-                                        self.globals.insert(alias.clone(), global_index);
+                                    if !self.scope.globals.contains_key(alias) {
+                                        let global_index = self.scope.globals.len();
+                                        self.scope.globals.insert(alias.clone(), global_index);
                                         self.chunk.global_names.insert(global_index, alias.clone());
                                     }
                                 }
@@ -613,11 +281,11 @@ impl Compiler {
                         // Сохраняем в переменную
                         if *is_global {
                             // Глобальная переменная
-                            let global_index = if let Some(&idx) = self.globals.get(var_name) {
+                            let global_index = if let Some(&idx) = self.scope.globals.get(var_name) {
                                 idx
                             } else {
-                                let idx = self.globals.len();
-                                self.globals.insert(var_name.clone(), idx);
+                                let idx = self.scope.globals.len();
+                                self.scope.globals.insert(var_name.clone(), idx);
                                 idx
                             };
                             self.chunk.global_names.insert(global_index, var_name.clone());
@@ -632,14 +300,14 @@ impl Compiler {
                                 self.chunk.write_with_line(OpCode::StoreLocal(var_index), *line);
                             } else {
                                 // На верхнем уровне - проверяем, есть ли глобальная переменная
-                                if let Some(&global_index) = self.globals.get(var_name) {
+                                if let Some(&global_index) = self.scope.globals.get(var_name) {
                                     // Глобальная переменная найдена - обновляем
                                     self.chunk.global_names.insert(global_index, var_name.clone());
                                     self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
                                 } else {
                                     // Новая глобальная переменная на верхнем уровне
-                                    let global_index = self.globals.len();
-                                    self.globals.insert(var_name.clone(), global_index);
+                                    let global_index = self.scope.globals.len();
+                                    self.scope.globals.insert(var_name.clone(), global_index);
                                     self.chunk.global_names.insert(global_index, var_name.clone());
                                     self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
                                 }
@@ -651,7 +319,7 @@ impl Compiler {
                     if let Some(last_name) = names.last() {
                         if let Some(local_index) = self.resolve_local(last_name) {
                             self.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
-                        } else if let Some(&global_index) = self.globals.get(last_name) {
+                        } else if let Some(&global_index) = self.scope.globals.get(last_name) {
                             self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
                         }
                     }
@@ -665,11 +333,11 @@ impl Compiler {
                 if *is_global {
                     // Явное объявление глобальной переменной
                     // Всегда изменяет глобальную переменную, даже внутри функций
-                    let global_index = if let Some(&idx) = self.globals.get(name) {
+                    let global_index = if let Some(&idx) = self.scope.globals.get(name) {
                         idx
                     } else {
-                        let idx = self.globals.len();
-                        self.globals.insert(name.clone(), idx);
+                        let idx = self.scope.globals.len();
+                        self.scope.globals.insert(name.clone(), idx);
                         idx
                     };
                     // Сохраняем имя глобальной переменной для использования в JOIN
@@ -690,15 +358,15 @@ impl Compiler {
                     } else {
                         // Переменная не найдена локально - проверяем, является ли она глобальной
                         // На верхнем уровне главной функции переменные без 'global' все равно глобальные
-                        if let Some(&global_index) = self.globals.get(name) {
+                        if let Some(&global_index) = self.scope.globals.get(name) {
                             // Глобальная переменная уже существует - обновляем
                             // Сохраняем имя глобальной переменной для использования в JOIN
                             self.chunk.global_names.insert(global_index, name.clone());
                             self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
                         } else {
                             // Новая глобальная переменная на верхнем уровне
-                            let global_index = self.globals.len();
-                            self.globals.insert(name.clone(), global_index);
+                            let global_index = self.scope.globals.len();
+                            self.scope.globals.insert(name.clone(), global_index);
                             // Сохраняем имя глобальной переменной для использования в JOIN
                             self.chunk.global_names.insert(global_index, name.clone());
                             self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
@@ -719,12 +387,12 @@ impl Compiler {
                 self.compile_expr(condition)?;
                 
                 // Создаем метки для else и end
-                let else_label = self.create_label();
-                let end_label = self.create_label();
+                let else_label = self.labels.create_label();
+                let end_label = self.labels.create_label();
                 
                 // Jump if false к else (или end, если else нет)
                 let target_label = if else_branch.is_some() { else_label } else { end_label };
-                self.emit_jump(true, target_label)?;
+                self.labels.emit_jump(&mut self.chunk, self.current_line,true, target_label)?;
                 
                 // Компилируем then ветку (с новой областью видимости)
                 self.begin_scope();
@@ -735,11 +403,11 @@ impl Compiler {
                 self.end_scope();
                 
                 // Jump к end после then
-                self.emit_jump(false, end_label)?;
+                self.labels.emit_jump(&mut self.chunk, self.current_line,false, end_label)?;
                 
                 // Помечаем метку else (если есть)
                 if else_branch.is_some() {
-                    self.mark_label(else_label);
+                    self.labels.mark_label(else_label, self.chunk.code.len());
                 
                 // Компилируем else ветку (с новой областью видимости)
                     self.begin_scope();
@@ -751,21 +419,21 @@ impl Compiler {
                 }
                 
                 // Помечаем метку end
-                self.mark_label(end_label);
+                self.labels.mark_label(end_label, self.chunk.code.len());
             }
             Stmt::While { condition, body, line } => {
                 self.current_line = *line;
                 
                 // Создаем метки для начала и конца цикла
-                let loop_start_label = self.create_label();
-                let loop_end_label = self.create_label();
+                let loop_start_label = self.labels.create_label();
+                let loop_end_label = self.labels.create_label();
                 
                 // Помечаем начало цикла
-                self.mark_label(loop_start_label);
+                self.labels.mark_label(loop_start_label, self.chunk.code.len());
                 
                 self.compile_expr(condition)?;
                 // Jump if false к концу цикла
-                self.emit_jump(true, loop_end_label)?;
+                self.labels.emit_jump(&mut self.chunk, self.current_line,true, loop_end_label)?;
                 
                 // Создаем контекст цикла
                 let loop_context = LoopContext {
@@ -782,10 +450,10 @@ impl Compiler {
                 self.end_scope();
                 
                 // Jump к началу цикла
-                self.emit_loop(loop_start_label)?;
+                self.labels.emit_loop(&mut self.chunk, self.current_line,loop_start_label)?;
                 
                 // Помечаем конец цикла
-                self.mark_label(loop_end_label);
+                self.labels.mark_label(loop_end_label, self.chunk.code.len());
                 
                 // Контекст цикла уже содержит метки для break/continue
                 
@@ -820,7 +488,7 @@ impl Compiler {
                 let expected_count = if is_simple_case {
                     0 // Не распаковываем, просто присваиваем
                 } else {
-                    self.count_unpack_variables(pattern)
+                    unpack::count_unpack_variables(pattern)
                 };
                 
                 // Объявляем переменные из паттерна распаковки
@@ -833,16 +501,16 @@ impl Compiler {
                         vec![None]
                     }
                 } else {
-                    self.declare_unpack_pattern_variables(pattern, *line)?
+                    unpack::declare_unpack_pattern_variables(pattern, &mut self.scope, *line)?
                 };
                 
                 // Создаем метки для цикла
-                let loop_start_label = self.create_label();
-                let continue_label = self.create_label();
-                let loop_end_label = self.create_label();
+                let loop_start_label = self.labels.create_label();
+                let continue_label = self.labels.create_label();
+                let loop_end_label = self.labels.create_label();
                 
                 // Помечаем начало цикла
-                self.mark_label(loop_start_label);
+                self.labels.mark_label(loop_start_label, self.chunk.code.len());
                 
                 // Проверяем условие: индекс < длина массива
                 // Загружаем индекс
@@ -855,7 +523,7 @@ impl Compiler {
                 self.chunk.write_with_line(OpCode::Less, *line);
                 
                 // Если условие false, выходим из цикла
-                self.emit_jump(true, loop_end_label)?;
+                self.labels.emit_jump(&mut self.chunk, self.current_line,true, loop_end_label)?;
                 
                 // Загружаем элемент массива по индексу
                 self.chunk.write_with_line(OpCode::LoadLocal(array_local), *line);
@@ -870,7 +538,7 @@ impl Compiler {
                         self.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
                     }
                 } else {
-                    self.compile_unpack_pattern(pattern, &var_locals, expected_count, *line)?;
+                    unpack::compile_unpack_pattern(pattern, &var_locals, expected_count, &mut self.chunk, &mut self.scope, &mut self.labels, self.current_line, *line)?;
                 }
                 
                 // Создаем контекст цикла
@@ -886,7 +554,7 @@ impl Compiler {
                 }
                 
                 // Помечаем метку continue (начало инкремента индекса)
-                self.mark_label(continue_label);
+                self.labels.mark_label(continue_label, self.chunk.code.len());
                 
                 // Инкрементируем индекс
                 self.chunk.write_with_line(OpCode::LoadLocal(index_local), *line);
@@ -896,10 +564,10 @@ impl Compiler {
                 self.chunk.write_with_line(OpCode::StoreLocal(index_local), *line);
                 
                 // Переход к началу цикла
-                self.emit_loop(loop_start_label)?;
+                self.labels.emit_loop(&mut self.chunk, self.current_line,loop_start_label)?;
                 
                 // Помечаем конец цикла
-                self.mark_label(loop_end_label);
+                self.labels.mark_label(loop_end_label, self.chunk.code.len());
                 
                 // Контекст цикла уже содержит метки для break/continue
                 
@@ -934,7 +602,7 @@ impl Compiler {
                     // Вычисляем значение по умолчанию во время компиляции
                     if let Some(ref default_expr) = param.default_value {
                         // Пытаемся вычислить константное выражение
-                        match self.evaluate_constant_expr(default_expr) {
+                        match constant_fold::evaluate_constant_expr(default_expr) {
                             Ok(Some(constant_value)) => {
                                 default_values.push(Some(constant_value));
                             }
@@ -973,7 +641,7 @@ impl Compiler {
                 
                 // Сохраняем текущие локальные области видимости для доступа к переменным родительских функций
                 // Это нужно для поддержки замыканий - переменные из родительских функций должны быть доступны
-                let parent_locals_snapshot: Vec<std::collections::HashMap<String, usize>> = self.locals.iter()
+                let parent_locals_snapshot: Vec<std::collections::HashMap<String, usize>> = self.scope.locals.iter()
                     .map(|scope| scope.clone())
                     .collect();
                 
@@ -982,9 +650,9 @@ impl Compiler {
                 let saved_exception_handlers = self.exception_handlers.clone();
                 let saved_error_type_table = self.error_type_table.clone();
                 let saved_function = self.current_function;
-                let saved_local_count = self.local_count;
+                let saved_local_count = self.scope.local_count;
                 self.current_function = Some(function_index);
-                self.local_count = 0;
+                self.scope.local_count = 0;
                 // Очищаем обработчики и таблицу типов ошибок для новой функции
                 self.exception_handlers.clear();
                 self.error_type_table.clear();
@@ -995,7 +663,8 @@ impl Compiler {
                 // Находим переменные, которые используются в теле функции, но не объявлены в ней
                 // (захваченные из родительских функций)
                 let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
-                let captured_vars = self.find_captured_variables(body, &parent_locals_snapshot, &param_names);
+                let current_scope = self.scope.locals.last().cloned().unwrap_or_default();
+                let captured_vars = closure::find_captured_variables(body, &parent_locals_snapshot, &param_names, &current_scope);
         
                 
                 // Создаем локальные слоты для захваченных переменных (перед параметрами)
@@ -1072,8 +741,8 @@ impl Compiler {
                 self.end_scope();
                 
                 // Эталонный алгоритм апгрейда jump-инструкций: стабилизация layout и финализация
-                self.stabilize_layout()?;
-                self.finalize_jumps()?;
+                self.labels.stabilize_layout(&mut self.chunk, *line)?;
+                self.labels.finalize_jumps(&mut self.chunk, *line)?;
                 
                 // Сохраняем скомпилированную функцию (обработчики уже сохранены в chunk при компиляции try/catch)
                 let function_chunk = std::mem::replace(&mut self.chunk, saved_chunk);
@@ -1085,10 +754,10 @@ impl Compiler {
                 self.exception_handlers = saved_exception_handlers;
                 self.error_type_table = saved_error_type_table;
                 self.current_function = saved_function;
-                self.local_count = saved_local_count;
+                self.scope.local_count = saved_local_count;
                 
                 // Сохраняем функцию в глобальную таблицу (уже сделано в первом проходе)
-                let global_index = *self.globals.get(name).unwrap();
+                let global_index = *self.scope.globals.get(name).unwrap();
                 
                 // Сохраняем имя глобальной переменной для использования в JOIN
                 self.chunk.global_names.insert(global_index, name.clone());
@@ -1120,7 +789,7 @@ impl Compiler {
                 }
                 // Jump к метке конца цикла
                 let break_label = self.loop_contexts.last().unwrap().break_label;
-                self.emit_jump(false, break_label)?;
+                self.labels.emit_jump(&mut self.chunk, self.current_line,false, break_label)?;
             }
             Stmt::Continue { line } => {
                 self.current_line = *line;
@@ -1132,7 +801,7 @@ impl Compiler {
                 }
                 // Jump к метке continue
                 let continue_label = self.loop_contexts.last().unwrap().continue_label;
-                self.emit_jump(false, continue_label)?;
+                self.labels.emit_jump(&mut self.chunk, self.current_line,false, continue_label)?;
             }
             Stmt::Throw { value, line } => {
                 self.current_line = *line;
@@ -1141,9 +810,9 @@ impl Compiler {
                 // Генерируем Throw опкод (None означает RuntimeError без конкретного типа)
                 self.chunk.write_with_line(OpCode::Throw(None), *line);
             }
-            Stmt::Try { try_block, catch_blocks, else_block, line } => {
-                self.current_line = *line;
-                self.compile_try(try_block, catch_blocks, else_block.as_deref(), *line)?;
+            Stmt::Try { .. } => {
+                // Обрабатывается в compile_stmt_with_pop через stmt::compile_stmt
+                unreachable!("Try statement should be handled by stmt::compile_stmt")
             }
         }
         Ok(())
@@ -1158,193 +827,7 @@ impl Compiler {
         function_info: Option<(usize, &Function)>,
         line: usize,
     ) -> Result<Vec<Arg>, LangError> {
-        // Если это встроенная функция, проверяем, поддерживает ли она именованные аргументы
-        if function_info.is_none() {
-            // Проверяем, есть ли именованные аргументы
-            let has_named = args.iter().any(|a| matches!(a, Arg::Named { .. }));
-            
-            if has_named {
-                // Проверяем, поддерживает ли эта нативная функция именованные аргументы
-                if let Some(param_names) = self.get_native_function_params(function_name) {
-                    // Нативная функция поддерживает именованные аргументы
-                    // Разрешаем их аналогично пользовательским функциям
-                    let mut resolved = vec![None; param_names.len()];
-                    let mut positional_count = 0;
-                    
-                    // Для методов объектов (например, nn_train), первый параметр - это объект,
-                    // который не передается в args метода, поэтому пропускаем позицию 0
-                    let start_position = if (function_name == "nn_train" || function_name == "nn_train_sh") && !param_names.is_empty() && param_names[0] == "nn" {
-                        1  // Пропускаем первый параметр "nn" (объект метода)
-                    } else {
-                        0
-                    };
-                    
-                    // Обрабатываем аргументы
-                    for arg in args {
-                        match arg {
-                            Arg::Positional(expr) => {
-                                let target_position = start_position + positional_count;
-                                if target_position >= param_names.len() {
-                                    return Err(LangError::ParseError {
-                                        message: format!(
-                                            "Function '{}' takes at most {} arguments but {} positional arguments were provided",
-                                            function_name, param_names.len() - start_position, positional_count + 1
-                                        ),
-                                        line,
-                                    });
-                                }
-                                resolved[target_position] = Some(Arg::Positional(expr.clone()));
-                                positional_count += 1;
-                            }
-                            Arg::Named { name, value } => {
-                                // Находим индекс параметра по имени
-                                if let Some(param_index) = param_names.iter().position(|n| n == name) {
-                                    if resolved[param_index].is_some() {
-                                        return Err(LangError::ParseError {
-                                            message: format!(
-                                                "Function '{}' got multiple values for argument '{}'",
-                                                function_name, name
-                                            ),
-                                            line,
-                                        });
-                                    }
-                                    resolved[param_index] = Some(Arg::Named {
-                                        name: name.clone(),
-                                        value: value.clone(),
-                                    });
-                                } else {
-                                    return Err(LangError::ParseError {
-                                        message: format!(
-                                            "Function '{}' got an unexpected keyword argument '{}'",
-                                            function_name, name
-                                        ),
-                                        line,
-                                    });
-                                }
-                            }
-                        }
-                    }
-                    
-                    // Собираем итоговый список аргументов в правильном порядке
-                    // Включаем только предоставленные параметры (нативные функции сами обрабатывают опциональные)
-                    let mut final_args = Vec::new();
-                    for i in 0..param_names.len() {
-                        if let Some(arg) = resolved[i].take() {
-                            match arg {
-                                Arg::Positional(expr) => final_args.push(Arg::Positional(expr)),
-                                Arg::Named { value, .. } => final_args.push(Arg::Positional(value)),
-                            }
-                        }
-                    }
-                    
-                    return Ok(final_args);
-                } else {
-                    // Нативная функция не поддерживает именованные аргументы (например, print, min, max)
-                    return Err(LangError::ParseError {
-                        message: format!(
-                            "Named arguments are not supported for built-in function '{}'",
-                            function_name
-                        ),
-                        line,
-                    });
-                }
-            } else {
-                // Нет именованных аргументов, просто возвращаем позиционные
-                return Ok(args.iter().map(|a| match a {
-                    Arg::Positional(e) => Arg::Positional(e.clone()),
-                    Arg::Named { .. } => unreachable!(),
-                }).collect());
-            }
-        }
-        
-        let (_, function) = function_info.unwrap();
-        let param_names = &function.param_names;
-        let default_values = &function.default_values;
-        
-        // Создаем массив для разрешенных аргументов
-        let mut resolved = vec![None; param_names.len()];
-        let mut positional_count = 0;
-        
-        // Обрабатываем аргументы
-        for arg in args {
-            match arg {
-                Arg::Positional(expr) => {
-                    if positional_count >= param_names.len() {
-                        return Err(LangError::ParseError {
-                            message: format!(
-                                "Function '{}' takes {} arguments but {} positional arguments were provided",
-                                function_name, param_names.len(), positional_count + 1
-                            ),
-                            line,
-                        });
-                    }
-                    resolved[positional_count] = Some(Arg::Positional(expr.clone()));
-                    positional_count += 1;
-                }
-                Arg::Named { name, value } => {
-                    // Находим индекс параметра по имени
-                    if let Some(param_index) = param_names.iter().position(|n| n == name) {
-                        if resolved[param_index].is_some() {
-                            return Err(LangError::ParseError {
-                                message: format!(
-                                    "Function '{}' got multiple values for argument '{}'",
-                                    function_name, name
-                                ),
-                                line,
-                            });
-                        }
-                        resolved[param_index] = Some(Arg::Named {
-                            name: name.clone(),
-                            value: value.clone(),
-                        });
-                    } else {
-                        return Err(LangError::ParseError {
-                            message: format!(
-                                "Function '{}' got an unexpected keyword argument '{}'",
-                                function_name, name
-                            ),
-                            line,
-                        });
-                    }
-                }
-            }
-        }
-        
-        // Применяем значения по умолчанию для незаполненных параметров
-        let mut final_args = Vec::new();
-        for (i, param_name) in param_names.iter().enumerate() {
-            if let Some(arg) = resolved[i].take() {
-                // Аргумент был предоставлен
-                match arg {
-                    Arg::Positional(expr) => {
-                        final_args.push(Arg::Positional(expr));
-                    }
-                    Arg::Named { value, .. } => {
-                        final_args.push(Arg::Positional(value));
-                    }
-                }
-            } else {
-                // Аргумент не был предоставлен - используем значение по умолчанию
-                if let Some(default_value) = default_values.get(i).and_then(|v| v.as_ref()) {
-                    // Значение по умолчанию было вычислено во время компиляции
-                    final_args.push(Arg::Positional(Expr::Literal {
-                        value: default_value.clone(),
-                        line,
-                    }));
-                } else {
-                    // Обязательный параметр не был предоставлен
-                    return Err(LangError::ParseError {
-                        message: format!(
-                            "Function '{}' missing required argument '{}'",
-                            function_name, param_name
-                        ),
-                        line,
-                    });
-                }
-            }
-        }
-        
-        Ok(final_args)
+        args::resolve_function_args(function_name, args, function_info, line)
     }
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), LangError> {
@@ -1352,7 +835,23 @@ impl Compiler {
         self.current_line = expr_line;
         
         // Оптимизация: вычисляем константные выражения во время компиляции
-        if let Some(constant_value) = self.evaluate_constant_expr(expr)? {
+        if let Some(constant_value) = constant_fold::evaluate_constant_expr(expr)? {
+            let constant_index = self.chunk.add_constant(constant_value);
+            self.chunk.write_with_line(OpCode::Constant(constant_index), expr_line);
+            return Ok(());
+        }
+        
+        let mut ctx = self.create_context();
+        expr::compile_expr(&mut ctx, expr)
+    }
+
+    #[allow(dead_code)]
+    fn compile_expr_old(&mut self, expr: &Expr) -> Result<(), LangError> {
+        let expr_line = expr.line();
+        self.current_line = expr_line;
+        
+        // Оптимизация: вычисляем константные выражения во время компиляции
+        if let Some(constant_value) = constant_fold::evaluate_constant_expr(expr)? {
             let constant_index = self.chunk.add_constant(constant_value);
             self.chunk.write_with_line(OpCode::Constant(constant_index), expr_line);
             return Ok(());
@@ -1378,7 +877,7 @@ impl Compiler {
                     let index = self.declare_local(name);
                     self.chunk.write_with_line(OpCode::StoreLocal(index), *line);
                     self.chunk.write_with_line(OpCode::LoadLocal(index), *line);
-                } else if let Some(&global_index) = self.globals.get(name) {
+                } else if let Some(&global_index) = self.scope.globals.get(name) {
                     // Мы в главной функции, глобальная переменная найдена - обновляем
                     // Сохраняем имя глобальной переменной для использования в JOIN
                     self.chunk.global_names.insert(global_index, name.clone());
@@ -1393,8 +892,8 @@ impl Compiler {
                         self.chunk.write_with_line(OpCode::LoadLocal(index), *line);
                     } else {
                         // На верхнем уровне - создаем новую глобальную переменную
-                        let global_index = self.globals.len();
-                        self.globals.insert(name.clone(), global_index);
+                        let global_index = self.scope.globals.len();
+                        self.scope.globals.insert(name.clone(), global_index);
                         self.chunk.global_names.insert(global_index, name.clone());
                         self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
                         self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
@@ -1432,14 +931,14 @@ impl Compiler {
                         self.chunk.write_with_line(OpCode::StoreLocal(var_index), *line);
                     } else {
                         // На верхнем уровне - проверяем, есть ли глобальная переменная
-                        if let Some(&global_index) = self.globals.get(name) {
+                        if let Some(&global_index) = self.scope.globals.get(name) {
                             // Глобальная переменная найдена - обновляем
                             self.chunk.global_names.insert(global_index, name.clone());
                             self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
                         } else {
                             // Новая глобальная переменная на верхнем уровне
-                            let global_index = self.globals.len();
-                            self.globals.insert(name.clone(), global_index);
+                            let global_index = self.scope.globals.len();
+                            self.scope.globals.insert(name.clone(), global_index);
                             self.chunk.global_names.insert(global_index, name.clone());
                             self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
                         }
@@ -1453,7 +952,7 @@ impl Compiler {
                 if let Some(last_name) = names.last() {
                     if let Some(local_index) = self.resolve_local(last_name) {
                         self.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
-                    } else if let Some(&global_index) = self.globals.get(last_name) {
+                    } else if let Some(&global_index) = self.scope.globals.get(last_name) {
                         self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
                     }
                 }
@@ -1548,7 +1047,7 @@ impl Compiler {
                     self.chunk.write_with_line(OpCode::StoreLocal(index), *line);
                     // Загружаем значение обратно, чтобы присваивание возвращало значение
                     self.chunk.write_with_line(OpCode::LoadLocal(index), *line);
-                } else if let Some(&global_index) = self.globals.get(name) {
+                } else if let Some(&global_index) = self.scope.globals.get(name) {
                     // Мы в главной функции, глобальная переменная найдена - загружаем её значение
                     self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
                     
@@ -1644,14 +1143,14 @@ impl Compiler {
                 if let Some(local_index) = self.resolve_local(name) {
                     // Локальная переменная
                     self.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
-                } else if let Some(&global_index) = self.globals.get(name) {
+                } else if let Some(&global_index) = self.scope.globals.get(name) {
                     // Глобальная переменная или функция
                     self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
                 } else {
                     // Переменная не найдена - создаем новый глобальный индекс
                     // Это позволит проверить переменную во время выполнения
-                    let global_index = self.globals.len();
-                    self.globals.insert(name.clone(), global_index);
+                    let global_index = self.scope.globals.len();
+                    self.scope.globals.insert(name.clone(), global_index);
                     self.chunk.global_names.insert(global_index, name.clone());
                     self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
                 }
@@ -1778,32 +1277,31 @@ impl Compiler {
                     }
                 }
                 
-                // Загружаем функцию: сначала проверяем переменные (локальные или глобальные),
-                // затем ищем функцию по имени
+                // Загружаем функцию: сначала проверяем локальные переменные,
+                // затем пользовательские функции (они имеют приоритет над встроенными),
+                // затем глобальные переменные (встроенные функции)
                 if let Some(local_index) = self.resolve_local(name) {
                     // Локальная переменная содержит функцию
                     self.chunk.write_with_line(OpCode::LoadLocal(local_index), self.current_line);
-                } else if let Some(&global_index) = self.globals.get(name) {
-                    // Глобальная переменная содержит функцию
+                } else if let Some(function_index) = self.function_names.iter().position(|n| n == name) {
+                    // Пользовательская функция найдена - она имеет приоритет над встроенными
+                    let constant_index = self.chunk.add_constant(Value::Function(function_index));
+                    self.chunk.write_with_line(OpCode::Constant(constant_index), self.current_line);
+                } else if let Some(&global_index) = self.scope.globals.get(name) {
+                    // Глобальная переменная содержит функцию (встроенная функция)
                     self.chunk.write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
                 } else {
-                    // Ищем функцию по имени в списке функций
-                    if let Some(function_index) = self.function_names.iter().position(|n| n == name) {
-                        let constant_index = self.chunk.add_constant(Value::Function(function_index));
-                        self.chunk.write_with_line(OpCode::Constant(constant_index), self.current_line);
+                    // Функция не найдена - это может быть функция, импортированная через import *
+                    // Регистрируем её как глобальную переменную для разрешения во время выполнения
+                    let global_index = if let Some(&idx) = self.scope.globals.get(name) {
+                        idx
                     } else {
-                        // Функция не найдена - это может быть функция, импортированная через import *
-                        // Регистрируем её как глобальную переменную для разрешения во время выполнения
-                        let global_index = if let Some(&idx) = self.globals.get(name) {
-                            idx
-                        } else {
-                            let idx = self.globals.len();
-                            self.globals.insert(name.clone(), idx);
-                            self.chunk.global_names.insert(idx, name.clone());
-                            idx
-                        };
-                        self.chunk.write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
-                    }
+                        let idx = self.scope.globals.len();
+                        self.scope.globals.insert(name.clone(), idx);
+                        self.chunk.global_names.insert(idx, name.clone());
+                        idx
+                    };
+                    self.chunk.write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
                 }
                 
                 // Вызываем функцию с количеством аргументов
@@ -1812,7 +1310,7 @@ impl Compiler {
                 // Если нужно присвоить результат обратно в переменную
                 if let Some(var_name) = var_name_to_assign {
                     // Определяем, глобальная или локальная переменная
-                    let is_local = !self.locals.is_empty() && self.resolve_local(&var_name).is_some();
+                    let is_local = !self.scope.locals.is_empty() && self.resolve_local(&var_name).is_some();
                     
                     if is_local {
                         // Локальная переменная
@@ -1822,11 +1320,11 @@ impl Compiler {
                         self.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
                     } else {
                         // Глобальная переменная
-                        let global_index = if let Some(&idx) = self.globals.get(&var_name) {
+                        let global_index = if let Some(&idx) = self.scope.globals.get(&var_name) {
                             idx
                         } else {
-                            let idx = self.globals.len();
-                            self.globals.insert(var_name.clone(), idx);
+                            let idx = self.scope.globals.len();
+                            self.scope.globals.insert(var_name.clone(), idx);
                             idx
                         };
                         // Сохраняем имя глобальной переменной для использования в JOIN
@@ -1855,6 +1353,20 @@ impl Compiler {
                 // Используем MakeArray, но в VM будем создавать Tuple
                 let arity = elements.len();
                 self.chunk.write_with_line(OpCode::MakeTuple(arity), *line);
+            }
+            Expr::ObjectLiteral { pairs, line } => {
+                // Компилируем пары (ключ, значение) в обратном порядке
+                // На стеке будут: [key1, value1, key2, value2, ...]
+                for (key, value) in pairs.iter().rev() {
+                    // Сначала добавляем ключ как строку
+                    let key_index = self.chunk.add_constant(Value::String(key.clone()));
+                    self.chunk.write_with_line(OpCode::Constant(key_index), *line);
+                    // Затем компилируем значение
+                    self.compile_expr(value)?;
+                }
+                // Создаем объект из пар на стеке
+                let pair_count = pairs.len();
+                self.chunk.write_with_line(OpCode::MakeObject(pair_count), *line);
             }
             Expr::ArrayIndex { array, index, line } => {
                 // Компилируем выражение массива (оно должно быть на стеке первым)
@@ -1924,7 +1436,7 @@ impl Compiler {
                     self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
                     
                     // Находим индекс функции table_suffixes и загружаем её на стек
-                    if let Some(&function_index) = self.globals.get("table_suffixes") {
+                    if let Some(&function_index) = self.scope.globals.get("table_suffixes") {
                         // Загружаем функцию на стек
                         // Порядок на стеке: [left_suffix, right_suffix, table, function]
                         // При Call(3): извлекается function, table, right_suffix, left_suffix
@@ -1994,7 +1506,7 @@ impl Compiler {
                     };
                     
                     // Находим индекс функции
-                    if let Some(&function_index) = self.globals.get(function_name) {
+                    if let Some(&function_index) = self.scope.globals.get(function_name) {
                         // На стеке сейчас: [object, arg_n, ..., arg_2, arg_1]
                         // При вызове функции аргументы извлекаются в обратном порядке: [arg_1, arg_2, ..., arg_n, object]
                         // Но нам нужно [object, arg_1, arg_2, ..., arg_n]
@@ -2133,7 +1645,7 @@ impl Compiler {
                         // Теперь на стеке: [object, arg_1] (для device/save), [object, arg_1, arg_2, ...] (для train) или [object] (для get_device)
                         
                         // Загружаем функцию из ml модуля
-                        if let Some(&ml_index) = self.globals.get("ml") {
+                        if let Some(&ml_index) = self.scope.globals.get("ml") {
                             self.chunk.write_with_line(OpCode::LoadGlobal(ml_index), *line);
                             let method_name_index = self.chunk.add_constant(Value::String(function_name.to_string()));
                             self.chunk.write_with_line(OpCode::Constant(method_name_index), *line);
@@ -2271,1121 +1783,25 @@ impl Compiler {
         Ok(())
     }
 
-    /// Вычисляет размер инструкции в байтах для эталонного алгоритма апгрейда jump-инструкций
-    fn instruction_size(opcode: &OpCode) -> usize {
-        match opcode {
-            // Jump инструкции с относительными смещениями
-            OpCode::Jump8(_) | OpCode::JumpIfFalse8(_) => 2,  // 1 байт opcode + 1 байт смещение
-            OpCode::Jump16(_) | OpCode::JumpIfFalse16(_) => 3, // 1 байт opcode + 2 байта смещение
-            OpCode::Jump32(_) | OpCode::JumpIfFalse32(_) => 5, // 1 байт opcode + 4 байта смещение
-            OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_) => 2, // Временно считаем как Jump8 до финализации
-            
-            // Инструкции с параметрами
-            OpCode::Constant(_) => 2,  // 1 байт opcode + 1 байт индекс константы (usize может быть больше, но упрощаем)
-            OpCode::LoadLocal(_) | OpCode::StoreLocal(_) => 2, // 1 байт opcode + 1 байт индекс
-            OpCode::LoadGlobal(_) | OpCode::StoreGlobal(_) => 2, // 1 байт opcode + 1 байт индекс
-            OpCode::Call(_) => 2, // 1 байт opcode + 1 байт количество аргументов
-            OpCode::MakeArray(_) => 2, // 1 байт opcode + 1 байт размер
-            OpCode::MakeTuple(_) => 2, // 1 байт opcode + 1 байт размер
-            OpCode::MakeArrayDynamic => 1, // 1 байт opcode (размер на стеке) 1 байт opcode + 1 байт количество элементов
-            OpCode::BeginTry(_) => 2, // 1 байт opcode + 1 байт индекс обработчика
-            OpCode::Catch(Some(_)) => 2, // 1 байт opcode + 1 байт тип ошибки
-            OpCode::Catch(None) => 1, // 1 байт opcode
-            OpCode::Throw(Some(_)) => 2, // 1 байт opcode + 1 байт тип ошибки
-            OpCode::Throw(None) => 1, // 1 байт opcode
-            
-            // Все остальные инструкции занимают 1 байт
-            _ => 1,
-        }
-    }
-
-    /// Вычисляет абсолютные адреса всех инструкций с учетом их размеров
-    fn compute_instruction_addresses(&self) -> Vec<usize> {
-        let mut addresses = Vec::with_capacity(self.chunk.code.len());
-        let mut current_addr = 0;
-        
-        for opcode in &self.chunk.code {
-            addresses.push(current_addr);
-            current_addr += Self::instruction_size(opcode);
-        }
-        
-        addresses
-    }
-
-    /// Апгрейдит jump-инструкции до минимально достаточного формата
-    /// Возвращает true если были изменения
-    fn upgrade_jump_instructions(&mut self) -> bool {
-        let addresses = self.compute_instruction_addresses();
-        let mut changed = false;
-        
-        // Адреса меток будут использованы при вычислении смещений
-        
-        // Обрабатываем все pending jumps (JumpLabel и JumpIfFalseLabel)
-        for (jump_index, label_id, is_conditional) in self.pending_jumps.iter() {
-            if *jump_index >= self.chunk.code.len() {
-                continue;
-            }
-            
-            // Получаем адрес целевой метки
-            let dst_instruction_index = *self.labels.get(label_id).unwrap_or(jump_index);
-            if dst_instruction_index >= addresses.len() {
-                continue;
-            }
-            
-            // VM использует индексы инструкций, а не байтовые адреса
-            // IP инкрементируется на 1 после каждой инструкции
-            // Поэтому смещение вычисляется как: offset = dst_index - (src_index + 1)
-            // где +1 - это автоматический инкремент IP после выполнения jump-инструкции
-            let src_index = *jump_index;
-            let dst_index = dst_instruction_index;
-            
-            // Вычисляем относительное смещение в индексах инструкций
-            // offset = dst_index - (src_index + 1), так как IP инкрементируется на 1 после jump
-            let offset = (dst_index as i64 - (src_index as i64 + 1)) as i32;
-            
-            // Определяем текущий размер jump-инструкции (для апгрейда)
-            let current_opcode = &self.chunk.code[*jump_index];
-            
-            // Определяем минимально достаточный формат
-            let new_opcode = if offset >= -128 && offset <= 127 {
-                // Jump8 достаточно
-                if *is_conditional {
-                    OpCode::JumpIfFalse8(offset as i8)
-                } else {
-                    OpCode::Jump8(offset as i8)
-                }
-            } else if offset >= -32768 && offset <= 32767 {
-                // Нужен Jump16
-                if *is_conditional {
-                    OpCode::JumpIfFalse16(offset as i16)
-                } else {
-                    OpCode::Jump16(offset as i16)
-                }
-            } else {
-                // Нужен Jump32
-                if *is_conditional {
-                    OpCode::JumpIfFalse32(offset)
-                } else {
-                    OpCode::Jump32(offset)
-                }
-            };
-            
-            // Проверяем, нужно ли апгрейдить
-            // НЕ заменяем JumpLabel здесь - это делает finalize_jumps
-            if matches!(current_opcode, OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_)) {
-                // Пропускаем JumpLabel - они будут обработаны в finalize_jumps
-                continue;
-            }
-            
-            let new_size = Self::instruction_size(&new_opcode);
-            let current_size = Self::instruction_size(current_opcode);
-            if new_size != current_size {
-                self.chunk.code[*jump_index] = new_opcode;
-                changed = true;
-            } else {
-                // Если размер не изменился, но смещение могло измениться, обновляем
-                match current_opcode {
-                    OpCode::Jump8(_) | OpCode::Jump16(_) | OpCode::Jump32(_) |
-                    OpCode::JumpIfFalse8(_) | OpCode::JumpIfFalse16(_) | OpCode::JumpIfFalse32(_) => {
-                        self.chunk.code[*jump_index] = new_opcode;
-                        // Не помечаем как changed, если размер не изменился
-                    }
-                    _ => {}
-                }
-            }
-        }
-        
-        changed
-    }
-
-    /// Итеративно стабилизирует layout до полной фиксации размеров
-    fn stabilize_layout(&mut self) -> Result<(), LangError> {
-        let mut iterations = 0;
-        const MAX_ITERATIONS: usize = 100; // Защита от бесконечного цикла
-        
-        loop {
-            let changed = self.upgrade_jump_instructions();
-            iterations += 1;
-            
-            if !changed {
-                break; // Layout стабилизирован
-            }
-            
-            if iterations >= MAX_ITERATIONS {
-                return Err(LangError::ParseError {
-                    message: "Layout stabilization failed: too many iterations".to_string(),
-                    line: self.current_line,
-                });
-            }
-        }
-        
-        Ok(())
-    }
-
-    /// Финализирует jump-инструкции: заменяет все JumpLabel на финальные инструкции
-    /// Вызывается после стабилизации layout
-    fn finalize_jumps(&mut self) -> Result<(), LangError> {
-        let addresses = self.compute_instruction_addresses();
-        
-        // Заменяем все оставшиеся JumpLabel на финальные инструкции
-        // Обрабатываем все pending_jumps, а также ищем все JumpLabel в коде
-        let mut jumps_to_finalize = self.pending_jumps.clone();
-        
-        // Также ищем все JumpLabel в коде, которые могут не быть в pending_jumps
-        for (jump_index, opcode) in self.chunk.code.iter().enumerate() {
-            match opcode {
-                OpCode::JumpLabel(label_id) => {
-                    if !jumps_to_finalize.iter().any(|(idx, _, _)| *idx == jump_index) {
-                        jumps_to_finalize.push((jump_index, *label_id, false));
-                    }
-                }
-                OpCode::JumpIfFalseLabel(label_id) => {
-                    if !jumps_to_finalize.iter().any(|(idx, _, _)| *idx == jump_index) {
-                        jumps_to_finalize.push((jump_index, *label_id, true));
-                    }
-                }
-                _ => {}
-            }
-        }
-        
-        for (jump_index, label_id, is_conditional) in jumps_to_finalize.iter() {
-            if *jump_index >= self.chunk.code.len() {
-                continue;
-            }
-            
-            let current_opcode = &self.chunk.code[*jump_index];
-            
-            // Пропускаем, если уже финализировано
-            if !matches!(current_opcode, OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_)) {
-                continue;
-            }
-            
-            // Получаем адрес целевой метки
-            let dst_instruction_index = *self.labels.get(label_id)
-                .ok_or_else(|| LangError::ParseError {
-                    message: format!("Label {} not found", label_id),
-                    line: self.current_line,
-                })?;
-            
-            // Если метка указывает за пределы массива, это означает, что метка помечена после последней инструкции
-            // В этом случае используем индекс последней инструкции
-            let dst_instruction_index = if dst_instruction_index >= self.chunk.code.len() {
-                if self.chunk.code.is_empty() {
-            return Err(LangError::ParseError {
-                        message: format!("Label {} points to empty code", label_id),
-                line: self.current_line,
-            });
-        }
-                self.chunk.code.len() - 1
-            } else {
-                dst_instruction_index
-            };
-            
-            if dst_instruction_index >= addresses.len() {
-                return Err(LangError::ParseError {
-                    message: format!("Label {} instruction index {} >= addresses len {} (code len: {})", 
-                        label_id, dst_instruction_index, addresses.len(), self.chunk.code.len()),
-                    line: self.current_line,
-                });
-            }
-            
-            // VM использует индексы инструкций, а не байтовые адреса
-            // IP инкрементируется на 1 после каждой инструкции
-            // Поэтому смещение вычисляется как: offset = dst_index - (src_index + 1)
-            let src_index = *jump_index;
-            let dst_index = dst_instruction_index;
-            
-            // Вычисляем относительное смещение в индексах инструкций
-            // offset = dst_index - (src_index + 1), так как IP инкрементируется на 1 после jump
-            let offset = (dst_index as i64 - (src_index as i64 + 1)) as i32;
-            
-            // Определяем финальную инструкцию
-            let final_opcode = if offset >= -128 && offset <= 127 {
-                if *is_conditional {
-                    OpCode::JumpIfFalse8(offset as i8)
-                } else {
-                    OpCode::Jump8(offset as i8)
-                }
-            } else if offset >= -32768 && offset <= 32767 {
-                if *is_conditional {
-                    OpCode::JumpIfFalse16(offset as i16)
-                } else {
-                    OpCode::Jump16(offset as i16)
-                }
-            } else {
-                if *is_conditional {
-                    OpCode::JumpIfFalse32(offset)
-                } else {
-                    OpCode::Jump32(offset)
-                }
-            };
-            
-            self.chunk.code[*jump_index] = final_opcode;
-        }
-        
-        // Очищаем только pending_jumps, но НЕ очищаем labels и label_counter,
-        // так как они могут использоваться в других функциях или в главном скрипте
-        // Метки будут очищены при компиляции следующей функции или в конце компиляции главного скрипта
-        self.pending_jumps.clear();
-        
-        Ok(())
-    }
-    
-    /// Очищает все временные структуры меток (вызывается в конце компиляции)
-    fn clear_labels(&mut self) {
-        self.labels.clear();
-        self.label_counter = 0;
-        self.pending_jumps.clear();
-    }
-
-    /// Создает новую метку и возвращает её ID
-    fn create_label(&mut self) -> usize {
-        let label_id = self.label_counter;
-        self.label_counter += 1;
-        label_id
-    }
-
-    /// Помечает текущую позицию инструкции меткой
-    /// Метка указывает на следующую инструкцию, которая будет добавлена
-    fn mark_label(&mut self, label_id: usize) {
-        let instruction_index = self.chunk.code.len();
-        // Проверяем, что метка не указывает за пределы массива
-        if instruction_index > self.chunk.code.len() {
-            // Это не должно происходить, но на всякий случай
-            return;
-        }
-        self.labels.insert(label_id, instruction_index);
-    }
-
-    /// Создает jump-инструкцию с меткой (для эталонного алгоритма)
-    fn emit_jump(&mut self, is_conditional: bool, label_id: usize) -> Result<usize, LangError> {
-        let jump_index = self.chunk.code.len();
-        let opcode = if is_conditional {
-            OpCode::JumpIfFalseLabel(label_id)
-        } else {
-            OpCode::JumpLabel(label_id)
-        };
-        self.chunk.write_with_line(opcode, self.current_line);
-        self.pending_jumps.push((jump_index, label_id, is_conditional));
-        Ok(jump_index)
-    }
-
-
-    /// Создает jump-инструкцию для цикла (переход к началу цикла)
-    /// Использует метку для эталонного алгоритма
-    fn emit_loop(&mut self, loop_label_id: usize) -> Result<(), LangError> {
-        self.emit_jump(false, loop_label_id)?;
-        Ok(())
-    }
 
     fn begin_scope(&mut self) {
-        self.locals.push(std::collections::HashMap::new());
+        self.scope.begin_scope();
     }
 
     fn end_scope(&mut self) {
-        if let Some(scope) = self.locals.pop() {
-            // Уменьшаем счетчик локальных переменных на количество переменных в этой области
-            self.local_count -= scope.len();
-        }
+        self.scope.end_scope();
     }
 
     fn declare_local(&mut self, name: &str) -> usize {
-        let index = self.local_count;
-        if let Some(scope) = self.locals.last_mut() {
-            scope.insert(name.to_string(), index);
-        }
-        self.local_count += 1;
-        index
+        self.scope.declare_local(name)
     }
 
-    fn resolve_local(&mut self, name: &str) -> Option<usize> {
-        // Ищем переменную в текущих областях видимости (от последней к первой)
-        for scope in self.locals.iter().rev() {
-            if let Some(&index) = scope.get(name) {
-                return Some(index);
-            }
-        }
-        None
+    fn resolve_local(&self, name: &str) -> Option<usize> {
+        self.scope.resolve_local(name)
     }
 
-    /// Подсчитывает количество фиксированных переменных (не wildcard, не variadic) в паттерне распаковки
-    /// Для вложенных паттернов считает только переменные текущего уровня (вложенный паттерн = 1 элемент)
-    fn count_unpack_variables(&self, pattern: &[UnpackPattern]) -> usize {
-        let mut count = 0;
-        for pat in pattern {
-            match pat {
-                UnpackPattern::Variable(_) => count += 1,
-                UnpackPattern::Wildcard => {}, // Wildcard не считается
-                UnpackPattern::Variadic(_) | UnpackPattern::VariadicWildcard => {
-                    // Variadic не считается в фиксированных переменных
-                }
-                UnpackPattern::Nested(_) => count += 1, // Вложенный паттерн считается как один элемент
-            }
-        }
-        count
-    }
     
 
-    /// Объявляет переменные из паттерна распаковки и возвращает их локальные индексы
-    fn declare_unpack_pattern_variables(&mut self, pattern: &[UnpackPattern], line: usize) -> Result<Vec<Option<usize>>, LangError> {
-        let mut var_locals = Vec::new();
-        for pat in pattern {
-            match pat {
-                UnpackPattern::Variable(name) => {
-                    let index = self.declare_local(name);
-                    var_locals.push(Some(index));
-                }
-                UnpackPattern::Wildcard => {
-                    // Wildcard не создает переменную
-                    var_locals.push(None);
-                }
-                UnpackPattern::Variadic(name) => {
-                    // Variadic переменная создает переменную
-                    let index = self.declare_local(name);
-                    var_locals.push(Some(index));
-                }
-                UnpackPattern::VariadicWildcard => {
-                    // Variadic wildcard не создает переменную
-                    var_locals.push(None);
-                }
-                UnpackPattern::Nested(nested) => {
-                    // Рекурсивно обрабатываем вложенные паттерны
-                    let nested_locals = self.declare_unpack_pattern_variables(nested, line)?;
-                    var_locals.extend(nested_locals);
-                }
-            }
-        }
-        Ok(var_locals)
-    }
 
-    /// Компилирует код для распаковки значения в переменные
-    /// Предполагается, что значение находится на вершине стека
-    fn compile_unpack_pattern(&mut self, pattern: &[UnpackPattern], var_locals: &[Option<usize>], expected_count: usize, line: usize) -> Result<(), LangError> {
-        // Сохраняем элемент во временную переменную
-        let temp_local = self.declare_local("__unpack_temp");
-        self.chunk.write_with_line(OpCode::StoreLocal(temp_local), line);
-        
-        // Проверяем минимальную длину элемента (M >= N_fixed)
-        // Загружаем элемент
-        self.chunk.write_with_line(OpCode::LoadLocal(temp_local), line);
-        // Получаем длину
-        self.chunk.write_with_line(OpCode::GetArrayLength, line);
-        // Загружаем минимальную требуемую длину (N_fixed)
-        let n_fixed_const = self.chunk.add_constant(Value::Number(expected_count as f64));
-        self.chunk.write_with_line(OpCode::Constant(n_fixed_const), line);
-        // Сравниваем: length < N_fixed?
-        self.chunk.write_with_line(OpCode::Less, line);
-        
-        // Если length >= N_fixed, пропускаем ошибку
-        let skip_error_label = self.create_label();
-        self.emit_jump(true, skip_error_label)?;
-        
-        // Выбрасываем ошибку: длина меньше минимально требуемой
-        let error_msg = format!("Unpack pattern requires at least {} elements, but got array with length less than {}", expected_count, expected_count);
-        let error_msg_index = self.chunk.add_constant(Value::String(error_msg));
-        self.chunk.write_with_line(OpCode::Constant(error_msg_index), line);
-        self.chunk.write_with_line(OpCode::Throw(None), line);
-        
-        // Метка для пропуска ошибки
-        self.mark_label(skip_error_label);
-        
-        // Распаковываем значения
-        // var_locals соответствует структуре pattern, итерируем их вместе
-        let mut var_index = 0;
-        self.compile_unpack_pattern_recursive(pattern, var_locals, &mut var_index, temp_local, line)?;
-        
-        Ok(())
-    }
-
-    /// Собирает имена переменных из паттерна распаковки
-    fn collect_unpack_pattern_variables(&self, pattern: &[UnpackPattern], vars: &mut std::collections::HashSet<String>) {
-        for pat in pattern {
-            match pat {
-                UnpackPattern::Variable(name) => {
-                    vars.insert(name.clone());
-                }
-                UnpackPattern::Wildcard => {}
-                UnpackPattern::Variadic(name) => {
-                    vars.insert(name.clone());
-                }
-                UnpackPattern::VariadicWildcard => {}
-                UnpackPattern::Nested(nested) => {
-                    self.collect_unpack_pattern_variables(nested, vars);
-                }
-            }
-        }
-    }
-
-    /// Рекурсивно компилирует распаковку вложенных паттернов
-    fn compile_unpack_pattern_recursive(&mut self, pattern: &[UnpackPattern], var_locals: &[Option<usize>], var_index: &mut usize, source_local: usize, line: usize) -> Result<(), LangError> {
-        // Находим позицию variadic в паттерне (если есть)
-        let variadic_pos = pattern.iter().position(|p| matches!(p, UnpackPattern::Variadic(_) | UnpackPattern::VariadicWildcard));
-        
-        // Обрабатываем фиксированные переменные до variadic
-        let end_pos = variadic_pos.unwrap_or(pattern.len());
-        for (i, pat) in pattern[..end_pos].iter().enumerate() {
-            match pat {
-                UnpackPattern::Variable(_) => {
-                    // Получаем значение по индексу
-                    self.chunk.write_with_line(OpCode::LoadLocal(source_local), line);
-                    let index_const = self.chunk.add_constant(Value::Number(*var_index as f64));
-                    self.chunk.write_with_line(OpCode::Constant(index_const), line);
-                    self.chunk.write_with_line(OpCode::GetArrayElement, line);
-                    
-                    // Сохраняем в переменную
-                    if let Some(local_index) = var_locals.get(i).and_then(|&x| x) {
-                        self.chunk.write_with_line(OpCode::StoreLocal(local_index), line);
-                    }
-                    *var_index += 1;
-                }
-                UnpackPattern::Wildcard => {
-                    // Получаем значение, но не сохраняем (просто удаляем со стека)
-                    self.chunk.write_with_line(OpCode::LoadLocal(source_local), line);
-                    let index_const = self.chunk.add_constant(Value::Number(*var_index as f64));
-                    self.chunk.write_with_line(OpCode::Constant(index_const), line);
-                    self.chunk.write_with_line(OpCode::GetArrayElement, line);
-                    self.chunk.write_with_line(OpCode::Pop, line); // Удаляем значение
-                    *var_index += 1;
-                }
-                UnpackPattern::Variadic(_) | UnpackPattern::VariadicWildcard => {
-                    // Не должно быть здесь, так как мы обрабатываем только до variadic
-                    unreachable!("Variadic should be handled separately");
-                }
-                UnpackPattern::Nested(nested) => {
-                    // Для вложенной распаковки нужно получить элемент и рекурсивно распаковать
-                    self.chunk.write_with_line(OpCode::LoadLocal(source_local), line);
-                    let index_const = self.chunk.add_constant(Value::Number(*var_index as f64));
-                    self.chunk.write_with_line(OpCode::Constant(index_const), line);
-                    self.chunk.write_with_line(OpCode::GetArrayElement, line);
-                    
-                    // Сохраняем вложенный элемент во временную переменную
-                    let nested_temp = self.declare_local("__unpack_nested_temp");
-                    self.chunk.write_with_line(OpCode::StoreLocal(nested_temp), line);
-                    
-                    // Упрощенный подход: для вложенных паттернов создаем новые локальные переменные
-                    let nested_var_locals = self.declare_unpack_pattern_variables(nested, line)?;
-                    let mut nested_var_index = 0;
-                    self.compile_unpack_pattern_recursive(nested, &nested_var_locals, &mut nested_var_index, nested_temp, line)?;
-                    
-                    *var_index += 1;
-                }
-            }
-        }
-        
-        // Обрабатываем variadic (если есть)
-        if let Some(pos) = variadic_pos {
-            let variadic_pattern = &pattern[pos];
-            match variadic_pattern {
-                UnpackPattern::Variadic(_) => {
-                    // Создаем массив из оставшихся элементов
-                    // 1. Вычисляем count = length - var_index
-                    self.chunk.write_with_line(OpCode::LoadLocal(source_local), line);
-                    self.chunk.write_with_line(OpCode::GetArrayLength, line);
-                    let var_index_const = self.chunk.add_constant(Value::Number(*var_index as f64));
-                    self.chunk.write_with_line(OpCode::Constant(var_index_const), line);
-                    self.chunk.write_with_line(OpCode::Sub, line);
-                    // Теперь на стеке: count
-                    
-                    // Сохраняем count во временную переменную
-                    let count_temp = self.declare_local("__variadic_count");
-                    self.chunk.write_with_line(OpCode::StoreLocal(count_temp), line);
-                    
-                    // 2. Загружаем элементы от length-1 до var_index (в обратном порядке индексов)
-                    // чтобы они были на стеке в правильном порядке для MakeArrayDynamic
-                    let loop_start_label = self.create_label();
-                    let loop_end_label = self.create_label();
-                    let loop_index_temp = self.declare_local("__variadic_loop_idx");
-                    
-                    // Начинаем с length-1
-                    self.chunk.write_with_line(OpCode::LoadLocal(source_local), line);
-                    self.chunk.write_with_line(OpCode::GetArrayLength, line);
-                    let one_const = self.chunk.add_constant(Value::Number(1.0));
-                    self.chunk.write_with_line(OpCode::Constant(one_const), line);
-                    self.chunk.write_with_line(OpCode::Sub, line);
-                    self.chunk.write_with_line(OpCode::StoreLocal(loop_index_temp), line);
-                    
-                    // Начало цикла
-                    self.mark_label(loop_start_label);
-                    
-                    // Проверяем условие: loop_index >= var_index
-                    self.chunk.write_with_line(OpCode::LoadLocal(loop_index_temp), line);
-                    self.chunk.write_with_line(OpCode::Constant(var_index_const), line);
-                    self.chunk.write_with_line(OpCode::GreaterEqual, line);
-                    
-                    // Если условие false, выходим из цикла
-                    self.emit_jump(true, loop_end_label)?;
-                    
-                    // Загружаем элемент по индексу loop_index
-                    self.chunk.write_with_line(OpCode::LoadLocal(source_local), line);
-                    self.chunk.write_with_line(OpCode::LoadLocal(loop_index_temp), line);
-                    self.chunk.write_with_line(OpCode::GetArrayElement, line);
-                    
-                    // Декрементируем loop_index
-                    self.chunk.write_with_line(OpCode::LoadLocal(loop_index_temp), line);
-                    self.chunk.write_with_line(OpCode::Constant(one_const), line);
-                    self.chunk.write_with_line(OpCode::Sub, line);
-                    self.chunk.write_with_line(OpCode::StoreLocal(loop_index_temp), line);
-                    
-                    // Переход к началу цикла
-                    self.emit_loop(loop_start_label)?;
-                    
-                    // Конец цикла
-                    self.mark_label(loop_end_label);
-                    
-                    // 3. Создаем массив динамически: загружаем count и используем MakeArrayDynamic
-                    self.chunk.write_with_line(OpCode::LoadLocal(count_temp), line);
-                    self.chunk.write_with_line(OpCode::MakeArrayDynamic, line);
-                    
-                    // 4. Сохраняем в variadic переменную
-                    if let Some(local_index) = var_locals.get(pos).and_then(|&x| x) {
-                        self.chunk.write_with_line(OpCode::StoreLocal(local_index), line);
-                    }
-                }
-                UnpackPattern::VariadicWildcard => {
-                    // Variadic wildcard: пропускаем оставшиеся элементы
-                    // Ничего не делаем, элементы уже пропущены
-                }
-                _ => {}
-            }
-        }
-        
-        Ok(())
-    }
-    
-    /// Находит все переменные, используемые в выражениях и statements
-    fn find_used_variables_in_expr(&self, expr: &Expr) -> std::collections::HashSet<String> {
-        let mut vars = std::collections::HashSet::new();
-        match expr {
-            Expr::Variable { name, .. } => {
-                vars.insert(name.clone());
-            }
-            Expr::Assign { name, value, .. } => {
-                vars.insert(name.clone());
-                vars.extend(self.find_used_variables_in_expr(value));
-            }
-            Expr::UnpackAssign { names, value, .. } => {
-                for name in names {
-                    vars.insert(name.clone());
-                }
-                vars.extend(self.find_used_variables_in_expr(value));
-            }
-            Expr::Binary { left, right, .. } => {
-                vars.extend(self.find_used_variables_in_expr(left));
-                vars.extend(self.find_used_variables_in_expr(right));
-            }
-            Expr::Unary { right, .. } => {
-                vars.extend(self.find_used_variables_in_expr(right));
-            }
-            Expr::Call { args, .. } => {
-                for arg in args {
-                    match arg {
-                        Arg::Positional(expr) => {
-                            vars.extend(self.find_used_variables_in_expr(expr));
-                        }
-                        Arg::Named { value, .. } => {
-                            vars.extend(self.find_used_variables_in_expr(value));
-                        }
-                    }
-                }
-            }
-            Expr::ArrayLiteral { elements, .. } => {
-                for elem in elements {
-                    vars.extend(self.find_used_variables_in_expr(elem));
-                }
-            }
-            Expr::TupleLiteral { elements, .. } => {
-                for elem in elements {
-                    vars.extend(self.find_used_variables_in_expr(elem));
-                }
-            }
-            Expr::ArrayIndex { array, index, .. } => {
-                vars.extend(self.find_used_variables_in_expr(array));
-                vars.extend(self.find_used_variables_in_expr(index));
-            }
-            Expr::Property { object, .. } => {
-                vars.extend(self.find_used_variables_in_expr(object));
-            }
-            Expr::MethodCall { object, args, .. } => {
-                vars.extend(self.find_used_variables_in_expr(object));
-                for arg in args {
-                    match arg {
-                        Arg::Positional(expr) => {
-                            vars.extend(self.find_used_variables_in_expr(expr));
-                        }
-                        Arg::Named { value, .. } => {
-                            vars.extend(self.find_used_variables_in_expr(value));
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-        vars
-    }
-    
-    /// Находит все переменные, используемые в statements
-    fn find_used_variables_in_stmt(&self, stmt: &Stmt) -> std::collections::HashSet<String> {
-        let mut vars = std::collections::HashSet::new();
-        match stmt {
-            Stmt::Import { .. } => {
-                // Import statements don't use variables
-            }
-            Stmt::Let { value, .. } => {
-                vars.extend(self.find_used_variables_in_expr(value));
-            }
-            Stmt::Expr { expr, .. } => {
-                vars.extend(self.find_used_variables_in_expr(expr));
-            }
-            Stmt::If { condition, then_branch, else_branch, .. } => {
-                vars.extend(self.find_used_variables_in_expr(condition));
-                for stmt in then_branch {
-                    vars.extend(self.find_used_variables_in_stmt(stmt));
-                }
-                if let Some(else_branch) = else_branch {
-                    for stmt in else_branch {
-                        vars.extend(self.find_used_variables_in_stmt(stmt));
-                    }
-                }
-            }
-            Stmt::While { condition, body, .. } => {
-                vars.extend(self.find_used_variables_in_expr(condition));
-                for stmt in body {
-                    vars.extend(self.find_used_variables_in_stmt(stmt));
-                }
-            }
-            Stmt::For { iterable, body, .. } => {
-                vars.extend(self.find_used_variables_in_expr(iterable));
-                for stmt in body {
-                    vars.extend(self.find_used_variables_in_stmt(stmt));
-                }
-            }
-            Stmt::Function { body, .. } => {
-                for stmt in body {
-                    vars.extend(self.find_used_variables_in_stmt(stmt));
-                }
-            }
-            Stmt::Return { value, .. } => {
-                if let Some(expr) = value {
-                    vars.extend(self.find_used_variables_in_expr(expr));
-                }
-            }
-            Stmt::Break { .. } => {
-                // break не использует переменные
-            }
-            Stmt::Continue { .. } => {
-                // continue не использует переменные
-            }
-            Stmt::Try { try_block, catch_blocks, else_block, .. } => {
-                // Находим переменные в try блоке
-                for stmt in try_block {
-                    vars.extend(self.find_used_variables_in_stmt(stmt));
-                }
-                // Находим переменные в catch блоках
-                for catch_block in catch_blocks {
-                    for stmt in &catch_block.body {
-                        vars.extend(self.find_used_variables_in_stmt(stmt));
-                    }
-                }
-                // Находим переменные в else блоке (если есть)
-                if let Some(else_block) = else_block {
-                    for stmt in else_block {
-                        vars.extend(self.find_used_variables_in_stmt(stmt));
-                    }
-                }
-            }
-            Stmt::Throw { value, .. } => {
-                // Находим переменные в выражении throw
-                vars.extend(self.find_used_variables_in_expr(value));
-            }
-        }
-        vars
-    }
-    
-    /// Находит все переменные, объявленные локально в теле функции
-    /// (через let и for, рекурсивно проверяя вложенные блоки)
-    fn find_locally_declared_variables(&self, body: &[Stmt]) -> std::collections::HashSet<String> {
-        let mut declared_vars = std::collections::HashSet::new();
-        
-        for stmt in body {
-            match stmt {
-                Stmt::Let { name, is_global, .. } => {
-                    // Добавляем только локальные переменные (не глобальные)
-                    if !is_global {
-                        declared_vars.insert(name.clone());
-                    }
-                }
-                Stmt::For { pattern, body, .. } => {
-                    // Переменные цикла for объявляются локально
-                    self.collect_unpack_pattern_variables(pattern, &mut declared_vars);
-                    // Рекурсивно проверяем тело цикла
-                    declared_vars.extend(self.find_locally_declared_variables(body));
-                }
-                Stmt::If { then_branch, else_branch, .. } => {
-                    // Рекурсивно проверяем ветки if
-                    declared_vars.extend(self.find_locally_declared_variables(then_branch));
-                    if let Some(else_branch) = else_branch {
-                        declared_vars.extend(self.find_locally_declared_variables(else_branch));
-                    }
-                }
-                Stmt::While { body, .. } => {
-                    // Рекурсивно проверяем тело while
-                    declared_vars.extend(self.find_locally_declared_variables(body));
-                }
-                Stmt::Function { body, .. } => {
-                    // Рекурсивно проверяем тело вложенной функции
-                    declared_vars.extend(self.find_locally_declared_variables(body));
-                }
-                Stmt::Try { try_block, catch_blocks, else_block, .. } => {
-                    // Рекурсивно проверяем try блок
-                    declared_vars.extend(self.find_locally_declared_variables(try_block));
-                    // Рекурсивно проверяем catch блоки
-                    for catch_block in catch_blocks {
-                        declared_vars.extend(self.find_locally_declared_variables(&catch_block.body));
-                    }
-                    // Рекурсивно проверяем else блок (если есть)
-                    if let Some(else_block) = else_block {
-                        declared_vars.extend(self.find_locally_declared_variables(else_block));
-                    }
-                }
-                _ => {
-                    // Expr, Return, Break, Continue не объявляют переменные
-                }
-            }
-        }
-        
-        declared_vars
-    }
-    
-    /// Находит переменные, которые используются в теле функции, но не объявлены в ней
-    /// (т.е. захваченные из родительских функций)
-    fn find_captured_variables(
-        &self,
-        body: &[Stmt],
-        parent_locals: &[std::collections::HashMap<String, usize>],
-        params: &[String],
-    ) -> Vec<String> {
-        let mut used_vars = std::collections::HashSet::new();
-        for stmt in body {
-            used_vars.extend(self.find_used_variables_in_stmt(stmt));
-        }
-        
-        // Исключаем параметры функции
-        let param_set: std::collections::HashSet<String> = params.iter().cloned().collect();
-        used_vars.retain(|v| !param_set.contains(v));
-        
-        // Находим все переменные, объявленные локально в теле функции
-        let locally_declared = self.find_locally_declared_variables(body);
-        
-        // Исключаем локально объявленные переменные из проверки захвата
-        // Они локальные, не требуют захвата из родительских областей
-        used_vars.retain(|v| !locally_declared.contains(v));
-        
-        // Ищем переменные, которые используются, но не найдены в текущих областях видимости
-        // но найдены в родительских областях видимости
-        let mut captured = Vec::new();
-        
-        for var_name in &used_vars {
-            // Проверяем, найдена ли переменная в текущей области видимости функции
-            // (только в последней области, которая была создана для этой функции)
-            // НЕ проверяем в родительских областях, которые все еще в self.locals
-            let found_in_current_scope = self.locals.last()
-                .map(|scope| scope.contains_key(var_name))
-                .unwrap_or(false);
-            
-            if !found_in_current_scope {
-                // Проверяем, найдена ли переменная в родительских областях видимости
-                let found_in_parent = parent_locals.iter().any(|scope| scope.contains_key(var_name));
-            
-                if found_in_parent {
-                    captured.push(var_name.clone());
-                }
-            }
-        }
-        
-        captured
-    }
-
-    /// Оптимизация: вычисляет константные выражения во время компиляции
-    fn evaluate_constant_expr(&self, expr: &Expr) -> Result<Option<Value>, LangError> {
-        match expr {
-            Expr::Literal { value, .. } => Ok(Some(value.clone())),
-            Expr::ArrayLiteral { .. } => Ok(None), // Не можем вычислить во время компиляции
-            Expr::TupleLiteral { .. } => Ok(None), // Не можем вычислить во время компиляции
-            Expr::Property { .. } => Ok(None), // Не можем вычислить во время компиляции
-            Expr::MethodCall { .. } => Ok(None), // Не можем вычислить во время компиляции
-            Expr::Binary { left, op, right, .. } => {
-                // Пытаемся вычислить бинарное выражение, если оба операнда константы
-                let left_val = self.evaluate_constant_expr(left)?;
-                let right_val = self.evaluate_constant_expr(right)?;
-                
-                if let (Some(l), Some(r)) = (left_val, right_val) {
-                    match op {
-                        TokenKind::Plus => {
-                            match (l, r) {
-                                (Value::Number(n1), Value::Number(n2)) => Ok(Some(Value::Number(n1 + n2))),
-                                (Value::String(s1), Value::String(s2)) => Ok(Some(Value::String(format!("{}{}", s1, s2)))),
-                                (Value::String(s), Value::Number(n)) => Ok(Some(Value::String(format!("{}{}", s, n)))),
-                                (Value::Number(n), Value::String(s)) => Ok(Some(Value::String(format!("{}{}", n, s)))),
-                                _ => Ok(None),
-                            }
-                        }
-                        TokenKind::Minus => {
-                            if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
-                                Ok(Some(Value::Number(n1 - n2)))
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                        TokenKind::Star => {
-                            match (&l, &r) {
-                                (Value::Number(n1), Value::Number(n2)) => Ok(Some(Value::Number(n1 * n2))),
-                                (Value::String(s), Value::Number(n)) => {
-                                    let count = *n as i64;
-                                    if count <= 0 {
-                                        Ok(Some(Value::String(String::new())))
-                                    } else {
-                                        Ok(Some(Value::String(s.repeat(count as usize))))
-                                    }
-                                }
-                                (Value::Number(n), Value::String(s)) => {
-                                    let count = *n as i64;
-                                    if count <= 0 {
-                                        Ok(Some(Value::String(String::new())))
-                                    } else {
-                                        Ok(Some(Value::String(s.repeat(count as usize))))
-                                    }
-                                }
-                                _ => Ok(None),
-                            }
-                        }
-                        TokenKind::Slash => {
-                            if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
-                                if n2 == 0.0 {
-                                    // Don't constant-fold division by zero - let it be a runtime error
-                                    // so we can provide proper stack traces
-                                    return Ok(None);
-                                }
-                                Ok(Some(Value::Number(n1 / n2)))
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                        TokenKind::SlashSlash => {
-                            if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
-                                if n2 == 0.0 {
-                                    return Ok(None);
-                                }
-                                Ok(Some(Value::Number((n1 / n2).floor())))
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                        TokenKind::EqualEqual => Ok(Some(Value::Bool(l == r))),
-                        TokenKind::BangEqual => Ok(Some(Value::Bool(l != r))),
-                        TokenKind::Greater => {
-                            if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
-                                Ok(Some(Value::Bool(n1 > n2)))
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                        TokenKind::Less => {
-                            if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
-                                Ok(Some(Value::Bool(n1 < n2)))
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                        TokenKind::GreaterEqual => {
-                            if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
-                                Ok(Some(Value::Bool(n1 >= n2)))
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                        TokenKind::LessEqual => {
-                            if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
-                                Ok(Some(Value::Bool(n1 <= n2)))
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                        _ => Ok(None),
-                    }
-                } else {
-                    Ok(None)
-                }
-            }
-            Expr::Unary { op, right, .. } => {
-                let right_val = self.evaluate_constant_expr(right)?;
-                if let Some(r) = right_val {
-                    match op {
-                        TokenKind::Minus => {
-                            if let Value::Number(n) = r {
-                                Ok(Some(Value::Number(-n)))
-                            } else {
-                                Ok(None)
-                            }
-                        }
-                        TokenKind::Bang => {
-                            Ok(Some(Value::Bool(!r.is_truthy())))
-                        }
-                        _ => Ok(None),
-                    }
-                } else {
-                    Ok(None)
-                }
-            }
-            _ => Ok(None), // Переменные, вызовы функций и присваивания не могут быть вычислены во время компиляции
-        }
-    }
-
-    fn compile_try(
-        &mut self,
-        try_block: &[Stmt],
-        catch_blocks: &[crate::parser::ast::CatchBlock],
-        else_block: Option<&[Stmt]>,
-        line: usize,
-    ) -> Result<(), LangError> {
-        // Сохраняем текущую высоту стека
-        let stack_height = self.chunk.code.len();
-        
-        // Создаем обработчик исключений
-        let mut handler = ExceptionHandler {
-            catch_ips: Vec::new(),
-            error_types: Vec::new(),
-            error_var_slots: Vec::new(),
-            else_ip: None,
-            stack_height,
-        };
-        
-        // Начинаем новую область видимости для try блока
-        self.begin_scope();
-        
-        // Генерируем BeginTry (пока без индекса обработчика, патчим позже)
-        let begin_try_ip = self.chunk.code.len();
-        self.chunk.write_with_line(OpCode::BeginTry(0), line); // Временное значение
-        
-        // Компилируем try блок
-        for stmt in try_block {
-            self.compile_stmt(stmt)?;
-        }
-        
-        // Генерируем EndTry
-        self.chunk.write_with_line(OpCode::EndTry, line);
-        
-        // Завершаем область видимости try блока
-        self.end_scope();
-        
-        // Создаем метки для try/catch блоков
-        let after_try_label = self.create_label();
-        let after_catch_label = if else_block.is_some() {
-            Some(self.create_label())
-        } else {
-            None
-        };
-        
-        // Добавляем Jump после EndTry, чтобы пропустить catch блоки, если ошибки не было
-        self.emit_jump(false, after_try_label)?;
-        
-        // Компилируем catch блоки
-        for catch_block in catch_blocks {
-            // Сохраняем IP начала catch блока
-            let catch_ip = self.chunk.code.len();
-            handler.catch_ips.push(catch_ip);
-            
-            // Определяем тип ошибки
-            let error_type_index = if let Some(ref error_type_name) = catch_block.error_type {
-                Some(self.get_error_type_index(error_type_name))
-            } else {
-                None // catch всех
-            };
-            handler.error_types.push(error_type_index);
-            
-            // Если есть переменная ошибки, создаем для неё слот
-            let error_var_slot = if let Some(ref error_var) = catch_block.error_var {
-                self.begin_scope();
-                let slot = self.declare_local(error_var);
-                Some(slot)
-            } else {
-                None
-            };
-            handler.error_var_slots.push(error_var_slot);
-            
-            // Генерируем Catch опкод
-            self.chunk.write_with_line(
-                OpCode::Catch(error_type_index),
-                catch_block.line,
-            );
-            
-            // Компилируем тело catch блока
-            for stmt in &catch_block.body {
-                self.compile_stmt(stmt)?;
-            }
-            
-            // Генерируем EndCatch
-            self.chunk.write_with_line(OpCode::EndCatch, catch_block.line);
-            
-            // Завершаем область видимости catch блока
-            if error_var_slot.is_some() {
-                self.end_scope();
-            }
-            
-            // Добавляем Jump после EndCatch, чтобы пропустить else блок
-            // (catch блок уже обработал ошибку, else блок не нужен)
-            if let Some(ref after_catch_label) = after_catch_label {
-                self.emit_jump(false, *after_catch_label)?;
-            }
-        }
-        
-        // Помечаем метку после try (начало catch блоков)
-        self.mark_label(after_try_label);
-        
-        // Компилируем else блок (если есть)
-        if let Some(else_block) = else_block {
-            let else_ip = self.chunk.code.len();
-            handler.else_ip = Some(else_ip);
-            
-            self.begin_scope();
-            for stmt in else_block {
-                self.compile_stmt(stmt)?;
-            }
-            self.end_scope();
-            
-            // Помечаем метку после catch блоков (если есть else)
-            if let Some(ref after_catch_label) = after_catch_label {
-                self.mark_label(*after_catch_label);
-            }
-        }
-        
-        // Добавляем обработчик в стек компилятора
-        let handler_index = self.exception_handlers.len();
-        self.exception_handlers.push(handler.clone());
-        
-        // Сохраняем обработчик в chunk
-        let handler_info = crate::bytecode::ExceptionHandlerInfo {
-            catch_ips: handler.catch_ips.clone(),
-            error_types: handler.error_types.clone(),
-            error_var_slots: handler.error_var_slots.clone(),
-            else_ip: handler.else_ip,
-            stack_height: handler.stack_height,
-        };
-        self.chunk.exception_handlers.push(handler_info);
-        
-        // Копируем таблицу типов ошибок в chunk (если еще не скопирована)
-        if self.chunk.error_type_table.is_empty() {
-            self.chunk.error_type_table = self.error_type_table.clone();
-        }
-        
-        // Патчим BeginTry с правильным индексом обработчика
-        if let Some(OpCode::BeginTry(_)) = self.chunk.code.get_mut(begin_try_ip) {
-            *self.chunk.code.get_mut(begin_try_ip).unwrap() = OpCode::BeginTry(handler_index);
-        }
-        
-        // Генерируем PopExceptionHandler в конце
-        self.chunk.write_with_line(OpCode::PopExceptionHandler, line);
-        
-        Ok(())
-    }
 }
 

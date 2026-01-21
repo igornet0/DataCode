@@ -78,6 +78,10 @@ impl Lexer {
                 let token = self.make_token(TokenKind::Dot);
                 return Ok(token);
             }
+            ':' => {
+                let token = self.make_token(TokenKind::Colon);
+                return Ok(token);
+            }
             '@' => {
                 let token = self.make_token(TokenKind::At);
                 return Ok(token);
@@ -204,7 +208,7 @@ impl Lexer {
                 self.current = start;
                 self.number()
             }
-            c if c.is_ascii_alphabetic() || c == '_' => {
+            c if c.is_alphabetic() || c == '_' => {
                 self.current = start;
                 self.identifier()
             }
@@ -293,7 +297,7 @@ impl Lexer {
         let start_line = self.line;
         let start = self.current;
 
-        while self.peek().is_ascii_alphanumeric() || self.peek() == '_' {
+        while self.peek().is_alphanumeric() || self.peek() == '_' {
             self.advance();
         }
 
@@ -323,6 +327,7 @@ impl Lexer {
             "try" => TokenKind::Try,
             "catch" => TokenKind::Catch,
             "throw" => TokenKind::Throw,
+            "finally" => TokenKind::Finally,
             "cache" => TokenKind::Cache,
             "import" => TokenKind::Import,
             "from" => TokenKind::From,

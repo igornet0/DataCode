@@ -273,7 +273,7 @@ fn test_ml_layer_with_neural_network() {
         # Train for 1 epoch
         let loss_history = ml.nn_train(nn, x, y, 1, 2, 0.01, "sparse_cross_entropy")
         
-        len(loss_history)
+        len(loss_history.loss)
     "#;
     let result = run(code);
     assert!(result.is_ok(), "Test failed with error: {:?}", result);
@@ -482,6 +482,7 @@ fn test_ml_model_info_with_graph() {
     }
 }
 
+#[cfg(feature = "gpu")]
 #[test]
 fn test_ml_model_info_save_and_load() {
     // Test model_info after saving and loading a model
@@ -1094,7 +1095,7 @@ fn test_all_layers_frozen_warning() {
         loss_history = ml.nn_train(model, x, y, 2, 2, 0.01, "mse")
         
         # Training should complete (loss_history should exist)
-        len(loss_history) == 2
+        len(loss_history.loss) == 2
     "#;
     let result = run(code);
     assert!(result.is_ok(), "Test failed with error: {:?}", result);

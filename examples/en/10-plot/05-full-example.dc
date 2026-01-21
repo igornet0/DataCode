@@ -1,5 +1,6 @@
 # Full example of working with the plot module
 # Demonstration of all capabilities of the module for working with images
+import plot
 
 print("=== Example of working with the plot module ===")
 print("")

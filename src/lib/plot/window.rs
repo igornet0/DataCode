@@ -65,5 +65,12 @@ impl Window {
         let size = self.window_handle.inner_size();
         (size.width, size.height)
     }
+    
+    /// Update window size (called on resize event)
+    pub fn update_size(&mut self) {
+        let size = self.window_handle.inner_size();
+        self.width = size.width;
+        self.height = size.height;
+    }
 }
 

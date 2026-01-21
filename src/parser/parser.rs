@@ -492,7 +492,7 @@ impl Parser {
         self.consume(TokenKind::LBrace, "Expect '{' after 'try'")?;
         let try_block = self.block()?;
         
-        // Парсим catch блоки (должен быть хотя бы один)
+        // Парсим catch блоки (опционально, но должен быть хотя бы один catch или finally)
         let mut catch_blocks = Vec::new();
         
         while self.match_token(TokenKind::Catch) {
@@ -531,14 +531,6 @@ impl Parser {
             });
         }
         
-        // Проверяем, что есть хотя бы один catch блок
-        if catch_blocks.is_empty() {
-            return Err(LangError::ParseError {
-                message: "try statement must have at least one catch block".to_string(),
-                line: try_line,
-            });
-        }
-        
         // Парсим else блок (опционально)
         let else_block = if self.match_token(TokenKind::Else) {
             self.consume(TokenKind::LBrace, "Expect '{' after 'else'")?;
@@ -547,10 +539,27 @@ impl Parser {
             None
         };
         
+        // Парсим finally блок (опционально)
+        let finally_block = if self.match_token(TokenKind::Finally) {
+            self.consume(TokenKind::LBrace, "Expect '{' after 'finally'")?;
+            Some(self.block()?)
+        } else {
+            None
+        };
+        
+        // Проверяем, что есть хотя бы один catch блок или finally блок
+        if catch_blocks.is_empty() && finally_block.is_none() {
+            return Err(LangError::ParseError {
+                message: "try statement must have at least one catch block or finally block".to_string(),
+                line: try_line,
+            });
+        }
+        
         Ok(Stmt::Try {
             try_block,
             catch_blocks,
             else_block,
+            finally_block,
             line: try_line,
         })
     }
@@ -1188,6 +1197,9 @@ impl Parser {
         if self.match_token(TokenKind::LBracket) {
             return self.array_literal();
         }
+        if self.match_token(TokenKind::LBrace) {
+            return self.object_literal();
+        }
 
         let token = self.peek();
         Err(LangError::ParseError {
@@ -1280,6 +1292,62 @@ impl Parser {
         } else {
             Ok(Expr::ArrayLiteral {
                 elements,
+                line,
+            })
+        }
+    }
+
+    fn object_literal(&mut self) -> Result<Expr, LangError> {
+        let line = self.previous().line;
+        let mut pairs = Vec::new();
+
+        if !self.check(TokenKind::RBrace) {
+            loop {
+                // Ключ должен быть строкой
+                let key_token = self.consume(TokenKind::String, "Expect string key in object literal")?;
+                let key = key_token.lexeme[1..key_token.lexeme.len() - 1].to_string(); // Убираем кавычки
+                
+                // Потребляем двоеточие
+                self.consume(TokenKind::Colon, "Expect ':' after key in object literal")?;
+                
+                // Парсим значение
+                let value = self.expression()?;
+                
+                pairs.push((key, value));
+                
+                if !self.match_token(TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+
+        self.consume(TokenKind::RBrace, "Expect '}' after object pairs")?;
+
+        // Если все значения - литералы, создаем Value::Object напрямую
+        // Иначе создаем ObjectLiteral для компиляции во время выполнения
+        let mut all_literals = true;
+        let mut object_map = std::collections::HashMap::new();
+        
+        for (key, expr) in &pairs {
+            match expr {
+                Expr::Literal { value, .. } => {
+                    object_map.insert(key.clone(), value.clone());
+                }
+                _ => {
+                    all_literals = false;
+                    break;
+                }
+            }
+        }
+
+        if all_literals {
+            Ok(Expr::Literal {
+                value: Value::Object(object_map),
+                line,
+            })
+        } else {
+            Ok(Expr::ObjectLiteral {
+                pairs,
                 line,
             })
         }

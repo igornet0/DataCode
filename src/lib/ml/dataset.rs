@@ -169,16 +169,21 @@ impl Dataset {
             }
         }
 
-        let mut batches = Vec::new();
+        // OPTIMIZATION: Pre-allocate batches vector with known capacity
+        let num_batches = (num_samples + batch_size - 1) / batch_size; // Ceiling division
+        let mut batches = Vec::with_capacity(num_batches);
+
+        let num_features = self.num_features();
+        let num_targets = self.num_targets();
 
         // Split into batches
         for chunk in indices.chunks(batch_size) {
             let batch_size_actual = chunk.len();
             
-            // Extract feature batch
-            let mut feature_batch_data = Vec::new();
-            let num_features = self.num_features();
+            // OPTIMIZATION: Pre-allocate with exact capacity needed
+            let mut feature_batch_data = Vec::with_capacity(batch_size_actual * num_features);
             
+            // OPTIMIZATION: More efficient data extraction - iterate once and copy contiguous chunks
             for &idx in chunk {
                 let start_idx = idx * num_features;
                 let end_idx = start_idx + num_features;
@@ -187,10 +192,10 @@ impl Dataset {
             
             let feature_batch = Tensor::new(feature_batch_data, vec![batch_size_actual, num_features])?;
 
-            // Extract target batch
-            let mut target_batch_data = Vec::new();
-            let num_targets = self.num_targets();
+            // OPTIMIZATION: Pre-allocate with exact capacity needed
+            let mut target_batch_data = Vec::with_capacity(batch_size_actual * num_targets);
             
+            // OPTIMIZATION: More efficient data extraction
             for &idx in chunk {
                 let start_idx = idx * num_targets;
                 let end_idx = start_idx + num_targets;

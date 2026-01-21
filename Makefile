@@ -152,11 +152,7 @@ update:
 	@echo ""
 	@if [ "$$(uname)" = "Darwin" ]; then \
 		echo "🍎 macOS detected - updating with Metal GPU support"; \
-		echo "🔨 Пересборка DataCode в релизном режиме с Metal..."; \
-		cargo build --release --features metal || (echo "❌ Ошибка: Не удалось собрать DataCode" && exit 1); \
-		echo "✅ Сборка завершена успешно"; \
-		echo ""; \
-		echo "📦 Переустановка DataCode..."; \
+		echo "🔨 Пересборка и переустановка DataCode с Metal..."; \
 		cargo install --path . --features metal --force || (echo "❌ Ошибка: Не удалось переустановить DataCode" && exit 1); \
 		echo "✅ DataCode обновлен успешно!"; \
 		echo ""; \
@@ -167,19 +163,11 @@ update:
 		fi; \
 	elif [ "$$(uname)" = "Linux" ]; then \
 		echo "🐧 Linux detected - updating with CUDA GPU support"; \
-		echo "🔨 Пересборка DataCode в релизном режиме с CUDA..."; \
-		cargo build --release --features cuda || (echo "❌ Ошибка: Не удалось собрать DataCode" && exit 1); \
-		echo "✅ Сборка завершена успешно"; \
-		echo ""; \
-		echo "📦 Переустановка DataCode..."; \
+		echo "🔨 Пересборка и переустановка DataCode с CUDA..."; \
 		cargo install --path . --features cuda --force || (echo "❌ Ошибка: Не удалось переустановить DataCode" && exit 1); \
 		echo "✅ DataCode обновлен успешно!"; \
 	else \
-		echo "🔨 Пересборка DataCode в релизном режиме..."; \
-		cargo build --release || (echo "❌ Ошибка: Не удалось собрать DataCode" && exit 1); \
-		echo "✅ Сборка завершена успешно"; \
-		echo ""; \
-		echo "📦 Переустановка DataCode..."; \
+		echo "🔨 Пересборка и переустановка DataCode..."; \
 		cargo install --path . --force || (echo "❌ Ошибка: Не удалось переустановить DataCode" && exit 1); \
 		echo "✅ DataCode обновлен успешно!"; \
 	fi

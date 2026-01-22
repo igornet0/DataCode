@@ -30,6 +30,46 @@ pub fn native_getcwd(_args: &[Value]) -> Value {
     }
 }
 
+/// Безопасное форматирование пути для сообщений об ошибках
+/// В режиме --use-ve преобразует полный путь в относительный
+pub fn format_path_for_error(path: &PathBuf) -> String {
+    use crate::websocket::{get_use_ve, get_user_session_path};
+    
+    if get_use_ve() {
+        if let Some(session_path) = get_user_session_path() {
+            // Канонизируем оба пути для корректного сравнения
+            let canonical_session = session_path.canonicalize().ok().unwrap_or(session_path.clone());
+            let canonical_path = path.canonicalize().ok().unwrap_or(path.clone());
+            
+            // Проверяем, начинается ли путь с пути сессии
+            if let Ok(stripped) = canonical_path.strip_prefix(&canonical_session) {
+                // Формируем относительный путь с префиксом ./
+                let relative = stripped.to_string_lossy().to_string();
+                if relative.is_empty() || relative == "." {
+                    "./".to_string()
+                } else {
+                    // Убираем начальные слеши и добавляем ./
+                    let trimmed = relative.trim_start_matches(|c| c == '/' || c == '\\');
+                    if trimmed.is_empty() {
+                        "./".to_string()
+                    } else {
+                        format!("./{}", trimmed)
+                    }
+                }
+            } else {
+                // Путь вне сессии - возвращаем как есть (не канонизированный для сохранения оригинального формата)
+                path.to_string_lossy().to_string()
+            }
+        } else {
+            // Нет пути сессии - возвращаем как есть
+            path.to_string_lossy().to_string()
+        }
+    } else {
+        // Не режим --use-ve - возвращаем полный путь
+        path.to_string_lossy().to_string()
+    }
+}
+
 /// Безопасное разрешение пути относительно папки сессии в режиме --use-ve
 pub fn resolve_path_in_session(path: &PathBuf) -> Result<PathBuf, String> {
     use crate::websocket::{get_user_session_path, get_use_ve};

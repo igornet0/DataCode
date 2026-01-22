@@ -8,8 +8,8 @@ use std::cell::RefCell;
 use std::fs;
 use std::io;
 
-// Import resolve_path_in_session from file module
-use super::file::resolve_path_in_session;
+// Import resolve_path_in_session and format_path_for_error from file module
+use super::file::{resolve_path_in_session, format_path_for_error};
 
 pub fn native_table(args: &[Value]) -> Value {
     if args.is_empty() {
@@ -436,13 +436,13 @@ pub fn native_read_file(args: &[Value]) -> Value {
         // Проверяем существование файла перед чтением
         if !resolved_path.exists() {
             use crate::websocket::set_native_error;
-            set_native_error(format!("File does not exist: {}", resolved_path.display()));
+            set_native_error(format!("File does not exist: {}", format_path_for_error(&resolved_path)));
             return Value::Null;
         }
         
         if !resolved_path.is_file() {
             use crate::websocket::set_native_error;
-            set_native_error(format!("Path is not a file: {}", resolved_path.display()));
+            set_native_error(format!("Path is not a file: {}", format_path_for_error(&resolved_path)));
             return Value::Null;
         }
         

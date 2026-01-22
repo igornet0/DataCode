@@ -137,9 +137,21 @@ Charlie,35,Paris
             read_csv_code = """
 # Поскольку getcwd() возвращает пустую строку, используем относительные пути
 # Файлы загружаются в папку сессии пользователя
-global data = read_file(path("data.csv"), 0)
+
+# Базовое чтение файла
+global data = read_file(path("data.csv"), header_row=0)
 print("Загружено строк:", len(data))
 table_info(data)
+
+# Чтение с фильтрацией колонок через header (массив)
+global data_filtered = read_file(path("data.csv"), header=["Name", "Age", "City"])
+print("Загружено строк с фильтрацией:", len(data_filtered))
+print("Колонки:", data_filtered.columns)
+
+# Чтение с переименованием колонок через header (словарь)
+global data_renamed = read_file(path("data.csv"), header_row=0, header={"Name": "FullName", "Age": null, "City": null, "Salary": null})
+print("Загружено строк с переименованием:", len(data_renamed))
+print("Колонки:", data_renamed.columns)
 """
             read_csv = {
                 "type": "execute",
@@ -300,7 +312,7 @@ for file in files {
     
     if file.extension == "zip" {
         print("  Тип: ZIP архив")
-        p0rint("  (Бинарные файлы загружены успешно)")
+        print("  (Бинарные файлы загружены успешно)")
     }
 }
 """
@@ -322,13 +334,13 @@ for file in files {
 
             print("📋 Тест 11: Проверка списка файлов в папке")
             list_files_code = """
-            print("Файлы в папке getcwd():")
+            print('Файлы в папке getcwd():')
             for file in list_files(getcwd()) {
                 print("  -", file)
             }
 
             print()
-            print("Файлы в папке '.':")
+            print('Файлы в папке ".":')
 
             for file in list_files(".") {
                 print("  -", file)
@@ -355,20 +367,34 @@ for file in files {
             }
 
             try {
+
                 print("Файлы в папке '../getcwd()' (должно быть ошибка):")
                 for file in list_files(".." / getcwd()) {
                     print("  -", file)
                 }
+
             } catch e {
                 print("Error: ", e)
                 print("Должно быть ошибка")
             }
+
             try {
                 print("Файлы в папке '../..' (должно быть ошибка):")
                 for file in list_files("../..") {
                     print("  -", file)
                 }
+
             } catch e { 
+                print("Error: ", e)
+                print("Должно быть ошибка")
+            }
+
+            try {
+                print("Чтение файла с несуществующим путем (должно быть ошибка):")
+                data = read_file(path("nonexistent.txt"))
+                print("  -", data)
+                
+            } catch e {
                 print("Error: ", e)
                 print("Должно быть ошибка")
             }

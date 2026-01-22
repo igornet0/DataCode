@@ -232,7 +232,8 @@ asyncio.run(smb_example())
 
 После подключения к SMB шаре доступны следующие операции в DataCode:
 
-- **list_files(path("lib://share_name/dir"))** - получить список файлов
+- **list_files(path("lib://share_name/dir"))** - получить список файлов (рекурсивно обходит все поддиректории)
+- **list_files(path("lib://share_name/dir"), regex="*.csv")** - получить отфильтрованный список файлов по шаблону (поддерживает glob-паттерны типа `*.csv` или обычные регулярные выражения)
 - **read_file(path("lib://share_name/file.csv"))** - прочитать файл (поддерживаются CSV, XLSX, TXT)
 
 Подробнее см. [`examples/ru/08-websocket/README.md`](../../examples/ru/08-websocket/README.md).

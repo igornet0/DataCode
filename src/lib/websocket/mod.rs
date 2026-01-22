@@ -268,7 +268,7 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                             }
                         }
                         WebSocketRequest::SmbListFiles { share_name, path } => {
-                            let result = smb_manager.lock().unwrap().list_files(&share_name, &path);
+                            let result = smb_manager.lock().unwrap().list_files(&share_name, &path, None, true);
                             
                             let response = match result {
                                 Ok(files) => SmbListFilesResponse {

@@ -214,6 +214,8 @@ This document describes all data types supported by the DataCode programming lan
 **Features**:
 - The `list_files()` function returns an array of `Path` objects with full paths to files and directories
 - Path objects can be used directly with functions `read_file()`, `path()` and others
+- The function recursively traverses all subdirectories by default
+- Optional `regex` parameter for filtering files by name pattern (supports glob patterns like `*.csv` or regular expressions)
 
 **Path object methods**:
 
@@ -247,6 +249,24 @@ for file in files {
         global data = read_file(file)  # Direct use of Path object
     }
 }
+
+# Using with regex filter (glob patterns)
+global csv_files = list_files('/path/to/dir', regex='*.csv')
+for file in csv_files {
+    print('CSV file:', file.name)
+}
+
+# Using with regex filter (multiple extensions)
+global data_files = list_files('/path/to/dir', regex='*.csv|*.xlsx')
+for file in data_files {
+    print('Data file:', file.name)
+}
+
+# Using with regex filter (regular expression)
+global numbered_files = list_files('/path/to/dir', regex='^file\\d+\\.txt$')
+for file in numbered_files {
+    print('Numbered file:', file.name)
+}
 ```
 
 **📚 Examples:** 
@@ -257,10 +277,14 @@ for file in files {
 
 - **Internal representation**: `PathBuf`
 - **Description**: Glob pattern for file search
+- **Note**: You can also use the `regex` parameter in `list_files()` directly for filtering files
 - **Examples**:
   ```datacode
   global pattern = path('/path/*.csv')
   global files = list_files(pattern)
+  
+  # Or use regex parameter directly
+  global files = list_files('/path/to/dir', regex='*.csv')
   ```
 
 ---

@@ -145,7 +145,7 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "push" => Some(vec!["array".to_string(), "item".to_string()]),
         "isinstance" => Some(vec!["value".to_string(), "type".to_string()]),
         "money" => Some(vec!["amount".to_string(), "format".to_string()]),
-        "list_files" => Some(vec!["path".to_string()]),
+        "list_files" => Some(vec!["path".to_string(), "regex".to_string()]),
         
         // Функции с опциональными параметрами
         "table" => Some(vec!["data".to_string(), "headers".to_string()]),

@@ -1,0 +1,192 @@
+# Typed Functions
+# Demonstration of function type annotations and type checking
+
+print("=== Basic Type Annotations ===")
+
+# Function with typed parameters
+fn int_add(a: int, b: int) -> int {
+    return a + b
+}
+
+# Function with float parameters
+fn float_multiply(a: float, b: float) -> float {
+    return a * b
+}
+
+# Function with string parameters
+fn greet(name: str) -> str {
+    return "Hello, " + name + "!"
+}
+
+print("int_add(5, 3) =", int_add(5, 3))
+print("float_multiply(2.5, 4.0) =", float_multiply(2.5, 4.0))
+print(greet("DataCode"))
+
+print("\n=== Type Checking ===")
+
+# Type checking prevents wrong types
+print("Trying int_add(5, 3.5) - should cause TypeError:")
+try {
+    int_add(5, 3.5)
+} catch TypeError {
+    print("  ✓ Caught TypeError as expected")
+}
+
+print("\nTrying greet(123) - should cause TypeError:")
+try {
+    greet(123)
+} catch TypeError {
+    print("  ✓ Caught TypeError as expected")
+}
+
+print("\n=== Union Types ===")
+
+# Function with union type parameter (str | int)
+fn process_value(value: str | int) -> str {
+    return "Value: " + str(value)
+}
+
+print(process_value("hello"))
+print(process_value(42))
+
+# Function with multiple union types
+fn flexible_add(a: int | float, b: int | float) -> float {
+    return a + b
+}
+
+print("flexible_add(5, 3) =", flexible_add(5, 3))
+print("flexible_add(2.5, 3.7) =", flexible_add(2.5, 3.7))
+print("flexible_add(5, 3.5) =", flexible_add(5, 3.5))
+
+print("\n=== Union Types with null ===")
+
+# Function with null in union type
+fn process_or_default(value: null | str | int = null) -> str {
+    if value == null {
+        return "default value"
+    } else {
+        return "received: " + str(value)
+    }
+}
+
+print(process_or_default())
+print(process_or_default("test"))
+print(process_or_default(123))
+
+print("\n=== Return Type Annotations ===")
+
+# Function with return type annotation
+fn get_string() -> str {
+    return "This is a string"
+}
+
+fn get_number() -> int {
+    return 42
+}
+
+fn get_boolean() -> bool {
+    return true
+}
+
+print(get_string())
+print(get_number())
+print(get_boolean())
+
+# Function with union return type
+fn get_value(flag: bool) -> str | int {
+    if flag {
+        return "string result"
+    } else {
+        return 100
+    }
+}
+
+print("get_value(true) =", get_value(true))
+print("get_value(false) =", get_value(false))
+
+print("\n=== Partial Typing ===")
+
+# Function with some typed and some untyped parameters
+fn mixed_types(a: int, b) -> str {
+    return str(a) + " + " + str(b) + " = " + str(a + b)
+}
+
+print(mixed_types(5, 3))
+print(mixed_types(5, 3.5))
+
+# First parameter typed, second untyped
+fn first_typed(a: str, b) -> str {
+    return a + " " + str(b)
+}
+
+print(first_typed("Number:", 42))
+
+print("\n=== Array and Object Types ===")
+
+# Function with array type
+fn sum_array(arr: array) -> float {
+    let sum = 0.0
+    for item in arr {
+        sum = sum + item
+    }
+    return sum
+}
+
+print("sum_array([1, 2, 3, 4, 5]) =", sum_array([1, 2, 3, 4, 5]))
+
+# Function with object type
+fn get_name(obj: object) -> str {
+    return obj["name"]
+}
+
+let person = {"name": "Alice", "age": 30}
+print("get_name(person) =", get_name(person))
+
+print("\n=== Typed Recursive Functions ===")
+
+# Typed recursive function
+fn factorial(n: int) -> int {
+    if n <= 1 {
+        return 1
+    } else {
+        return n * factorial(n - 1)
+    }
+}
+
+print("factorial(5) =", factorial(5))
+
+# Typed Fibonacci
+fn fibonacci(n: int) -> int {
+    if n <= 1 {
+        return n
+    } else {
+        return fibonacci(n - 1) + fibonacci(n - 2)
+    }
+}
+
+print("fibonacci(7) =", fibonacci(7))
+
+print("\n=== Complex Union Types ===")
+
+# Function accepting multiple types
+fn format_output(value: null | str | int | float) -> str {
+    if value == null {
+        return "null"
+    } else {
+        return "value: " + str(value)
+    }
+}
+
+print(format_output(null))
+print(format_output("text"))
+print(format_output(42))
+print(format_output(3.14))
+
+print("\n=== Type Safety Benefits ===")
+
+print("Type checking helps catch errors early:")
+print("  - Prevents passing wrong types to functions")
+print("  - Makes code more readable and self-documenting")
+print("  - Union types provide flexibility while maintaining safety")
+
+print("\n=== All examples completed! ===")

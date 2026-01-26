@@ -1,0 +1,192 @@
+# Типизированные функции
+# Демонстрация аннотаций типов функций и проверки типов
+
+print("=== Базовые аннотации типов ===")
+
+# Функция с типизированными параметрами
+fn int_add(a: int, b: int) -> int {
+    return a + b
+}
+
+# Функция с параметрами типа float
+fn float_multiply(a: float, b: float) -> float {
+    return a * b
+}
+
+# Функция с параметрами типа str
+fn greet(name: str) -> str {
+    return "Привет, " + name + "!"
+}
+
+print("int_add(5, 3) =", int_add(5, 3))
+print("float_multiply(2.5, 4.0) =", float_multiply(2.5, 4.0))
+print(greet("ДатаКод"))
+
+print("\n=== Проверка типов ===")
+
+# Проверка типов предотвращает передачу неправильных типов
+print("Попытка int_add(5, 3.5) - должна вызвать TypeError:")
+try {
+    int_add(5, 3.5)
+} catch TypeError {
+    print("  ✓ TypeError перехвачен, как и ожидалось")
+}
+
+print("\nПопытка greet(123) - должна вызвать TypeError:")
+try {
+    greet(123)
+} catch TypeError {
+    print("  ✓ TypeError перехвачен, как и ожидалось")
+}
+
+print("\n=== Union типы ===")
+
+# Функция с union типом параметра (str | int)
+fn process_value(value: str | int) -> str {
+    return "Значение: " + str(value)
+}
+
+print(process_value("привет"))
+print(process_value(42))
+
+# Функция с несколькими union типами
+fn flexible_add(a: int | float, b: int | float) -> float {
+    return a + b
+}
+
+print("flexible_add(5, 3) =", flexible_add(5, 3))
+print("flexible_add(2.5, 3.7) =", flexible_add(2.5, 3.7))
+print("flexible_add(5, 3.5) =", flexible_add(5, 3.5))
+
+print("\n=== Union типы с null ===")
+
+# Функция с null в union типе
+fn process_or_default(value: null | str | int = null) -> str {
+    if value == null {
+        return "значение по умолчанию"
+    } else {
+        return "получено: " + str(value)
+    }
+}
+
+print(process_or_default())
+print(process_or_default("тест"))
+print(process_or_default(123))
+
+print("\n=== Аннотации возвращаемого типа ===")
+
+# Функция с аннотацией возвращаемого типа
+fn get_string() -> str {
+    return "Это строка"
+}
+
+fn get_number() -> int {
+    return 42
+}
+
+fn get_boolean() -> bool {
+    return true
+}
+
+print(get_string())
+print(get_number())
+print(get_boolean())
+
+# Функция с union возвращаемым типом
+fn get_value(flag: bool) -> str | int {
+    if flag {
+        return "строковый результат"
+    } else {
+        return 100
+    }
+}
+
+print("get_value(true) =", get_value(true))
+print("get_value(false) =", get_value(false))
+
+print("\n=== Частичная типизация ===")
+
+# Функция с некоторыми типизированными и некоторыми нетипизированными параметрами
+fn mixed_types(a: int, b) -> str {
+    return str(a) + " + " + str(b) + " = " + str(a + b)
+}
+
+print(mixed_types(5, 3))
+print(mixed_types(5, 3.5))
+
+# Первый параметр типизирован, второй нет
+fn first_typed(a: str, b) -> str {
+    return a + " " + str(b)
+}
+
+print(first_typed("Число:", 42))
+
+print("\n=== Типы array и object ===")
+
+# Функция с типом array
+fn sum_array(arr: array) -> float {
+    let sum = 0.0
+    for item in arr {
+        sum = sum + item
+    }
+    return sum
+}
+
+print("sum_array([1, 2, 3, 4, 5]) =", sum_array([1, 2, 3, 4, 5]))
+
+# Функция с типом object
+fn get_name(obj: object) -> str {
+    return obj["name"]
+}
+
+let person = {"name": "Алиса", "age": 30}
+print("get_name(person) =", get_name(person))
+
+print("\n=== Типизированные рекурсивные функции ===")
+
+# Типизированная рекурсивная функция
+fn factorial(n: int) -> int {
+    if n <= 1 {
+        return 1
+    } else {
+        return n * factorial(n - 1)
+    }
+}
+
+print("factorial(5) =", factorial(5))
+
+# Типизированная функция Фибоначчи
+fn fibonacci(n: int) -> int {
+    if n <= 1 {
+        return n
+    } else {
+        return fibonacci(n - 1) + fibonacci(n - 2)
+    }
+}
+
+print("fibonacci(7) =", fibonacci(7))
+
+print("\n=== Сложные union типы ===")
+
+# Функция, принимающая несколько типов
+fn format_output(value: null | str | int | float) -> str {
+    if value == null {
+        return "null"
+    } else {
+        return "значение: " + str(value)
+    }
+}
+
+print(format_output(null))
+print(format_output("текст"))
+print(format_output(42))
+print(format_output(3.14))
+
+print("\n=== Преимущества безопасности типов ===")
+
+print("Проверка типов помогает обнаруживать ошибки раньше:")
+print("  - Предотвращает передачу неправильных типов в функции")
+print("  - Делает код более читаемым и самодокументируемым")
+print("  - Union типы обеспечивают гибкость при сохранении безопасности")
+
+print("\n=== Все примеры завершены! ===")

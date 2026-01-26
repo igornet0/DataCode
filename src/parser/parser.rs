@@ -185,6 +185,13 @@ impl Parser {
                 let param_name = self.consume(TokenKind::Identifier, "Expect parameter name")?.lexeme.clone();
                 let param_line = self.previous().line;
                 
+                // Проверяем, есть ли аннотация типа (param: type)
+                let type_annotation = if self.match_token(TokenKind::Colon) {
+                    Some(self.parse_type_name()?)
+                } else {
+                    None
+                };
+                
                 // Проверяем, есть ли значение по умолчанию
                 let default_value = if self.match_token(TokenKind::Equal) {
                     has_default = true;
@@ -202,6 +209,7 @@ impl Parser {
                 
                 params.push(Param {
                     name: param_name,
+                    type_annotation,
                     default_value,
                 });
                 
@@ -211,11 +219,19 @@ impl Parser {
             }
         }
         self.consume(TokenKind::RParen, "Expect ')' after parameters")?;
+        
+        // Проверяем, есть ли аннотация возвращаемого типа (-> type)
+        let return_type = if self.match_token(TokenKind::Arrow) {
+            Some(self.parse_type_name()?)
+        } else {
+            None
+        };
+        
         self.consume(TokenKind::LBrace, "Expect '{' before function body")?;
 
         let body = self.block()?;
 
-        Ok(Stmt::Function { name, params, body, is_cached, line: fn_line })
+        Ok(Stmt::Function { name, params, return_type, body, is_cached, line: fn_line })
     }
 
     fn statement(&mut self) -> Result<Stmt, LangError> {
@@ -1351,6 +1367,37 @@ impl Parser {
                 line,
             })
         }
+    }
+
+    /// Парсит один тип - может быть идентификатором или ключевым словом null
+    fn parse_single_type(&mut self) -> Result<String, LangError> {
+        if self.check(TokenKind::Null) {
+            self.advance();
+            Ok("null".to_string())
+        } else if self.check(TokenKind::Identifier) {
+            Ok(self.consume(TokenKind::Identifier, "Expect type name")?.lexeme.clone())
+        } else {
+            Err(LangError::ParseError {
+                message: "Expect type name (identifier or 'null')".to_string(),
+                line: self.peek().line,
+            })
+        }
+    }
+
+    /// Парсит union типы - может быть один тип или несколько через |
+    /// Например: "int", "str | int", "null | str | int"
+    fn parse_type_name(&mut self) -> Result<Vec<String>, LangError> {
+        let mut types = Vec::new();
+        
+        // Парсим первый тип
+        types.push(self.parse_single_type()?);
+        
+        // Парсим дополнительные типы через |
+        while self.match_token(TokenKind::Pipe) {
+            types.push(self.parse_single_type()?);
+        }
+        
+        Ok(types)
     }
 
     fn consume(&mut self, kind: TokenKind, message: &str) -> Result<&Token, LangError> {

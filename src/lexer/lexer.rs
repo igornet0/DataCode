@@ -82,6 +82,10 @@ impl Lexer {
                 let token = self.make_token(TokenKind::Colon);
                 return Ok(token);
             }
+            '|' => {
+                let token = self.make_token(TokenKind::Pipe);
+                return Ok(token);
+            }
             '@' => {
                 let token = self.make_token(TokenKind::At);
                 return Ok(token);
@@ -97,7 +101,11 @@ impl Lexer {
                 }
             }
             '-' => {
-                if self.match_char('=') {
+                if self.match_char('>') {
+                    // Оператор ->
+                    let token = self.make_token(TokenKind::Arrow);
+                    return Ok(token);
+                } else if self.match_char('=') {
                     // Оператор -=
                     let token = self.make_token(TokenKind::MinusEqual);
                     return Ok(token);
@@ -395,6 +403,7 @@ impl Lexer {
             TokenKind::GreaterEqual => ">=".to_string(),
             TokenKind::PlusEqual => "+=".to_string(),
             TokenKind::MinusEqual => "-=".to_string(),
+            TokenKind::Arrow => "->".to_string(),
             TokenKind::StarEqual => "*=".to_string(),
             TokenKind::StarStar => "**".to_string(),
             TokenKind::StarStarEqual => "**=".to_string(),

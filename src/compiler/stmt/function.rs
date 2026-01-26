@@ -10,7 +10,7 @@ use crate::compiler::closure;
 use crate::compiler::stmt;
 
 pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), LangError> {
-    if let Stmt::Function { name, params, body, is_cached, line } = stmt {
+    if let Stmt::Function { name, params, return_type, body, is_cached, line } = stmt {
         *ctx.current_line = *line;
         
         // Находим индекс функции (она уже объявлена в первом проходе)
@@ -26,12 +26,14 @@ pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
         function.arity = params.len();
         function.is_cached = *is_cached;
         
-        // Сохраняем имена параметров и вычисляем значения по умолчанию
+        // Сохраняем имена параметров, типы и вычисляем значения по умолчанию
         let mut param_names = Vec::new();
+        let mut param_types = Vec::new();
         let mut default_values = Vec::new();
         
         for param in params.iter() {
             param_names.push(param.name.clone());
+            param_types.push(param.type_annotation.clone());
             
             // Вычисляем значение по умолчанию во время компиляции
             if let Some(ref default_expr) = param.default_value {
@@ -58,6 +60,8 @@ pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
         }
         
         function.param_names = param_names.clone();
+        function.param_types = param_types;
+        function.return_type = return_type.clone();
         function.default_values = default_values;
         
         // Если кэш включен, но еще не инициализирован, инициализируем его

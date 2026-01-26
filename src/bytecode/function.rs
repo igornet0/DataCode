@@ -113,6 +113,8 @@ pub struct Function {
     pub chunk: Chunk,
     pub arity: usize, // Количество параметров
     pub param_names: Vec<String>, // Имена параметров для разрешения именованных аргументов
+    pub param_types: Vec<Option<Vec<String>>>, // Типы параметров для проверки типов (None если тип не указан, Vec для union типов)
+    pub return_type: Option<Vec<String>>, // Тип возвращаемого значения (None если не указан, Vec для union типов)
     pub default_values: Vec<Option<Value>>, // Значения по умолчанию для каждого параметра (None если нет default)
     pub captured_vars: Vec<CapturedVar>, // Information about captured variables
     pub is_cached: bool, // Флаг, указывающий, что функция должна кэшироваться
@@ -126,6 +128,8 @@ impl Function {
             chunk: Chunk::new(),
             arity,
             param_names: Vec::new(),
+            param_types: Vec::new(),
+            return_type: None,
             default_values: Vec::new(),
             captured_vars: Vec::new(),
             is_cached: false,
@@ -139,6 +143,8 @@ impl Function {
             chunk: Chunk::new(),
             arity,
             param_names: Vec::new(),
+            param_types: Vec::new(),
+            return_type: None,
             default_values: Vec::new(),
             captured_vars: Vec::new(),
             is_cached: true,
@@ -154,6 +160,8 @@ impl Clone for Function {
             chunk: self.chunk.clone(),
             arity: self.arity,
             param_names: self.param_names.clone(),
+            param_types: self.param_types.clone(),
+            return_type: self.return_type.clone(),
             default_values: self.default_values.clone(),
             captured_vars: self.captured_vars.clone(),
             is_cached: self.is_cached,

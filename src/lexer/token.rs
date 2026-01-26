@@ -62,6 +62,8 @@ pub enum TokenKind {
     Semicolon, // ;
     Dot,      // .
     Colon,    // :
+    Arrow,    // ->
+    Pipe,     // |
 
     // Ключевые слова для циклов
     In,       // in

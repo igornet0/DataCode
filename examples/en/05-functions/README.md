@@ -44,6 +44,22 @@ cargo run examples/en/05-functions/recursion.dc
 cargo run examples/en/05-functions/nested_functions.dc
 ```
 
+### 4. `typed_functions.dc` - Typed Functions
+**Description**: Demonstrates function type annotations and runtime type checking.
+
+**What you'll learn**:
+- Type annotations for parameters: `fn add(a: int, b: int)`
+- Return type annotations: `-> int`
+- Union types: `str | int`, `null | str | int`
+- Type checking and TypeError handling
+- Partial typing (some parameters typed, others not)
+- Typed recursive functions
+
+**Run**:
+```bash
+cargo run examples/en/05-functions/typed_functions.dc
+```
+
 ## 🎯 Concepts Covered
 
 ### Function Declaration
@@ -65,6 +81,27 @@ A recursive function calls itself. It's important to define a base case to avoid
 - Function parameters are accessible only inside the function
 - Local variables in functions are not visible outside
 - Global variables are accessible from functions
+
+### Type Annotations
+Functions can have type annotations for parameters and return values:
+```dc
+fn add(a: int, b: int) -> int {
+    return a + b
+}
+```
+
+### Union Types
+Parameters can accept multiple types using union syntax:
+```dc
+fn process(value: str | int) -> str {
+    return str(value)
+}
+```
+
+### Type Checking
+- Runtime type checking ensures arguments match expected types
+- TypeError is raised when types don't match
+- Union types allow flexibility while maintaining type safety
 
 ## 🔗 Navigation
 

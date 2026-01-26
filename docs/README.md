@@ -40,6 +40,15 @@
 
 **Примеры:** [`examples/ru/03-типы данных/`](../../examples/ru/03-типы%20данных/)
 
+#### [Пользовательские функции с аннотациями типов](./ru/user_functions.md)
+Полное руководство по созданию функций с аннотациями типов:
+- Аннотации типов параметров и возвращаемых значений
+- Union типы (`str | int`, `null | str | int`)
+- Проверка типов во время выполнения
+- Частичная типизация и значения по умолчанию
+
+**Примеры:** [`examples/ru/05-функции/типизированные_функции.dc`](../../examples/ru/05-функции/типизированные_функции.dc)
+
 #### [Работа с таблицами](./ru/table_create_function.md)
 Создание и работа с таблицами в DataCode:
 - Функции `table()` и `table_create()`
@@ -109,10 +118,11 @@
 docs/
 ├── README.md                    # Этот файл (навигация)
 ├── ru/                          # Русская документация
-│   ├── README.md                # Навигация по русской документации
-│   ├── builtin_functions.md     # Встроенные функции
-│   ├── data_types.md            # Типы данных
-│   ├── table_create_function.md # Работа с таблицами
+    │   ├── README.md                # Навигация по русской документации
+    │   ├── builtin_functions.md     # Встроенные функции
+    │   ├── data_types.md            # Типы данных
+    │   ├── user_functions.md        # Пользовательские функции с аннотациями типов
+    │   ├── table_create_function.md # Работа с таблицами
 │   ├── websocket_server.md      # WebSocket сервер
 │   ├── join_specification.md    # Спецификация JOIN
 │   ├── ml_module.md             # ML модуль (машинное обучение)
@@ -125,6 +135,7 @@ docs/
     ├── README.md                # Навигация по английской документации
     ├── builtin_functions.md     # Built-in functions
     ├── data_types.md            # Data types
+    ├── user_functions.md        # User-defined functions with type annotations
     ├── table_create_function.md # Working with tables
     ├── websocket_server.md      # WebSocket server
     ├── join_specification.md    # JOIN specification

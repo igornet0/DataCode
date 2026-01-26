@@ -653,6 +653,31 @@ match instruction {
                             }
                             // Если arity == 0, args остается пустым вектором
                             
+                            // Проверяем типы аргументов, если указаны аннотации типов
+                            for (i, (arg, expected_types)) in args.iter().zip(&function.param_types).enumerate() {
+                                if let Some(type_names) = expected_types {
+                                    if !crate::vm::calls::check_type_value(arg, type_names) {
+                                        let param_name = function.param_names.get(i)
+                                            .map(|s| s.as_str())
+                                            .unwrap_or("unknown");
+                                        let error = LangError::runtime_error_with_type(
+                                            format!(
+                                                "Argument '{}' expected type '{}', got '{}'",
+                                                param_name, 
+                                                crate::vm::calls::format_type_names(type_names),
+                                                crate::vm::calls::get_type_name_value(arg)
+                                            ),
+                                            line,
+                                            ErrorType::TypeError,
+                                        );
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            Ok(()) => return Ok(VMStatus::Continue),
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                }
+                            }
+                            
                             // Проверяем кэш, если функция помечена как кэшируемая
                             if function.is_cached {
                                 use crate::bytecode::function::CacheKey;

@@ -44,7 +44,24 @@ Detailed description of all data types supported by the language:
 
 ---
 
-### 3. [Working with Tables](./table_create_function.md)
+### 3. [User-Defined Functions with Type Annotations](./user_functions.md)
+
+Complete guide to creating functions with type annotations:
+
+- **Type annotations** - Parameter and return type annotations
+- **Union types** - Multiple types with `str | int` syntax
+- **Type checking** - Runtime type validation and error handling
+- **Partial typing** - Mixing typed and untyped parameters
+- **Default values** - Combining types with default parameters
+- **Supported types** - All available types for annotations
+
+**📚 Usage examples:**
+- Typed functions: [`examples/en/05-functions/typed_functions.dc`](../../examples/en/05-functions/typed_functions.dc)
+- All function examples: [`examples/en/05-functions/`](../../examples/en/05-functions/)
+
+---
+
+### 4. [Working with Tables](./table_create_function.md)
 
 Creating and working with tables in DataCode:
 
@@ -59,7 +76,7 @@ Creating and working with tables in DataCode:
 
 ---
 
-### 4. [WebSocket Server](./websocket_server.md)
+### 5. [WebSocket Server](./websocket_server.md)
 
 Remote execution of DataCode code via WebSocket:
 
@@ -74,7 +91,7 @@ Remote execution of DataCode code via WebSocket:
 
 ---
 
-### 5. [JOIN Specification](./join_specification.md)
+### 6. [JOIN Specification](./join_specification.md)
 
 Table join operations:
 
@@ -89,7 +106,7 @@ Table join operations:
 
 ---
 
-### 6. [ML Module](./ml/ml_module.md)
+### 7. [ML Module](./ml/ml_module.md)
 
 Machine learning module for DataCode:
 
@@ -110,7 +127,7 @@ Machine learning module for DataCode:
 
 ---
 
-### 7. [Plot Module - Charts and Visualization](./plot/README.md)
+### 8. [Plot Module - Charts and Visualization](./plot/README.md)
 
 Complete description of the `plot` module for working with images and creating charts:
 
@@ -125,7 +142,7 @@ Complete description of the `plot` module for working with images and creating c
 
 ---
 
-### 8. [Text Rendering in Plot Module](./text_rendering.md)
+### 9. [Text Rendering in Plot Module](./text_rendering.md)
 
 Detailed description of the text rendering system in the plot module:
 
@@ -165,6 +182,7 @@ Get familiar with the type system:
 ### 4. Functions
 Master creating and using functions:
 - **Documentation:** [`examples/en/05-functions/README.md`](../../examples/en/05-functions/README.md)
+- **Type Annotations:** [`docs/en/user_functions.md`](./user_functions.md) - User-defined functions with type annotations
 - **Examples:** [`examples/en/05-functions/`](../../examples/en/05-functions/)
 
 ### 5. Loops
@@ -222,6 +240,7 @@ docs/
     ├── README.md                # This file
     ├── builtin_functions.md     # Built-in functions
     ├── data_types.md            # Data types
+    ├── user_functions.md        # User-defined functions with type annotations
     ├── table_create_function.md # Working with tables
     ├── websocket_server.md      # WebSocket server
     ├── join_specification.md    # JOIN specification

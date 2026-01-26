@@ -293,8 +293,8 @@ fn glob_to_regex_single(glob: &str) -> String {
     regex
 }
 
-/// Рекурсивно обходит директорию и собирает все файлы
-/// Применяет regex фильтрацию к именам файлов, если regex задан
+/// Рекурсивно обходит директорию и собирает все файлы и директории
+/// Применяет regex фильтрацию к именам файлов и директорий, если regex задан
 fn list_files_recursive(
     dir: &PathBuf,
     regex: Option<&Regex>,
@@ -349,7 +349,27 @@ fn list_files_recursive(
                         }
                         files.push(Value::Path(entry_path));
                     } else if metadata.is_dir() {
-                        // Для директорий рекурсивно обходим содержимое
+                        // Для директорий проверяем regex фильтрацию (если задан)
+                        let should_include = if let Some(re) = regex {
+                            if let Some(dir_name) = entry_path.file_name() {
+                                if let Some(name_str) = dir_name.to_str() {
+                                    re.is_match(name_str)
+                                } else {
+                                    false // Невалидное имя директории
+                                }
+                            } else {
+                                false // Нет имени директории
+                            }
+                        } else {
+                            true // Если regex не задан, включаем все директории
+                        };
+                        
+                        if should_include {
+                            // Добавляем директорию в результат
+                            files.push(Value::Path(entry_path.clone()));
+                        }
+                        
+                        // Рекурсивно обходим содержимое директории
                         let sub_files = list_files_recursive(&entry_path, regex, session_path);
                         files.extend(sub_files);
                     }

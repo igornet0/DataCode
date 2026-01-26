@@ -11,10 +11,11 @@ pub struct CatchBlock {
     pub line: usize,
 }
 
-/// Параметр функции с опциональным значением по умолчанию
+/// Параметр функции с опциональным значением по умолчанию и типом
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
+    pub type_annotation: Option<Vec<String>>, // Типы параметра: ["int"], ["str", "int"] для union типов
     pub default_value: Option<Expr>, // None для обязательных параметров
 }
 
@@ -178,6 +179,7 @@ pub enum Stmt {
     Function {
         name: String,
         params: Vec<Param>,
+        return_type: Option<Vec<String>>, // Тип возвращаемого значения (может быть union типом)
         body: Vec<Stmt>,
         is_cached: bool,
         line: usize,

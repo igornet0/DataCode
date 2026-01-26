@@ -83,10 +83,11 @@ impl Compiler {
     fn collect_all_functions(&mut self, statements: &[Stmt]) -> Result<(), LangError> {
         for stmt in statements {
             match stmt {
-                Stmt::Function { name, params, body, is_cached, .. } => {
+                Stmt::Function { name, params, return_type, body, is_cached, .. } => {
                     // Объявляем функцию с правильной сигнатурой сразу
                     let arity = params.len();
                     let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
+                    let param_types: Vec<Option<Vec<String>>> = params.iter().map(|p| p.type_annotation.clone()).collect();
                     
                     let mut function = if *is_cached {
                         Function::with_cache(name.clone(), arity)
@@ -94,8 +95,10 @@ impl Compiler {
                         Function::new(name.clone(), arity)
                     };
                     
-                    // Устанавливаем имена параметров сразу (значения по умолчанию обработаем позже)
+                    // Устанавливаем имена и типы параметров сразу
                     function.param_names = param_names;
+                    function.param_types = param_types;
+                    function.return_type = return_type.clone();
                     // Инициализируем default_values как None для всех параметров (обработаем позже)
                     function.default_values = vec![None; params.len()];
                     
@@ -577,7 +580,7 @@ impl Compiler {
                 self.end_scope();
                 self.loop_contexts.pop();
             }
-            Stmt::Function { name, params, body, is_cached, line } => {
+            Stmt::Function { name, params, return_type, body, is_cached, line } => {
                 self.current_line = *line;
                 // Находим индекс функции (она уже объявлена в первом проходе)
                 let function_index = self.function_names.iter()
@@ -591,6 +594,8 @@ impl Compiler {
                 let mut function = self.functions[function_index].clone();
                 function.arity = params.len();
                 function.is_cached = *is_cached;
+                function.param_types = params.iter().map(|p| p.type_annotation.clone()).collect();
+                function.return_type = return_type.clone();
                 
                 // Сохраняем имена параметров и вычисляем значения по умолчанию
                 let mut param_names = Vec::new();

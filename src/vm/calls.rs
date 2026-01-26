@@ -1,7 +1,100 @@
 // Function call operations for VM
 
-use crate::common::{error::LangError, value::Value};
+use crate::common::{error::{LangError, ErrorType}, value::Value};
 use crate::vm::frame::CallFrame;
+
+/// Проверяет, соответствует ли значение одному типу
+fn check_single_type(value: &Value, type_name: &str) -> bool {
+    let type_name_lower = type_name.to_lowercase();
+    match (value, type_name_lower.as_str()) {
+        // Числовые типы
+        (Value::Number(n), "int" | "integer") => n.fract() == 0.0,
+        (Value::Number(_), "float" | "num" | "number") => true,
+        // Строковые типы
+        (Value::String(_), "str" | "string") => true,
+        // Булевы типы
+        (Value::Bool(_), "bool" | "boolean") => true,
+        // Коллекции
+        (Value::Array(_), "array" | "list") => true,
+        (Value::Tuple(_), "tuple") => true,
+        (Value::Object(_), "object" | "dict" | "dictionary") => true,
+        (Value::Table(_), "table") => true,
+        // Специальные типы
+        (Value::Null, "null" | "none") => true,
+        (Value::Path(_), "path") => true,
+        (Value::Function(_) | Value::NativeFunction(_), "function" | "fn") => true,
+        // ML типы
+        (Value::Tensor(_), "tensor") => true,
+        (Value::Graph(_), "graph") => true,
+        (Value::Dataset(_), "dataset") => true,
+        (Value::NeuralNetwork(_), "neural_network" | "neuralnetwork") => true,
+        (Value::Sequential(_), "sequential") => true,
+        (Value::Layer(_), "layer") => true,
+        // Оптимизаторы
+        (Value::LinearRegression(_), "linear_regression" | "linearregression") => true,
+        (Value::SGD(_), "sgd") => true,
+        (Value::Momentum(_), "momentum") => true,
+        (Value::NAG(_), "nag") => true,
+        (Value::Adagrad(_), "adagrad") => true,
+        (Value::RMSprop(_), "rmsprop") => true,
+        (Value::Adam(_), "adam") => true,
+        (Value::AdamW(_), "adamw") => true,
+        // Графические типы
+        (Value::Window(_), "window") => true,
+        (Value::Image(_), "image") => true,
+        (Value::Figure(_), "figure") => true,
+        (Value::Axis(_), "axis") => true,
+        (Value::ColumnReference { .. }, "column") => true,
+        _ => false,
+    }
+}
+
+/// Проверяет, соответствует ли значение хотя бы одному из типов (union типы)
+pub fn check_type_value(value: &Value, type_names: &[String]) -> bool {
+    type_names.iter().any(|type_name| check_single_type(value, type_name))
+}
+
+/// Форматирует список типов для сообщения об ошибке
+pub fn format_type_names(type_names: &[String]) -> String {
+    type_names.join(" | ")
+}
+
+/// Возвращает имя типа значения
+pub fn get_type_name_value(value: &Value) -> &'static str {
+    match value {
+        Value::Number(n) => {
+            if n.fract() == 0.0 { "int" } else { "float" }
+        }
+        Value::Bool(_) => "bool",
+        Value::String(_) => "str",
+        Value::Array(_) => "array",
+        Value::Tuple(_) => "tuple",
+        Value::Object(_) => "object",
+        Value::Table(_) => "table",
+        Value::Null => "null",
+        Value::Path(_) => "path",
+        Value::Function(_) | Value::NativeFunction(_) => "function",
+        Value::Tensor(_) => "tensor",
+        Value::Graph(_) => "graph",
+        Value::Dataset(_) => "dataset",
+        Value::NeuralNetwork(_) => "neural_network",
+        Value::Sequential(_) => "sequential",
+        Value::Layer(_) => "layer",
+        Value::LinearRegression(_) => "linear_regression",
+        Value::SGD(_) => "sgd",
+        Value::Momentum(_) => "momentum",
+        Value::NAG(_) => "nag",
+        Value::Adagrad(_) => "adagrad",
+        Value::RMSprop(_) => "rmsprop",
+        Value::Adam(_) => "adam",
+        Value::AdamW(_) => "adamw",
+        Value::Window(_) => "window",
+        Value::Image(_) => "image",
+        Value::Figure(_) => "figure",
+        Value::Axis(_) => "axis",
+        Value::ColumnReference { .. } => "column",
+    }
+}
 
 /// Setup a function call by creating a new call frame and setting up captured variables
 /// Returns the cached result if available, or None if execution is needed
@@ -31,6 +124,25 @@ pub fn setup_function_call(
             ),
             0,
         ));
+    }
+
+    // Проверяем типы аргументов, если указаны аннотации типов
+    for (i, (arg, expected_types)) in args.iter().zip(&function.param_types).enumerate() {
+        if let Some(type_names) = expected_types {
+            if !check_type_value(arg, type_names) {
+                let param_name = function.param_names.get(i)
+                    .map(|s| s.as_str())
+                    .unwrap_or("unknown");
+                return Err(LangError::runtime_error_with_type(
+                    format!(
+                        "Argument '{}' expected type '{}', got '{}'",
+                        param_name, format_type_names(type_names), get_type_name_value(arg)
+                    ),
+                    0,
+                    ErrorType::TypeError,
+                ));
+            }
+        }
     }
 
     // Проверяем кэш, если функция помечена как кэшируемая

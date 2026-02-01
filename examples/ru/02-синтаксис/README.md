@@ -15,7 +15,7 @@
 
 **Запуск**:
 ```bash
-cargo run examples/ru/02-синтаксис/условия.dc
+datacode examples/ru/02-синтаксис/условия.dc
 ```
 
 ### 2. `выражения.dc` - Сложные выражения
@@ -29,7 +29,7 @@ cargo run examples/ru/02-синтаксис/условия.dc
 
 **Запуск**:
 ```bash
-cargo run examples/ru/02-синтаксис/выражения.dc
+datacode examples/ru/02-синтаксис/выражения.dc
 ```
 
 ### 3. `булевы.dc` - Булевы значения
@@ -43,7 +43,7 @@ cargo run examples/ru/02-синтаксис/выражения.dc
 
 **Запуск**:
 ```bash
-cargo run examples/ru/02-синтаксис/булевы.dc
+datacode examples/ru/02-синтаксис/булевы.dc
 ```
 
 ## 🎯 Изучаемые концепции

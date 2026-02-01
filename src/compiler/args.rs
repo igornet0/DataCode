@@ -1,7 +1,9 @@
 /// Разрешение аргументов функций: именованные -> позиционные, применение значений по умолчанию
 
 use crate::parser::ast::Arg;
+use crate::parser::ast::Expr;
 use crate::common::error::LangError;
+use crate::common::value::Value;
 use crate::compiler::natives;
 
 /// Разрешает аргументы функции: именованные -> позиционные, применяет значения по умолчанию
@@ -78,14 +80,21 @@ pub fn resolve_function_args(
                     }
                 }
                 
-                // Собираем итоговый список аргументов в правильном порядке
-                // Включаем только предоставленные параметры (нативные функции сами обрабатывают опциональные)
+                // Собираем итоговый список аргументов в правильном порядке.
+                // Для нативных функций с большим числом опциональных параметров (например Field)
+                // передаём Null для непереданных параметров, чтобы натива получала args[i] = param i.
                 let mut final_args = Vec::new();
                 for i in 0..param_names.len() {
-                    if let Some(arg) = resolved[i].take() {
-                        match arg {
+                    match resolved[i].take() {
+                        Some(arg) => match arg {
                             Arg::Positional(expr) => final_args.push(Arg::Positional(expr)),
                             Arg::Named { value, .. } => final_args.push(Arg::Positional(value)),
+                        },
+                        None => {
+                            final_args.push(Arg::Positional(Expr::Literal {
+                                value: Value::Null,
+                                line,
+                            }));
                         }
                     }
                 }

@@ -1,0 +1,18 @@
+from settings_env import Settings, Field
+
+cls DatabaseConfig(Settings) {
+    model_config = Settings.config(env_prefix="DB__", extra="ignore")
+
+    public:
+        url: str = Field(...)
+}
+
+cls Config(Settings) {
+    model_config = Settings.config(env_prefix="APP__", extra="ignore")
+
+    public:
+        env: str = Field(default="dev")
+        debug: bool = Field(default=true)
+
+        db: DatabaseConfig = Field(default_factory=DatabaseConfig)
+}

@@ -10,6 +10,7 @@ pub mod return_stmt;
 pub mod break_continue;
 pub mod throw;
 pub mod try_catch;
+pub mod class;
 
 use crate::parser::ast::Stmt;
 use crate::common::error::LangError;
@@ -47,6 +48,7 @@ pub fn compile_stmt(
         Stmt::Continue { .. } => break_continue::compile_continue(ctx, stmt),
         Stmt::Throw { .. } => throw::compile_throw(ctx, stmt),
         Stmt::Try { .. } => try_catch::compile_try_catch(ctx, stmt),
+        Stmt::Class { .. } => class::compile_class(ctx, stmt),
     }
 }
 

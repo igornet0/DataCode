@@ -1,0 +1,77 @@
+# Наследование классов в DataCode
+# Демонстрация создания классов-наследников
+
+# ============================================================
+# Родительский класс
+# ============================================================
+cls Parent {
+    v: int
+
+    protected:
+    p: int
+    
+    public:
+    new Parent(v, p) {
+        this.v = v
+        this.p = p
+    }
+
+    fn getV() {
+        return this.v
+    }
+
+    fn getP() {
+        return this.p
+    }
+}
+
+# ============================================================
+# Класс-наследник с методом
+# ============================================================
+cls Child(Parent) {
+    public:
+    new Child(v) {
+        super(v, 202)
+    }
+}
+# Создание экземпляра наследника
+c = Child(10)
+
+try {
+pa = Parent(20)
+} catch e {
+    print("Parent Error init:", e)
+    pa = Parent(20, 303)
+}
+
+# Доступ к унаследованному полю через метод
+print("Значение v: " + c.getV())
+print("Значение p: " + c.getP())
+print("Значение pa.getP: " + pa.getP())
+
+# Прямой доступ к унаследованному публичному полю
+
+try {
+print("Напрямую c.v: " + c.v)
+} catch ProtectError as e {
+    print(e)
+}
+print("-"*10)
+
+try {
+print("Напрямую pa.v: " + pa.v)
+} catch ProtectError as e {
+    print(e)
+}
+print("-"*10)
+try {
+print("Напрямую c.p: " + c.p)
+} catch ProtectError as e {
+    print(e)
+}
+print("-"*10)
+try {
+print("Напрямую pa.p: " + pa.p)
+} catch ProtectError as e {
+    print(e)
+}

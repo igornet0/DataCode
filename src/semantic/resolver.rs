@@ -131,6 +131,44 @@ impl Resolver {
                 // Разрешаем выражение в throw
                 self.resolve_expr(value)?;
             }
+            Stmt::Class { name, private_fields, protected_fields, public_fields, private_variables, protected_variables, public_variables, constructors, methods, .. } => {
+                // Объявляем класс
+                self.declare(name);
+                self.define(name);
+                
+                // Разрешаем значения по умолчанию полей
+                for field in private_fields.iter().chain(protected_fields.iter()).chain(public_fields.iter()) {
+                    if let Some(ref default_expr) = field.default_value {
+                        self.resolve_expr(default_expr)?;
+                    }
+                }
+                
+                // Разрешаем выражения переменных уровня класса
+                for var in private_variables.iter().chain(protected_variables.iter()).chain(public_variables.iter()) {
+                    self.resolve_expr(&var.value)?;
+                }
+                
+                // Разрешаем конструкторы и методы
+                for constructor in constructors {
+                    // Разрешаем значения по умолчанию параметров
+                    for param in &constructor.params {
+                        if let Some(ref default_expr) = param.default_value {
+                            self.resolve_expr(default_expr)?;
+                        }
+                    }
+                    self.resolve_function(&constructor.params, &constructor.body, FunctionType::Function)?;
+                }
+                
+                for method in methods {
+                    // Разрешаем значения по умолчанию параметров
+                    for param in &method.params {
+                        if let Some(ref default_expr) = param.default_value {
+                            self.resolve_expr(default_expr)?;
+                        }
+                    }
+                    self.resolve_function(&method.params, &method.body, FunctionType::Function)?;
+                }
+            }
         }
         Ok(())
     }
@@ -229,6 +267,38 @@ impl Resolver {
                     }
                 }
             }
+            Expr::This { .. } => {
+                // this разрешается во время компиляции как первый параметр функции
+                // Проверка, что this используется только в методах/конструкторах, будет в компиляторе
+            }
+            Expr::Super { .. } => {
+                // super разрешается во время компиляции
+            }
+            Expr::SuperCall { args, .. } => {
+                for arg in args {
+                    match arg {
+                        Arg::Positional(expr) => {
+                            self.resolve_expr(expr)?;
+                        }
+                        Arg::Named { value, .. } => {
+                            self.resolve_expr(value)?;
+                        }
+                    }
+                }
+            }
+            Expr::SuperMethodCall { args, .. } => {
+                for arg in args {
+                    match arg {
+                        Arg::Positional(expr) => {
+                            self.resolve_expr(expr)?;
+                        }
+                        Arg::Named { value, .. } => {
+                            self.resolve_expr(value)?;
+                        }
+                    }
+                }
+            }
+            Expr::Ellipsis { .. } => {}
         }
         Ok(())
     }

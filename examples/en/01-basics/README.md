@@ -13,7 +13,7 @@ This section contains basic examples for learning the fundamentals of the DataCo
 
 **Run**:
 ```bash
-cargo run examples/en/01-basics/hello.dc
+datacode examples/en/01-basics/hello.dc
 ```
 
 ### 2. `variables.dc` - Variables
@@ -26,7 +26,7 @@ cargo run examples/en/01-basics/hello.dc
 
 **Run**:
 ```bash
-cargo run examples/en/01-basics/variables.dc
+datacode examples/en/01-basics/variables.dc
 ```
 
 ### 3. `arithmetic.dc` - Arithmetic Operations
@@ -39,7 +39,7 @@ cargo run examples/en/01-basics/variables.dc
 
 **Run**:
 ```bash
-cargo run examples/en/01-basics/arithmetic.dc
+datacode examples/en/01-basics/arithmetic.dc
 ```
 
 ### 4. `strings.dc` - Working with Strings
@@ -52,7 +52,7 @@ cargo run examples/en/01-basics/arithmetic.dc
 
 **Run**:
 ```bash
-cargo run examples/en/01-basics/strings.dc
+datacode examples/en/01-basics/strings.dc
 ```
 
 ### 5. `global_local.dc` - Global and Local Variables
@@ -65,7 +65,33 @@ cargo run examples/en/01-basics/strings.dc
 
 **Run**:
 ```bash
-cargo run examples/en/01-basics/global_local.dc
+datacode examples/en/01-basics/global_local.dc
+```
+
+### 6. `classes.dc` - Working with Classes
+**Description**: Demonstrates class declaration, constructors, fields and methods.
+
+**What you'll learn**:
+- Simple class with public fields and constructor (`cls Point`, `new Point`)
+- Class with private fields and methods (`Counter`, `inc()`, `get()`)
+- Class with method that takes arguments (`Calculator`, `add(n)`)
+
+**Run**:
+```bash
+datacode examples/en/01-basics/classes.dc
+```
+
+### 7. `inheritance.dc` - Class Inheritance
+**Description**: Demonstrates child classes, `super`, and access to inherited/protected fields.
+
+**What you'll learn**:
+- Parent class with public and protected fields
+- Child class with `super()` in constructor
+- Access via methods vs direct access; `ProtectError` for protected fields
+
+**Run**:
+```bash
+datacode examples/en/01-basics/inheritance.dc
 ```
 
 ## 🎯 Concepts Covered

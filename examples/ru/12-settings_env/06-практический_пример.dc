@@ -1,0 +1,30 @@
+# Практический пример: загрузка конфига приложения из .env
+# Объединение load_env, config с префиксом и использование полей
+
+from settings_env import load_env, Settings
+
+# Простая загрузка без префикса — все ключи из simple.env
+let app_env = load_env("simple.env")
+if app_env != null {
+    print("Конфиг приложения (simple.env):")
+    print("  app_name: " + app_env["app_name"])
+    print("  env: " + app_env["env"])
+    print("  debug: " + app_env["debug"])
+}
+
+# Загрузка с префиксом APP__ из dev.env — только переменные приложения
+let cfg = Settings.config(env_prefix="APP__")
+let env_only = load_env("dev.env", [], cfg)
+if env_only != null {
+    print("Переменные с префиксом APP__:")
+    print("  env: " + env_only["env"])
+    print("  debug: " + env_only["debug"])
+}
+
+# Загрузка только DB__ из dev.env — конфиг базы данных
+let db_cfg = Settings.config(env_prefix="DB__")
+let db_env = load_env("dev.env", [], db_cfg)
+if db_env != null {
+    print("Конфиг БД (префикс DB__):")
+    print("  url: " + db_env["url"])
+}

@@ -222,8 +222,9 @@ fn apply_header_filter(table: Table, header_arg: Option<&Value>) -> Table {
             
             Table::from_data(new_rows, Some(new_headers))
         }
-        Value::Object(rename_map) => {
+        Value::Object(rename_map_rc) => {
             // Переименовываем колонки согласно словарю
+            let rename_map = rename_map_rc.borrow();
             let mut new_headers = Vec::new();
             
             for old_header in &table.headers {

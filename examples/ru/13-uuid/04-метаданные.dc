@@ -1,0 +1,39 @@
+# Метаданные UUID: версия, вариант, временная метка
+
+import uuid
+
+# UUID версии 4 (случайный)
+let u4 = uuid.v4()
+print("UUID v4:")
+print("  версия: " + uuid.version(u4))
+print("  вариант (1 = RFC4122): " + uuid.variant(u4))
+let ts4 = uuid.timestamp(u4)
+if ts4 == null {
+    print("  временная метка: null (у v4 нет времени)")
+} else {
+    print("  временная метка: " + ts4)
+}
+
+# UUID версии 7 (время-упорядоченный)
+let u7 = uuid.v7()
+print("UUID v7:")
+print("  версия: " + uuid.version(u7))
+print("  вариант: " + uuid.variant(u7))
+let ts7 = uuid.timestamp(u7)
+if ts7 != null {
+    print("  временная метка (Unix): " + ts7)
+} else {
+    print("  временная метка: null")
+}
+
+# Разобранный UUID (версия 4 из строки)
+let parsed = uuid.parse("550e8400-e29b-41d4-a716-446655440000")
+if parsed != null {
+    print("Разобранный UUID 550e8400-...:")
+    print("  версия: " + uuid.version(parsed))
+    print("  вариант: " + uuid.variant(parsed))
+}
+
+# v5 — версия 5
+let u5 = uuid.v5(uuid.DNS, "test")
+print("UUID v5(DNS, \"test\"): версия = " + uuid.version(u5))

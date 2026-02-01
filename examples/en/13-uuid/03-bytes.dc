@@ -1,0 +1,26 @@
+# Working with UUID byte representation
+# to_bytes — array of 16 numbers 0–255, from_bytes — build UUID
+
+import uuid
+
+let u = uuid.v4()
+print("Original UUID: " + uuid.to_string(u))
+
+# UUID → array of 16 numbers (0–255)
+let bytes = uuid.to_bytes(u)
+print("Byte array length: " + len(bytes))
+
+# First and last bytes (for illustration)
+print("First byte: " + bytes[0])
+print("Last byte: " + bytes[15])
+
+# Byte array → UUID
+let restored = uuid.from_bytes(bytes)
+print("Restored UUID: " + uuid.to_string(restored))
+print("Matches original: " + (uuid.to_string(u) == uuid.to_string(restored)))
+
+# Round-trip: UUID → bytes → UUID → to_string
+let u2 = uuid.v7()
+let bytes2 = uuid.to_bytes(u2)
+let u2_restored = uuid.from_bytes(bytes2)
+print("Round-trip v7: " + (uuid.to_string(u2) == uuid.to_string(u2_restored)))

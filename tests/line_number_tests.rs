@@ -12,11 +12,12 @@ mod tests {
         "#;
         let result = run(source);
         assert!(result.is_err());
-        if let Err(LangError::RuntimeError { line, .. }) = result {
-            // Номер строки должен быть больше 0 (строка с undefined_var)
+        // Неопределённая переменная обнаруживается при выполнении (RuntimeError)
+        if let Err(LangError::RuntimeError { line, message, .. }) = result {
             assert!(line > 0, "Expected line number > 0, got {}", line);
+            assert!(message.contains("Undefined variable"), "Expected undefined variable message, got {}", message);
         } else {
-            panic!("Expected RuntimeError, got {:?}", result);
+            panic!("Expected RuntimeError for undefined variable, got {:?}", result);
         }
     }
 

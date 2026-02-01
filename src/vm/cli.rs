@@ -18,9 +18,14 @@ pub struct WebSocketConfig {
 #[derive(Debug, Clone)]
 pub struct FileExecutionConfig {
     pub filename: String,
+    /// When set, resolve relative script path and load_env base from this directory (e.g. when running via cargo from subdirectory).
+    pub base_dir: Option<String>,
     pub build_model: bool,
     pub output_db: Option<String>,
     pub debug: bool,
+    /// When true, run in main thread without GUI event loop (script output visible; no plot windows)
+    pub no_gui: bool,
+    pub script_args: Vec<String>, // Аргументы для передачи в скрипт (после имени файла)
 }
 
 /// Parsed CLI arguments
@@ -42,6 +47,8 @@ pub fn print_help() {
     println!("  datacode main.dc           # Execute DataCode file");
     println!("  datacode main.dc --build_model  # Execute and export tables to SQLite");
     println!("  datacode main.dc --build_model output.db  # Export to specific file");
+    println!("  datacode main.dc --no-gui       # Run in main thread (script output visible, no plot windows)");
+    println!("  datacode --base-dir <dir> main.dc  # Resolve script and .env paths from <dir> (see Path resolution below)");
     println!("  datacode --websocket       # Start WebSocket server for remote code execution");
     println!("  datacode --help            # Show this help");
     println!();
@@ -49,7 +56,14 @@ pub fn print_help() {
     println!("  • Create files with .dc extension");
     println!("  • Write DataCode programs in files");
     println!("  • Execute with: datacode filename.dc");
-
+    println!();
+    println!("Path resolution (--base-dir):");
+    println!("  • Relative script path (e.g. src/main.dc) is resolved from current working directory (CWD).");
+    println!("  • When running from repo root or IDE, CWD may be the project root — then load_env reads");
+    println!("    settings from that tree (e.g. project_root/src/settings/dev.env), not from the script dir.");
+    println!("  • Use --base-dir <dir> to fix: datacode --base-dir sandbox/config_test src/main.dc");
+    println!("  • Or run from the script directory: cd sandbox/config_test && cargo run -- src/main.dc");
+    println!("  • Use --debug to print CWD, script path and resolved .env path to stderr.");
     println!();
     println!("SQLite Export (--build_model):");
     println!("  • Exports all tables from global variables to SQLite database");
@@ -188,26 +202,18 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
         // File execution
         let filename = arg.clone();
         
-        // Check file existence
-        if !Path::new(&filename).exists() {
-            return Err(format!("Ошибка: файл '{}' не найден", filename));
-        }
-        
-        // Check file extension (optional, but useful)
-        if !filename.ends_with(".dc") {
-            eprintln!("Предупреждение: файл '{}' не имеет расширения .dc", filename);
-        }
-        
-        // Check for --build_model and --debug flags
+        // Check for --build_model, --debug, --no-gui, --base-dir flags first (to get base_dir for existence check)
         let mut build_model = false;
         let mut output_db: Option<String> = None;
         let mut debug = false;
+        let mut no_gui = false;
+        let mut base_dir: Option<String> = None;
+        let mut script_args = Vec::new();
         let mut i = 2;
         while i < args.len() {
             match args[i].as_str() {
                 "--build_model" | "--build-model" => {
                     build_model = true;
-                    // Check next argument - might be filename
                     if i + 1 < args.len() && !args[i + 1].starts_with('-') {
                         output_db = Some(args[i + 1].clone());
                         i += 2;
@@ -219,17 +225,49 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
                     debug = true;
                     i += 1;
                 }
-                _ => {
+                "--no-gui" => {
+                    no_gui = true;
+                    i += 1;
+                }
+                "--base-dir" | "--base_dir" => {
+                    if i + 1 < args.len() {
+                        base_dir = Some(args[i + 1].clone());
+                        i += 2;
+                    } else {
+                        return Err("Ошибка: --base-dir требует значение (путь к директории)".to_string());
+                    }
+                }
+                arg => {
+                    if !arg.starts_with('-') {
+                        script_args.push(arg.to_string());
+                    }
                     i += 1;
                 }
             }
         }
         
+        // Check file existence: if base_dir set and path relative, resolve relative to base_dir
+        let script_path_for_check: std::path::PathBuf = if let Some(ref b) = base_dir {
+            Path::new(b).join(&filename)
+        } else {
+            Path::new(&filename).to_path_buf()
+        };
+        if !script_path_for_check.exists() {
+            return Err(format!("Ошибка: файл '{}' не найден", script_path_for_check.display()));
+        }
+        
+        if !filename.ends_with(".dc") {
+            eprintln!("Предупреждение: файл '{}' не имеет расширения .dc", filename);
+        }
+        
         Ok(CliArgs::FileExecution(FileExecutionConfig {
             filename,
+            base_dir,
             build_model,
             output_db,
             debug,
+            no_gui,
+            script_args,
         }))
     } else {
         // REPL mode (interactive)

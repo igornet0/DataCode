@@ -15,7 +15,7 @@ This section contains examples of language syntax constructs.
 
 **Run**:
 ```bash
-cargo run examples/en/02-syntax/conditionals.dc
+datacode examples/en/02-syntax/conditionals.dc
 ```
 
 ### 2. `expressions.dc` - Complex Expressions
@@ -29,7 +29,7 @@ cargo run examples/en/02-syntax/conditionals.dc
 
 **Run**:
 ```bash
-cargo run examples/en/02-syntax/expressions.dc
+datacode examples/en/02-syntax/expressions.dc
 ```
 
 ### 3. `booleans.dc` - Boolean Values
@@ -43,7 +43,7 @@ cargo run examples/en/02-syntax/expressions.dc
 
 **Run**:
 ```bash
-cargo run examples/en/02-syntax/booleans.dc
+datacode examples/en/02-syntax/booleans.dc
 ```
 
 ## 🎯 Concepts Covered

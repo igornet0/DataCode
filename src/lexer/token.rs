@@ -61,6 +61,7 @@ pub enum TokenKind {
     Comma,    // ,
     Semicolon, // ;
     Dot,      // .
+    Ellipsis, // ...
     Colon,    // :
     Arrow,    // ->
     Pipe,     // |
@@ -77,6 +78,14 @@ pub enum TokenKind {
     // Аннотации
     At,       // @
     Cache,    // cache
+
+    // Ключевые слова для классов
+    Cls,      // cls
+    This,     // this
+    Super,    // super
+    Private,   // private
+    Protected, // protected
+    Public,    // public
 
     // Конец файла
     Eof,

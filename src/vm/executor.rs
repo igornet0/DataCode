@@ -1,5 +1,6 @@
 // Opcode execution for VM
 
+use crate::debug_println;
 use crate::bytecode::OpCode;
 use crate::common::{error::LangError, value::Value};
 use crate::vm::types::VMStatus;
@@ -15,26 +16,60 @@ use crate::vm::types::{ExplicitRelation, ExplicitPrimaryKey};
 use std::rc::Rc;
 use std::cell::RefCell;
 
+/// Returns [class_name, superclass, ...] for VM protected access checks.
+fn get_superclass_chain(
+    globals: &[Value],
+    global_names: &std::collections::HashMap<usize, String>,
+    class_name: &str,
+) -> Vec<String> {
+    let mut chain = vec![class_name.to_string()];
+    let mut current = class_name.to_string();
+    loop {
+        let super_name_opt = global_names
+            .iter()
+            .find(|(_, name)| name.as_str() == current)
+            .and_then(|(idx, _)| globals.get(*idx))
+            .and_then(|v| {
+                if let Value::Object(rc) = v {
+                    let map = rc.borrow();
+                    map.get("__superclass").cloned()
+                } else {
+                    None
+                }
+            });
+        let super_name = match super_name_opt {
+            Some(Value::String(s)) => s,
+            _ => break,
+        };
+        chain.push(super_name.clone());
+        current = super_name;
+    }
+    chain
+}
+
 /// Execute one step of the VM - get next instruction and execute it
 pub fn step(
     frames: &mut Vec<CallFrame>,
 ) -> Result<Option<(OpCode, usize)>, LangError> {
-    let frame = match frames.last_mut() {
-        Some(f) => f,
-        None => return Ok(None),
-    };
+    loop {
+        let frame = match frames.last_mut() {
+            Some(f) => f,
+            None => return Ok(None),
+        };
 
-    if frame.ip >= frame.function.chunk.code.len() {
-        frames.pop();
-        return Ok(None);
+        if frame.ip >= frame.function.chunk.code.len() {
+            // Frame exhausted (e.g. empty method body); pop and continue with caller
+            frames.pop();
+            continue;
+        }
+
+        let ip = frame.ip;
+        let instruction = frame.function.chunk.code[ip].clone();
+        let line = frame.function.chunk.get_line(ip);
+        frame.ip += 1;
+
+        return Ok(Some((instruction, line)));
     }
-
-    let ip = frame.ip;
-    let instruction = frame.function.chunk.code[ip].clone();
-    let line = frame.function.chunk.get_line(ip);
-    frame.ip += 1;
-
-    Ok(Some((instruction, line)))
 }
 
 /// Execute a single instruction
@@ -55,11 +90,41 @@ pub fn execute_instruction(
     explicit_relations: &mut Vec<crate::vm::types::ExplicitRelation>,
     explicit_primary_keys: &mut Vec<crate::vm::types::ExplicitPrimaryKey>,
     loaded_modules: &mut std::collections::HashSet<String>,
+    abi_natives: &mut Vec<crate::abi::NativeAbiFn>,
+    loaded_native_libraries: &mut Vec<libloading::Library>,
     vm_ptr: *mut crate::vm::vm::Vm,
 ) -> Result<VMStatus, LangError> {
     let frame = frames.last_mut().unwrap();
+    let current_ip = frame.ip - 1; // IP уже инкрементирован в step()
+
+    // Логирование выполнения конструктора
+    let is_constructor = frame.function.name.contains("::new_");
     
-match instruction {
+    if is_constructor {
+        let is_return = matches!(instruction, OpCode::Return);
+        let _is_load_local = matches!(instruction, OpCode::LoadLocal(_));
+        let _is_store_local = matches!(instruction, OpCode::StoreLocal(_));
+        debug_println!("[DEBUG executor constructor] '{}' IP {} line {}: {:?} (stack len {})", 
+            frame.function.name, current_ip, line, instruction, stack.len());
+        if is_return && !stack.is_empty() {
+            let return_value = &stack[stack.len() - 1];
+            let val_type = match return_value {
+                Value::Object(_) => {
+                    if let Value::Object(obj_rc) = return_value {
+                        let map = obj_rc.borrow();
+                        let keys: Vec<String> = map.keys().cloned().collect();
+                        format!("Object с ключами: {:?}", keys)
+                    } else {
+                        "Object".to_string()
+                    }
+                },
+                _ => format!("{:?}", return_value),
+            };
+            debug_println!("[DEBUG executor constructor] Возвращаемое значение: {}", val_type);
+        }
+    }
+    
+    match instruction {
                 OpCode::Import(module_index) => {
                     let module_name = match &frame.function.chunk.constants[module_index] {
                         Value::String(name) => name.clone(),
@@ -81,10 +146,67 @@ match instruction {
                         return Ok(VMStatus::Continue);
                     }
                     
-                    // Register the module
-                    modules::register_module(&module_name, natives, globals, global_names)?;
-                    loaded_modules.insert(module_name);
-                    return Ok(VMStatus::Continue);
+                    // Built-in (ml, plot, settings_env), then .dc file, then native ABI module
+                    if modules::is_known_module(&module_name) {
+                        modules::register_module(&module_name, natives, globals, global_names)?;
+                        loaded_modules.insert(module_name);
+                        return Ok(VMStatus::Continue);
+                    }
+                    let base_path = unsafe { (*vm_ptr).get_base_path() }.or_else(crate::vm::file_import::get_base_path);
+                    let load_dc_err = if let Some(ref base_path) = base_path {
+                        match crate::vm::file_import::load_local_module_with_vm(&module_name, base_path) {
+                            Ok((module_object, module_vm)) => {
+                                let start_function_index = unsafe {
+                                    let vm_ref = &mut *vm_ptr;
+                                    vm_ref.add_functions(module_vm.get_functions().clone())
+                                };
+                                if let Value::Object(module_obj_rc) = &module_object {
+                                    let mut module_obj = module_obj_rc.borrow_mut();
+                                    module_obj.insert("__start_function_index".to_string(), Value::Number(start_function_index as f64));
+                                }
+                                if let Some((&idx, _)) = global_names.iter().find(|(_, n)| n.as_str() == module_name.as_str()) {
+                                    if idx < globals.len() { globals[idx] = module_object; } else { globals.resize(idx + 1, Value::Null); globals[idx] = module_object; }
+                                } else {
+                                    let idx = globals.len();
+                                    globals.push(module_object);
+                                    global_names.insert(idx, module_name.clone());
+                                }
+                                loaded_modules.insert(module_name);
+                                return Ok(VMStatus::Continue);
+                            }
+                            Err(e) => Some(e),
+                        }
+                    } else {
+                        None
+                    };
+                    if let Ok(module_object) = crate::vm::native_loader::try_load_native_module(
+                        &module_name,
+                        base_path.as_deref(),
+                        natives.len(),
+                        abi_natives,
+                        loaded_native_libraries,
+                    ) {
+                        let module_value = Value::Object(Rc::new(RefCell::new(module_object)));
+                        if let Some((&idx, _)) = global_names.iter().find(|(_, n)| n.as_str() == module_name.as_str()) {
+                            if idx < globals.len() { globals[idx] = module_value; } else { globals.resize(idx + 1, Value::Null); globals[idx] = module_value; }
+                        } else {
+                            let idx = globals.len();
+                            globals.push(module_value);
+                            global_names.insert(idx, module_name.clone());
+                        }
+                        loaded_modules.insert(module_name);
+                        return Ok(VMStatus::Continue);
+                    }
+                    return Err(load_dc_err.map_or_else(
+                        || LangError::runtime_error(
+                            format!("Module '{}' not found (built-in, .dc file, or native module)", module_name),
+                            line,
+                        ),
+                        |e| LangError::runtime_error(
+                            format!("Failed to load module '{}': {}", module_name, e),
+                            line,
+                        ),
+                    ));
                 }
                 OpCode::ImportFrom(module_index, items_index) => {
                     // Get module name
@@ -121,8 +243,134 @@ match instruction {
                     
                     // Register the module if not already loaded
                     if !loaded_modules.contains(&module_name) {
-                        modules::register_module(&module_name, natives, globals, global_names)?;
-                        loaded_modules.insert(module_name.clone());
+                        // Сначала попробуем зарегистрировать как встроенный модуль
+                        if modules::is_known_module(&module_name) {
+                            modules::register_module(&module_name, natives, globals, global_names)?;
+                            loaded_modules.insert(module_name.clone());
+                        } else {
+                            // Попробуем загрузить как локальный файл (VM base_path затем thread-local)
+                            use crate::vm::file_import;
+                            let base_path = unsafe { (*vm_ptr).get_base_path() }.or_else(file_import::get_base_path);
+                            if let Some(ref base_path) = base_path {
+                                match file_import::load_local_module_with_vm(&module_name, base_path) {
+                                    Ok((module_object, module_vm)) => {
+                                        debug_println!("[DEBUG ImportFrom] Загружен модуль '{}'", module_name);
+                                        debug_println!("[DEBUG ImportFrom] Функций в модуле: {}", module_vm.get_functions().len());
+                                        
+                                        // Сливаем функции и глобалы модуля в main VM (merge_globals_from добавляет функции и обновляет индексы в глобалах)
+                                        let start_function_index = unsafe {
+                                            let vm_ref = &mut *vm_ptr;
+                                            let start_idx = vm_ref.functions_count();
+                                            debug_println!("[DEBUG ImportFrom] Начальный индекс функций в основном VM: {}", start_idx);
+                                            vm_ref.merge_globals_from(&module_vm);
+                                            let added_count = vm_ref.functions_count() - start_idx;
+                                            debug_println!("[DEBUG ImportFrom] Добавлено функций: {}, начальный индекс: {}", added_count, start_idx);
+                                            // Обновляем LoadGlobal/StoreGlobal в байткоде добавленных функций на индексы main VM
+                                            let global_names = vm_ref.get_global_names().clone();
+                                            let end = vm_ref.functions_count();
+                                            for i in start_idx..end {
+                                                crate::vm::vm::Vm::update_chunk_indices_from_names(
+                                                    &mut vm_ref.get_functions_mut()[i].chunk,
+                                                    &global_names,
+                                                    None, // vm_ref already borrowed mutably for chunk
+                                                );
+                                            }
+                                            start_idx
+                                        };
+
+                                        // Обновляем индексы глобалов в главном chunk, чтобы они соответствовали
+                                        // текущему global_names после merge (иначе последующий LOAD_GLOBAL загрузит неверный слот)
+                                        if let Some(main_frame) = frames.first_mut() {
+                                            crate::vm::vm::Vm::update_chunk_indices_from_names(
+                                                &mut main_frame.function.chunk,
+                                                global_names,
+                                                Some(globals.as_slice()),
+                                            );
+                                        }
+
+                                        // Сохраняем start_function_index в объекте модуля как метаданные
+                                        if let Value::Object(module_obj_rc) = &module_object {
+                                            let mut module_obj = module_obj_rc.borrow_mut();
+                                            module_obj.insert("__start_function_index".to_string(), Value::Number(start_function_index as f64));
+                                            debug_println!("[DEBUG ImportFrom] Сохранен start_function_index={} в объекте модуля", start_function_index);
+                                            debug_println!("[DEBUG ImportFrom] Ключи в объекте модуля: {:?}", module_obj.keys().collect::<Vec<_>>());
+                                        }
+                                        
+                                        // Регистрируем модуль в глобальных переменных
+                                        // Проверяем, есть ли уже модуль в globals
+                                        if let Some((&idx, _)) = global_names.iter().find(|(_, n)| n.as_str() == module_name.as_str()) {
+                                            // Модуль уже зарегистрирован, обновляем значение
+                                            if idx < globals.len() {
+                                                globals[idx] = module_object;
+                                            } else {
+                                                // Индекс выходит за границы, расширяем массив
+                                                globals.resize(idx + 1, Value::Null);
+                                                globals[idx] = module_object;
+                                            }
+                                        } else {
+                                            // Новый модуль, создаем новый индекс
+                                            let idx = globals.len();
+                                            globals.push(module_object);
+                                            global_names.insert(idx, module_name.clone());
+                                        }
+                                        loaded_modules.insert(module_name.clone());
+                                    }
+                                    Err(load_err) => {
+                                        // Попробуем загрузить как нативный ABI-модуль (.so/.dylib)
+                                        match crate::vm::native_loader::try_load_native_module(
+                                            &module_name,
+                                            Some(&base_path),
+                                            natives.len(),
+                                            abi_natives,
+                                            loaded_native_libraries,
+                                        ) {
+                                            Ok(module_object) => {
+                                                let module_value = Value::Object(Rc::new(RefCell::new(module_object)));
+                                                if let Some((&idx, _)) = global_names.iter().find(|(_, n)| n.as_str() == module_name.as_str()) {
+                                                    if idx < globals.len() {
+                                                        globals[idx] = module_value;
+                                                    } else {
+                                                        globals.resize(idx + 1, Value::Null);
+                                                        globals[idx] = module_value;
+                                                    }
+                                                } else {
+                                                    let idx = globals.len();
+                                                    globals.push(module_value);
+                                                    global_names.insert(idx, module_name.clone());
+                                                }
+                                                loaded_modules.insert(module_name.clone());
+                                            }
+                                            Err(_) => {
+                                                let error = ExceptionHandler::runtime_error(
+                                                    &frames,
+                                                    format!("Failed to load module '{}': {}", module_name, load_err),
+                                                    line,
+                                                );
+                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                    Ok(()) => return Ok(VMStatus::Continue),
+                                                    Err(e) => return Err(e),
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            } else {
+                                // Базовый путь не установлен — локальные .dc модули недоступны
+                                let builtins = modules::builtin_modules_list();
+                                let error = ExceptionHandler::runtime_error(
+                                    &frames,
+                                    format!(
+                                        "Module '{}' not found. Built-in modules: {}. For local .dc modules (e.g. from config import Config), run a script file from CLI or use run_with_vm_with_args_and_lib(..., base_path).",
+                                        module_name, builtins
+                                    ),
+                                    line,
+                                );
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    Ok(()) => return Ok(VMStatus::Continue),
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                        }
                     }
                     
                     // Get the module object from globals
@@ -160,8 +408,9 @@ match instruction {
                         }
                     }
                     
-                    let module_object_ref = match &globals[module_global_index] {
-                        Value::Object(map) => map,
+                    // Get the module object - clone the Rc to avoid borrow conflicts
+                    let module_object_rc = match &globals[module_global_index] {
+                        Value::Object(map_rc) => map_rc.clone(),
                         Value::Null => {
                             let error = ExceptionHandler::runtime_error(
                             &frames,
@@ -186,8 +435,8 @@ match instruction {
                             }
                         }
                     };
-                    // Clone the HashMap to avoid borrowing issues
-                    let module_object = module_object_ref.clone();
+                    // Clone the HashMap to avoid borrowing issues - we can now mutate globals
+                    let module_object = module_object_rc.borrow().clone();
                     
                     // Import items
                     for item_value in items_array {
@@ -273,14 +522,26 @@ match instruction {
                                     }
                                 } else {
                                     // Named import: just the name
+                                    debug_println!("[DEBUG ImportFrom] Импортируем '{}' из модуля '{}'", item_str, module_name);
+                                    debug_println!("[DEBUG ImportFrom] Доступные ключи в модуле: {:?}", module_object.keys().collect::<Vec<_>>());
+                                    
                                     if let Some(value) = module_object.get(&item_str) {
+                                        debug_println!("[DEBUG ImportFrom] Найден '{}' в модуле, тип: {:?}", item_str, match value {
+                                            Value::Object(_) => "Object",
+                                            Value::Function(_) => "Function",
+                                            Value::Null => "Null",
+                                            _ => "Other",
+                                        });
+                                        
                                         // Register the name in globals
                                         let global_index = if let Some(&idx) = global_names.iter().find(|(_, n)| n.as_str() == item_str.as_str()).map(|(idx, _)| idx) {
+                                            debug_println!("[DEBUG ImportFrom] '{}' уже существует в globals с индексом {}", item_str, idx);
                                             idx
                                         } else {
                                             let idx = globals.len();
                                             globals.push(value.clone());
                                             global_names.insert(idx, item_str.clone());
+                                            debug_println!("[DEBUG ImportFrom] Создан новый глобальный индекс {} для '{}'", idx, item_str);
                                             idx
                                         };
                                         // Update the global value
@@ -288,7 +549,103 @@ match instruction {
                                             globals.resize(global_index + 1, Value::Null);
                                         }
                                         globals[global_index] = value.clone();
+                                        debug_println!("[DEBUG ImportFrom] '{}' установлен в globals[{}]", item_str, global_index);
+                                        
+                                        // Если импортируется класс (объект с метаданными класса), также импортируем все конструкторы
+                                        // Конструкторы имеют формат ClassName::new_<arity>
+                                        if let Value::Object(class_obj_rc) = value {
+                                            let class_obj = class_obj_rc.borrow();
+                                            debug_println!("[DEBUG ImportFrom] Проверяем, является ли '{}' классом...", item_str);
+                                            // Проверяем, что это класс (имеет метаданные __class_name)
+                                            if class_obj.contains_key("__class_name") {
+                                                debug_println!("[DEBUG ImportFrom] '{}' является классом! Импортируем конструкторы...", item_str);
+                                                // Получаем start_function_index из объекта модуля
+                                                // Сначала получаем объект модуля из глобальных переменных
+                                                let start_function_index = if let Some(&module_global_idx) = global_names.iter().find(|(_, n)| n.as_str() == module_name).map(|(idx, _)| idx) {
+                                                    if module_global_idx < globals.len() {
+                                                        if let Value::Object(module_obj_rc) = &globals[module_global_idx] {
+                                                            let module_obj = module_obj_rc.borrow();
+                                                            if let Some(Value::Number(idx)) = module_obj.get("__start_function_index") {
+                                                                debug_println!("[DEBUG ImportFrom] Найден start_function_index={} для модуля '{}'", *idx, module_name);
+                                                                *idx as usize
+                                                            } else {
+                                                                debug_println!("[DEBUG ImportFrom] WARNING: start_function_index не найден в модуле '{}', используем 0", module_name);
+                                                                0 // Если не найден, используем 0 (функции уже добавлены)
+                                                            }
+                                                        } else {
+                                                            debug_println!("[DEBUG ImportFrom] WARNING: Модуль '{}' не является объектом", module_name);
+                                                            0
+                                                        }
+                                                    } else {
+                                                        debug_println!("[DEBUG ImportFrom] WARNING: Индекс модуля {} выходит за границы globals (len={})", module_global_idx, globals.len());
+                                                        0
+                                                    }
+                                                } else {
+                                                    debug_println!("[DEBUG ImportFrom] WARNING: Модуль '{}' не найден в global_names", module_name);
+                                                    0
+                                                };
+                                                
+                                                // Импортируем все конструкторы этого класса из модуля
+                                                let constructor_prefix = format!("{}::new_", item_str);
+                                                debug_println!("[DEBUG ImportFrom] Ищем конструкторы с префиксом '{}'", constructor_prefix);
+                                                let mut found_constructors = 0;
+                                                for (key, val) in module_object.iter() {
+                                                    if key.starts_with(&constructor_prefix) {
+                                                        found_constructors += 1;
+                                                        debug_println!("[DEBUG ImportFrom] Найден конструктор: {}", key);
+                                                        // Обновляем индекс функции в конструкторе
+                                                        let (updated_val, new_function_index) = match val {
+                                                            Value::Function(function_index) => {
+                                                                let new_index = start_function_index + *function_index;
+                                                                debug_println!("[DEBUG ImportFrom] Обновляем индекс функции: {} -> {}", function_index, new_index);
+                                                                // Обновляем индекс функции с учетом уже добавленных функций
+                                                                (Value::Function(new_index), new_index)
+                                                            }
+                                                            _ => {
+                                                                debug_println!("[DEBUG ImportFrom] WARNING: Конструктор {} не является функцией", key);
+                                                                (val.clone(), 0)
+                                                            }
+                                                        };
+                                                        
+                                                        // Импортируем конструктор
+                                                        let constructor_global_index = if let Some(&idx) = global_names.iter().find(|(_, n)| n.as_str() == key.as_str()).map(|(idx, _)| idx) {
+                                                            debug_println!("[DEBUG ImportFrom] Конструктор '{}' уже существует в globals с индексом {}, обновляем индекс функции", key, idx);
+                                                            // Обновляем индекс функции в существующем конструкторе
+                                                            // Это важно, потому что конструктор мог быть создан при merge из __lib__.dc
+                                                            // с неправильным индексом функции (0), и теперь нужно обновить его на правильный
+                                                            if idx < globals.len() {
+                                                                if let Value::Function(old_fn_idx) = &globals[idx] {
+                                                                    debug_println!("[DEBUG ImportFrom] Старый индекс функции: {}, новый индекс функции: {} (функции из модуля добавлены в VM)", old_fn_idx, new_function_index);
+                                                                }
+                                                                globals[idx] = updated_val.clone();
+                                                            } else {
+                                                                globals.resize(idx + 1, Value::Null);
+                                                                globals[idx] = updated_val.clone();
+                                                            }
+                                                            idx
+                                                        } else {
+                                                            let idx = globals.len();
+                                                            globals.push(updated_val.clone());
+                                                            global_names.insert(idx, key.clone());
+                                                            debug_println!("[DEBUG ImportFrom] Создан новый глобальный индекс {} для конструктора '{}'", idx, key);
+                                                            idx
+                                                        };
+                                                        // Update the global value
+                                                        if constructor_global_index >= globals.len() {
+                                                            globals.resize(constructor_global_index + 1, Value::Null);
+                                                        }
+                                                        globals[constructor_global_index] = updated_val;
+                                                        debug_println!("[DEBUG ImportFrom] Конструктор '{}' установлен в globals[{}] с индексом функции {}", key, constructor_global_index, new_function_index);
+                                                    }
+                                                }
+                                                debug_println!("[DEBUG ImportFrom] Всего найдено конструкторов: {}", found_constructors);
+                                                // Методы класса живут только внутри объекта класса (getBalance, deposit и т.д.), не экспортируем их в globals при ImportFrom.
+                                            } else {
+                                                debug_println!("[DEBUG ImportFrom] '{}' не является классом (нет ключа __class_name)", item_str);
+                                            }
+                                        }
                                     } else {
+                                        debug_println!("[DEBUG ImportFrom] ERROR: '{}' не найден в модуле '{}'", item_str, module_name);
                                         let error = ExceptionHandler::runtime_error_with_type(
                                 &frames,
                                             format!("Module '{}' has no attribute '{}'", module_name, item_str),
@@ -316,6 +673,15 @@ match instruction {
                         }
                     }
                     
+                    // After importing items (builtin or file), update main chunk's LoadGlobal/StoreGlobal
+                    // to the current global_names so subsequent instructions see the correct slots.
+                    if let Some(main_frame) = frames.first_mut() {
+                        crate::vm::vm::Vm::update_chunk_indices_from_names(
+                            &mut main_frame.function.chunk,
+                            global_names,
+                            Some(globals.as_slice()),
+                        );
+                    }
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::Constant(index) => {
@@ -337,6 +703,21 @@ match instruction {
                 }
                 OpCode::StoreLocal(index) => {
                     let value = stack::pop(stack, frames, exception_handlers)?;
+                    
+                    // Логирование для объектов (проверка клонирования)
+                    if let Value::Object(obj_rc) = &value {
+                        let _obj_ptr = Rc::as_ptr(obj_rc);
+                        let frame = frames.last().unwrap();
+                        let is_constructor = frame.function.name.contains("::new_");
+                        let current_ip = frame.ip - 1;
+                        
+                        if is_constructor {
+                            let map = obj_rc.borrow();
+                            let key_count = map.len();
+                            debug_println!("[DEBUG StoreLocal] constructor '{}' IP {} slot {}: Object ({} keys)", frame.function.name, current_ip, index, key_count);
+                        }
+                    }
+                    
                     // Clone уже создает глубокую копию для массивов и таблиц
                     let frame = frames.last_mut().unwrap();
                     if index >= frame.slots.len() {
@@ -374,6 +755,47 @@ match instruction {
                         // Для сложных типов (Array, Table) возвращаем ссылку (shallow copy Rc)
                         // Для простых типов клонируем значение
                         let value = &globals[index];
+                        // Отладочный вывод для проверки значений
+                        if let Some(var_name) = global_names.get(&index) {
+                            if var_name.contains("Data") || var_name.contains("range") || var_name.contains("print") || var_name.contains("::new_") {
+                                let value_type_str = match value {
+                                    Value::Null => "Null".to_string(),
+                                    Value::Function(fn_idx) => {
+                                        if *fn_idx < functions.len() {
+                                            format!("Function({}, имя: '{}')", fn_idx, functions[*fn_idx].name)
+                                        } else {
+                                            format!("Function({}, OUT OF BOUNDS!)", fn_idx)
+                                        }
+                                    },
+                                    Value::Object(_) => "Object".to_string(),
+                                    Value::NativeFunction(_) => "NativeFunction".to_string(),
+                                    _ => "Other".to_string(),
+                                };
+                                debug_println!("[DEBUG LoadGlobal] Загружаем '{}' из globals[{}], значение: {}", var_name, index, value_type_str);
+                                
+                                // Дополнительная проверка для конструкторов
+                                if var_name.contains("::new_") {
+                                    if let Value::Function(fn_idx) = value {
+                                        if *fn_idx < functions.len() {
+                                            let func = &functions[*fn_idx];
+                                            debug_println!("[DEBUG LoadGlobal] Конструктор '{}' имеет индекс функции {}, имя функции: '{}', arity: {}", 
+                                                var_name, fn_idx, func.name, func.arity);
+                                        } else {
+                                            debug_println!("[DEBUG LoadGlobal] ОШИБКА: Конструктор '{}' имеет индекс функции {} (выходит за границы, всего функций: {})", 
+                                                var_name, fn_idx, functions.len());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if matches!(value, Value::Null) {
+                            // Если значение Null, проверяем, не является ли это функцией, которая должна быть установлена
+                            if let Some(var_name) = global_names.get(&index) {
+                                if var_name.contains("Data") || var_name.contains("range") || var_name.contains("print") {
+                                    debug_println!("[DEBUG LoadGlobal] WARNING: '{}' в globals[{}] равен Null", var_name, index);
+                                }
+                            }
+                        }
                         let loaded_value = match value {
                             Value::Array(arr_rc) => Value::Array(Rc::clone(arr_rc)),
                             Value::Table(table_rc) => Value::Table(Rc::clone(table_rc)),
@@ -568,10 +990,137 @@ match instruction {
                     ));
                 }
                 OpCode::Call(arity) => {
+                    let frame = frames.last().unwrap();
+                    let current_ip = frame.ip - 1; // IP уже инкрементирован в step(), возвращаемся назад
+                    debug_println!("[DEBUG executor OpCode::Call] Получен OpCode::Call({}) на строке {}, IP: {}", arity, line, current_ip);
+                    
+                    // Проверяем, что инструкция в байткоде действительно имеет правильный arity
+                    if let Some(OpCode::Call(recorded_arity)) = frame.function.chunk.code.get(current_ip) {
+                        if *recorded_arity != arity {
+                            debug_println!("[ERROR executor OpCode::Call] КРИТИЧЕСКАЯ ОШИБКА: В байткоде на IP {} записано Call({}), но прочитано Call({})!", 
+                                current_ip, recorded_arity, arity);
+                            // Дополнительная отладка: показываем окружающие инструкции
+                            let start = current_ip.saturating_sub(5);
+                            let end = (current_ip + 5).min(frame.function.chunk.code.len());
+                            debug_println!("[ERROR executor OpCode::Call] Окружающие инструкции (IP {} - {}):", start, end);
+                            for i in start..end {
+                                let marker = if i == current_ip { " <-- ТЕКУЩАЯ" } else { "" };
+                                debug_println!("[ERROR executor OpCode::Call]   IP {}: {:?}{}", i, frame.function.chunk.code.get(i), marker);
+                            }
+                        } else {
+                            debug_println!("[DEBUG executor OpCode::Call] Подтверждено: Call({}) правильно прочитан из байткода на IP {}", arity, current_ip);
+                        }
+                    } else {
+                        debug_println!("[ERROR executor OpCode::Call] КРИТИЧЕСКАЯ ОШИБКА: На IP {} не найдена инструкция Call!", current_ip);
+                        // Показываем, что там на самом деле
+                        if let Some(opcode) = frame.function.chunk.code.get(current_ip) {
+                            debug_println!("[ERROR executor OpCode::Call] На IP {} найдена инструкция: {:?}", current_ip, opcode);
+                        }
+                    }
+                    
                     // Получаем функцию со стека
                     // Используем stack::pop для правильного номера строки при ошибке
+                    let stack_size_before_pop = stack.len();
+                    debug_println!("[DEBUG executor OpCode::Call] Размер стека перед извлечением функции: {}", stack_size_before_pop);
+                    
+                    // Детальное логирование стека для IP 15 и IP 40 (вызовы методов)
+                    if current_ip == 15 || current_ip == 40 {
+                        debug_println!("[DEBUG executor OpCode::Call] ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ СТЕКА для IP 15:");
+                        debug_println!("[DEBUG executor OpCode::Call] Размер стека: {}", stack.len());
+                        debug_println!("[DEBUG executor OpCode::Call] stack_start текущего frame: {}", frame.stack_start);
+                        debug_println!("[DEBUG executor OpCode::Call] Байткод вокруг IP 15:");
+                        let start = current_ip.saturating_sub(5);
+                        let end = (current_ip + 5).min(frame.function.chunk.code.len());
+                        for i in start..end {
+                            let marker = if i == current_ip { " <-- ТЕКУЩАЯ" } else { "" };
+                            debug_println!("[DEBUG executor OpCode::Call]   IP {}: {:?}{}", i, frame.function.chunk.code.get(i), marker);
+                        }
+                        for (i, val) in stack.iter().enumerate() {
+                            let val_type = match val {
+                                Value::Number(_) => "Number".to_string(),
+                                Value::String(_) => "String".to_string(),
+                                Value::Bool(_) => "Bool".to_string(),
+                                Value::Array(_) => "Array".to_string(),
+                                Value::Object(_) => "Object".to_string(),
+                                Value::Function(fn_idx) => {
+                                    if *fn_idx < functions.len() {
+                                        format!("Function({}, имя: '{}')", fn_idx, functions[*fn_idx].name)
+                                    } else {
+                                        format!("Function({}, OUT OF BOUNDS!)", fn_idx)
+                                    }
+                                },
+                                Value::NativeFunction(_) => "NativeFunction".to_string(),
+                                Value::Null => "Null".to_string(),
+                                _ => "Other".to_string(),
+                            };
+                            debug_println!("[DEBUG executor OpCode::Call]   Стек[{}]: {} ({:?})", i, val_type, val);
+                        }
+                    }
+                    
                     let function_value = stack::pop(stack, frames, exception_handlers)?;
-                    match function_value {
+                    let stack_size_after_pop = stack.len();
+                    debug_println!("[DEBUG executor OpCode::Call] Размер стека после извлечения функции: {}", stack_size_after_pop);
+                    
+                    // Отладочный вывод для проверки вызываемой функции
+                    let function_type = match &function_value {
+                        Value::Null => "Null",
+                        Value::Function(_) => "Function",
+                        Value::NativeFunction(_) => "NativeFunction",
+                        _ => "Other",
+                    };
+                    debug_println!("[DEBUG executor OpCode::Call] Значение на стеке перед вызовом: тип = {}, значение = {:?}", function_type, function_value);
+                    
+                    // Дополнительное логирование для IP 15 и IP 40
+                    if current_ip == 15 || current_ip == 40 {
+                        debug_println!("[DEBUG executor OpCode::Call] Извлечена функция для IP {}: {:?}", current_ip, function_value);
+                        if let Value::Function(fn_idx) = &function_value {
+                            if *fn_idx < functions.len() {
+                                debug_println!("[DEBUG executor OpCode::Call] Функция на IP {}: индекс={}, имя='{}', arity={}, ожидается аргументов: {}", 
+                                    current_ip, fn_idx, functions[*fn_idx].name, functions[*fn_idx].arity, arity);
+                            }
+                        }
+                    }
+                    if matches!(&function_value, Value::Null) {
+                        debug_println!("[DEBUG Call] Пытаемся вызвать Null с {} аргументами на строке {}", arity, line);
+                    }
+                    // If callee is a class Object (from import), resolve to constructor from globals or from class object
+                    // If callee is Object without __class_name but has __call__, use __call__ as the actual callee (e.g. Settings)
+                    let actual_callee: Value = {
+                        if let Value::Object(obj_rc) = &function_value {
+                            let class_name_opt = obj_rc.borrow().get("__class_name").cloned();
+                            if let Some(Value::String(class_name)) = class_name_opt {
+                                let constructor_name = format!("{}::new_{}", class_name, arity);
+                                let constructor_value = global_names
+                                    .iter()
+                                    .find(|(_, n)| *n == &constructor_name)
+                                    .and_then(|(idx, _)| globals.get(*idx).cloned());
+                                if let Some(Value::Function(constructor_fn_idx)) = constructor_value {
+                                    debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to constructor '{}'", class_name, constructor_name);
+                                    Value::Function(constructor_fn_idx)
+                                } else {
+                                    // Fallback: constructor may live only on the class object (e.g. after import)
+                                    let method_key = format!("new_{}", arity);
+                                    let from_class = obj_rc.borrow().get(&method_key).cloned();
+                                    if let Some(Value::Function(constructor_fn_idx)) = from_class {
+                                        debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to constructor from class key '{}'", class_name, method_key);
+                                        Value::Function(constructor_fn_idx)
+                                    } else {
+                                        function_value
+                                    }
+                                }
+                            } else {
+                                let call_opt = obj_rc.borrow().get("__call__").cloned();
+                                if let Some(Value::Function(_)) | Some(Value::NativeFunction(_)) = call_opt.as_ref() {
+                                    call_opt.unwrap()
+                                } else {
+                                    function_value
+                                }
+                            }
+                        } else {
+                            function_value
+                        }
+                    };
+                    match actual_callee {
                         Value::Function(function_index) => {
                             if function_index >= functions.len() {
                                 let error = ExceptionHandler::runtime_error(
@@ -586,6 +1135,22 @@ match instruction {
                             }
                             
                             let function = functions[function_index].clone();
+                            
+                            debug_println!("[DEBUG executor Call] Вызываем функцию с индексом {}, имя: '{}', arity: {}, получено аргументов: {} (всего функций в VM: {})", 
+                                function_index, function.name, function.arity, arity, functions.len());
+                            
+                            // Дополнительная отладка для конструкторов
+                            if function.name.contains("::new_") {
+                                debug_println!("[DEBUG executor Call] ВНИМАНИЕ: Вызывается конструктор '{}' с индексом функции {}", function.name, function_index);
+                                debug_println!("[DEBUG executor Call] Ожидаем, что конструктор сохранит методы в объект через SetArrayElement");
+                            }
+                            
+                            // Дополнительная отладка для методов класса
+                            if function.name.contains("::method_") {
+                                let current_ip_debug = frames.last().map(|f| f.ip - 1).unwrap_or(0);
+                                debug_println!("[DEBUG executor Call] ВНИМАНИЕ: Вызывается метод класса '{}' с индексом функции {} на IP {}", function.name, function_index, current_ip_debug);
+                                debug_println!("[DEBUG executor Call] Размер стека перед извлечением аргументов: {}, ожидается аргументов: {}", stack.len(), arity);
+                            }
                             
                             // Проверяем количество аргументов
                             if arity != function.arity {
@@ -612,6 +1177,27 @@ match instruction {
                                 // stack_start указывает на начало стека для текущего frame
                                 // Аргументы и функция были помещены на стек после stack_start
                                 // После извлечения функции стек должен содержать минимум arity аргументов
+                                let stack_size_before = stack.len();
+                                debug_println!("[DEBUG executor Call] Размер стека перед извлечением аргументов: {}, stack_start: {}, ожидается аргументов: {}", 
+                                    stack_size_before, frame.stack_start, arity);
+                                
+                                // Дополнительная отладка: показываем все элементы стека
+                                debug_println!("[DEBUG executor Call] Полное содержимое стека ({} элементов):", stack.len());
+                                for (i, val) in stack.iter().enumerate() {
+                                    let val_type = match val {
+                                        Value::Number(_) => "Number",
+                                        Value::String(_) => "String",
+                                        Value::Bool(_) => "Bool",
+                                        Value::Array(_) => "Array",
+                                        Value::Object(_) => "Object",
+                                        Value::Function(_) => "Function",
+                                        Value::NativeFunction(_) => "NativeFunction",
+                                        Value::Null => "Null",
+                                        _ => "Other",
+                                    };
+                                    debug_println!("[DEBUG executor Call]   Стек[{}]: {} ({:?})", i, val_type, val);
+                                }
+                                
                                 if stack.len() <= frame.stack_start {
                                     let error = ExceptionHandler::runtime_error(
                                         &frames,
@@ -629,6 +1215,18 @@ match instruction {
                                 
                                 // Проверяем, что на стеке достаточно аргументов (после извлечения функции)
                                 let available_args = stack.len() - frame.stack_start;
+                                debug_println!("[DEBUG executor Call] Доступно аргументов на стеке: {} (размер стека: {}, stack_start: {})", 
+                                    available_args, stack.len(), frame.stack_start);
+                                
+                                // Логируем содержимое стека для отладки
+                                if available_args > 0 {
+                                    debug_println!("[DEBUG executor Call] Содержимое стека (последние {} элементов):", available_args.min(10));
+                                    let start_idx = stack.len().saturating_sub(available_args.min(10));
+                                    for (i, val) in stack.iter().skip(start_idx).enumerate() {
+                                        debug_println!("[DEBUG executor Call]   Стек[{}]: {:?}", start_idx + i, val);
+                                    }
+                                }
+                                
                                 if available_args < arity {
                                     let error = ExceptionHandler::runtime_error(
                                         &frames,
@@ -645,11 +1243,14 @@ match instruction {
                                     }
                                 }
                                 
-                                for _ in 0..arity {
+                                for i in 0..arity {
                                     // Безопасно извлекаем аргументы напрямую, так как мы уже проверили стек
-                                    args.push(stack.pop().unwrap_or(Value::Null));
+                                    let arg = stack.pop().unwrap_or(Value::Null);
+                                    debug_println!("[DEBUG executor Call] Извлечен аргумент {}: {:?}", i, arg);
+                                    args.push(arg);
                                 }
                                 args.reverse(); // Теперь args[0] - первый аргумент
+                                debug_println!("[DEBUG executor Call] Всего извлечено аргументов: {}, после reverse: {:?}", args.len(), args);
                             }
                             // Если arity == 0, args остается пустым вектором
                             
@@ -768,7 +1369,8 @@ match instruction {
                             return Ok(VMStatus::Continue);
                         }
                         Value::NativeFunction(native_index) => {
-                            if native_index >= natives.len() {
+                            let builtin_count = natives.len();
+                            if native_index >= builtin_count + abi_natives.len() {
                                 let error = ExceptionHandler::runtime_error(
                             &frames,
                                     format!("Native function index {} out of bounds", native_index),
@@ -780,17 +1382,17 @@ match instruction {
                             }
                             }
                             
-                            // Специальная обработка для методов тензора max_idx и min_idx
+                            // Специальная обработка для методов тензора max_idx и min_idx (только встроенные нативы)
                             // Эти методы могут быть вызваны как tensor.max_idx() с arity=0,
                             // но тензор уже находится на стеке перед функцией
-                            use crate::ml::natives;
-                            let is_max_idx = std::ptr::eq(
+                            use crate::ml::natives as ml_natives;
+                            let is_max_idx = native_index < builtin_count && std::ptr::eq(
                                 natives[native_index] as *const (),
-                                natives::native_max_idx as *const ()
+                                ml_natives::native_max_idx as *const ()
                             );
-                            let is_min_idx = std::ptr::eq(
+                            let is_min_idx = native_index < builtin_count && std::ptr::eq(
                                 natives[native_index] as *const (),
-                                natives::native_min_idx as *const ()
+                                ml_natives::native_min_idx as *const ()
                             );
                             
                             let mut args = Vec::new();
@@ -900,14 +1502,29 @@ match instruction {
                                 }
                             }
                             
-                            // Вызываем нативную функцию
-                            let native_fn = natives[native_index];
-                            let result = native_fn(&args);
+                            // Вызываем нативную функцию (встроенную или ABI)
+                            let result = if native_index < builtin_count {
+                                let native_fn = natives[native_index];
+                                native_fn(&args)
+                            } else {
+                                crate::vm::native_loader::call_abi_native(
+                                    abi_natives[native_index - builtin_count],
+                                    &args,
+                                )
+                            };
                             
                             // Очищаем контекст VM после вызова нативной функции
                             VM_CALL_CONTEXT.with(|ctx| {
                                 *ctx.borrow_mut() = None;
                             });
+                            
+                            // Проверяем ABI-ошибку (throw_error из нативного модуля)
+                            if let Some(abi_err) = crate::vm::native_loader::take_last_abi_error() {
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, abi_err) {
+                                    Ok(()) => return Ok(VMStatus::Continue),
+                                    Err(e) => return Err(e),
+                                }
+                            }
                             
                             // Если это relate(), получаем связи из thread-local storage
                             if native_index == 65 {
@@ -989,7 +1606,7 @@ match instruction {
                                 if error_msg.contains("Falling back to CPU") || 
                                    error_msg.contains("not available") && error_msg.contains("GPU") {
                                     // Print as warning and continue execution
-                                    eprintln!("⚠️  Предупреждение: {}", error_msg);
+                                    debug_println!("⚠️  Предупреждение: {}", error_msg);
                                     // Don't create an error, just continue
                                 } else {
                                     // Determine error type based on error message
@@ -1070,7 +1687,7 @@ match instruction {
                             
                             // Call native_nn_forward function (it handles both NeuralNetwork and LinearRegression)
                             use crate::ml::natives;
-                            let args = vec![function_value.clone(), input_value];
+                            let args = vec![actual_callee.clone(), input_value];
                             let result = natives::native_nn_forward(&args);
                             
                             stack::push(stack, result);
@@ -1078,9 +1695,17 @@ match instruction {
                         }
                         _ => {
                             // Try to provide more helpful error message
-                            let error_msg = match &function_value {
+                            let error_msg = match &actual_callee {
                                 Value::Null => "Cannot call null - function may not be imported or defined".to_string(),
-                                _ => format!("Can only call functions, got: {:?}", std::mem::discriminant(&function_value)),
+                                Value::Object(obj_rc) => {
+                                    let obj = obj_rc.borrow();
+                                    if let Some(Value::String(class_name)) = obj.get("__class_name") {
+                                        format!("Class '{}' cannot accept {} argument(s)", class_name, arity)
+                                    } else {
+                                        format!("Can only call functions, got: {:?}", std::mem::discriminant(&actual_callee))
+                                    }
+                                }
+                                _ => format!("Can only call functions, got: {:?}", std::mem::discriminant(&actual_callee)),
                             };
                             let error = ExceptionHandler::runtime_error(
                             &frames,error_msg, line);
@@ -1100,6 +1725,13 @@ match instruction {
                     // Получаем возвращаемое значение (если есть)
                     // Проверяем стек относительно stack_start текущего фрейма
                     let frame = frames.last().unwrap();
+                    
+                    // Логирование для конструкторов
+                    let is_constructor = frame.function.name.contains("::new_");
+                    if is_constructor {
+                        debug_println!("[DEBUG executor Return] constructor '{}' line {} Return (stack len {}, stack_start {})", frame.function.name, line, stack.len(), frame.stack_start);
+                    }
+                    
                     // ВАЖНО: Проверяем, что стек не ниже stack_start (это может произойти
                     // если цикл или другой statement оставил стек в некорректном состоянии)
                     // Используем безопасное извлечение без вызова stack::pop, чтобы избежать
@@ -1113,6 +1745,17 @@ match instruction {
                         // Это нормальная ситуация для функций без явного return
                         Some(Value::Null)
                     };
+                    
+                    // Отладка: логируем содержимое объекта после выполнения конструктора
+                    if let Some(ref ret_val) = return_value {
+                        if let Value::Object(obj_rc) = ret_val {
+                            // Проверяем, является ли это конструктором (по имени функции)
+                            if frame.function.name.contains("::new_") {
+                                let key_count = obj_rc.borrow().len();
+                                debug_println!("[DEBUG Return] constructor '{}' line {} returns Object ({} keys)", frame.function.name, line, key_count);
+                            }
+                        }
+                    }
                     
                     let frames_count = frames.len();
                     if frames_count > 1 {
@@ -1212,7 +1855,7 @@ match instruction {
                         };
                         object.insert(key, value);
                     }
-                    stack::push(stack, Value::Object(object));
+                    stack::push(stack, Value::Object(Rc::new(RefCell::new(object))));
                 }
                 OpCode::MakeArrayDynamic => {
                     // Размер массива находится на стеке
@@ -1293,8 +1936,26 @@ match instruction {
                     }
                 }
                 OpCode::GetArrayElement => {
+                    let frame = frames.last().unwrap();
+                    let current_ip = frame.ip - 1; // IP уже инкрементирован в step()
+                    
                     let index_value = stack::pop(stack, frames, exception_handlers)?;
                     let container = stack::pop(stack, frames, exception_handlers)?;
+                    
+                    let container_type = match &container {
+                        Value::Array(_) => "Array",
+                        Value::Object(_) => "Object",
+                        Value::Table(_) => "Table",
+                        Value::Path(_) => "Path",
+                        Value::Uuid(_, _) => "UUID",
+                        _ => "Other",
+                    };
+                    let key_str = match &index_value {
+                        Value::String(k) => k.clone(),
+                        Value::Number(n) => format!("{}", n),
+                        _ => format!("{:?}", index_value),
+                    };
+                    debug_println!("[DEBUG GetArrayElement] line {} IP {}: {} key '{}'", line, current_ip, container_type, key_str);
                     
                     match container {
                         Value::Array(arr) => {
@@ -1351,7 +2012,7 @@ match instruction {
                                 Value::Image(img_rc) => Value::Image(Rc::clone(img_rc)),
                                 Value::Window(handle) => Value::Window(*handle), // PlotWindowHandle is Copy
                                 Value::Tensor(tensor_rc) => Value::Tensor(Rc::clone(tensor_rc)),
-                                Value::Object(_) => element.clone(), // Object uses HashMap, clone is needed
+                                Value::Object(obj_rc) => Value::Object(obj_rc.clone()), // Object uses Rc<RefCell>, clone Rc
                                 _ => element.clone(), // Простые типы клонируем
                             };
                             stack::push(stack, value);
@@ -1491,7 +2152,7 @@ match instruction {
                                                 row_dict.insert(header.clone(), row[i].clone());
                                             }
                                         }
-                                        stack::push(stack, Value::Object(row_dict));
+                                        stack::push(stack, Value::Object(Rc::new(RefCell::new(row_dict))));
                                     } else {
                                         let error = ExceptionHandler::runtime_error_with_type(
                                 &frames,
@@ -1518,7 +2179,9 @@ match instruction {
                                 }
                             }
                         }
-                        Value::Object(map) => {
+                        Value::Object(map_rc) => {
+                            let map = map_rc.borrow();
+                            
                             // Check if this is a layer accessor object (has __neural_network key)
                             if map.contains_key("__neural_network") {
                                 // This is a layer accessor - handle indexing to get layers
@@ -1562,18 +2225,177 @@ match instruction {
                             // Regular object access
                             match index_value {
                                 Value::String(key) => {
+                                    // Доступ к объекту класса: запрет чтения приватных переменных класса снаружи (ProtectError)
+                                    if map.contains_key("__class_name") {
+                                        if key != "model_config" {
+                                            if let Some(Value::Array(private_vars_rc)) = map.get("__class_private_vars") {
+                                                let private_vars = private_vars_rc.borrow();
+                                                let is_private = private_vars.iter().any(|v| {
+                                                    if let Value::String(s) = v { s.as_str() == key } else { false }
+                                                });
+                                                if is_private {
+                                                    let class_name = map.get("__class_name")
+                                                        .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                                                        .unwrap_or_else(|| "?".to_string());
+                                                    let msg = format!("Class variable '{}' is private in '{}' and cannot be accessed from outside the class", key, class_name);
+                                                    let error = ExceptionHandler::runtime_error_with_type(
+                                                        &frames,
+                                                        msg,
+                                                        line,
+                                                        ErrorType::ProtectError,
+                                                    );
+                                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                        Ok(()) => return Ok(VMStatus::Continue),
+                                                        Err(e) => return Err(e),
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        // Class protected variables: allow only from this class or subclasses
+                                        if let Some(Value::Array(protected_vars_rc)) = map.get("__class_protected_vars") {
+                                            let protected_vars = protected_vars_rc.borrow();
+                                            let is_protected = protected_vars.iter().any(|v| {
+                                                if let Value::String(s) = v { s.as_str() == key } else { false }
+                                            });
+                                            if is_protected {
+                                                let class_name_obj = map.get("__class_name");
+                                                let in_hierarchy = if let Some(Value::String(ref obj_class_name)) = class_name_obj {
+                                                    frames.iter().any(|f| {
+                                                        let frame_class = f.function.name.split("::").next().unwrap_or("");
+                                                        let frame_chain = get_superclass_chain(globals, global_names, frame_class);
+                                                        frame_chain.iter().any(|c| c == obj_class_name)
+                                                    })
+                                                } else {
+                                                    false
+                                                };
+                                                if !in_hierarchy {
+                                                    let obj_class_name = map.get("__class_name")
+                                                        .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                                                        .unwrap_or_else(|| "?".to_string());
+                                                    let frame_class_opt = frames.iter().rev()
+                                                        .find_map(|f| {
+                                                            if f.function.name.contains("::new_") || f.function.name.contains("::method_") {
+                                                                f.function.name.split("::").next().map(String::from)
+                                                            } else {
+                                                                None
+                                                            }
+                                                        });
+                                                    let msg = match &frame_class_opt {
+                                                        Some(class) => format!("Class variable '{}' is protected in '{}' and cannot be accessed from subclass '{}'", key, obj_class_name, class),
+                                                        None => format!("Class variable '{}' is protected in '{}' and cannot be accessed from outside the class", key, obj_class_name),
+                                                    };
+                                                    let error = ExceptionHandler::runtime_error_with_type(
+                                                        &frames,
+                                                        msg,
+                                                        line,
+                                                        ErrorType::ProtectError,
+                                                    );
+                                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                        Ok(()) => return Ok(VMStatus::Continue),
+                                                        Err(e) => return Err(e),
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Instance private fields: allow only from the defining class (not subclasses)
+                                    if let (Some(Value::String(ref class_name)), Some(Value::Array(private_fields_rc))) = (
+                                        map.get("__class_name"),
+                                        map.get("__private_fields"),
+                                    ) {
+                                        let private_fields_slice = private_fields_rc.borrow();
+                                        let is_private_field = private_fields_slice.iter().any(|v| {
+                                            if let Value::String(s) = v { s.as_str() == key } else { false }
+                                        });
+                                        if is_private_field {
+                                            let defining_class = map.get("__private_field_defining_class")
+                                                .and_then(|v| {
+                                                    if let Value::Object(rc) = v {
+                                                        rc.borrow().get(&key).and_then(|v| {
+                                                            if let Value::String(s) = v { Some(s.clone()) } else { None }
+                                                        })
+                                                    } else { None }
+                                                })
+                                                .unwrap_or_else(|| class_name.clone());
+                                            let in_defining_class = frames.iter().any(|f| {
+                                                f.function.name.starts_with(&format!("{}::", defining_class))
+                                            });
+                                            if !in_defining_class {
+                                                // Innermost frame that is a class method/constructor (::new_ or ::method_); skip <main>
+                                                let frame_class_opt = frames.iter().rev()
+                                                    .find_map(|f| {
+                                                        if f.function.name.contains("::new_") || f.function.name.contains("::method_") {
+                                                            f.function.name.split("::").next().map(String::from)
+                                                        } else {
+                                                            None
+                                                        }
+                                                    });
+                                                let msg = match &frame_class_opt {
+                                                    Some(class) => format!("Field '{}' is private in '{}' and cannot be accessed from subclass '{}'", key, defining_class, class),
+                                                    None => format!("Field '{}' is private in '{}' and cannot be accessed from outside the class", key, defining_class),
+                                                };
+                                                let error = ExceptionHandler::runtime_error_with_type(
+                                                    &frames,
+                                                    msg,
+                                                    line,
+                                                    ErrorType::ProtectError,
+                                                );
+                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                    Ok(()) => return Ok(VMStatus::Continue),
+                                                    Err(e) => return Err(e),
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Instance protected fields: allow from this class or any subclass (frame class in instance's chain)
+                                    if let (Some(Value::String(ref instance_class)), Some(Value::Array(protected_fields_rc))) = (
+                                        map.get("__class_name"),
+                                        map.get("__protected_fields"),
+                                    ) {
+                                        let protected_fields_slice = protected_fields_rc.borrow();
+                                        let is_protected_field = protected_fields_slice.iter().any(|v| {
+                                            if let Value::String(s) = v { s.as_str() == key } else { false }
+                                        });
+                                        if is_protected_field {
+                                            let instance_chain = get_superclass_chain(globals, global_names, instance_class);
+                                            let in_hierarchy = frames.iter().any(|f| {
+                                                let frame_class = f.function.name.split("::").next().unwrap_or("");
+                                                instance_chain.iter().any(|c| c == frame_class)
+                                            });
+                                            if !in_hierarchy {
+                                                let frame_class_opt = frames.iter().rev()
+                                                    .find_map(|f| {
+                                                        if f.function.name.contains("::new_") || f.function.name.contains("::method_") {
+                                                            f.function.name.split("::").next().map(String::from)
+                                                        } else {
+                                                            None
+                                                        }
+                                                    });
+                                                let msg = match &frame_class_opt {
+                                                    Some(class) => format!("Field '{}' is protected in '{}' and cannot be accessed from subclass '{}'", key, instance_class, class),
+                                                    None => format!("Field '{}' is protected in '{}' and cannot be accessed from outside the class", key, instance_class),
+                                                };
+                                                let error = ExceptionHandler::runtime_error_with_type(
+                                                    &frames,
+                                                    msg,
+                                                    line,
+                                                    ErrorType::ProtectError,
+                                                );
+                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                    Ok(()) => return Ok(VMStatus::Continue),
+                                                    Err(e) => return Err(e),
+                                                }
+                                            }
+                                        }
+                                    }
                                     if let Some(value) = map.get(&key) {
                                         stack::push(stack, value.clone());
                                     } else {
-                                        let error = ExceptionHandler::runtime_error_with_type(&frames,
-                                            format!("Key '{}' not found in object", key),
-                                            line,
-                                            ErrorType::KeyError,
-                                        );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
-                                Ok(()) => return Ok(VMStatus::Continue),
-                                Err(e) => return Err(e),
-                            }
+                                        debug_println!("[DEBUG GetArrayElement] key '{}' not found, pushing Null", key);
+                                        // Для отсутствующих ключей возвращаем null
+                                        // Это позволяет классам иметь поля с значениями по умолчанию
+                                        // В арифметических операциях null будет преобразован в 0
+                                        stack::push(stack, Value::Null);
                                     }
                                 }
                                 _ => {
@@ -1658,13 +2480,14 @@ match instruction {
                                     
                                     // Get method index from plot object (stored during registration)
                                     let method_index = if let Some(plot_obj) = globals.iter().find(|v| {
-                                        if let Value::Object(map) = v {
-                                            map.contains_key("image")
+                                        if let Value::Object(map_rc) = v {
+                                            map_rc.borrow().contains_key("image")
                                         } else {
                                             false
                                         }
                                     }) {
-                                        if let Value::Object(map) = plot_obj {
+                                        if let Value::Object(map_rc) = plot_obj {
+                                            let map = map_rc.borrow();
                                             let idx_key = match method_name {
                                                 "imshow" => "__axis_imshow_idx",
                                                 "set_title" => "__axis_set_title_idx",
@@ -1764,7 +2587,8 @@ match instruction {
                                         }
                                         
                                         match &globals[ml_idx] {
-                                            Value::Object(map) => {
+                                            Value::Object(map_rc) => {
+                                                let map = map_rc.borrow();
                                                 match map.get(function_name) {
                                                     Some(Value::NativeFunction(idx)) => *idx,
                                                     _ => {
@@ -2163,7 +2987,7 @@ match instruction {
                                         use std::collections::HashMap;
                                         let mut layer_accessor = HashMap::new();
                                         layer_accessor.insert("__neural_network".to_string(), Value::NeuralNetwork(Rc::clone(&nn_rc)));
-                                        stack::push(stack, Value::Object(layer_accessor));
+                                        stack::push(stack, Value::Object(Rc::new(RefCell::new(layer_accessor))));
                                         return Ok(VMStatus::Continue);
                                     }
                                     
@@ -2203,7 +3027,8 @@ match instruction {
                                         }
                                         
                                         match &globals[ml_idx] {
-                                            Value::Object(map) => {
+                                            Value::Object(map_rc) => {
+                                                let map = map_rc.borrow();
                                                 match map.get(function_name) {
                                                     Some(Value::NativeFunction(idx)) => *idx,
                                                     _ => {
@@ -2280,6 +3105,309 @@ match instruction {
                         }
                     }
                     return Ok(VMStatus::Continue);
+                }
+                OpCode::SetArrayElement => {
+                    // Установка элемента массива/объекта: [value, index/key, container]
+                    // Стек: последний элемент наверху, поэтому порядок обратный
+                    let container = stack::pop(stack, frames, exception_handlers)?;
+                    let index_value = stack::pop(stack, frames, exception_handlers)?;
+                    let value = stack::pop(stack, frames, exception_handlers)?;
+                    
+                    // Универсальное логирование для всех случаев SetArrayElement
+                    let container_type = match &container {
+                        Value::Array(_) => "Array",
+                        Value::Object(_) => "Object",
+                        Value::Table(_) => "Table",
+                        _ => "Other",
+                    };
+                    let key_str = match &index_value {
+                        Value::String(k) => k.clone(),
+                        Value::Number(n) => format!("{}", n),
+                        _ => format!("{:?}", index_value),
+                    };
+                    let value_type_str = match &value {
+                        Value::Function(fn_idx) => {
+                            if *fn_idx < functions.len() {
+                                format!("Function({}, имя: '{}')", fn_idx, functions[*fn_idx].name)
+                            } else {
+                                format!("Function({}, OUT OF BOUNDS!)", fn_idx)
+                            }
+                        },
+                        Value::NativeFunction(_) => "NativeFunction".to_string(),
+                        _ => format!("{:?}", value),
+                    };
+                    debug_println!("[DEBUG SetArrayElement] line {}, {} key='{}' value={}", line, container_type, key_str, value_type_str);
+                    
+                    match container {
+                        Value::Array(arr) => {
+                            let index = match index_value {
+                                Value::Number(n) => {
+                                    let idx = n as i64;
+                                    if idx < 0 {
+                                        let error = ExceptionHandler::runtime_error(
+                                            &frames,
+                                            "Array index must be non-negative".to_string(),
+                                            line,
+                                        );
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            Ok(()) => return Ok(VMStatus::Continue),
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                    idx as usize
+                                }
+                                _ => {
+                                    let error = ExceptionHandler::runtime_error(
+                                        &frames,
+                                        "Array index must be a number".to_string(),
+                                        line,
+                                    );
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        Ok(()) => return Ok(VMStatus::Continue),
+                                        Err(e) => return Err(e),
+                                    }
+                                }
+                            };
+                            
+                            let mut arr_ref = arr.borrow_mut();
+                            if index >= arr_ref.len() {
+                                // Расширяем массив, если индекс выходит за границы
+                                arr_ref.resize(index + 1, Value::Null);
+                            }
+                            arr_ref[index] = value;
+                            // Возвращаем обновленный массив (через Rc)
+                            stack::push(stack, Value::Array(arr.clone()));
+                            return Ok(VMStatus::Continue);
+                        }
+                        Value::Object(obj_rc) => {
+                            // Для объектов индекс должен быть строкой
+                            let key = match index_value {
+                                Value::String(key) => key,
+                                _ => {
+                                    let error = ExceptionHandler::runtime_error(
+                                        &frames,
+                                        "Object key must be a string".to_string(),
+                                        line,
+                                    );
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        Ok(()) => return Ok(VMStatus::Continue),
+                                        Err(e) => return Err(e),
+                                    }
+                                }
+                            };
+                            // Class private variables: forbid write from outside (ProtectError)
+                            let is_class_private_var = {
+                                let map = obj_rc.borrow();
+                                map.contains_key("__class_name") && key != "model_config"
+                                    && map.get("__class_private_vars").and_then(|v| {
+                                        if let Value::Array(rc) = v {
+                                            Some(rc.borrow().iter().any(|v| {
+                                                if let Value::String(s) = v { s.as_str() == key } else { false }
+                                            }))
+                                        } else {
+                                            None
+                                        }
+                                    }).unwrap_or(false)
+                            };
+                            if is_class_private_var {
+                                let class_name = obj_rc.borrow().get("__class_name")
+                                    .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+                                    .unwrap_or_else(|| "?".to_string());
+                                let msg = format!("Class variable '{}' is private in '{}' and cannot be accessed from outside the class", key, class_name);
+                                let error = ExceptionHandler::runtime_error_with_type(
+                                    &frames,
+                                    msg,
+                                    line,
+                                    ErrorType::ProtectError,
+                                );
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    Ok(()) => return Ok(VMStatus::Continue),
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            // Instance private fields: allow write only from the defining class (not subclasses)
+                            let (is_instance_private_denied, private_error_msg) = {
+                                let map = obj_rc.borrow();
+                                if let (Some(Value::String(ref class_name)), Some(Value::Array(private_fields_rc))) = (
+                                    map.get("__class_name"),
+                                    map.get("__private_fields"),
+                                ) {
+                                    let is_private = private_fields_rc.borrow().iter().any(|v| {
+                                        if let Value::String(s) = v { s.as_str() == key } else { false }
+                                    });
+                                    if !is_private {
+                                        (false, String::new())
+                                    } else {
+                                        let defining_class = map.get("__private_field_defining_class")
+                                            .and_then(|v| {
+                                                if let Value::Object(rc) = v {
+                                                    rc.borrow().get(&key).and_then(|v| {
+                                                        if let Value::String(s) = v { Some(s.clone()) } else { None }
+                                                    })
+                                                } else { None }
+                                            })
+                                            .unwrap_or_else(|| class_name.clone());
+                                        let in_defining_class = frames.iter().any(|f| {
+                                            f.function.name.starts_with(&format!("{}::", defining_class))
+                                        });
+                                        if in_defining_class {
+                                            (false, String::new())
+                                        } else {
+                                            let frame_class_opt = frames.iter().rev()
+                                                .find_map(|f| {
+                                                    if f.function.name.contains("::new_") || f.function.name.contains("::method_") {
+                                                        f.function.name.split("::").next().map(String::from)
+                                                    } else {
+                                                        None
+                                                    }
+                                                });
+                                            let msg = match &frame_class_opt {
+                                                Some(class) => format!("Field '{}' is private in '{}' and cannot be accessed from subclass '{}'", key, defining_class, class),
+                                                None => format!("Field '{}' is private in '{}' and cannot be accessed from outside the class", key, defining_class),
+                                            };
+                                            (true, msg)
+                                        }
+                                    }
+                                } else {
+                                    (false, String::new())
+                                }
+                            };
+                            if is_instance_private_denied {
+                                let error = ExceptionHandler::runtime_error_with_type(
+                                    &frames,
+                                    private_error_msg,
+                                    line,
+                                    ErrorType::ProtectError,
+                                );
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    Ok(()) => return Ok(VMStatus::Continue),
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            // Class protected variables: allow write only from this class or subclasses
+                            let (is_class_protected_denied, class_protected_msg) = {
+                                let map = obj_rc.borrow();
+                                let is_protected_var = map.contains_key("__class_name") && key != "model_config"
+                                    && map.get("__class_protected_vars").and_then(|v| {
+                                        if let Value::Array(rc) = v {
+                                            Some(rc.borrow().iter().any(|v| {
+                                                if let Value::String(s) = v { s.as_str() == key } else { false }
+                                            }))
+                                        } else {
+                                            None
+                                        }
+                                    }).unwrap_or(false);
+                                if !is_protected_var {
+                                    (false, String::new())
+                                } else {
+                                    let obj_class = map.get("__class_name").and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
+                                    let in_hierarchy = obj_class.as_ref().map(|obj_class| {
+                                        frames.iter().any(|f| {
+                                            let frame_class = f.function.name.split("::").next().unwrap_or("");
+                                            let frame_chain = get_superclass_chain(globals, global_names, frame_class);
+                                            frame_chain.iter().any(|c| c == obj_class)
+                                        })
+                                    }).unwrap_or(false);
+                                    if in_hierarchy {
+                                        (false, String::new())
+                                    } else {
+                                        let frame_class_opt = frames.iter().rev()
+                                            .find_map(|f| {
+                                                if f.function.name.contains("::new_") || f.function.name.contains("::method_") {
+                                                    f.function.name.split("::").next().map(String::from)
+                                                } else {
+                                                    None
+                                                }
+                                            });
+                                        let class_name = obj_class.as_deref().unwrap_or("?");
+                                        let msg = match &frame_class_opt {
+                                            Some(class) => format!("Class variable '{}' is protected in '{}' and cannot be accessed from subclass '{}'", key, class_name, class),
+                                            None => format!("Class variable '{}' is protected in '{}' and cannot be accessed from outside the class", key, class_name),
+                                        };
+                                        (true, msg)
+                                    }
+                                }
+                            };
+                            if is_class_protected_denied {
+                                let error = ExceptionHandler::runtime_error_with_type(
+                                    &frames,
+                                    class_protected_msg,
+                                    line,
+                                    ErrorType::ProtectError,
+                                );
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    Ok(()) => return Ok(VMStatus::Continue),
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            // Instance protected fields: allow write only from this class or subclasses
+                            let (is_instance_protected_denied, instance_protected_msg) = {
+                                let map = obj_rc.borrow();
+                                if let (Some(Value::String(ref instance_class)), Some(Value::Array(protected_fields_rc))) = (
+                                    map.get("__class_name"),
+                                    map.get("__protected_fields"),
+                                ) {
+                                    let is_protected = protected_fields_rc.borrow().iter().any(|v| {
+                                        if let Value::String(s) = v { s.as_str() == key } else { false }
+                                    });
+                                    let in_hierarchy = {
+                                        let instance_chain = get_superclass_chain(globals, global_names, instance_class);
+                                        frames.iter().any(|f| {
+                                            let frame_class = f.function.name.split("::").next().unwrap_or("");
+                                            instance_chain.iter().any(|c| c == frame_class)
+                                        })
+                                    };
+                                    if is_protected && !in_hierarchy {
+                                        let frame_class_opt = frames.iter().rev()
+                                            .find_map(|f| {
+                                                if f.function.name.contains("::new_") || f.function.name.contains("::method_") {
+                                                    f.function.name.split("::").next().map(String::from)
+                                                } else {
+                                                    None
+                                                }
+                                            });
+                                        let msg = match &frame_class_opt {
+                                            Some(class) => format!("Field '{}' is protected in '{}' and cannot be accessed from subclass '{}'", key, instance_class, class),
+                                            None => format!("Field '{}' is protected in '{}' and cannot be accessed from outside the class", key, instance_class),
+                                        };
+                                        (true, msg)
+                                    } else {
+                                        (false, String::new())
+                                    }
+                                } else {
+                                    (false, String::new())
+                                }
+                            };
+                            if is_instance_protected_denied {
+                                let error = ExceptionHandler::runtime_error_with_type(
+                                    &frames,
+                                    instance_protected_msg,
+                                    line,
+                                    ErrorType::ProtectError,
+                                );
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    Ok(()) => return Ok(VMStatus::Continue),
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            obj_rc.borrow_mut().insert(key.clone(), value);
+                            let keys_after: Vec<String> = obj_rc.borrow().keys().cloned().collect();
+                            debug_println!("[DEBUG SetArrayElement] object key '{}' set, keys now: {}", key, keys_after.len());
+                            stack::push(stack, Value::Object(obj_rc.clone()));
+                            return Ok(VMStatus::Continue);
+                        }
+                        _ => {
+                            let error = ExceptionHandler::runtime_error(
+                                &frames,
+                                format!("SetArrayElement only supports arrays and objects, got: {:?}", container),
+                                line,
+                            );
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                Ok(()) => return Ok(VMStatus::Continue),
+                                Err(e) => return Err(e),
+                            }
+                        }
+                    }
                 }
                 OpCode::Clone => {
                     // Глубокое клонирование значения на стеке
@@ -2391,7 +3519,8 @@ match instruction {
                     exception_handlers.pop();
                     return Ok(VMStatus::Continue);
                 }
-            }
+    }
 
     Ok(VMStatus::Continue)
 }
+

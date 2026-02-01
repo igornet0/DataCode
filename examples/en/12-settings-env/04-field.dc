@@ -1,0 +1,24 @@
+# Field: Pydantic-style field descriptors
+# Field(default=...), Field(...) required field, min_length, max_length, alias
+
+from settings_env import Field
+
+# Field with default value (positional argument)
+let f_default = Field("dev")
+print("Field(\"dev\") — default: " + f_default["default"])
+
+# Field with named default
+let f_prod = Field(default="prod")
+print("Field(default=\"prod\") — default: " + f_prod["default"])
+
+# Required field (Field(...))
+let f_required = Field(...)
+print("Field(...) — required: " + str(f_required["required"]))
+
+# Validation: min_length, max_length
+let f_len = Field(default="x", min_length=1, max_length=10)
+print("min_length: " + str(f_len["min_length"]) + ", max_length: " + str(f_len["max_length"]))
+
+# Alias for field name
+let f_alias = Field(alias="userId", title="User ID")
+print("alias: " + f_alias["alias"])

@@ -1931,7 +1931,7 @@ pub fn native_nn_train_sh(args: &[Value]) -> Value {
             obj.insert("best_epoch".to_string(), Value::Number(history.best_epoch as f64));
             obj.insert("stopped_epoch".to_string(), Value::Number(history.stopped_epoch as f64));
             
-            Value::Object(obj)
+            Value::Object(Rc::new(RefCell::new(obj)))
         }
         Err(e) => {
             use crate::websocket::set_native_error;
@@ -2075,7 +2075,7 @@ pub fn native_nn_train(args: &[Value]) -> Value {
                 obj.insert("val_acc".to_string(), Value::Null);
             }
             
-            Value::Object(obj)
+            Value::Object(Rc::new(RefCell::new(obj)))
         }
         Err(e) => {
             // Set error message for VM to handle

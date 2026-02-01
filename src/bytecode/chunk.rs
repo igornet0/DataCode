@@ -247,6 +247,10 @@ impl Chunk {
                 output.push_str("GET_ARRAY_ELEMENT\n");
                 offset + 1
             }
+            OpCode::SetArrayElement => {
+                output.push_str("SET_ARRAY_ELEMENT\n");
+                offset + 1
+            }
             OpCode::Clone => {
                 output.push_str("CLONE\n");
                 offset + 1

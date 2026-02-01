@@ -1,0 +1,39 @@
+# UUID metadata: version, variant, timestamp
+
+import uuid
+
+# UUID version 4 (random)
+let u4 = uuid.v4()
+print("UUID v4:")
+print("  version: " + uuid.version(u4))
+print("  variant (1 = RFC4122): " + uuid.variant(u4))
+let ts4 = uuid.timestamp(u4)
+if ts4 == null {
+    print("  timestamp: null (v4 has no time)")
+} else {
+    print("  timestamp: " + ts4)
+}
+
+# UUID version 7 (time-ordered)
+let u7 = uuid.v7()
+print("UUID v7:")
+print("  version: " + uuid.version(u7))
+print("  variant: " + uuid.variant(u7))
+let ts7 = uuid.timestamp(u7)
+if ts7 != null {
+    print("  timestamp (Unix): " + ts7)
+} else {
+    print("  timestamp: null")
+}
+
+# Parsed UUID (version 4 from string)
+let parsed = uuid.parse("550e8400-e29b-41d4-a716-446655440000")
+if parsed != null {
+    print("Parsed UUID 550e8400-...:")
+    print("  version: " + uuid.version(parsed))
+    print("  variant: " + uuid.variant(parsed))
+}
+
+# v5 — version 5
+let u5 = uuid.v5(uuid.DNS, "test")
+print("UUID v5(DNS, \"test\"): version = " + uuid.version(u5))

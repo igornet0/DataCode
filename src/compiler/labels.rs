@@ -281,6 +281,70 @@ impl LabelManager {
         Ok(())
     }
 
+    /// Финализирует только прыжки, добавленные начиная с индекса `from` в pending_jumps.
+    /// Используется при компиляции вложенных chunk (например, конструктор класса), чтобы не затронуть прыжки основного chunk.
+    pub fn finalize_jumps_from(&mut self, chunk: &mut Chunk, from: usize, current_line: usize) -> Result<(), LangError> {
+        if from >= self.pending_jumps.len() {
+            return Ok(());
+        }
+        let addresses = self.compute_instruction_addresses(chunk);
+        let to_process: Vec<_> = self.pending_jumps[from..].to_vec();
+        for (jump_index, label_id, is_conditional) in to_process.iter() {
+            if *jump_index >= chunk.code.len() {
+                continue;
+            }
+            let current_opcode = &chunk.code[*jump_index];
+            if !matches!(current_opcode, OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_)) {
+                continue;
+            }
+            let dst_instruction_index = *self.labels.get(label_id).ok_or_else(|| LangError::ParseError {
+                message: format!("Label {} not found", label_id),
+                line: current_line,
+            })?;
+            let dst_instruction_index = if dst_instruction_index >= chunk.code.len() {
+                if chunk.code.is_empty() {
+                    return Err(LangError::ParseError {
+                        message: format!("Label {} points to empty code", label_id),
+                        line: current_line,
+                    });
+                }
+                chunk.code.len() - 1
+            } else {
+                dst_instruction_index
+            };
+            if dst_instruction_index >= addresses.len() {
+                return Err(LangError::ParseError {
+                    message: format!("Label {} instruction index {} >= addresses len {}",
+                        label_id, dst_instruction_index, addresses.len()),
+                    line: current_line,
+                });
+            }
+            let offset = (dst_instruction_index as i64 - (*jump_index as i64 + 1)) as i32;
+            let final_opcode = if offset >= -128 && offset <= 127 {
+                if *is_conditional {
+                    OpCode::JumpIfFalse8(offset as i8)
+                } else {
+                    OpCode::Jump8(offset as i8)
+                }
+            } else if offset >= -32768 && offset <= 32767 {
+                if *is_conditional {
+                    OpCode::JumpIfFalse16(offset as i16)
+                } else {
+                    OpCode::Jump16(offset as i16)
+                }
+            } else {
+                if *is_conditional {
+                    OpCode::JumpIfFalse32(offset)
+                } else {
+                    OpCode::Jump32(offset)
+                }
+            };
+            chunk.code[*jump_index] = final_opcode;
+        }
+        self.pending_jumps.drain(from..);
+        Ok(())
+    }
+
     pub fn clear(&mut self) {
         self.labels.clear();
         self.label_counter = 0;

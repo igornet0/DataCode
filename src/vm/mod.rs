@@ -1,6 +1,9 @@
 pub mod vm;
 pub mod frame;
 pub mod file_ops;
+pub mod file_import;
+pub mod abi_bridge;
+pub mod native_loader;
 
 pub mod natives;
 

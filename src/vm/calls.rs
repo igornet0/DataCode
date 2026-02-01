@@ -1,5 +1,6 @@
 // Function call operations for VM
 
+use crate::debug_println;
 use crate::common::{error::{LangError, ErrorType}, value::Value};
 use crate::vm::frame::CallFrame;
 
@@ -73,6 +74,7 @@ pub fn get_type_name_value(value: &Value) -> &'static str {
         Value::Table(_) => "table",
         Value::Null => "null",
         Value::Path(_) => "path",
+        Value::Uuid(_, _) => "uuid",
         Value::Function(_) | Value::NativeFunction(_) => "function",
         Value::Tensor(_) => "tensor",
         Value::Graph(_) => "graph",
@@ -93,6 +95,7 @@ pub fn get_type_name_value(value: &Value) -> &'static str {
         Value::Figure(_) => "figure",
         Value::Axis(_) => "axis",
         Value::ColumnReference { .. } => "column",
+        Value::Ellipsis => "ellipsis",
     }
 }
 
@@ -108,12 +111,15 @@ pub fn setup_function_call(
 ) -> Result<Option<Value>, LangError> {
     if function_index >= functions.len() {
         return Err(LangError::runtime_error(
-            format!("Function index {} out of bounds", function_index),
+            format!("Function index {} out of bounds (functions.len() = {})", function_index, functions.len()),
             0,
         ));
     }
-
+    
     let function = functions[function_index].clone();
+    
+    debug_println!("[DEBUG setup_function_call] Вызываем функцию с индексом {}, имя: '{}', arity: {}, получено аргументов: {} (всего функций в VM: {})", 
+        function_index, function.name, function.arity, args.len(), functions.len());
 
     // Проверяем количество аргументов
     if args.len() != function.arity {

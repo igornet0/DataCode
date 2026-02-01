@@ -197,12 +197,15 @@ pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
         // Сохраняем имя глобальной переменной для использования в JOIN
         ctx.chunk.global_names.insert(global_index, name.clone());
         
-        // Сохраняем функцию как константу
-        let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
-        
-        // Сохраняем функцию в глобальную переменную
-        ctx.chunk.write_with_line(OpCode::Constant(constant_index), *line);
-        ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+        // Для __main__ не эмитим Constant+StoreGlobal в главный chunk: слот заполняется в VM через set_functions.
+        // Иначе StoreGlobal(79) перезаписал бы правильный Value::Function(12) значением Value::Function(0) (индекс компилятора).
+        if name != "__main__" {
+            // Сохраняем функцию как константу
+            let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
+            // Сохраняем функцию в глобальную переменную
+            ctx.chunk.write_with_line(OpCode::Constant(constant_index), *line);
+            ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+        }
         
         Ok(())
     } else {

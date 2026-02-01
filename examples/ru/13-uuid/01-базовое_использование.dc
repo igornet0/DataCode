@@ -1,0 +1,34 @@
+# Базовое использование модуля uuid
+# Импорт, генерация v4/v7, вывод в строку, разбор строки
+
+import uuid
+
+# Тип значения UUID
+let u4 = uuid.v4()
+print("Тип uuid.v4(): " + typeof(u4))
+
+# Генерация случайного UUID (версия 4)
+let random_uuid = uuid.random()
+print("Случайный UUID (v4): " + uuid.to_string(random_uuid))
+
+# Генерация время-упорядоченного UUID (версия 7)
+let time_uuid = uuid.v7()
+print("Время-упорядоченный UUID (v7): " + uuid.to_string(time_uuid))
+
+# Алиасы: new() = v7(), random() = v4()
+let u_new = uuid.new()
+print("uuid.new() (как v7): " + uuid.to_string(u_new))
+
+# Разбор строки в UUID
+let parsed = uuid.parse("550e8400-e29b-41d4-a716-446655440000")
+if parsed != null {
+    print("Разобранный UUID: " + uuid.to_string(parsed))
+} else {
+    print("Ошибка разбора")
+}
+
+# Неверная строка — parse возвращает null
+let invalid = uuid.parse("не-uuid-строка")
+if invalid == null {
+    print("Неверный формат: parse вернул null")
+}

@@ -61,7 +61,24 @@ Complete guide to creating functions with type annotations:
 
 ---
 
-### 4. [Working with Tables](./table_create_function.md)
+### 4. [Working with Classes](./classes.md)
+
+Declaration, fields, constructors, methods, inheritance, this/super, and visibility (private, protected, public):
+
+- **Class declaration** - `cls Name { }` and `cls Child(Parent) { }`
+- **Visibility** - `private:`, `protected:`, `public:` sections
+- **Constructor** - `new ClassName(params) { body }`, instance creation `ClassName(args)`
+- **Inheritance** - `super(args)` in constructor, `super.method(args)` in methods
+
+**📚 Usage examples:**
+- Classes, constructors, fields, methods (EN): [`examples/en/01-basics/classes.dc`](../../examples/en/01-basics/classes.dc)
+- Inheritance, super, visibility (EN): [`examples/en/01-basics/inheritance.dc`](../../examples/en/01-basics/inheritance.dc)
+- Classes (RU): [`examples/ru/01-основы/классы.dc`](../../examples/ru/01-основы/классы.dc)
+- Inheritance (RU): [`examples/ru/01-основы/наследование.dc`](../../examples/ru/01-основы/наследование.dc)
+
+---
+
+### 5. [Working with Tables](./table_create_function.md)
 
 Creating and working with tables in DataCode:
 
@@ -76,7 +93,7 @@ Creating and working with tables in DataCode:
 
 ---
 
-### 5. [WebSocket Server](./websocket_server.md)
+### 6. [WebSocket Server](./websocket_server.md)
 
 Remote execution of DataCode code via WebSocket:
 
@@ -91,7 +108,7 @@ Remote execution of DataCode code via WebSocket:
 
 ---
 
-### 6. [JOIN Specification](./join_specification.md)
+### 7. [JOIN Specification](./join_specification.md)
 
 Table join operations:
 
@@ -106,7 +123,7 @@ Table join operations:
 
 ---
 
-### 7. [ML Module](./ml/ml_module.md)
+### 8. [ML Module](./ml/ml_module.md)
 
 Machine learning module for DataCode:
 
@@ -127,7 +144,7 @@ Machine learning module for DataCode:
 
 ---
 
-### 8. [Plot Module - Charts and Visualization](./plot/README.md)
+### 9. [Plot Module - Charts and Visualization](./plot/README.md)
 
 Complete description of the `plot` module for working with images and creating charts:
 
@@ -142,7 +159,36 @@ Complete description of the `plot` module for working with images and creating c
 
 ---
 
-### 9. [Text Rendering in Plot Module](./text_rendering.md)
+### 10. [settings_env Module](./settings_env/README.md)
+
+Loading environment variables from .env files, type coercion, prefix filtering, configuration, and Settings subclasses with Field descriptors:
+
+- **Loading .env** - load_env, Settings, path resolution
+- **Configuration** - Settings.config (env_prefix, extra, case_sensitive, etc.)
+- **Field descriptors** - default, default_factory, required, min_length, max_length, alias, regex
+- **Settings subclasses** - model_config, nested configs via default_factory
+
+**📚 Usage examples:**
+- settings_env module: [`examples/en/12-settings-env/`](../../examples/en/12-settings-env/), [`examples/ru/12-settings_env/`](../../examples/ru/12-settings_env/)
+
+---
+
+### 11. [uuid Module](./uuid/README.md)
+
+UUID generation: v4, v7, deterministic v3/v5, string parsing, byte representation, metadata:
+
+- **Generation** - v4, v7, new (alias v7), random (alias v4)
+- **Parsing and strings** - parse, to_string
+- **Bytes** - to_bytes, from_bytes
+- **Deterministic UUIDs** - v3, v5, namespace DNS, URL, OID
+- **Metadata** - version, variant, timestamp
+
+**📚 Usage examples:**
+- uuid module: [`examples/en/13-uuid/`](../../examples/en/13-uuid/), [`examples/ru/13-uuid/`](../../examples/ru/13-uuid/)
+
+---
+
+### 12. [Text Rendering in Plot Module](./text_rendering.md)
 
 Detailed description of the text rendering system in the plot module:
 
@@ -165,9 +211,10 @@ Detailed description of the text rendering system in the plot module:
 If you're just starting to learn DataCode, we recommend the following order:
 
 ### 1. Language Basics
-Start with basic concepts:
+Start with basic concepts (including classes):
 - **Documentation:** [`examples/en/01-basics/README.md`](../../examples/en/01-basics/README.md)
 - **Examples:** [`examples/en/01-basics/`](../../examples/en/01-basics/)
+- **Classes:** [Working with Classes](./classes.md)
 
 ### 2. Syntax
 Study syntactic constructs:
@@ -206,7 +253,7 @@ View complete demonstrations:
 
 All examples are organized in the [`examples/en/`](../../examples/en/) folder:
 
-- **[01-basics](../../examples/en/01-basics/)** - Basic language concepts
+- **[01-basics](../../examples/en/01-basics/)** - Basic language concepts (including classes)
 - **[02-syntax](../../examples/en/02-syntax/)** - Syntactic constructs
 - **[03-data-types](../../examples/en/03-data-types/)** - Working with data types
 - **[04-advanced](../../examples/en/04-advanced/)** - Advanced features
@@ -217,6 +264,8 @@ All examples are organized in the [`examples/en/`](../../examples/en/) folder:
 - **[09-data-model-creation](../../examples/en/09-data-model-creation/)** - Data model creation
 - **[10-plot](../../examples/en/10-plot/)** - Charts and visualization
 - **[11-mnist-mlp](../../examples/en/11-mnist-mlp/)** - MNIST MLP example
+- **[12-settings-env](../../examples/en/12-settings-env/)** - settings_env module
+- **[13-uuid](../../examples/en/13-uuid/)** - uuid module
 
 **Complete example documentation:** [`examples/en/README.md`](../../examples/en/README.md)
 
@@ -241,6 +290,7 @@ docs/
     ├── builtin_functions.md     # Built-in functions
     ├── data_types.md            # Data types
     ├── user_functions.md        # User-defined functions with type annotations
+    ├── classes.md               # Working with classes
     ├── table_create_function.md # Working with tables
     ├── websocket_server.md      # WebSocket server
     ├── join_specification.md    # JOIN specification
@@ -248,6 +298,10 @@ docs/
     ├── text_rendering.md        # Text rendering in plot module
     ├── plot/                    # Plot module documentation
     │   └── README.md            # Plot module - charts and visualization
+    ├── settings_env/            # settings_env module documentation
+    │   └── README.md            # settings_env module - environment variables
+    ├── uuid/                    # uuid module documentation
+    │   └── README.md            # uuid module - UUID generation
     └── ml/                      # ML module documentation
         ├── training_flow.md     # Neural network training flow
         └── model_save_format.md # Model save format

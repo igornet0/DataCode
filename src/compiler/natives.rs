@@ -86,7 +86,6 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "table_suffixes");
     register(globals, "relate");
     register(globals, "primary_key");
-    register(globals, "concat");
 }
 
 fn register(globals: &mut std::collections::HashMap<String, usize>, name: &str) {
@@ -197,6 +196,32 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "restore_best".to_string(),
             "x_val".to_string(),
             "y_val".to_string(),
+        ]),
+        
+        // settings_env.Field(...) — full Pydantic-style field descriptor
+        "Field" => Some(vec![
+            "default".to_string(),
+            "default_factory".to_string(),
+            "alias".to_string(),
+            "title".to_string(),
+            "description".to_string(),
+            "examples".to_string(),
+            "exclude".to_string(),
+            "include".to_string(),
+            "const".to_string(),
+            "gt".to_string(),
+            "ge".to_string(),
+            "lt".to_string(),
+            "le".to_string(),
+            "multiple_of".to_string(),
+            "min_length".to_string(),
+            "max_length".to_string(),
+            "regex".to_string(),
+            "deprecated".to_string(),
+            "repr".to_string(),
+            "json_schema_extra".to_string(),
+            "validate_default".to_string(),
+            "frozen".to_string(),
         ]),
         
         // Функция не найдена или не поддерживает именованные аргументы

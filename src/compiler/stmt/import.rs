@@ -64,6 +64,7 @@ pub fn compile_import(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), L
                 for item in items {
                     match item {
                         ImportItem::Named(name) => {
+                            ctx.imported_symbols.insert(name.clone(), module.clone());
                             if !ctx.scope.globals.contains_key(name) {
                                 let global_index = ctx.scope.globals.len();
                                 ctx.scope.globals.insert(name.clone(), global_index);
@@ -71,6 +72,7 @@ pub fn compile_import(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), L
                             }
                         }
                         ImportItem::Aliased { alias, .. } => {
+                            ctx.imported_symbols.insert(alias.clone(), module.clone());
                             if !ctx.scope.globals.contains_key(alias) {
                                 let global_index = ctx.scope.globals.len();
                                 ctx.scope.globals.insert(alias.clone(), global_index);

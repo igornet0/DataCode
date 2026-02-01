@@ -75,6 +75,10 @@ impl Lexer {
                 return Ok(token);
             }
             '.' => {
+                if self.match_char('.') && self.match_char('.') {
+                    let token = self.make_token(TokenKind::Ellipsis);
+                    return Ok(token);
+                }
                 let token = self.make_token(TokenKind::Dot);
                 return Ok(token);
             }
@@ -340,6 +344,12 @@ impl Lexer {
             "import" => TokenKind::Import,
             "from" => TokenKind::From,
             "as" => TokenKind::As,
+            "cls" => TokenKind::Cls,
+            "this" => TokenKind::This,
+            "super" => TokenKind::Super,
+            "private" => TokenKind::Private,
+            "protected" => TokenKind::Protected,
+            "public" => TokenKind::Public,
             _ => TokenKind::Identifier,
         }
     }
@@ -411,6 +421,7 @@ impl Lexer {
             TokenKind::SlashSlash => "//".to_string(),
             TokenKind::SlashSlashEqual => "//=".to_string(),
             TokenKind::PercentEqual => "%=".to_string(),
+            TokenKind::Ellipsis => "...".to_string(),
             _ => {
                 let start = if self.current > 0 { self.current - 1 } else { 0 };
                 self.source[start..self.current]

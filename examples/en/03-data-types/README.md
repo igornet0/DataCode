@@ -17,7 +17,7 @@ This section demonstrates working with different data types in DataCode, includi
 
 **Run**:
 ```bash
-cargo run examples/en/03-data-types/type_conversion_functions.dc
+datacode examples/en/03-data-types/type_conversion_functions.dc
 ```
 
 ### 2. `type_conversion_guide.dc` - Type Conversion Guide
@@ -31,7 +31,7 @@ cargo run examples/en/03-data-types/type_conversion_functions.dc
 
 **Run**:
 ```bash
-cargo run examples/en/03-data-types/type_conversion_guide.dc
+datacode examples/en/03-data-types/type_conversion_guide.dc
 ```
 
 ### 3. `type_date.dc` - Working with Dates
@@ -44,7 +44,7 @@ cargo run examples/en/03-data-types/type_conversion_guide.dc
 
 **Run**:
 ```bash
-cargo run examples/en/03-data-types/type_date.dc
+datacode examples/en/03-data-types/type_date.dc
 ```
 
 ### 4. `objects.dc` - Working with Objects
@@ -62,7 +62,7 @@ cargo run examples/en/03-data-types/type_date.dc
 
 **Run**:
 ```bash
-cargo run examples/en/03-data-types/objects.dc
+datacode examples/en/03-data-types/objects.dc
 ```
 
 ## 🎯 Concepts Covered

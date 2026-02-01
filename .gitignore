@@ -20,13 +20,19 @@ target
 
 node_modules
 
-datacode-syntax
+datacode_syntax
+datacode_sdk
+datacode_abi
+datacode_lib
+sandbox
 packaging/macos/DataCode.app/Contents/MacOS/datacode
 .datacode_history
 model_data.zip
 *.db
 temp_sessions/
 *.nn
+# DPM in-project virtual env
+.dpm/
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #  be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore

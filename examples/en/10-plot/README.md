@@ -14,7 +14,7 @@ This section contains examples of working with the `plot` module for loading and
 
 **Run**:
 ```bash
-cargo run examples/en/10-plot/01-load-image.dc
+datacode examples/en/10-plot/01-load-image.dc
 ```
 
 ### 2. `02-show-image.dc` - Quick Image Viewing
@@ -27,7 +27,7 @@ cargo run examples/en/10-plot/01-load-image.dc
 
 **Run**:
 ```bash
-cargo run examples/en/10-plot/02-show-image.dc
+datacode examples/en/10-plot/02-show-image.dc
 ```
 
 ### 3. `03-create-window.dc` - Creating a Window
@@ -40,7 +40,7 @@ cargo run examples/en/10-plot/02-show-image.dc
 
 **Run**:
 ```bash
-cargo run examples/en/10-plot/03-create-window.dc
+datacode examples/en/10-plot/03-create-window.dc
 ```
 
 ### 4. `04-draw-image.dc` - Drawing in a Window
@@ -53,7 +53,7 @@ cargo run examples/en/10-plot/03-create-window.dc
 
 **Run**:
 ```bash
-cargo run examples/en/10-plot/04-draw-image.dc
+datacode examples/en/10-plot/04-draw-image.dc
 ```
 
 ### 5. `05-full-example.dc` - Comprehensive Example
@@ -66,7 +66,7 @@ cargo run examples/en/10-plot/04-draw-image.dc
 
 **Run**:
 ```bash
-cargo run examples/en/10-plot/05-full-example.dc
+datacode examples/en/10-plot/05-full-example.dc
 ```
 
 ### 6. `06-subplots.dc` - Creating a Subplots Grid
@@ -83,7 +83,7 @@ cargo run examples/en/10-plot/05-full-example.dc
 
 **Run**:
 ```bash
-cargo run examples/en/10-plot/06-subplots.dc
+datacode examples/en/10-plot/06-subplots.dc
 ```
 
 ### 7. `07-bar-chart.dc` - Bar Chart
@@ -97,7 +97,7 @@ cargo run examples/en/10-plot/06-subplots.dc
 
 **Run**:
 ```bash
-cargo run examples/en/10-plot/07-bar-chart.dc
+datacode examples/en/10-plot/07-bar-chart.dc
 ```
 
 ### 8. `08-heatmap.dc` - Heatmap
@@ -111,7 +111,7 @@ cargo run examples/en/10-plot/07-bar-chart.dc
 
 **Run**:
 ```bash
-cargo run examples/en/10-plot/08-heatmap.dc
+datacode examples/en/10-plot/08-heatmap.dc
 ```
 
 ### 9. `09-line-chart.dc` - Line Chart
@@ -126,7 +126,7 @@ cargo run examples/en/10-plot/08-heatmap.dc
 
 **Run**:
 ```bash
-cargo run examples/en/10-plot/09-line-chart.dc
+datacode examples/en/10-plot/09-line-chart.dc
 ```
 
 ### 10. `10-pie-chart.dc` - Pie Chart
@@ -139,7 +139,7 @@ cargo run examples/en/10-plot/09-line-chart.dc
 
 **Run**:
 ```bash
-cargo run examples/en/10-plot/10-pie-chart.dc
+datacode examples/en/10-plot/10-pie-chart.dc
 ```
 
 ## 🎯 Concepts Covered

@@ -1,7 +1,7 @@
 // Recursive Descent Parser
 
 use crate::lexer::{Token, TokenKind};
-use crate::parser::ast::{Expr, Stmt, Param, Arg, UnpackPattern, ImportItem, ImportStmt};
+use crate::parser::ast::{Expr, Stmt, Param, Arg, UnpackPattern, ImportItem, ImportStmt, ClassVariable};
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use std::rc::Rc;
@@ -41,6 +41,8 @@ impl Parser {
             Ok(Stmt::Let { name, value, is_global: true, line: global_line })
         } else if self.match_token(TokenKind::Let) {
             self.variable_declaration()
+        } else if self.match_token(TokenKind::Cls) {
+            self.class_declaration()
         } else if self.check(TokenKind::At) || self.check(TokenKind::Fn) {
             self.function_declaration()
         } else {
@@ -48,10 +50,19 @@ impl Parser {
         }
     }
 
+    /// Parses a dotted module name: identifier ( . identifier )*
+    fn parse_dotted_module_name(&mut self, context: &str) -> Result<String, LangError> {
+        let mut parts = vec![self.consume(TokenKind::Identifier, context)?.lexeme.clone()];
+        while self.match_token(TokenKind::Dot) {
+            parts.push(self.consume(TokenKind::Identifier, "Expect identifier after '.' in module name")?.lexeme.clone());
+        }
+        Ok(parts.join("."))
+    }
+
     fn from_import_declaration(&mut self) -> Result<Stmt, LangError> {
         let import_line = self.peek().line;
         self.consume(TokenKind::From, "Expect 'from'")?;
-        let module = self.consume(TokenKind::Identifier, "Expect module name after 'from'")?.lexeme.clone();
+        let module = self.parse_dotted_module_name("Expect module name after 'from'")?;
         self.consume(TokenKind::Import, "Expect 'import' after module name")?;
         
         let items = self.parse_import_items()?;
@@ -66,7 +77,7 @@ impl Parser {
         let import_line = self.previous().line; // 'import' был уже потреблен
         let mut modules = Vec::new();
         loop {
-            let module = self.consume(TokenKind::Identifier, "Expect module name after 'import'")?.lexeme.clone();
+            let module = self.parse_dotted_module_name("Expect module name after 'import'")?;
             modules.push(module);
             
             if !self.match_token(TokenKind::Comma) {
@@ -232,6 +243,390 @@ impl Parser {
         let body = self.block()?;
 
         Ok(Stmt::Function { name, params, return_type, body, is_cached, line: fn_line })
+    }
+
+    fn class_declaration(&mut self) -> Result<Stmt, LangError> {
+        let cls_line = self.previous().line;
+        let name = self.consume(TokenKind::Identifier, "Expect class name after 'cls'")?.lexeme.clone();
+        let superclass = if self.match_token(TokenKind::LParen) {
+            let super_name = self.consume(TokenKind::Identifier, "Expect superclass name after '('")?.lexeme.clone();
+            self.consume(TokenKind::RParen, "Expect ')' after superclass name")?;
+            Some(super_name)
+        } else {
+            None
+        };
+        self.consume(TokenKind::LBrace, "Expect '{' after class name")?;
+        
+        let mut private_fields = Vec::new();
+        let mut protected_fields = Vec::new();
+        let mut public_fields = Vec::new();
+        let mut private_variables = Vec::new();
+        let mut protected_variables = Vec::new();
+        let mut public_variables = Vec::new();
+        let mut constructors = Vec::new();
+        let mut methods = Vec::new();
+        // None = private, Some(false) = protected, Some(true) = public
+        let mut current_section_public: Option<bool> = None;
+        
+        while !self.check(TokenKind::RBrace) && !self.is_at_end() {
+            if self.match_token(TokenKind::Private) {
+                self.consume(TokenKind::Colon, "Expect ':' after 'private'")?;
+                current_section_public = None;
+                loop {
+                    if self.is_at_end() {
+                        break;
+                    }
+                    if self.check(TokenKind::Protected) || self.check(TokenKind::Public) || self.check(TokenKind::RBrace) || self.check(TokenKind::Fn) {
+                        break;
+                    }
+                    if self.check(TokenKind::Identifier) && self.peek().lexeme == "new" {
+                        break;
+                    }
+                    let saved_pos = self.current;
+                    if self.check(TokenKind::Identifier) {
+                        self.advance();
+                        if self.check(TokenKind::LParen) {
+                            self.current = saved_pos;
+                            break;
+                        }
+                        self.current = saved_pos;
+                    } else {
+                        break;
+                    }
+                    if self.check_next(TokenKind::Colon) {
+                        let field = self.parse_class_field()?;
+                        private_fields.push(field);
+                    } else if self.check_next(TokenKind::Equal) {
+                        let var = self.parse_class_variable_assignment()?;
+                        private_variables.push(var);
+                    } else {
+                        break;
+                    }
+                }
+            } else if self.match_token(TokenKind::Protected) {
+                self.consume(TokenKind::Colon, "Expect ':' after 'protected'")?;
+                current_section_public = Some(false);
+                loop {
+                    if self.is_at_end() {
+                        break;
+                    }
+                    if self.check(TokenKind::Private) || self.check(TokenKind::Public) || self.check(TokenKind::RBrace) || self.check(TokenKind::Fn) {
+                        break;
+                    }
+                    if self.check(TokenKind::Identifier) && self.peek().lexeme == "new" {
+                        break;
+                    }
+                    let saved_pos = self.current;
+                    if self.check(TokenKind::Identifier) {
+                        self.advance();
+                        if self.check(TokenKind::LParen) {
+                            self.current = saved_pos;
+                            break;
+                        }
+                        self.current = saved_pos;
+                    } else {
+                        break;
+                    }
+                    if self.check_next(TokenKind::Colon) {
+                        let field = self.parse_class_field()?;
+                        protected_fields.push(field);
+                    } else if self.check_next(TokenKind::Equal) {
+                        let var = self.parse_class_variable_assignment()?;
+                        protected_variables.push(var);
+                    } else {
+                        break;
+                    }
+                }
+            } else if self.match_token(TokenKind::Public) {
+                self.consume(TokenKind::Colon, "Expect ':' after 'public'")?;
+                current_section_public = Some(true);
+                loop {
+                    if self.is_at_end() {
+                        break;
+                    }
+                    if self.check(TokenKind::Private) || self.check(TokenKind::Protected) || self.check(TokenKind::RBrace) || self.check(TokenKind::Fn) {
+                        break;
+                    }
+                    if self.check(TokenKind::Identifier) && self.peek().lexeme == "new" {
+                        break;
+                    }
+                    let saved_pos = self.current;
+                    if self.check(TokenKind::Identifier) {
+                        self.advance();
+                        if self.check(TokenKind::LParen) {
+                            self.current = saved_pos;
+                            break;
+                        }
+                        self.current = saved_pos;
+                    } else {
+                        break;
+                    }
+                    if self.check_next(TokenKind::Colon) {
+                        let field = self.parse_class_field()?;
+                        public_fields.push(field);
+                    } else if self.check_next(TokenKind::Equal) {
+                        let var = self.parse_class_variable_assignment()?;
+                        public_variables.push(var);
+                    } else {
+                        break;
+                    }
+                }
+            } else if self.check(TokenKind::Identifier) && self.check_next(TokenKind::Colon) {
+                let field = self.parse_class_field()?;
+                match current_section_public {
+                    None => private_fields.push(field),
+                    Some(false) => protected_fields.push(field),
+                    Some(true) => public_fields.push(field),
+                }
+            } else if self.check(TokenKind::Identifier) && self.check_next(TokenKind::Equal) {
+                let var = self.parse_class_variable_assignment()?;
+                match current_section_public {
+                    None => private_variables.push(var),
+                    Some(false) => protected_variables.push(var),
+                    Some(true) => public_variables.push(var),
+                }
+            } else if self.check(TokenKind::Identifier) && self.peek().lexeme == "new" {
+                let constructor = self.parse_constructor(&name)?;
+                constructors.push(constructor);
+            } else if self.check(TokenKind::Fn) {
+                let method = self.parse_method()?;
+                methods.push(method);
+            } else {
+                return Err(LangError::ParseError {
+                    message: "Expect 'private:', 'protected:', 'public:', field (name : type), class variable (name = expr), constructor, or method in class body".to_string(),
+                    line: self.peek().line,
+                });
+            }
+        }
+        
+        self.consume(TokenKind::RBrace, "Expect '}' after class body")?;
+        
+        Ok(Stmt::Class {
+            name,
+            superclass,
+            private_fields,
+            protected_fields,
+            public_fields,
+            private_variables,
+            protected_variables,
+            public_variables,
+            constructors,
+            methods,
+            line: cls_line,
+        })
+    }
+
+    fn parse_class_field(&mut self) -> Result<crate::parser::ast::ClassField, LangError> {
+        let field_name = self.consume(TokenKind::Identifier, "Expect field name")?.lexeme.clone();
+        let _field_line = self.previous().line;
+        
+        // Проверяем, есть ли аннотация типа
+        let type_annotation = if self.match_token(TokenKind::Colon) {
+            Some(self.parse_type_name()?)
+        } else {
+            None
+        };
+        
+        // Проверяем, есть ли значение по умолчанию
+        let default_value = if self.match_token(TokenKind::Equal) {
+            Some(self.expression()?)
+        } else {
+            None
+        };
+        
+        Ok(crate::parser::ast::ClassField {
+            name: field_name,
+            type_annotation,
+            default_value,
+        })
+    }
+
+    fn parse_class_variable_assignment(&mut self) -> Result<ClassVariable, LangError> {
+        let name = self.consume(TokenKind::Identifier, "Expect variable name")?.lexeme.clone();
+        self.consume(TokenKind::Equal, "Expect '=' after variable name in class variable")?;
+        let value = self.expression()?;
+        Ok(ClassVariable { name, value })
+    }
+
+    fn parse_constructor(&mut self, class_name: &str) -> Result<crate::parser::ast::Constructor, LangError> {
+        // Парсим: new ClassName(...) { ... } или new ClassName(...) : this(...) {}
+        let new_line = self.consume(TokenKind::Identifier, "Expect 'new'")?.line;
+        // Проверяем, что это действительно 'new'
+        if self.previous().lexeme != "new" {
+            return Err(LangError::ParseError {
+                message: "Expect 'new' for constructor".to_string(),
+                line: new_line,
+            });
+        }
+        
+        // Парсим имя класса (должно совпадать с именем класса)
+        let constructor_class_name = self.consume(TokenKind::Identifier, "Expect class name after 'new'")?.lexeme.clone();
+        if constructor_class_name != class_name {
+            return Err(LangError::ParseError {
+                message: format!("Constructor class name '{}' must match class name '{}'", constructor_class_name, class_name),
+                line: self.previous().line,
+            });
+        }
+        
+        self.consume(TokenKind::LParen, "Expect '(' after class name in constructor")?;
+        
+        let mut params = Vec::new();
+        let mut has_default = false;
+        if !self.check(TokenKind::RParen) {
+            loop {
+                if params.len() >= 255 {
+                    return Err(LangError::ParseError {
+                        message: "Cannot have more than 255 parameters".to_string(),
+                        line: self.previous().line,
+                    });
+                }
+                
+                let param_name = self.consume(TokenKind::Identifier, "Expect parameter name")?.lexeme.clone();
+                let param_line = self.previous().line;
+                
+                // Проверяем, есть ли аннотация типа
+                let type_annotation = if self.match_token(TokenKind::Colon) {
+                    Some(self.parse_type_name()?)
+                } else {
+                    None
+                };
+                
+                // Проверяем, есть ли значение по умолчанию
+                let default_value = if self.match_token(TokenKind::Equal) {
+                    has_default = true;
+                    Some(self.expression()?)
+                } else {
+                    if has_default {
+                        return Err(LangError::ParseError {
+                            message: "Non-default argument follows default argument".to_string(),
+                            line: param_line,
+                        });
+                    }
+                    None
+                };
+                
+                params.push(crate::parser::ast::Param {
+                    name: param_name,
+                    type_annotation,
+                    default_value,
+                });
+                
+                if !self.match_token(TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.consume(TokenKind::RParen, "Expect ')' after parameters")?;
+        
+        // Проверяем, есть ли делегирующий конструктор: new ClassName(...) : this(...) {}
+        let (body, delegate_args) = if self.match_token(TokenKind::Colon) {
+            // Делегирующий конструктор
+            if !self.match_token(TokenKind::This) {
+                return Err(LangError::ParseError {
+                    message: "Expect 'this' after ':' in delegating constructor".to_string(),
+                    line: self.peek().line,
+                });
+            }
+            self.consume(TokenKind::LParen, "Expect '(' after 'this'")?;
+            let mut delegate_args = Vec::new();
+            if !self.check(TokenKind::RParen) {
+                loop {
+                    delegate_args.push(self.expression()?);
+                    if !self.match_token(TokenKind::Comma) {
+                        break;
+                    }
+                }
+            }
+            self.consume(TokenKind::RParen, "Expect ')' after delegate arguments")?;
+            self.consume(TokenKind::LBrace, "Expect '{' after delegating constructor")?;
+            self.consume(TokenKind::RBrace, "Expect '}' after delegating constructor body")?;
+            (Vec::new(), Some(delegate_args))
+        } else {
+            // Обычный конструктор
+            self.consume(TokenKind::LBrace, "Expect '{' before constructor body")?;
+            (self.block()?, None)
+        };
+        
+        Ok(crate::parser::ast::Constructor {
+            params,
+            body,
+            delegate_args,
+            line: new_line,
+        })
+    }
+
+    fn parse_method(&mut self) -> Result<crate::parser::ast::Method, LangError> {
+        // Парсим: fn methodName(...) -> type? { ... }
+        self.consume(TokenKind::Fn, "Expect 'fn'")?;
+        let method_line = self.previous().line;
+        let name = self.consume(TokenKind::Identifier, "Expect method name")?.lexeme.clone();
+        self.consume(TokenKind::LParen, "Expect '(' after method name")?;
+        
+        let mut params = Vec::new();
+        let mut has_default = false;
+        if !self.check(TokenKind::RParen) {
+            loop {
+                if params.len() >= 255 {
+                    return Err(LangError::ParseError {
+                        message: "Cannot have more than 255 parameters".to_string(),
+                        line: self.previous().line,
+                    });
+                }
+                
+                let param_name = self.consume(TokenKind::Identifier, "Expect parameter name")?.lexeme.clone();
+                let param_line = self.previous().line;
+                
+                // Проверяем, есть ли аннотация типа
+                let type_annotation = if self.match_token(TokenKind::Colon) {
+                    Some(self.parse_type_name()?)
+                } else {
+                    None
+                };
+                
+                // Проверяем, есть ли значение по умолчанию
+                let default_value = if self.match_token(TokenKind::Equal) {
+                    has_default = true;
+                    Some(self.expression()?)
+                } else {
+                    if has_default {
+                        return Err(LangError::ParseError {
+                            message: "Non-default argument follows default argument".to_string(),
+                            line: param_line,
+                        });
+                    }
+                    None
+                };
+                
+                params.push(crate::parser::ast::Param {
+                    name: param_name,
+                    type_annotation,
+                    default_value,
+                });
+                
+                if !self.match_token(TokenKind::Comma) {
+                    break;
+                }
+            }
+        }
+        self.consume(TokenKind::RParen, "Expect ')' after parameters")?;
+        
+        // Проверяем, есть ли аннотация возвращаемого типа
+        let return_type = if self.match_token(TokenKind::Arrow) {
+            Some(self.parse_type_name()?)
+        } else {
+            None
+        };
+        
+        self.consume(TokenKind::LBrace, "Expect '{' before method body")?;
+        let body = self.block()?;
+        
+        Ok(crate::parser::ast::Method {
+            name,
+            params,
+            return_type,
+            body,
+            line: method_line,
+        })
     }
 
     fn statement(&mut self) -> Result<Stmt, LangError> {
@@ -528,8 +923,10 @@ impl Parser {
                 None
             };
             
-            // Парсим переменную ошибки (опционально)
-            let error_var = if self.match_token(TokenKind::Identifier) {
+            // Парсим переменную ошибки (опционально): "as e" или просто "e"
+            let error_var = if self.match_token(TokenKind::As) {
+                Some(self.consume(TokenKind::Identifier, "Expect variable name after 'as'")?.lexeme.clone())
+            } else if self.match_token(TokenKind::Identifier) {
                 Some(self.previous().lexeme.clone())
             } else {
                 None
@@ -694,6 +1091,35 @@ impl Parser {
                     value: Box::new(value),
                     line: op_line,
                 });
+            } else if let Expr::Property { object, name, .. } = expr {
+                // Присваивание к свойству объекта: obj.field += value
+                let value = self.assignment()?;
+                let property_path = match &*object {
+                    Expr::Variable { name: var_name, .. } => format!("{}.{}", var_name, name),
+                    Expr::This { .. } => format!("this.{}", name),
+                    Expr::Property { object, name: prop_name, .. } => {
+                        // Рекурсивно строим путь к свойству
+                        let base = match &**object {
+                            Expr::Variable { name, .. } => name.clone(),
+                            Expr::This { .. } => "this".to_string(),
+                            _ => return Err(LangError::ParseError {
+                                message: "Invalid assignment target".to_string(),
+                                line: op_line,
+                            }),
+                        };
+                        format!("{}.{}.{}", base, prop_name, name)
+                    },
+                    _ => return Err(LangError::ParseError {
+                        message: "Invalid assignment target".to_string(),
+                        line: op_line,
+                    }),
+                };
+                return Ok(Expr::AssignOp {
+                    name: property_path,
+                    op: op_kind,
+                    value: Box::new(value),
+                    line: op_line,
+                });
             }
             return Err(LangError::ParseError {
                 message: "Invalid assignment target".to_string(),
@@ -831,6 +1257,36 @@ impl Parser {
                 let value = self.assignment()?;
                 return Ok(Expr::Assign {
                     name,
+                    value: Box::new(value),
+                    line: equal_line,
+                });
+            } else if let Expr::Property { object, name, .. } = expr {
+                // Присваивание к свойству объекта: obj.field = value или this.field = value
+                let value = self.assignment()?;
+                // Для присваивания к свойству создаем специальное выражение
+                // Используем формат "object.field" для имени, где object может быть "this" или именем переменной
+                let property_path = match &*object {
+                    Expr::Variable { name: var_name, .. } => format!("{}.{}", var_name, name),
+                    Expr::This { .. } => format!("this.{}", name),
+                    Expr::Property { object, name: prop_name, .. } => {
+                        // Рекурсивно строим путь к свойству
+                        let base = match &**object {
+                            Expr::Variable { name, .. } => name.clone(),
+                            Expr::This { .. } => "this".to_string(),
+                            _ => return Err(LangError::ParseError {
+                                message: "Invalid assignment target".to_string(),
+                                line: equal_line,
+                            }),
+                        };
+                        format!("{}.{}.{}", base, prop_name, name)
+                    },
+                    _ => return Err(LangError::ParseError {
+                        message: "Invalid assignment target".to_string(),
+                        line: equal_line,
+                    }),
+                };
+                return Ok(Expr::Assign {
+                    name: property_path,
                     value: Box::new(value),
                     line: equal_line,
                 });
@@ -985,9 +1441,9 @@ impl Parser {
             // Но не группировкой выражений - проверяем тип выражения перед обработкой
             if self.check(TokenKind::LParen) {
                 // Проверяем, что это действительно вызов функции/метода
-                // (переменная или Property), а не просто группировка
+                // (переменная, Property или Super), а не просто группировка
                 match &expr {
-                    Expr::Variable { .. } | Expr::Property { .. } => {
+                    Expr::Variable { .. } | Expr::Property { .. } | Expr::Super { .. } => {
                         self.advance(); // Съедаем LParen
                         expr = self.finish_call(expr)?;
                         continue;
@@ -1096,24 +1552,37 @@ impl Parser {
         let paren = self.consume(TokenKind::RParen, "Expect ')' after arguments")?;
         
         // Извлекаем имя функции из callee
-        // Может быть переменной или методом (Property)
+        // Может быть переменной, методом (Property), super() или super.method()
         match callee {
             Expr::Variable { name, .. } => {
                 Ok(Expr::Call { name, args, line: call_line })
             }
+            Expr::Super { .. } => {
+                // super(...) - вызов конструктора родителя
+                Ok(Expr::SuperCall { args, line: call_line })
+            }
             Expr::Property { object, name, .. } => {
-                // Это вызов метода - создаем MethodCall
-                Ok(Expr::MethodCall {
-                    object,
-                    method: name,
-                    args,
-                    line: call_line,
-                })
+                // Проверяем, является ли object Super - тогда это super.method()
+                if matches!(object.as_ref(), Expr::Super { .. }) {
+                    Ok(Expr::SuperMethodCall {
+                        method: name,
+                        args,
+                        line: call_line,
+                    })
+                } else {
+                    // Это обычный вызов метода - создаем MethodCall
+                    Ok(Expr::MethodCall {
+                        object,
+                        method: name,
+                        args,
+                        line: call_line,
+                    })
+                }
             }
             _ => {
                 // Для сложных выражений пока не поддерживаем вызовы
                 Err(LangError::ParseError {
-                    message: "Can only call functions, variables, and methods".to_string(),
+                    message: "Can only call functions, variables, methods, and super".to_string(),
                     line: paren.line,
                 })
             }
@@ -1144,6 +1613,18 @@ impl Parser {
         if self.match_token(TokenKind::Null) {
             let line = self.previous().line;
             return Ok(Expr::Literal { value: Value::Null, line });
+        }
+        if self.match_token(TokenKind::This) {
+            let line = self.previous().line;
+            return Ok(Expr::This { line });
+        }
+        if self.match_token(TokenKind::Super) {
+            let line = self.previous().line;
+            return Ok(Expr::Super { line });
+        }
+        if self.match_token(TokenKind::Ellipsis) {
+            let line = self.previous().line;
+            return Ok(Expr::Ellipsis { line });
         }
         if self.match_token(TokenKind::Number) {
             let line = self.previous().line;
@@ -1358,7 +1839,7 @@ impl Parser {
 
         if all_literals {
             Ok(Expr::Literal {
-                value: Value::Object(object_map),
+                value: Value::Object(Rc::new(RefCell::new(object_map))),
                 line,
             })
         } else {

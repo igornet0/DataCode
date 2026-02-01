@@ -1,0 +1,27 @@
+# Basic usage of the settings_env module
+# Import, load_env(path), Settings(path), reading keys
+
+from settings_env import load_env, Settings
+
+# Load .env file (path relative to script directory)
+let env = load_env("simple.env")
+if env != null {
+    print("app_name: " + env["app_name"])
+    print("env: " + env["env"])
+    print("debug: " + str(env["debug"]))
+    print("Number of keys: " + str(len(env)))
+} else {
+    print("File not found or load error")
+}
+
+# Settings(path) — same as load_env(path)
+let env2 = Settings("simple.env")
+if env2 != null {
+    print("Settings(\"simple.env\") — app_name: " + env2["app_name"])
+}
+
+# Missing file — load_env returns null (no crash)
+let missing = load_env("nonexistent.env")
+if missing == null {
+    print("Missing file: load_env returned null")
+}

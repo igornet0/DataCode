@@ -15,7 +15,7 @@
 
 **Запуск**:
 ```bash
-cargo run examples/ru/07-циклы/циклы_while.dc
+datacode examples/ru/07-циклы/циклы_while.dc
 ```
 
 ### 2. `циклы_for.dc` - Циклы for
@@ -30,7 +30,7 @@ cargo run examples/ru/07-циклы/циклы_while.dc
 
 **Запуск**:
 ```bash
-cargo run examples/ru/07-циклы/циклы_for.dc
+datacode examples/ru/07-циклы/циклы_for.dc
 ```
 
 ### 3. `вложенные_циклы.dc` - Вложенные циклы
@@ -44,7 +44,7 @@ cargo run examples/ru/07-циклы/циклы_for.dc
 
 **Запуск**:
 ```bash
-cargo run examples/ru/07-циклы/вложенные_циклы.dc
+datacode examples/ru/07-циклы/вложенные_циклы.dc
 ```
 
 ## 🎯 Изучаемые концепции

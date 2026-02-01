@@ -33,6 +33,20 @@ pub struct CompilationContext<'a> {
     pub exception_handlers: &'a mut Vec<ExceptionHandler>,
     pub error_type_table: &'a mut Vec<String>,
     pub loop_contexts: &'a mut Vec<LoopContext>,
+    /// Symbols imported via `from module import X`: name -> module. Used to treat uppercase names as class constructor calls only for file modules (not builtins).
+    pub imported_symbols: &'a mut std::collections::HashMap<String, String>,
+    /// Class name -> list of private field names (filled at end of each class; used to merge in subclass constructors).
+    pub class_private_fields: &'a mut std::collections::HashMap<String, Vec<String>>,
+    /// Class name -> list of protected field names (for inheritance: merge in subclass constructors).
+    pub class_protected_fields: &'a mut std::collections::HashMap<String, Vec<String>>,
+    /// Subclass name -> superclass name, set when implicit constructor was skipped (superclass has no matching constructor).
+    pub class_superclass: &'a mut std::collections::HashMap<String, String>,
+    /// Current class being compiled (for super.method() resolution).
+    pub current_class: Option<String>,
+    /// Superclass of current class (for super() and super.method() resolution).
+    pub current_superclass: Option<String>,
+    /// Whether we are currently compiling a constructor body.
+    pub in_constructor: bool,
 }
 
 impl<'a> CompilationContext<'a> {

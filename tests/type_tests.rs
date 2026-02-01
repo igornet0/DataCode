@@ -261,10 +261,14 @@ mod tests {
 
     #[test]
     fn test_type_error_null_arithmetic() {
-        assert_type_error(r#"
+        // В арифметике null приводится к 0 (удобно для полей класса со значениями по умолчанию)
+        assert_number_result(
+            r#"
             let x = null
             x + 5
-        "#);
+        "#,
+            5.0,
+        );
     }
 
     #[test]

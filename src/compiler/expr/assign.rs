@@ -18,6 +18,87 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
             // Не клонируем автоматически - переменные должны разделять ссылки на массивы/таблицы/объекты
             // Клонирование происходит только при явном вызове .clone()
             
+            // Проверяем, является ли это присваиванием к свойству объекта (например, "this.field" или "obj.field")
+            if name.contains('.') {
+                // Это присваивание к свойству объекта
+                let parts: Vec<&str> = name.split('.').collect();
+                if parts.len() == 2 {
+                    let (object_name, field_name) = (parts[0], parts[1]);
+                    
+                    // На стеке уже есть value
+                    // Нужно: [value, field_name, object] для SetArrayElement
+                    // Но SetArrayElement ожидает: [value, index/key, container]
+                    
+                    // Загружаем имя поля
+                    let field_name_index = ctx.chunk.add_constant(Value::String(field_name.to_string()));
+                    ctx.chunk.write_with_line(OpCode::Constant(field_name_index), *line);
+                    
+                    // Загружаем объект
+                    if object_name == "this" {
+                        // this может быть локальной переменной (конструктор) или параметром (метод)
+                        if let Some(local_index) = ctx.scope.resolve_local("this") {
+                            // this найден как локальная переменная (конструктор)
+                            ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                        } else {
+                            // this не найден как локальная переменная, значит это первый параметр (метод)
+                            // В методах this всегда в слоте 0
+                            ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
+                        }
+                    } else {
+                        // Загружаем переменную-объект
+                        if let Some(local_index) = ctx.scope.resolve_local(object_name) {
+                            ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                        } else if let Some(&global_index) = ctx.scope.globals.get(object_name) {
+                            ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                        } else {
+                            return Err(LangError::ParseError {
+                                message: format!("Variable '{}' not found", object_name),
+                                line: *line,
+                            });
+                        }
+                    }
+                    
+                    // Теперь на стеке: [value, field_name, object]
+                    // SetArrayElement ожидает: [value, index/key, container]
+                    // Вызываем SetArrayElement
+                    ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                    
+                    // SetArrayElement возвращает обновленный объект
+                    // Сохраняем его обратно в переменную
+                    if object_name == "this" {
+                        // this может быть локальной переменной или параметром
+                        if let Some(local_index) = ctx.scope.resolve_local("this") {
+                            // this найден как локальная переменная (конструктор)
+                            ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
+                            ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                        } else {
+                            // this не найден как локальная переменная, значит это первый параметр (метод)
+                            // В методах this всегда в слоте 0
+                            ctx.chunk.write_with_line(OpCode::StoreLocal(0), *line);
+                            ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
+                        }
+                    } else {
+                        // Сохраняем в переменную-объект
+                        if let Some(local_index) = ctx.scope.resolve_local(object_name) {
+                            ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
+                            ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                        } else if let Some(&global_index) = ctx.scope.globals.get(object_name) {
+                            ctx.chunk.global_names.insert(global_index, object_name.to_string());
+                            ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                            ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                        }
+                    }
+                    
+                    return Ok(());
+                } else {
+                    return Err(LangError::ParseError {
+                        message: format!("Invalid property path: {}", name),
+                        line: *line,
+                    });
+                }
+            }
+            
+            // Обычное присваивание переменной
             // Используем VariableResolver для разрешения переменной
             // Проверяем, является ли переменная локальной или глобальной
             if let Some(local_index) = ctx.scope.resolve_local(name) {
@@ -75,6 +156,114 @@ fn compile_assign_op(
     line: usize,
 ) -> Result<(), LangError> {
     // Оператор присваивания: a += b эквивалентно a = a + b
+    // Проверяем, является ли это присваиванием к свойству объекта
+    if name.contains('.') {
+        // Это присваивание к свойству объекта: obj.field += value
+        let parts: Vec<&str> = name.split('.').collect();
+        if parts.len() == 2 {
+            let (object_name, field_name) = (parts[0], parts[1]);
+            
+            // Загружаем текущее значение свойства
+            if object_name == "this" {
+                if let Some(local_index) = ctx.scope.resolve_local("this") {
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+                } else {
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(0), line);
+                }
+            } else {
+                if let Some(local_index) = ctx.scope.resolve_local(object_name) {
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+                } else if let Some(&global_index) = ctx.scope.globals.get(object_name) {
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), line);
+                } else {
+                    return Err(LangError::ParseError {
+                        message: format!("Variable '{}' not found", object_name),
+                        line,
+                    });
+                }
+            }
+            
+            // Загружаем имя поля
+            let field_name_index = ctx.chunk.add_constant(Value::String(field_name.to_string()));
+            ctx.chunk.write_with_line(OpCode::Constant(field_name_index), line);
+            
+            // Получаем текущее значение свойства
+            ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
+            
+            // Компилируем правую часть
+            expr::compile_expr(ctx, value)?;
+            
+            // Выполняем операцию
+            match op {
+                TokenKind::PlusEqual => ctx.chunk.write_with_line(OpCode::Add, line),
+                TokenKind::MinusEqual => ctx.chunk.write_with_line(OpCode::Sub, line),
+                TokenKind::StarEqual => ctx.chunk.write_with_line(OpCode::Mul, line),
+                TokenKind::StarStarEqual => ctx.chunk.write_with_line(OpCode::Pow, line),
+                TokenKind::SlashEqual => ctx.chunk.write_with_line(OpCode::Div, line),
+                TokenKind::SlashSlashEqual => ctx.chunk.write_with_line(OpCode::IntDiv, line),
+                TokenKind::PercentEqual => ctx.chunk.write_with_line(OpCode::Mod, line),
+                _ => {
+                    return Err(LangError::ParseError {
+                        message: format!("Unknown assignment operator: {:?}", op),
+                        line,
+                    });
+                }
+            }
+            
+            // Теперь на стеке: [new_value]
+            // Нужно: [new_value, field_name, object] для SetArrayElement
+            // Загружаем имя поля
+            let field_name_index = ctx.chunk.add_constant(Value::String(field_name.to_string()));
+            ctx.chunk.write_with_line(OpCode::Constant(field_name_index), line);
+            
+            // Загружаем объект
+            if object_name == "this" {
+                if let Some(local_index) = ctx.scope.resolve_local("this") {
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+                } else {
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(0), line);
+                }
+            } else {
+                if let Some(local_index) = ctx.scope.resolve_local(object_name) {
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+                } else if let Some(&global_index) = ctx.scope.globals.get(object_name) {
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), line);
+                }
+            }
+            
+            // Устанавливаем новое значение
+            ctx.chunk.write_with_line(OpCode::SetArrayElement, line);
+            
+            // Сохраняем обновленный объект обратно
+            if object_name == "this" {
+                if let Some(local_index) = ctx.scope.resolve_local("this") {
+                    ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), line);
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+                } else {
+                    ctx.chunk.write_with_line(OpCode::StoreLocal(0), line);
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(0), line);
+                }
+            } else {
+                if let Some(local_index) = ctx.scope.resolve_local(object_name) {
+                    ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), line);
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+                } else if let Some(&global_index) = ctx.scope.globals.get(object_name) {
+                    ctx.chunk.global_names.insert(global_index, object_name.to_string());
+                    ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), line);
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), line);
+                }
+            }
+            
+            return Ok(());
+        } else {
+            return Err(LangError::ParseError {
+                message: format!("Invalid property path: {}", name),
+                line,
+            });
+        }
+    }
+    
+    // Обычное присваивание переменной
     // Используем VariableResolver для разрешения переменной
     let is_local = VariableResolver::resolve_for_assign_op(ctx, name, line)?;
     

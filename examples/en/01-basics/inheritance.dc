@@ -1,0 +1,77 @@
+# Class inheritance in DataCode
+# Demonstrating child classes
+
+# ============================================================
+# Parent class
+# ============================================================
+cls Parent {
+    v: int
+
+    protected:
+    p: int
+    
+    public:
+    new Parent(v, p) {
+        this.v = v
+        this.p = p
+    }
+
+    fn getV() {
+        return this.v
+    }
+
+    fn getP() {
+        return this.p
+    }
+}
+
+# ============================================================
+# Child class with method
+# ============================================================
+cls Child(Parent) {
+    public:
+    new Child(v) {
+        super(v, 202)
+    }
+}
+# Creating child instance
+c = Child(10)
+
+try {
+pa = Parent(20)
+} catch e {
+    print("Parent Error init:", e)
+    pa = Parent(20, 303)
+}
+
+# Access inherited field via method
+print("Value v: " + c.getV())
+print("Value p: " + c.getP())
+print("Value pa.getP: " + pa.getP())
+
+# Direct access to inherited public field
+
+try {
+print("Directly c.v: " + c.v)
+} catch ProtectError as e {
+    print(e)
+}
+print("-"*10)
+
+try {
+print("Directly pa.v: " + pa.v)
+} catch ProtectError as e {
+    print(e)
+}
+print("-"*10)
+try {
+print("Directly c.p: " + c.p)
+} catch ProtectError as e {
+    print(e)
+}
+print("-"*10)
+try {
+print("Directly pa.p: " + pa.p)
+} catch ProtectError as e {
+    print(e)
+}

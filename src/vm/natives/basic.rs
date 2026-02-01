@@ -3,15 +3,21 @@
 use crate::common::value::Value;
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::io::Write;
 
 pub fn native_print(args: &[Value]) -> Value {
     use crate::websocket::output_capture::OutputCapture;
-    
+    use crate::common::debug;
     if args.is_empty() {
         if OutputCapture::is_capturing() {
             OutputCapture::write_output("");
         } else {
             println!();
+            let _ = std::io::stdout().flush();
+            if debug::is_debug_enabled() {
+                eprintln!("[OUTPUT]");
+                let _ = std::io::stderr().flush();
+            }
         }
     } else {
         let mut output = String::new();
@@ -25,6 +31,12 @@ pub fn native_print(args: &[Value]) -> Value {
             OutputCapture::write_output(&output);
         } else {
             println!("{}", output);
+            let _ = std::io::stdout().flush();
+            // When debug is on, also emit to stderr so script output appears in log when using > log.log 2>&1
+            if debug::is_debug_enabled() {
+                eprintln!("[OUTPUT] {}", output);
+                let _ = std::io::stderr().flush();
+            }
         }
     }
     Value::Null
@@ -36,7 +48,7 @@ pub fn native_len(args: &[Value]) -> Value {
             Value::String(s) => Value::Number(s.len() as f64),
             Value::Array(arr) => Value::Number(arr.borrow().len() as f64),
             Value::Table(table) => Value::Number(table.borrow().len() as f64),
-            Value::Object(map) => Value::Number(map.len() as f64),
+            Value::Object(map_rc) => Value::Number(map_rc.borrow().len() as f64),
             Value::ColumnReference { table, column_name } => {
                 let table_ref = table.borrow();
                 if let Some(column) = table_ref.get_column(column_name) {
@@ -356,6 +368,7 @@ pub fn native_typeof(args: &[Value]) -> Value {
         Value::Array(_) => "array",
         Value::Tuple(_) => "tuple",
         Value::Path(_) => "path",
+        Value::Uuid(_, _) => "uuid",
         Value::Table(_) => "table",
         Value::Object(_) => "object",
         Value::ColumnReference { .. } => "column",
@@ -380,6 +393,7 @@ pub fn native_typeof(args: &[Value]) -> Value {
         Value::Image(_) => "image",
         Value::Figure(_) => "figure",
         Value::Axis(_) => "axis",
+        Value::Ellipsis => "ellipsis",
     };
     Value::String(type_name.to_string())
 }
@@ -447,6 +461,7 @@ pub fn native_isinstance(args: &[Value]) -> Value {
             }
         }
         Value::Path(_) => type_name_lower == "path",
+        Value::Uuid(_, _) => type_name_lower == "uuid",
         Value::Array(_) => type_name_lower == "array" || type_name_lower == "list",
         Value::Tuple(_) => type_name_lower == "tuple",
         Value::Table(_) => type_name_lower == "table",
@@ -472,6 +487,7 @@ pub fn native_isinstance(args: &[Value]) -> Value {
         Value::Image(_) => type_name_lower == "image",
         Value::Figure(_) => type_name_lower == "figure",
         Value::Axis(_) => type_name_lower == "axis",
+        Value::Ellipsis => type_name_lower == "ellipsis",
     };
     
     Value::Bool(matches)

@@ -65,36 +65,36 @@ datacode examples/ru/01-основы/привет.dc
 
 1. **Start with basics / Начните с основ**:
    ```bash
-   cargo run examples/ru/01-основы/привет.dc
-   cargo run examples/ru/01-основы/переменные.dc
+   datacode examples/ru/01-основы/привет.dc
+   datacode examples/ru/01-основы/переменные.dc
    ```
 
 2. **Learn syntax / Изучите синтаксис**:
    ```bash
-   cargo run examples/ru/02-синтаксис/условия.dc
-   cargo run examples/ru/02-синтаксис/выражения.dc
+   datacode examples/ru/02-синтаксис/условия.dc
+   datacode examples/ru/02-синтаксис/выражения.dc
    ```
 
 3. **Master functions / Освойте функции**:
    ```bash
-   cargo run examples/ru/05-функции/простые_функции.dc
-   cargo run examples/ru/05-функции/рекурсия.dc
+   datacode examples/ru/05-функции/простые_функции.dc
+   datacode examples/ru/05-функции/рекурсия.dc
    ```
 
 4. **Study loops / Изучите циклы**:
    ```bash
-   cargo run examples/ru/07-циклы/циклы_while.dc
-   cargo run examples/ru/07-циклы/циклы_for.dc
+   datacode examples/ru/07-циклы/циклы_while.dc
+   datacode examples/ru/07-циклы/циклы_for.dc
    ```
 
 5. **Advanced techniques / Продвинутые техники**:
    ```bash
-   cargo run examples/ru/04-продвинутые/комплексный.dc
+   datacode examples/ru/04-продвинутые/комплексный.dc
    ```
 
 6. **Full demonstration / Полная демонстрация**:
    ```bash
-   cargo run examples/ru/06-демонстрации/демонстрация.dc
+   datacode examples/ru/06-демонстрации/демонстрация.dc
    ```
 
 ## 📖 Documentation / Документация

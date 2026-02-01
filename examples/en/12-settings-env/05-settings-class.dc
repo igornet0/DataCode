@@ -1,0 +1,28 @@
+# Settings subclass: model_config and fields via Field
+# Creating instance Config("dev.env")
+
+from settings_env import Settings, Field
+
+cls DatabaseConfig(Settings) {
+    model_config = Settings.config(env_prefix="DB__", extra="ignore")
+
+    public:
+        url: str = Field(...)
+}
+
+cls AppConfig(Settings) {
+    model_config = Settings.config(env_prefix="APP__", extra="ignore")
+
+    public:
+        env: str = Field(default="dev")
+        debug: bool = Field(default=true)
+
+        db: DatabaseConfig = Field(default_factory=DatabaseConfig)
+}
+
+# Load configuration from dev.env (path relative to script directory)
+let cfg = AppConfig("dev.env")
+print("Application configuration:")
+print("  env: " + cfg.env)
+print("  debug: " + cfg.debug)
+print("  db.url: " + cfg.db.url)

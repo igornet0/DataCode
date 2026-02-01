@@ -173,6 +173,39 @@ pub fn find_used_variables_in_stmt(stmt: &Stmt) -> std::collections::HashSet<Str
             // Находим переменные в выражении throw
             vars.extend(find_used_variables_in_expr(value));
         }
+        Stmt::Class { private_fields, protected_fields, public_fields, private_variables, protected_variables, public_variables, constructors, methods, .. } => {
+            // Находим переменные в значениях по умолчанию полей
+            for field in private_fields.iter().chain(protected_fields.iter()).chain(public_fields.iter()) {
+                if let Some(ref default_expr) = field.default_value {
+                    vars.extend(find_used_variables_in_expr(default_expr));
+                }
+            }
+            // Находим переменные в выражениях переменных уровня класса
+            for var in private_variables.iter().chain(protected_variables.iter()).chain(public_variables.iter()) {
+                vars.extend(find_used_variables_in_expr(&var.value));
+            }
+            // Находим переменные в конструкторах и методах
+            for constructor in constructors {
+                for param in &constructor.params {
+                    if let Some(ref default_expr) = param.default_value {
+                        vars.extend(find_used_variables_in_expr(default_expr));
+                    }
+                }
+                for stmt in &constructor.body {
+                    vars.extend(find_used_variables_in_stmt(stmt));
+                }
+            }
+            for method in methods {
+                for param in &method.params {
+                    if let Some(ref default_expr) = param.default_value {
+                        vars.extend(find_used_variables_in_expr(default_expr));
+                    }
+                }
+                for stmt in &method.body {
+                    vars.extend(find_used_variables_in_stmt(stmt));
+                }
+            }
+        }
     }
     vars
 }
@@ -221,6 +254,15 @@ pub fn find_locally_declared_variables(body: &[Stmt]) -> std::collections::HashS
                 // Рекурсивно проверяем else блок (если есть)
                 if let Some(else_block) = else_block {
                     declared_vars.extend(find_locally_declared_variables(else_block));
+                }
+            }
+            Stmt::Class { constructors, methods, .. } => {
+                // Классы не объявляют переменные в текущей области, но их конструкторы и методы могут
+                for constructor in constructors {
+                    declared_vars.extend(find_locally_declared_variables(&constructor.body));
+                }
+                for method in methods {
+                    declared_vars.extend(find_locally_declared_variables(&method.body));
                 }
             }
             _ => {

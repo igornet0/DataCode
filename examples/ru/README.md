@@ -77,68 +77,97 @@
 - `mnist_model_demo.dc` - Демонстрация модели
 - `mnist_mlp_sh.dc` - Пример shell скрипта
 
+### ⚙️ [12-settings_env](12-settings_env/) - Модуль settings_env
+Загрузка переменных окружения из .env файлов, приведение типов, префиксы, config и классы-наследники Settings:
+- `01-базовое_использование.dc` - load_env, Settings, чтение ключей
+- `02-типы_и_приведение.dc` - Приведение к bool, number, string
+- `03-префикс_и_config.dc` - env_prefix и load_env с config
+- `04-field.dc` - Дескрипторы Field (default, required, min_length, alias)
+- `05-класс_config.dc` - Класс-наследник Settings с вложенным конфигом
+- `06-практический_пример.dc` - Сводный пример конфигурации приложения
+
+### 🆔 [13-uuid](13-uuid/) - Модуль UUID
+Работа с встроенным модулем `uuid`: генерация уникальных идентификаторов (v4, v7), разбор строк, байты, детерминированные UUID (v3, v5) и метаданные:
+- `01-базовое_использование.dc` - Импорт, v4/v7, to_string, parse
+- `02-детерминированные_uuid.dc` - v3 и v5 с namespace (DNS, URL, OID)
+- `03-байты.dc` - to_bytes и from_bytes
+- `04-метаданные.dc` - version, variant, timestamp
+- `05-практический_пример.dc` - Генерация id для записей
+
 ## 🚀 Быстрый старт
 
 ### Рекомендуемый порядок изучения
 
 1. **Начните с основ**:
    ```bash
-   cargo run examples/ru/01-основы/привет.dc
-   cargo run examples/ru/01-основы/переменные.dc
+   datacode examples/ru/01-основы/привет.dc
+   datacode examples/ru/01-основы/переменные.dc
    ```
 
 2. **Изучите синтаксис**:
    ```bash
-   cargo run examples/ru/02-синтаксис/условия.dc
-   cargo run examples/ru/02-синтаксис/выражения.dc
+   datacode examples/ru/02-синтаксис/условия.dc
+   datacode examples/ru/02-синтаксис/выражения.dc
    ```
 
 3. **Поймите типы данных**:
    ```bash
-   cargo run examples/ru/03-типы\ данных/функции_преобразования_типов.dc
-   cargo run examples/ru/03-типы\ данных/объекты.dc
+   datacode examples/ru/03-типы\ данных/функции_преобразования_типов.dc
+   datacode examples/ru/03-типы\ данных/объекты.dc
    ```
 
 4. **Освойте функции**:
    ```bash
-   cargo run examples/ru/05-функции/простые_функции.dc
-   cargo run examples/ru/05-функции/рекурсия.dc
+   datacode examples/ru/05-функции/простые_функции.dc
+   datacode examples/ru/05-функции/рекурсия.dc
    ```
 
 5. **Изучите циклы**:
    ```bash
-   cargo run examples/ru/07-циклы/циклы_while.dc
-   cargo run examples/ru/07-циклы/циклы_for.dc
+   datacode examples/ru/07-циклы/циклы_while.dc
+   datacode examples/ru/07-циклы/циклы_for.dc
    ```
 
 6. **Продвинутые техники**:
    ```bash
-   cargo run examples/ru/04-продвинутые/комплексный.dc
-   cargo run examples/ru/04-продвинутые/обработка_ошибок.dc
+   datacode examples/ru/04-продвинутые/комплексный.dc
+   datacode examples/ru/04-продвинутые/обработка_ошибок.dc
    ```
 
 7. **Создание моделей данных**:
    ```bash
-   cargo run examples/ru/09-создание\ модели\ данных/05-объединения_таблиц.dc
+   datacode examples/ru/09-создание\ модели\ данных/05-объединения_таблиц.dc
    ```
 
 8. **Графики и визуализация**:
    ```bash
-   cargo run examples/ru/10-графики/01-загрузка-изображения.dc
-   cargo run examples/ru/10-графики/07-столбчатая-диаграмма.dc
-   cargo run examples/ru/10-графики/09-линейный-график.dc
-   cargo run examples/ru/10-графики/10-круговая-диаграмма.dc
-   cargo run examples/ru/10-графики/08-тепловая-карта.dc
+   datacode examples/ru/10-графики/01-загрузка-изображения.dc
+   datacode examples/ru/10-графики/07-столбчатая-диаграмма.dc
+   datacode examples/ru/10-графики/09-линейный-график.dc
+   datacode examples/ru/10-графики/10-круговая-диаграмма.dc
+   datacode examples/ru/10-графики/08-тепловая-карта.dc
    ```
 
 9. **Пример MNIST MLP**:
    ```bash
-   cargo run examples/ru/11-mnist-mlp/mnist_mlp.dc
+   datacode examples/ru/11-mnist-mlp/mnist_mlp.dc
    ```
 
-10. **Полная демонстрация**:
+10. **Модуль settings_env**:
    ```bash
-   cargo run examples/ru/06-демонстрации/демонстрация.dc
+   datacode examples/ru/12-settings_env/01-базовое_использование.dc
+   datacode examples/ru/12-settings_env/05-класс_config.dc
+   ```
+
+11. **Модуль UUID**:
+   ```bash
+   datacode examples/ru/13-uuid/01-базовое_использование.dc
+   datacode examples/ru/13-uuid/05-практический_пример.dc
+   ```
+
+12. **Полная демонстрация**:
+   ```bash
+   datacode examples/ru/06-демонстрации/демонстрация.dc
    ```
 
 ## 📖 Документация
@@ -150,7 +179,7 @@
 - **Начинайте с простого**: Начните с раздела `01-основы`
 - **Экспериментируйте**: Изменяйте примеры и смотрите, что происходит
 - **Читайте комментарии**: Комментарии в примерах объясняют код
-- **Используйте REPL**: Запустите `cargo run` для интерактивного режима
+- **Используйте REPL**: Запустите `datacode` для интерактивного режима
 
 ## 🔗 Полезные ссылки
 

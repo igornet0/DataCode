@@ -1,0 +1,30 @@
+# Deterministic UUIDs (v3 and v5)
+# Same namespace + name yield the same UUID
+
+import uuid
+
+# UUID v5 with DNS namespace and name — reproducible result
+let u5_dns = uuid.v5(uuid.DNS, "example.com")
+print("uuid.v5(DNS, \"example.com\"): " + uuid.to_string(u5_dns))
+
+# Calling again yields the same UUID
+let u5_dns_again = uuid.v5(uuid.DNS, "example.com")
+print("Repeat v5(DNS, \"example.com\"): " + uuid.to_string(u5_dns_again))
+print("Same: " + (uuid.to_string(u5_dns) == uuid.to_string(u5_dns_again)))
+
+# Different name — different UUID
+let u5_other = uuid.v5(uuid.DNS, "other.org")
+print("uuid.v5(DNS, \"other.org\"): " + uuid.to_string(u5_other))
+
+# UUID v3 with URL namespace
+let u3_url = uuid.v3(uuid.URL, "https://example.com/page")
+print("uuid.v3(URL, \"https://example.com/page\"): " + uuid.to_string(u3_url))
+
+# OID namespace
+let u5_oid = uuid.v5(uuid.OID, "1.2.3.4.5")
+print("uuid.v5(OID, \"1.2.3.4.5\"): " + uuid.to_string(u5_oid))
+
+# Namespace constants are UUIDs too
+print("uuid.DNS (string): " + uuid.to_string(uuid.DNS))
+print("uuid.URL (string): " + uuid.to_string(uuid.URL))
+print("uuid.OID (string): " + uuid.to_string(uuid.OID))

@@ -4,6 +4,7 @@
 pub enum ErrorType {
     // RuntimeError и его подтипы
     RuntimeError,
+    ProtectError,
     ValueError,
     TypeError,
     IndexError,
@@ -31,6 +32,7 @@ impl ErrorType {
     pub fn name(&self) -> &'static str {
         match self {
             ErrorType::RuntimeError => "RuntimeError",
+            ErrorType::ProtectError => "ProtectError",
             ErrorType::ValueError => "ValueError",
             ErrorType::TypeError => "TypeError",
             ErrorType::IndexError => "IndexError",
@@ -72,7 +74,9 @@ impl ErrorType {
             (ErrorType::StateError, ErrorType::RuntimeError) => true,
             // OverflowError является RuntimeError
             (ErrorType::OverflowError, ErrorType::RuntimeError) => true,
-            
+            // ProtectError является RuntimeError
+            (ErrorType::ProtectError, ErrorType::RuntimeError) => true,
+
             // FileNotFoundError является IOError
             (ErrorType::FileNotFoundError, ErrorType::IOError) => true,
             // PermissionError является IOError
@@ -102,6 +106,7 @@ impl ErrorType {
     pub fn from_name(name: &str) -> Option<Self> {
         match name {
             "RuntimeError" => Some(ErrorType::RuntimeError),
+            "ProtectError" => Some(ErrorType::ProtectError),
             "ValueError" => Some(ErrorType::ValueError),
             "TypeError" => Some(ErrorType::TypeError),
             "IndexError" => Some(ErrorType::IndexError),

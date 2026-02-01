@@ -1,0 +1,60 @@
+# Working with classes in DataCode
+# Demonstrating class declaration, constructors, fields and methods
+
+# ============================================================
+# Example 1: Simple class with fields and constructor
+# ============================================================
+cls Point {
+    public:
+        x: int
+        y: int
+    new Point(x, y) {
+        this.x = x
+        this.y = y
+    }
+}
+
+# Create instance and access fields
+let p = Point(10, 20)
+print("Point: x=" + p.x + ", y=" + p.y)
+
+# ============================================================
+# Example 2: Class with methods and private fields
+# ============================================================
+cls Counter {
+    private:
+        n: int = 0
+    public:
+        name: str
+    new Counter(name) {
+        this.name = name
+    }
+    fn inc() {
+        this.n = this.n + 1
+    }
+    fn get() {
+        return this.n
+    }
+}
+
+let c = Counter("Counter")
+c.inc()
+c.inc()
+print("Counter '" + c.name + "' = " + c.get())
+
+# ============================================================
+# Example 3: Class with method that takes arguments
+# ============================================================
+cls Calculator {
+    public:
+        base: int
+    new Calculator(base) {
+        this.base = base
+    }
+    fn add(n) {
+        return this.base + n
+    }
+}
+
+let calc = Calculator(100)
+print("100 + 25 = " + calc.add(25))

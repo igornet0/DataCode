@@ -404,7 +404,8 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         // Check if first argument is an object with title key (named arguments)
         let title = if !args.is_empty() {
             match &args[0] {
-                Value::Object(map) => {
+                Value::Object(map_rc) => {
+                    let map = map_rc.borrow();
                     if let Some(Value::String(s)) = map.get("title") {
                         Some(s.clone())
                     } else {
@@ -502,7 +503,8 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         // Check if first argument is an object with title key (named arguments)
         let title = if !args.is_empty() {
             match &args[0] {
-                Value::Object(map) => {
+                Value::Object(map_rc) => {
+                    let map = map_rc.borrow();
                     if let Some(Value::String(s)) = map.get("title") {
                         Some(s.clone())
                     } else {
@@ -598,7 +600,8 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         // Check if first argument is an object with title key (named arguments)
         let title = if !args.is_empty() {
             match &args[0] {
-                Value::Object(map) => {
+                Value::Object(map_rc) => {
+                    let map = map_rc.borrow();
                     if let Some(Value::String(s)) = map.get("title") {
                         Some(s.clone())
                     } else {
@@ -694,7 +697,8 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         // Check if first argument is an object with title key (named arguments)
         let title = if !args.is_empty() {
             match &args[0] {
-                Value::Object(map) => {
+                Value::Object(map_rc) => {
+                    let map = map_rc.borrow();
                     if let Some(Value::String(s)) = map.get("title") {
                         Some(s.clone())
                     } else {
@@ -1031,7 +1035,8 @@ pub fn native_plot_subplots(args: &[Value]) -> Value {
     // Parse figsize if provided (as named argument or tuple)
     let figsize = if args.len() == 3 {
         match &args[2] {
-            Value::Object(map) => {
+            Value::Object(map_rc) => {
+                let map = map_rc.borrow();
                 // Named arguments: figsize=(10, 10) becomes an object
                 if let Some(Value::Array(arr)) = map.get("figsize") {
                     let arr_ref = arr.borrow();
@@ -1156,7 +1161,8 @@ pub fn native_axis_imshow(args: &[Value]) -> Value {
                 // This is likely cmap, not axis('off') or axis('on')
                 Some(s.clone())
             }
-            Value::Object(map) => {
+            Value::Object(map_rc) => {
+                let map = map_rc.borrow();
                 // Named arguments: cmap='gray' might be passed as object
                 if let Some(Value::String(s)) = map.get("cmap") {
                     Some(s.clone())
@@ -1577,7 +1583,8 @@ pub fn native_plot_line(args: &[Value]) -> Value {
     // They can be in separate Object arguments or combined in one Object
     // Also check all arguments (not just skip(2)) in case named args come before positional
     for arg in args.iter() {
-        if let Value::Object(map) = arg {
+        if let Value::Object(map_rc) = arg {
+            let map = map_rc.borrow();
             // Extract all named parameters from this Object
             if let Some(Value::Bool(b)) = map.get("marker") {
                 show_points = *b;
@@ -1624,7 +1631,8 @@ pub fn native_plot_line(args: &[Value]) -> Value {
     // Debug: print color information
     for (_i, arg) in args.iter().enumerate() {
         match arg {
-            Value::Object(map) => {
+            Value::Object(map_rc) => {
+                let map = map_rc.borrow();
                 if let Some(Value::String(_s)) = map.get("color") {
                     // Color found in object
                 }
@@ -1708,7 +1716,8 @@ pub fn native_plot_bar(args: &[Value]) -> Value {
 
     // Extract named parameters from all Object arguments
     for arg in args.iter() {
-        if let Value::Object(map) = arg {
+        if let Value::Object(map_rc) = arg {
+            let map = map_rc.borrow();
             if let Some(Value::String(s)) = map.get("color") {
                 color = parse_color(s);
             }
@@ -1806,7 +1815,8 @@ pub fn native_plot_pie(args: &[Value]) -> Value {
 
     // Extract named parameters from all Object arguments
     for arg in args.iter() {
-        if let Value::Object(map) = arg {
+        if let Value::Object(map_rc) = arg {
+            let map = map_rc.borrow();
             if let Some(Value::String(s)) = map.get("color") {
                 color = parse_color(s);
             }
@@ -1921,7 +1931,8 @@ pub fn native_plot_heatmap(args: &[Value]) -> Value {
 
     // Extract named parameters from all Object arguments
     for arg in args.iter() {
-        if let Value::Object(map) = arg {
+        if let Value::Object(map_rc) = arg {
+            let map = map_rc.borrow();
             if let Some(Value::Number(n)) = map.get("min") {
                 min_val = Some(*n);
             }

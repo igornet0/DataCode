@@ -1,0 +1,18 @@
+# Types and value coercion from .env
+# load_env coerces strings to bool, number, or string
+
+from settings_env import load_env
+
+let env = load_env("with_types.env")
+if env != null {
+    print("bool_true: " + env["bool_true"])
+    print("bool_false: " + env["bool_false"])
+    print("int_num: " + env["int_num"])
+    print("float_num: " + env["float_num"])
+    print("string_val: " + env["string_val"])
+    print("quoted: " + env["quoted"])
+
+    # Type check after coercion
+    print("bool_true == true: " + str(env["bool_true"] == true))
+    print("int_num + float_num: " + str(env["int_num"] + env["float_num"]))
+}

@@ -42,9 +42,9 @@ if model_path.exists {
     print("Модель успешно создана!")
 }
 
-# model.device("metal")
+model.device("metal")
 # model.device("gpu")
-model.device("cpu")
+# model.device("cpu")
 print("Устройство модели: ", model.get_device())
 
 #  Получение обучающих данных
@@ -65,7 +65,7 @@ print("Форма y_val:", ml.shape(y_val))
 epochs = 5
 
 batch_size = 120
-learning_rate = 0.0001
+learning_rate = 0.001
 
 print("Начало обучения...")
 print("Эпохи: ", epochs)

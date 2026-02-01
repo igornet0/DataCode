@@ -15,7 +15,7 @@ This section contains examples of using `while` and `for` loops.
 
 **Run**:
 ```bash
-cargo run examples/en/07-loops/while_loops.dc
+datacode examples/en/07-loops/while_loops.dc
 ```
 
 ### 2. `for_loops.dc` - For Loops
@@ -28,7 +28,7 @@ cargo run examples/en/07-loops/while_loops.dc
 
 **Run**:
 ```bash
-cargo run examples/en/07-loops/for_loops.dc
+datacode examples/en/07-loops/for_loops.dc
 ```
 
 ### 3. `nested_loops.dc` - Nested Loops
@@ -42,7 +42,7 @@ cargo run examples/en/07-loops/for_loops.dc
 
 **Run**:
 ```bash
-cargo run examples/en/07-loops/nested_loops.dc
+datacode examples/en/07-loops/nested_loops.dc
 ```
 
 ## 🎯 Concepts Covered

@@ -1142,5 +1142,30 @@ mod tests {
             Err(e) => panic!("Error: {:?}", e),
         }
     }
+
+    /// Регрессионный тест: uuid-скрипт с модульными вызовами (uuid.to_string(u) и т.д.) не должен
+    /// падать с GetArrayElement из‑за недетерминированного порядка обновления индексов глобалов.
+    /// Запускаем суть test_uuid.dc многократно и проверяем отсутствие runtime-ошибки.
+    #[test]
+    fn test_uuid_script_stability_repeated_runs() {
+        let source = r#"
+import uuid
+let u = uuid.v7()
+print(typeof(u))
+print(uuid.to_string(u))
+print(uuid.version(u))
+let u4 = uuid.v4()
+print(uuid.to_string(u4))
+let parsed = uuid.parse("550e8400-e29b-41d4-a716-446655440000")
+print(uuid.to_string(parsed))
+print(uuid.DNS)
+print(uuid.to_string(uuid.v5(uuid.DNS, "example.com")))
+"#;
+        const N: usize = 25;
+        for i in 0..N {
+            let result = run_and_get_result(source);
+            assert!(result.is_ok(), "run {} failed: {:?}", i + 1, result.err());
+        }
+    }
 }
 

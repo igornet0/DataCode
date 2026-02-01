@@ -1,0 +1,18 @@
+# Типы и приведение значений из .env
+# load_env приводит строки к bool, number или string
+
+from settings_env import load_env
+
+let env = load_env("with_types.env")
+if env != null {
+    print("bool_true: " + env["bool_true"])
+    print("bool_false: " + env["bool_false"])
+    print("int_num: " + env["int_num"])
+    print("float_num: " + env["float_num"])
+    print("string_val: " + env["string_val"])
+    print("quoted: " + env["quoted"])
+
+    # Проверка типов после приведения
+    print("bool_true == true: " + str(env["bool_true"] == true))
+    print("int_num + float_num: " + str(env["int_num"] + env["float_num"]))
+}

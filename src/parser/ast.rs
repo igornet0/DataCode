@@ -54,6 +54,41 @@ pub enum ImportStmt {
     },
 }
 
+/// Поле класса с типом и значением по умолчанию
+#[derive(Debug, Clone)]
+pub struct ClassField {
+    pub name: String,
+    pub type_annotation: Option<Vec<String>>, // Типы поля: ["int"], ["str", "int"] для union типов
+    pub default_value: Option<Expr>, // None для полей без значения по умолчанию
+}
+
+/// Переменная уровня класса (присваивание без аннотации типа): name = expression
+#[derive(Debug, Clone)]
+pub struct ClassVariable {
+    pub name: String,
+    pub value: Expr,
+}
+
+/// Конструктор класса
+#[derive(Debug, Clone)]
+pub struct Constructor {
+    pub params: Vec<Param>,
+    pub body: Vec<Stmt>,
+    /// Аргументы вызова родителя в синтаксисе `: this(...)`
+    pub delegate_args: Option<Vec<Expr>>,
+    pub line: usize,
+}
+
+/// Метод класса
+#[derive(Debug, Clone)]
+pub struct Method {
+    pub name: String,
+    pub params: Vec<Param>,
+    pub return_type: Option<Vec<String>>, // Тип возвращаемого значения
+    pub body: Vec<Stmt>,
+    pub line: usize,
+}
+
 #[derive(Debug, Clone)]
 pub enum Expr {
     Literal {
@@ -124,6 +159,27 @@ pub enum Expr {
         args: Vec<Arg>,
         line: usize,
     },
+    This {
+        line: usize,
+    },
+    /// super keyword - base for SuperCall and SuperMethodCall
+    Super {
+        line: usize,
+    },
+    /// super(args) - call to parent constructor
+    SuperCall {
+        args: Vec<Arg>,
+        line: usize,
+    },
+    /// super.method(args) - call to parent method
+    SuperMethodCall {
+        method: String,
+        args: Vec<Arg>,
+        line: usize,
+    },
+    Ellipsis {
+        line: usize,
+    },
 }
 
 impl Expr {
@@ -143,6 +199,11 @@ impl Expr {
             Expr::ArrayIndex { line, .. } => *line,
             Expr::Property { line, .. } => *line,
             Expr::MethodCall { line, .. } => *line,
+            Expr::This { line, .. } => *line,
+            Expr::Super { line, .. } => *line,
+            Expr::SuperCall { line, .. } => *line,
+            Expr::SuperMethodCall { line, .. } => *line,
+            Expr::Ellipsis { line, .. } => *line,
         }
     }
 }
@@ -209,6 +270,19 @@ pub enum Stmt {
         import_stmt: ImportStmt,
         line: usize,
     },
+    Class {
+        name: String,
+        superclass: Option<String>,
+        private_fields: Vec<ClassField>,
+        protected_fields: Vec<ClassField>,
+        public_fields: Vec<ClassField>,
+        private_variables: Vec<ClassVariable>,
+        protected_variables: Vec<ClassVariable>,
+        public_variables: Vec<ClassVariable>,
+        constructors: Vec<Constructor>,
+        methods: Vec<Method>,
+        line: usize,
+    },
 }
 
 impl Stmt {
@@ -226,6 +300,7 @@ impl Stmt {
             Stmt::Try { line, .. } => *line,
             Stmt::Throw { line, .. } => *line,
             Stmt::Import { line, .. } => *line,
+            Stmt::Class { line, .. } => *line,
         }
     }
 }

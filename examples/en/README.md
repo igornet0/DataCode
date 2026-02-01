@@ -13,6 +13,8 @@ Basic examples to start learning:
 - `arithmetic.dc` - Arithmetic operations
 - `strings.dc` - Working with strings
 - `global_local.dc` - Global and local variables
+- `classes.dc` - Working with classes (constructors, fields, methods)
+- `inheritance.dc` - Class inheritance (super, protected)
 
 ### 🔧 [02-syntax](02-syntax/) - Syntax Constructs
 Language syntax examples:
@@ -77,68 +79,91 @@ Training a Multi-Layer Perceptron (MLP) on the MNIST dataset:
 - `mnist_model_demo.dc` - Model demonstration
 - `mnist_mlp_sh.dc` - Shell script example
 
+### ⚙️ [12-settings-env](12-settings-env/) - settings_env Module
+Working with the `settings_env` module: load .env files, type coercion, prefix filtering, Field descriptors, Settings subclasses:
+- `01-basic-usage.dc` - load_env, Settings, reading keys
+- `02-types-and-coercion.dc` - bool, number, string coercion
+- `03-prefix-and-config.dc` - env_prefix and config
+- `04-field.dc` - Field descriptors (default, required, validation)
+- `05-settings-class.dc` - Settings subclass with nested config
+- `06-practical-example.dc` - Combined example
+
+### 🆔 [13-uuid](13-uuid/) - UUID Module
+Working with the `uuid` module: v4/v7 generation, parse/to_string, bytes, deterministic (v3/v5), metadata:
+- `01-basic-usage.dc` - v4, v7, parse, to_string
+- `02-deterministic-uuid.dc` - v3, v5 with namespace
+- `03-bytes.dc` - to_bytes, from_bytes
+- `04-metadata.dc` - version, variant, timestamp
+- `05-practical-example.dc` - Record ids and URLs
+
 ## 🚀 Quick Start
 
 ### Recommended Learning Order
 
 1. **Start with basics**:
    ```bash
-   cargo run examples/en/01-basics/hello.dc
-   cargo run examples/en/01-basics/variables.dc
+   datacode examples/en/01-basics/hello.dc
+   datacode examples/en/01-basics/variables.dc
    ```
 
 2. **Learn syntax**:
    ```bash
-   cargo run examples/en/02-syntax/conditionals.dc
-   cargo run examples/en/02-syntax/expressions.dc
+   datacode examples/en/02-syntax/conditionals.dc
+   datacode examples/en/02-syntax/expressions.dc
    ```
 
 3. **Understand data types**:
    ```bash
-   cargo run examples/en/03-data-types/type_conversion_functions.dc
-   cargo run examples/en/03-data-types/objects.dc
+   datacode examples/en/03-data-types/type_conversion_functions.dc
+   datacode examples/en/03-data-types/objects.dc
    ```
 
 4. **Master functions**:
    ```bash
-   cargo run examples/en/05-functions/simple_functions.dc
-   cargo run examples/en/05-functions/recursion.dc
+   datacode examples/en/05-functions/simple_functions.dc
+   datacode examples/en/05-functions/recursion.dc
    ```
 
 5. **Study loops**:
    ```bash
-   cargo run examples/en/07-loops/while_loops.dc
-   cargo run examples/en/07-loops/for_loops.dc
+   datacode examples/en/07-loops/while_loops.dc
+   datacode examples/en/07-loops/for_loops.dc
    ```
 
 6. **Advanced techniques**:
    ```bash
-   cargo run examples/en/04-advanced/complex.dc
-   cargo run examples/en/04-advanced/error_handling.dc
+   datacode examples/en/04-advanced/complex.dc
+   datacode examples/en/04-advanced/error_handling.dc
    ```
 
 7. **Data model creation**:
    ```bash
-   cargo run examples/en/09-data-model-creation/05-table-joins.dc
+   datacode examples/en/09-data-model-creation/05-table-joins.dc
    ```
 
 8. **Plots and visualization**:
    ```bash
-   cargo run examples/en/10-plot/01-load-image.dc
-   cargo run examples/en/10-plot/07-bar-chart.dc
-   cargo run examples/en/10-plot/09-line-chart.dc
-   cargo run examples/en/10-plot/10-pie-chart.dc
-   cargo run examples/en/10-plot/08-heatmap.dc
+   datacode examples/en/10-plot/01-load-image.dc
+   datacode examples/en/10-plot/07-bar-chart.dc
+   datacode examples/en/10-plot/09-line-chart.dc
+   datacode examples/en/10-plot/10-pie-chart.dc
+   datacode examples/en/10-plot/08-heatmap.dc
    ```
 
 9. **MNIST MLP example**:
    ```bash
-   cargo run examples/en/11-mnist-mlp/mnist_mlp.dc
+   datacode examples/en/11-mnist-mlp/mnist_mlp.dc
    ```
 
-10. **Complete demonstration**:
+10. **settings_env and UUID**:
    ```bash
-   cargo run examples/en/06-demonstrations/showcase.dc
+   datacode examples/en/12-settings-env/01-basic-usage.dc
+   datacode examples/en/13-uuid/01-basic-usage.dc
+   ```
+
+11. **Complete demonstration**:
+   ```bash
+   datacode examples/en/06-demonstrations/showcase.dc
    ```
 
 ## 📖 Documentation

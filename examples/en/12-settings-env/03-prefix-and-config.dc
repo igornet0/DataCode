@@ -1,0 +1,25 @@
+# Prefix and config: loading only keys with a given prefix
+# Settings.config(env_prefix=...) and load_env(path, [], cfg)
+
+from settings_env import load_env, Settings
+
+# Config: only keys with prefix APP__
+let cfg = Settings.config(env_prefix="APP__")
+let env = load_env("with_prefix.env", [], cfg)
+
+if env != null {
+    print("Keys after filter by prefix APP__:")
+    print("  foo: " + env["foo"])
+    print("  bar: " + env["bar"])
+    print("  baz: " + env["baz"])
+    print("Number of keys (APP__* only): " + str(len(env)))
+}
+
+# Config with prefix DB__ — only db.host, db.port
+let cfg_db = Settings.config(env_prefix="DB__")
+let env_db = load_env("with_prefix.env", [], cfg_db)
+if env_db != null {
+    print("Keys with prefix DB__:")
+    print("  host: " + env_db["host"])
+    print("  port: " + env_db["port"])
+}

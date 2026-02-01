@@ -20,7 +20,7 @@ This section contains comprehensive demonstrations of all language features.
 
 **Run**:
 ```bash
-cargo run examples/en/06-demonstrations/showcase.dc
+datacode examples/en/06-demonstrations/showcase.dc
 ```
 
 ## 🎯 What You'll Learn

@@ -15,7 +15,7 @@ This section contains advanced examples of language usage.
 
 **Run**:
 ```bash
-cargo run examples/en/04-advanced/complex.dc
+datacode examples/en/04-advanced/complex.dc
 ```
 
 ### 2. `scope_demo.dc` - Variable Scope
@@ -29,7 +29,7 @@ cargo run examples/en/04-advanced/complex.dc
 
 **Run**:
 ```bash
-cargo run examples/en/04-advanced/scope_demo.dc
+datacode examples/en/04-advanced/scope_demo.dc
 ```
 
 ### 3. `error_handling.dc` - Error Handling
@@ -48,7 +48,7 @@ cargo run examples/en/04-advanced/scope_demo.dc
 
 **Run**:
 ```bash
-cargo run examples/en/04-advanced/error_handling.dc
+datacode examples/en/04-advanced/error_handling.dc
 ```
 
 ## 🎯 Concepts Covered

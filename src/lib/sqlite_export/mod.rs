@@ -919,6 +919,7 @@ fn get_value_type_name(value: &Value) -> &str {
         Value::Table(_) => "Table",
         Value::Object(_) => "Object",
         Value::Path(_) => "Path",
+        Value::Uuid(_, _) => "UUID",
         Value::ColumnReference { .. } => "ColumnReference",
         Value::Function(_) => "Function",
         Value::NativeFunction(_) => "NativeFunction",
@@ -941,6 +942,7 @@ fn get_value_type_name(value: &Value) -> &str {
         Value::Image(_) => "Image",
         Value::Figure(_) => "Figure",
         Value::Axis(_) => "Axis",
+        Value::Ellipsis => "Ellipsis",
     }
 }
 

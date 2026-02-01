@@ -81,6 +81,16 @@
 
 **Примеры:** [`examples/ru/10-графики/`](../../examples/ru/10-графики/), [`examples/en/10-plot/`](../../examples/en/10-plot/)
 
+#### [Модуль settings_env](./ru/settings_env/README.md)
+Загрузка переменных окружения из .env, приведение типов, префиксы, конфигурация, классы-наследники Settings и дескрипторы Field.
+
+**Примеры:** [`examples/ru/12-settings_env/`](../../examples/ru/12-settings_env/), [`examples/en/12-settings-env/`](../../examples/en/12-settings-env/)
+
+#### [Модуль uuid](./ru/uuid/README.md)
+Генерация уникальных идентификаторов (UUID): v4, v7, детерминированные v3/v5, разбор строк, работа с байтами, метаданные.
+
+**Примеры:** [`examples/ru/13-uuid/`](../../examples/ru/13-uuid/), [`examples/en/13-uuid/`](../../examples/en/13-uuid/)
+
 ---
 
 ## 🎯 Примеры кода
@@ -99,6 +109,8 @@
 - **[08-websocket](../../examples/ru/08-websocket/)** - Работа с WebSocket
 - **[09-создание модели данных](../../examples/ru/09-создание%20модели%20данных/)** - Создание моделей данных
 - **[10-графики](../../examples/ru/10-графики/)** - Графики и визуализация
+- **[12-settings_env](../../examples/ru/12-settings_env/)** - Модуль settings_env
+- **[13-uuid](../../examples/ru/13-uuid/)** - Модуль uuid
 
 **Полная документация по примерам:** [`examples/ru/README.md`](../../examples/ru/README.md)
 
@@ -128,6 +140,10 @@ docs/
 │   ├── ml_module.md             # ML модуль (машинное обучение)
 │   ├── plot/                    # Документация модуля plot
 │   │   └── README.md            # Модуль plot - графики и визуализация
+│   ├── settings_env/            # Документация модуля settings_env
+│   │   └── README.md            # Модуль settings_env - переменные окружения
+│   ├── uuid/                    # Документация модуля uuid
+│   │   └── README.md            # Модуль uuid - генерация UUID
 │   └── ml/                      # Документация ML модуля
 │       ├── training_flow.md     # Схема обучения нейронной сети
 │       └── model_save_format.md  # Формат сохранения моделей
@@ -142,6 +158,10 @@ docs/
     ├── ml_module.md             # ML module (machine learning)
     ├── plot/                    # Plot module documentation
     │   └── README.md            # Plot module - charts and visualization
+    ├── settings_env/            # settings_env module documentation
+    │   └── README.md            # settings_env module - environment variables
+    ├── uuid/                    # uuid module documentation
+    │   └── README.md            # uuid module - UUID generation
     └── ml/                      # ML module documentation
         ├── training_flow.md     # Neural network training flow
         └── model_save_format.md  # Model save format

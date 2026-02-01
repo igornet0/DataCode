@@ -62,6 +62,7 @@ impl VariableResolver {
         if let Some(local_index) = ctx.scope.resolve_local(name) {
             ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
         } else if let Some(&global_index) = ctx.scope.globals.get(name) {
+            ctx.chunk.global_names.insert(global_index, name.to_string());
             ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), line);
         } else {
             // Переменная не найдена - создаем новый глобальный индекс

@@ -1,0 +1,26 @@
+# Работа с байтовым представлением UUID
+# to_bytes — массив из 16 чисел 0–255, from_bytes — сборка UUID
+
+import uuid
+
+let u = uuid.v4()
+print("Исходный UUID: " + uuid.to_string(u))
+
+# UUID → массив из 16 чисел (0–255)
+let bytes = uuid.to_bytes(u)
+print("Длина массива байтов: " + len(bytes))
+
+# Первые и последние байты (для примера)
+print("Первый байт: " + bytes[0])
+print("Последний байт: " + bytes[15])
+
+# Массив байтов → UUID
+let restored = uuid.from_bytes(bytes)
+print("Восстановленный UUID: " + uuid.to_string(restored))
+print("Совпадает с исходным: " + (uuid.to_string(u) == uuid.to_string(restored)))
+
+# Круговая проверка: UUID → bytes → UUID → to_string
+let u2 = uuid.v7()
+let bytes2 = uuid.to_bytes(u2)
+let u2_restored = uuid.from_bytes(bytes2)
+print("Круговая проверка v7: " + (uuid.to_string(u2) == uuid.to_string(u2_restored)))

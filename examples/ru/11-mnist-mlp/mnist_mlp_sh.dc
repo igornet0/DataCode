@@ -20,7 +20,7 @@ print("Размер тестового набора: ", ml.dataset_features(data
 #  Примечание: Softmax встроен в операцию CrossEntropy loss, поэтому не нужен в Sequential
 
 #  Создание нейронной сети из Sequential
-model_path = path("model_mnist.nn")
+model_path = path("cpu_model_mnist.nn")
 
 if model_path.exists {
     print("Загрузка модели из - ", model_path)
@@ -42,9 +42,9 @@ if model_path.exists {
     print("Модель успешно создана!")
 }
 
-# model.device("metal")
+model.device("metal")
 # model.device("gpu")
-model.device("cpu")
+# model.device("cpu")
 print("Устройство модели: ", model.get_device())
 
 #  Получение обучающих данных
@@ -68,7 +68,7 @@ print("Форма y_val:", ml.shape(y_val))
 epochs = 100
 
 batch_size = 120
-learning_rate = 0.00001
+learning_rate = 0.001
 
 print("Начало обучения...")
 print("Эпохи: ", epochs)
@@ -80,7 +80,7 @@ print("Коэффициент обучения: ", learning_rate)
 #                            epochs, batch_size, learning_rate, 
 #                            "cross_entropy", x_val, y_val_onehot)
 
-model.layers[2].freeze()
+# model.layers[2].freeze()
 
 loss_history = model.train_sh(x_train, y_train, 
                             epochs, batch_size, learning_rate,

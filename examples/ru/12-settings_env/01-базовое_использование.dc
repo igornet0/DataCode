@@ -1,0 +1,27 @@
+# Базовое использование модуля settings_env
+# Импорт, load_env(path), Settings(path), чтение ключей
+
+from settings_env import load_env, Settings
+
+# Загрузка .env файла (путь относительно директории скрипта)
+let env = load_env("simple.env")
+if env != null {
+    print("app_name: " + env["app_name"])
+    print("env: " + env["env"])
+    print("debug: " + str(env["debug"]))
+    print("Количество ключей: " + str(len(env)))
+} else {
+    print("Файл не найден или ошибка загрузки")
+}
+
+# Settings(path) — то же, что load_env(path)
+let env2 = Settings("simple.env")
+if env2 != null {
+    print("Settings(\"simple.env\") — app_name: " + env2["app_name"])
+}
+
+# Отсутствующий файл — load_env возвращает null (без падения)
+let missing = load_env("nonexistent.env")
+if missing == null {
+    print("Отсутствующий файл: load_env вернул null")
+}

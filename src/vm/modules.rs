@@ -2,10 +2,20 @@
 
 use crate::common::{error::LangError, value::Value};
 use std::collections::HashMap;
+use std::rc::Rc;
+use std::cell::RefCell;
+
+/// Built-in module names (for error messages and is_known_module)
+const BUILTIN_MODULE_NAMES: &[&str] = &["ml", "plot", "settings_env", "uuid"];
 
 /// Check if a name is a known module name
 pub fn is_known_module(name: &str) -> bool {
-    matches!(name, "ml" | "plot")
+    BUILTIN_MODULE_NAMES.contains(&name)
+}
+
+/// Comma-separated list of built-in module names for error messages
+pub fn builtin_modules_list() -> String {
+    BUILTIN_MODULE_NAMES.join(", ")
 }
 
 /// Register a module by name
@@ -19,6 +29,8 @@ pub fn register_module(
     match module_name {
         "ml" => register_ml_module(natives, globals, global_names),
         "plot" => register_plot_module(natives, globals, global_names),
+        "settings_env" => register_settings_env_module(natives, globals, global_names),
+        "uuid" => register_uuid_module(natives, globals, global_names),
         _ => Err(LangError::runtime_error(
             format!("Unknown module: {}", module_name),
             0,
@@ -170,7 +182,7 @@ fn register_ml_module(
     layer_object.insert("relu".to_string(), Value::NativeFunction(ml_native_start + 44));
     layer_object.insert("softmax".to_string(), Value::NativeFunction(ml_native_start + 45));
     layer_object.insert("flatten".to_string(), Value::NativeFunction(ml_native_start + 46));
-    ml_object.insert("layer".to_string(), Value::Object(layer_object));
+    ml_object.insert("layer".to_string(), Value::Object(Rc::new(RefCell::new(layer_object))));
     // Neural network functions
     ml_object.insert("sequential".to_string(), Value::NativeFunction(ml_native_start + 48));
     ml_object.insert("sequential_add".to_string(), Value::NativeFunction(ml_native_start + 49));
@@ -205,22 +217,26 @@ fn register_ml_module(
             globals.resize(idx + 1, Value::Null);
         }
         idx
-    } else if let Some(idx) = globals.iter().position(|v| {
-        if let Value::Object(map) = v {
-            map.contains_key("tensor")
-        } else {
-            false
-        }
-    }) {
-        // ml object already exists at this index
-        idx
     } else {
-        // Create new global index
-        let idx = globals.len();
-        // Push a placeholder, will be set below
-        globals.push(Value::Null);
-        global_names.insert(idx, "ml".to_string());
-        idx
+        // Check if ml module already exists by checking for tensor key
+        let ml_idx_opt = globals.iter().position(|v| {
+            if let Value::Object(map_rc) = v {
+                map_rc.borrow().contains_key("tensor")
+            } else {
+                false
+            }
+        });
+        if let Some(idx) = ml_idx_opt {
+            // ml object already exists at this index
+            idx
+        } else {
+            // Create new global index
+            let idx = globals.len();
+            // Push a placeholder, will be set below
+            globals.push(Value::Null);
+            global_names.insert(idx, "ml".to_string());
+            idx
+        }
     };
     
     // Store ml object in globals (always store the original, not a clone)
@@ -236,11 +252,12 @@ fn register_ml_module(
         ));
     }
     // Store the module object
-    globals[ml_index] = Value::Object(ml_object);
+    globals[ml_index] = Value::Object(Rc::new(RefCell::new(ml_object)));
     
     // Verify it was stored correctly
     match &globals[ml_index] {
-        Value::Object(map) => {
+        Value::Object(map_rc) => {
+            let map = map_rc.borrow();
             if map.is_empty() {
                 return Err(LangError::runtime_error(
                     "ML module object stored but is empty".to_string(),
@@ -323,23 +340,128 @@ fn register_plot_module(
             globals.resize(idx + 1, Value::Null);
         }
         idx
-    } else if let Some(idx) = globals.iter().position(|v| {
-        if let Value::Object(map) = v {
-            map.contains_key("image")
-        } else {
-            false
-        }
-    }) {
-        idx
     } else {
-        let idx = globals.len();
-        globals.push(Value::Object(plot_object.clone()));
-        global_names.insert(idx, "plot".to_string());
-        idx
+        // Check if plot module already exists by checking for image key
+        let plot_idx_opt = globals.iter().position(|v| {
+            if let Value::Object(map_rc) = v {
+                map_rc.borrow().contains_key("image")
+            } else {
+                false
+            }
+        });
+        if let Some(idx) = plot_idx_opt {
+            idx
+        } else {
+            let idx = globals.len();
+            globals.push(Value::Object(Rc::new(RefCell::new(plot_object.clone()))));
+            global_names.insert(idx, "plot".to_string());
+            idx
+        }
     };
     
     // Store plot object in globals
-    globals[plot_index] = Value::Object(plot_object);
+    globals[plot_index] = Value::Object(Rc::new(RefCell::new(plot_object)));
+    
+    Ok(())
+}
+
+fn register_settings_env_module(
+    natives: &mut Vec<fn(&[Value]) -> Value>,
+    globals: &mut Vec<Value>,
+    global_names: &mut std::collections::HashMap<usize, String>,
+) -> Result<(), LangError> {
+    use crate::settings_env::natives;
+    
+    let settings_env_native_start = natives.len();
+    natives.push(natives::native_settings_env_load_env);
+    natives.push(natives::native_settings_env_settings);
+    natives.push(natives::native_settings_env_field);
+    natives.push(natives::native_settings_env_config);
+    
+    let mut settings_env_object = HashMap::new();
+    let load_env_fn = Value::NativeFunction(settings_env_native_start + 0);
+    let settings_call = Value::NativeFunction(settings_env_native_start + 1);
+    let config_fn = Value::NativeFunction(settings_env_native_start + 3);
+    let mut settings_object = HashMap::new();
+    settings_object.insert("__call__".to_string(), settings_call);
+    settings_object.insert("config".to_string(), config_fn);
+    let settings_value = Value::Object(Rc::new(RefCell::new(settings_object)));
+    settings_env_object.insert("load_env".to_string(), load_env_fn);
+    settings_env_object.insert("Settings".to_string(), settings_value.clone());
+    settings_env_object.insert("settings".to_string(), settings_value);
+    settings_env_object.insert("Field".to_string(), Value::NativeFunction(settings_env_native_start + 2));
+    
+    let settings_env_index = if let Some((&idx, _)) = global_names.iter().find(|(_, name)| name.as_str() == "settings_env") {
+        if idx >= globals.len() {
+            globals.resize(idx + 1, Value::Null);
+        }
+        idx
+    } else {
+        let idx = globals.len();
+        globals.push(Value::Null);
+        global_names.insert(idx, "settings_env".to_string());
+        idx
+    };
+    
+    globals[settings_env_index] = Value::Object(Rc::new(RefCell::new(settings_env_object)));
+    
+    Ok(())
+}
+
+fn register_uuid_module(
+    natives: &mut Vec<fn(&[Value]) -> Value>,
+    globals: &mut Vec<Value>,
+    global_names: &mut std::collections::HashMap<usize, String>,
+) -> Result<(), LangError> {
+    use crate::uuid::natives;
+    
+    let uuid_native_start = natives.len();
+    natives.push(natives::native_uuid_v4);
+    natives.push(natives::native_uuid_v7);
+    natives.push(natives::native_uuid_new);
+    natives.push(natives::native_uuid_random);
+    natives.push(natives::native_uuid_parse);
+    natives.push(natives::native_uuid_to_string);
+    natives.push(natives::native_uuid_to_bytes);
+    natives.push(natives::native_uuid_from_bytes);
+    natives.push(natives::native_uuid_version);
+    natives.push(natives::native_uuid_variant);
+    natives.push(natives::native_uuid_timestamp);
+    natives.push(natives::native_uuid_v3);
+    natives.push(natives::native_uuid_v5);
+    
+    let start = uuid_native_start;
+    let mut uuid_object = HashMap::new();
+    uuid_object.insert("v4".to_string(), Value::NativeFunction(start + 0));
+    uuid_object.insert("v7".to_string(), Value::NativeFunction(start + 1));
+    uuid_object.insert("new".to_string(), Value::NativeFunction(start + 2));
+    uuid_object.insert("random".to_string(), Value::NativeFunction(start + 3));
+    uuid_object.insert("parse".to_string(), Value::NativeFunction(start + 4));
+    uuid_object.insert("to_string".to_string(), Value::NativeFunction(start + 5));
+    uuid_object.insert("to_bytes".to_string(), Value::NativeFunction(start + 6));
+    uuid_object.insert("from_bytes".to_string(), Value::NativeFunction(start + 7));
+    uuid_object.insert("version".to_string(), Value::NativeFunction(start + 8));
+    uuid_object.insert("variant".to_string(), Value::NativeFunction(start + 9));
+    uuid_object.insert("timestamp".to_string(), Value::NativeFunction(start + 10));
+    uuid_object.insert("v3".to_string(), Value::NativeFunction(start + 11));
+    uuid_object.insert("v5".to_string(), Value::NativeFunction(start + 12));
+    uuid_object.insert("DNS".to_string(), natives::uuid_namespace_dns());
+    uuid_object.insert("URL".to_string(), natives::uuid_namespace_url());
+    uuid_object.insert("OID".to_string(), natives::uuid_namespace_oid());
+    
+    let uuid_index = if let Some((&idx, _)) = global_names.iter().find(|(_, name)| name.as_str() == "uuid") {
+        if idx >= globals.len() {
+            globals.resize(idx + 1, Value::Null);
+        }
+        idx
+    } else {
+        let idx = globals.len();
+        globals.push(Value::Null);
+        global_names.insert(idx, "uuid".to_string());
+        idx
+    };
+    
+    globals[uuid_index] = Value::Object(Rc::new(RefCell::new(uuid_object)));
     
     Ok(())
 }

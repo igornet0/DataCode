@@ -1,0 +1,31 @@
+# Практический пример: генерация id для записей
+# Использование uuid.v7() для уникальных идентификаторов записей
+
+import uuid
+
+# Несколько «записей» с уникальными id (v7 удобен для сортировки по времени)
+let id1 = uuid.v7()
+let id2 = uuid.v7()
+let id3 = uuid.v7()
+
+print("Сгенерированные id записей:")
+print("  запись 1:", id1)
+print("  запись 2:", id2)
+print("  запись 3:", id3)
+
+# Сохранение в массив (например, список id для базы)
+let ids = array(uuid.to_string(id1), uuid.to_string(id2), uuid.to_string(id3))
+print("Массив id (строки): " + ids)
+
+# Объект «запись» с полем id
+let record = {
+    "id": uuid.to_string(uuid.v7()),
+    "name": "Пример записи",
+    "created_at": uuid.timestamp(uuid.v7())
+}
+print("Запись с id: " + record["id"])
+print("Время создания (timestamp): " + record["created_at"])
+
+# Детерминированный id по имени (например, для сущности по URL)
+let entity_id = uuid.to_string(uuid.v5(uuid.URL, "https://api.example.com/users/42"))
+print("Детерминированный id для URL: " + entity_id)

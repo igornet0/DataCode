@@ -1,5 +1,6 @@
 // Компилятор AST → Bytecode
 
+use crate::debug_println;
 use crate::parser::ast::{Expr, Stmt, Arg, UnpackPattern, ImportStmt, ImportItem};
 use crate::bytecode::{Chunk, OpCode, Function, CapturedVar};
 use crate::common::error::LangError;
@@ -27,6 +28,14 @@ pub struct Compiler {
     exception_handlers: Vec<ExceptionHandler>, // Стек обработчиков исключений
     error_type_table: Vec<String>, // Таблица типов ошибок для текущей функции
     loop_contexts: Vec<LoopContext>, // Стек контекстов циклов для break/continue
+    /// Symbols from `from module import X`: name -> module. Uppercase names from file modules are compiled as constructor calls.
+    imported_symbols: std::collections::HashMap<String, String>,
+    /// Class name -> list of private field names (for inheritance: merge in subclass constructors).
+    class_private_fields: std::collections::HashMap<String, Vec<String>>,
+    /// Class name -> list of protected field names (for inheritance: merge in subclass constructors).
+    class_protected_fields: std::collections::HashMap<String, Vec<String>>,
+    /// Subclass name -> superclass name, set when implicit constructor was skipped (superclass has no matching constructor).
+    class_superclass: std::collections::HashMap<String, String>,
 }
 
 impl Compiler {
@@ -42,6 +51,10 @@ impl Compiler {
             exception_handlers: Vec::new(),
             error_type_table: Vec::new(),
             loop_contexts: Vec::new(),
+            imported_symbols: std::collections::HashMap::new(),
+            class_private_fields: std::collections::HashMap::new(),
+            class_protected_fields: std::collections::HashMap::new(),
+            class_superclass: std::collections::HashMap::new(),
         };
         compiler.register_natives();
         compiler
@@ -59,12 +72,145 @@ impl Compiler {
         // Первый проход: объявляем все функции (forward declaration), включая вложенные
         self.collect_all_functions(statements)?;
         
-        // Второй проход: компилируем все statements
+        // Второй проход: компилируем все statements (порядок детерминирован — AST/parse order, Vec).
         for (i, stmt) in statements.iter().enumerate() {
             let is_last = i == statements.len() - 1;
             self.compile_stmt_with_pop(stmt, !is_last)?;
         }
-        self.chunk.write_with_line(OpCode::Return, self.current_line);
+        
+        // Проверяем наличие функции __main__
+        if let Some(main_fn_index) = self.function_names.iter().position(|n| n == "__main__") {
+            // Найдена функция __main__, вызываем её вместо выполнения кода верхнего уровня
+            let main_function = &self.functions[main_fn_index];
+            let main_arity = main_function.arity;
+            
+            // Загружаем функцию __main__
+            if let Some(&global_index) = self.scope.globals.get("__main__") {
+                // Чтобы update_chunk_indices и VM могли сопоставить слот с __main__, записываем имя в главный chunk
+                self.chunk.global_names.insert(global_index, "__main__".to_string());
+                // Если __main__ принимает аргументы, передаем их из argv
+                if main_arity > 0 {
+                    // Регистрируем argv в scope для доступа (если его там еще нет)
+                    let argv_global_index = if let Some(&idx) = self.scope.globals.get("argv") {
+                        debug_println!("[DEBUG compiler] argv уже зарегистрирован в scope с индексом {}", idx);
+                        idx
+                    } else {
+                        // argv будет установлен в VM, создаем временный индекс
+                        let idx = self.scope.globals.len();
+                        self.scope.globals.insert("argv".to_string(), idx);
+                        self.chunk.global_names.insert(idx, "argv".to_string());
+                        debug_println!("[DEBUG compiler] Зарегистрирован argv в scope с индексом {} и в chunk.global_names", idx);
+                        idx
+                    };
+                    
+                    // Загружаем аргументы из argv для каждого параметра функции
+                    // Порядок важен: сначала загружаем все аргументы, потом функцию
+                    for i in 0..main_arity {
+                        // Проверяем границы массива: если i >= len(argv), используем значение по умолчанию
+                        // Загружаем argv для проверки длины
+                        self.chunk.write_with_line(OpCode::LoadGlobal(argv_global_index), self.current_line);
+                        self.chunk.write_with_line(OpCode::GetArrayLength, self.current_line);
+                        // Загружаем индекс i
+                        let index_const = self.chunk.add_constant(Value::Number(i as f64));
+                        self.chunk.write_with_line(OpCode::Constant(index_const), self.current_line);
+                        // Сравниваем: i < len(argv) -> если false, переходим к значению по умолчанию
+                        self.chunk.write_with_line(OpCode::Less, self.current_line);
+                        
+                        // Создаем метки для условного перехода
+                        let default_value_label = self.labels.create_label();
+                        let after_default_label = self.labels.create_label();
+                        
+                        // Если i >= len(argv), переходим к загрузке значения по умолчанию
+                        self.labels.emit_jump(&mut self.chunk, self.current_line, true, default_value_label)?;
+                        
+                        // Путь 1: argv[i] существует, загружаем его
+                        // Загружаем argv снова для получения элемента
+                        self.chunk.write_with_line(OpCode::LoadGlobal(argv_global_index), self.current_line);
+                        // Загружаем индекс i
+                        let index_const = self.chunk.add_constant(Value::Number(i as f64));
+                        self.chunk.write_with_line(OpCode::Constant(index_const), self.current_line);
+                        // Получаем argv[i]
+                        self.chunk.write_with_line(OpCode::GetArrayElement, self.current_line);
+                        // Переходим к преобразованию типа
+                        self.labels.emit_jump(&mut self.chunk, self.current_line, false, after_default_label)?;
+                        
+                        // Путь 2: argv[i] не существует, загружаем значение по умолчанию
+                        self.labels.mark_label(default_value_label, self.chunk.code.len());
+                        
+                        // Определяем значение по умолчанию: сначала проверяем default_values функции,
+                        // затем используем значения по умолчанию в зависимости от типа параметра
+                        let default_value = if let Some(Some(function_default)) = main_function.default_values.get(i) {
+                            // Используем значение по умолчанию из определения функции
+                            function_default.clone()
+                        } else if let Some(param_type) = main_function.param_types.get(i) {
+                            // Используем значение по умолчанию в зависимости от типа
+                            if let Some(type_names) = param_type {
+                                if type_names.iter().any(|t| t == "int" || t == "float" || t == "num" || t == "number") {
+                                    // Числовой тип - используем 0
+                                    Value::Number(0.0)
+                                } else if type_names.iter().any(|t| t == "str" || t == "string") {
+                                    // Строковый тип - используем пустую строку
+                                    Value::String(String::new())
+                                } else if type_names.iter().any(|t| t == "bool" || t == "boolean") {
+                                    // Булев тип - используем false
+                                    Value::Bool(false)
+                                } else {
+                                    // Другие типы - используем null
+                                    Value::Null
+                                }
+                            } else {
+                                // Тип не указан - используем null
+                                Value::Null
+                            }
+                        } else {
+                            // Тип параметра не указан - используем null
+                            Value::Null
+                        };
+                        
+                        // Загружаем значение по умолчанию на стек
+                        let default_const = self.chunk.add_constant(default_value);
+                        self.chunk.write_with_line(OpCode::Constant(default_const), self.current_line);
+                        
+                        // Помечаем метку после значения по умолчанию
+                        self.labels.mark_label(after_default_label, self.chunk.code.len());
+                        
+                        // Преобразуем значение в нужный тип, если необходимо
+                        // (для значения по умолчанию это обычно не нужно, но для argv[i] нужно)
+                        if let Some(param_type) = main_function.param_types.get(i) {
+                            if let Some(type_names) = param_type {
+                                if type_names.iter().any(|t| t == "int" || t == "float" || t == "num" || t == "number") {
+                                    // Вызываем функцию int() для преобразования строки в число
+                                    // Находим индекс нативной функции int
+                                    if let Some(&int_global_index) = self.scope.globals.get("int") {
+                                        // Загружаем функцию int
+                                        self.chunk.write_with_line(OpCode::LoadGlobal(int_global_index), self.current_line);
+                                        // Вызываем int() с одним аргументом (строка на стеке)
+                                        self.chunk.write_with_line(OpCode::Call(1), self.current_line);
+                                    }
+                                }
+                            }
+                        }
+                        // Значение argv[i] или значение по умолчанию (возможно преобразованное) теперь на стеке
+                    }
+                    
+                    // Теперь загружаем функцию на стек
+                    // На стеке: [argv[0], argv[1], ..., argv[n-1]]
+                    self.chunk.write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
+                    // Теперь на стеке: [argv[0], argv[1], ..., argv[n-1], function]
+                    // Вызываем функцию с аргументами из argv
+                    self.chunk.write_with_line(OpCode::Call(main_arity), self.current_line);
+                } else {
+                    // __main__ не принимает аргументы
+                    // Загружаем функцию на стек
+                    self.chunk.write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
+                    // Вызываем функцию
+                    self.chunk.write_with_line(OpCode::Call(0), self.current_line);
+                }
+            }
+        } else {
+            // Функция __main__ не найдена, выполняем код верхнего уровня как обычно
+            self.chunk.write_with_line(OpCode::Return, self.current_line);
+        }
         
         // Заканчиваем область видимости главной функции
         self.end_scope();
@@ -138,6 +284,9 @@ impl Compiler {
                         self.collect_all_functions(else_block)?;
                     }
                 }
+                Stmt::Class { .. } => {
+                    // Классы обрабатываются в compile_stmt
+                }
                 _ => {
                     // Другие statements не содержат вложенных statements
                 }
@@ -172,6 +321,13 @@ impl Compiler {
             exception_handlers: &mut self.exception_handlers,
             error_type_table: &mut self.error_type_table,
             loop_contexts: &mut self.loop_contexts,
+            imported_symbols: &mut self.imported_symbols,
+            class_private_fields: &mut self.class_private_fields,
+            class_protected_fields: &mut self.class_protected_fields,
+            class_superclass: &mut self.class_superclass,
+            current_class: None,
+            current_superclass: None,
+            in_constructor: false,
         }
     }
 
@@ -819,6 +975,10 @@ impl Compiler {
                 // Обрабатывается в compile_stmt_with_pop через stmt::compile_stmt
                 unreachable!("Try statement should be handled by stmt::compile_stmt")
             }
+            Stmt::Class { .. } => {
+                // Обрабатывается в compile_stmt_with_pop через stmt::compile_stmt
+                unreachable!("Class statement should be handled by stmt::compile_stmt")
+            }
         }
         Ok(())
     }
@@ -865,6 +1025,10 @@ impl Compiler {
         match expr {
             Expr::Literal { value, line } => {
                 let constant_index = self.chunk.add_constant(value.clone());
+                self.chunk.write_with_line(OpCode::Constant(constant_index), *line);
+            }
+            Expr::Ellipsis { line } => {
+                let constant_index = self.chunk.add_constant(Value::Ellipsis);
                 self.chunk.write_with_line(OpCode::Constant(constant_index), *line);
             }
             Expr::Assign { name, value, line } => {
@@ -1394,6 +1558,22 @@ impl Compiler {
                 }
                 // Для "idx" просто оставляем объект на стеке
             }
+            Expr::This { .. } => {
+                // Обрабатывается в compile_expr через expr::compile_expr
+                unreachable!("This expression should be handled by expr::compile_expr")
+            }
+            Expr::Super { .. } => {
+                // Обрабатывается в compile_expr через expr::compile_expr
+                unreachable!("Super expression should be handled by expr::compile_expr")
+            }
+            Expr::SuperCall { .. } => {
+                // Обрабатывается в compile_class для конструкторов
+                unreachable!("SuperCall expression should be handled by class compiler or expr::compile_expr")
+            }
+            Expr::SuperMethodCall { .. } => {
+                // Обрабатывается в compile_expr через expr::compile_expr
+                unreachable!("SuperMethodCall expression should be handled by expr::compile_expr")
+            }
             Expr::MethodCall { object, method, args, line } => {
                 // Компилируем объект
                 self.compile_expr(object)?;
@@ -1783,8 +1963,8 @@ impl Compiler {
                             self.chunk.write_with_line(OpCode::Call(resolved_args.len()), *line);
                         }
                     }
-                }
             }
+        }
         Ok(())
     }
 

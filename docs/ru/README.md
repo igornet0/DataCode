@@ -61,7 +61,24 @@
 
 ---
 
-### 4. [Работа с таблицами](./table_create_function.md)
+### 4. [Работа с классами](./classes.md)
+
+Объявление, поля, конструкторы, методы, наследование, this/super и видимость (private, protected, public):
+
+- **Объявление класса** - `cls Name { }` и `cls Child(Parent) { }`
+- **Видимость** - секции `private:`, `protected:`, `public:`
+- **Конструктор** - `new ClassName(params) { body }`, создание экземпляра `ClassName(args)`
+- **Наследование** - `super(args)` в конструкторе, `super.method(args)` в методах
+
+**📚 Примеры использования:**
+- Классы, конструкторы, поля, методы (EN): [`examples/en/01-basics/classes.dc`](../../examples/en/01-basics/classes.dc)
+- Наследование, super, видимость (EN): [`examples/en/01-basics/inheritance.dc`](../../examples/en/01-basics/inheritance.dc)
+- Классы (RU): [`examples/ru/01-основы/классы.dc`](../../examples/ru/01-основы/классы.dc)
+- Наследование (RU): [`examples/ru/01-основы/наследование.dc`](../../examples/ru/01-основы/наследование.dc)
+
+---
+
+### 5. [Работа с таблицами](./table_create_function.md)
 
 Создание и работа с таблицами в DataCode:
 
@@ -76,7 +93,7 @@
 
 ---
 
-### 5. [WebSocket сервер](./websocket_server.md)
+### 6. [WebSocket сервер](./websocket_server.md)
 
 Удаленное выполнение кода DataCode через WebSocket:
 
@@ -91,7 +108,7 @@
 
 ---
 
-### 6. [Спецификация JOIN](./join_specification.md)
+### 7. [Спецификация JOIN](./join_specification.md)
 
 Операции объединения таблиц:
 
@@ -106,7 +123,7 @@
 
 ---
 
-### 7. [ML модуль](./ml_module.md)
+### 8. [ML модуль](./ml_module.md)
 
 Модуль машинного обучения для DataCode:
 
@@ -127,7 +144,7 @@
 
 ---
 
-### 8. [Модуль plot - Графики и визуализация](./plot/README.md)
+### 9. [Модуль plot - Графики и визуализация](./plot/README.md)
 
 Полное описание модуля `plot` для работы с изображениями и построения графиков:
 
@@ -142,7 +159,36 @@
 
 ---
 
-### 8. [Отрисовка текста в модуле plot](./text_rendering.md)
+### 10. [Модуль settings_env](./settings_env/README.md)
+
+Загрузка переменных окружения из .env, приведение типов, префиксы, конфигурация, классы-наследники Settings и дескрипторы Field:
+
+- **Загрузка .env** - load_env, Settings, разрешение путей
+- **Конфигурация** - Settings.config (env_prefix, extra, case_sensitive и др.)
+- **Поля Field** - default, default_factory, required, min_length, max_length, alias, regex
+- **Классы-наследники Settings** - model_config, вложенные конфиги через default_factory
+
+**📚 Примеры использования:**
+- Модуль settings_env: [`examples/ru/12-settings_env/`](../../examples/ru/12-settings_env/), [`examples/en/12-settings-env/`](../../examples/en/12-settings-env/)
+
+---
+
+### 11. [Модуль uuid](./uuid/README.md)
+
+Генерация уникальных идентификаторов (UUID): v4, v7, детерминированные v3/v5, разбор строк, работа с байтами, метаданные:
+
+- **Генерация** - v4, v7, new (alias v7), random (alias v4)
+- **Разбор и строки** - parse, to_string
+- **Байты** - to_bytes, from_bytes
+- **Детерминированные UUID** - v3, v5, namespace DNS, URL, OID
+- **Метаданные** - version, variant, timestamp
+
+**📚 Примеры использования:**
+- Модуль uuid: [`examples/ru/13-uuid/`](../../examples/ru/13-uuid/), [`examples/en/13-uuid/`](../../examples/en/13-uuid/)
+
+---
+
+### 12. [Отрисовка текста в модуле plot](./text_rendering.md)
 
 Подробное описание системы отрисовки текста в модуле графиков:
 
@@ -165,9 +211,10 @@
 Если вы только начинаете изучать DataCode, рекомендуем следующий порядок:
 
 ### 1. Основы языка
-Начните с базовых концепций:
+Начните с базовых концепций (в том числе классы):
 - **Документация:** [`examples/ru/01-основы/README.md`](../../examples/ru/01-основы/README.md)
 - **Примеры:** [`examples/ru/01-основы/`](../../examples/ru/01-основы/)
+- **Классы:** [Работа с классами](./classes.md)
 
 ### 2. Синтаксис
 Изучите синтаксические конструкции:
@@ -206,7 +253,7 @@
 
 Все примеры организованы в папке [`examples/ru/`](../../examples/ru/):
 
-- **[01-основы](../../examples/ru/01-основы/)** - Базовые концепции языка
+- **[01-основы](../../examples/ru/01-основы/)** - Базовые концепции языка (в том числе классы)
 - **[02-синтаксис](../../examples/ru/02-синтаксис/)** - Синтаксические конструкции
 - **[03-типы данных](../../examples/ru/03-типы%20данных/)** - Работа с типами данных
 - **[04-продвинутые](../../examples/ru/04-продвинутые/)** - Продвинутые возможности
@@ -217,6 +264,8 @@
 - **[09-создание модели данных](../../examples/ru/09-создание%20модели%20данных/)** - Создание моделей данных
 - **[10-графики](../../examples/ru/10-графики/)** - Графики и визуализация
 - **[11-mnist-mlp](../../examples/ru/11-mnist-mlp/)** - Пример MLP на MNIST
+- **[12-settings_env](../../examples/ru/12-settings_env/)** - Модуль settings_env
+- **[13-uuid](../../examples/ru/13-uuid/)** - Модуль uuid
 
 **Полная документация по примерам:** [`examples/ru/README.md`](../../examples/ru/README.md)
 
@@ -241,6 +290,7 @@ docs/
     ├── builtin_functions.md     # Встроенные функции
     ├── data_types.md            # Типы данных
     ├── user_functions.md        # Пользовательские функции с аннотациями типов
+    ├── classes.md               # Работа с классами
     ├── table_create_function.md # Работа с таблицами
     ├── websocket_server.md      # WebSocket сервер
     ├── join_specification.md    # Спецификация JOIN
@@ -248,6 +298,10 @@ docs/
     ├── text_rendering.md        # Отрисовка текста в модуле plot
     ├── plot/                    # Документация модуля plot
     │   └── README.md            # Модуль plot - графики и визуализация
+    ├── settings_env/            # Документация модуля settings_env
+    │   └── README.md            # Модуль settings_env - переменные окружения
+    ├── uuid/                    # Документация модуля uuid
+    │   └── README.md            # Модуль uuid - генерация UUID
     └── ml/                      # Документация ML модуля
         ├── training_flow.md     # Схема обучения нейронной сети
         └── model_save_format.md # Формат сохранения моделей

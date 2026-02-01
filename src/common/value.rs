@@ -24,8 +24,9 @@ pub enum Value {
     Function(usize), // Индекс функции в массиве функций
     NativeFunction(usize), // Индекс нативной функции
     Path(PathBuf), // Путь к файлу или директории
+    Uuid(u64, u64), // 128-bit UUID (hi, lo), value-type, ABI-friendly
     Table(Rc<RefCell<Table>>),
-    Object(HashMap<String, Value>), // Словарь/объект: ключ-значение
+    Object(Rc<RefCell<HashMap<String, Value>>>), // Словарь/объект: ключ-значение (обернут в Rc<RefCell> для мутабельности)
     ColumnReference {
         table: Rc<RefCell<Table>>,
         column_name: String,
@@ -49,6 +50,7 @@ pub enum Value {
     Figure(Rc<RefCell<Figure>>),
     Axis(Rc<RefCell<Axis>>),
     Null,
+    Ellipsis, // ... (e.g. Field(...) for required field)
 }
 
 impl PartialEq for Value {
@@ -62,8 +64,9 @@ impl PartialEq for Value {
             (Value::Function(a), Value::Function(b)) => a == b,
             (Value::NativeFunction(a), Value::NativeFunction(b)) => a == b,
             (Value::Path(a), Value::Path(b)) => a == b,
+            (Value::Uuid(hi_a, lo_a), Value::Uuid(hi_b, lo_b)) => hi_a == hi_b && lo_a == lo_b,
             (Value::Table(a), Value::Table(b)) => *a.borrow() == *b.borrow(),
-            (Value::Object(a), Value::Object(b)) => a == b,
+            (Value::Object(a), Value::Object(b)) => *a.borrow() == *b.borrow(),
             (Value::ColumnReference { table: a, column_name: col_a }, Value::ColumnReference { table: b, column_name: col_b }) => {
                 Rc::ptr_eq(a, b) && col_a == col_b
             },
@@ -86,6 +89,7 @@ impl PartialEq for Value {
             (Value::Figure(a), Value::Figure(b)) => Rc::ptr_eq(a, b),
             (Value::Axis(a), Value::Axis(b)) => Rc::ptr_eq(a, b),
             (Value::Null, Value::Null) => true,
+            (Value::Ellipsis, Value::Ellipsis) => true,
             _ => false,
         }
     }
@@ -95,7 +99,7 @@ impl Value {
     /// Проверяет, можно ли использовать это значение как ключ кэша
     /// (только простые типы: Number, Bool, String, Null)
     pub fn is_hashable(&self) -> bool {
-        matches!(self, Value::Number(_) | Value::Bool(_) | Value::String(_) | Value::Null)
+        matches!(self, Value::Number(_) | Value::Bool(_) | Value::String(_) | Value::Uuid(_, _) | Value::Null | Value::Ellipsis)
     }
 
     pub fn is_truthy(&self) -> bool {
@@ -107,8 +111,9 @@ impl Value {
             Value::Array(arr) => !arr.borrow().is_empty(),
             Value::Tuple(tuple) => !tuple.borrow().is_empty(),
             Value::Path(p) => !p.as_os_str().is_empty(),  // Путь не пустой = true
+            Value::Uuid(_, _) => true,  // UUID всегда truthy
             Value::Table(table) => table.borrow().len() > 0,  // Таблица не пустая = true
-            Value::Object(map) => !map.is_empty(),  // Объект не пустой = true
+            Value::Object(map_rc) => !map_rc.borrow().is_empty(),  // Объект не пустой = true
             Value::ColumnReference { table, column_name } => {
                 let table_ref = table.borrow();
                 if let Some(column) = table_ref.get_column(column_name) {
@@ -134,6 +139,7 @@ impl Value {
             Value::Image(_) => true,
             Value::Figure(_) => true,
             Value::Axis(_) => true,
+            Value::Ellipsis => true,
             _ => true,
         }
     }
@@ -215,7 +221,8 @@ impl Value {
                         column_name)
                 }
             }
-            Value::Object(map) => {
+            Value::Object(map_rc) => {
+                let map = map_rc.borrow();
                 let pairs: Vec<String> = map.iter()
                     .map(|(k, v)| format!("\"{}\": {}", k, v.to_string()))
                     .collect();
@@ -293,7 +300,20 @@ impl Value {
             Value::Axis(_) => {
                 format!("<axis>")
             }
+            Value::Uuid(hi, lo) => {
+                let hi_b = hi.to_be_bytes();
+                let lo_b = lo.to_be_bytes();
+                format!(
+                    "{:08x}-{:04x}-{:04x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+                    u32::from_be_bytes([hi_b[0], hi_b[1], hi_b[2], hi_b[3]]),
+                    u16::from_be_bytes([hi_b[4], hi_b[5]]),
+                    u16::from_be_bytes([hi_b[6], hi_b[7]]),
+                    lo_b[0], lo_b[1],
+                    lo_b[2], lo_b[3], lo_b[4], lo_b[5], lo_b[6], lo_b[7]
+                )
+            }
             Value::Null => "null".to_string(),
+            Value::Ellipsis => "...".to_string(),
         }
     }
 }
@@ -318,6 +338,14 @@ impl Hash for Value {
             }
             Value::Null => {
                 state.write_u8(3); // Тег для Null
+            }
+            Value::Ellipsis => {
+                state.write_u8(5); // Тег для Ellipsis
+            }
+            Value::Uuid(hi, lo) => {
+                state.write_u8(4); // Тег для Uuid
+                state.write_u64(*hi);
+                state.write_u64(*lo);
             }
             // Для остальных типов не реализуем Hash - они не могут быть ключами кэша
             _ => {
@@ -350,6 +378,7 @@ impl Clone for Value {
             Value::Function(idx) => Value::Function(*idx),
             Value::NativeFunction(idx) => Value::NativeFunction(*idx),
             Value::Path(p) => Value::Path(p.clone()),
+            Value::Uuid(hi, lo) => Value::Uuid(*hi, *lo),
             Value::Table(table) => {
                 // Создаем новый Rc с глубокой копией таблицы
                 Value::Table(Rc::new(RefCell::new(table.borrow().clone())))
@@ -361,13 +390,9 @@ impl Clone for Value {
                     column_name: column_name.clone(),
                 }
             },
-            Value::Object(map) => {
-                // Создаем глубокую копию объекта (клонируем каждое значение)
-                let mut cloned_map = HashMap::new();
-                for (k, v) in map {
-                    cloned_map.insert(k.clone(), v.clone());
-                }
-                Value::Object(cloned_map)
+            Value::Object(map_rc) => {
+                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
+                Value::Object(map_rc.clone())
             },
             Value::Tensor(tensor) => {
                 // Создаем новый Rc с глубокой копией тензора
@@ -434,6 +459,7 @@ impl Clone for Value {
                 Value::Axis(axis.clone())
             },
             Value::Null => Value::Null,
+            Value::Ellipsis => Value::Ellipsis,
         }
     }
 }

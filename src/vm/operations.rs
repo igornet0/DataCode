@@ -28,6 +28,10 @@ pub fn binary_add(
     exception_handlers: &mut Vec<ExceptionHandler>,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
+    // Convert null to 0 for arithmetic operations (useful for class fields with default values)
+    let a = if matches!(a, Value::Null) { &Value::Number(0.0) } else { a };
+    let b = if matches!(b, Value::Null) { &Value::Number(0.0) } else { b };
+    
     match (a, b) {
         (Value::Number(n1), Value::Number(n2)) => Ok(Value::Number(n1 + n2)),
         (Value::String(s1), Value::String(s2)) => Ok(Value::String(format!("{}{}", s1, s2))),
@@ -38,6 +42,16 @@ pub fn binary_add(
             let mut result = arr1.borrow().clone();
             result.extend_from_slice(&arr2.borrow());
             Ok(Value::Array(Rc::new(RefCell::new(result))))
+        },
+        (Value::String(s), Value::Bool(b)) => Ok(Value::String(format!("{}{}", s, b))),
+        (Value::Bool(b), Value::String(s)) => Ok(Value::String(format!("{}{}", b, s))),
+        (Value::String(s), Value::Array(arr)) => {
+            let inner = arr.borrow().iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
+            Ok(Value::String(format!("{}[{}]", s, inner)))
+        },
+        (Value::Array(arr), Value::String(s)) => {
+            let inner = arr.borrow().iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
+            Ok(Value::String(format!("[{}]{}", inner, s)))
         },
         _ => {
             let error = ExceptionHandler::runtime_error(
@@ -62,6 +76,10 @@ pub fn binary_sub(
     exception_handlers: &mut Vec<ExceptionHandler>,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
+    // Convert null to 0 for arithmetic operations
+    let a = if matches!(a, Value::Null) { &Value::Number(0.0) } else { a };
+    let b = if matches!(b, Value::Null) { &Value::Number(0.0) } else { b };
+    
     match (a, b) {
         (Value::Number(n1), Value::Number(n2)) => Ok(Value::Number(n1 - n2)),
         _ => {

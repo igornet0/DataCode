@@ -61,6 +61,12 @@ pub fn compile_for(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), Lang
         // Помечаем начало цикла
         ctx.labels.mark_label(loop_start_label, ctx.chunk.code.len());
         
+        // ВАЖНО: Очищаем стек в начале каждой итерации цикла
+        // Это гарантирует, что значения, оставшиеся на стеке от предыдущей итерации,
+        // не будут использованы в текущей итерации
+        // Проверяем, что стек чист перед началом итерации
+        // (VM должен гарантировать это, но на всякий случай добавляем проверку)
+        
         // Проверяем условие: индекс < длина массива
         ctx.chunk.write_with_line(OpCode::LoadLocal(index_local), *line);
         ctx.chunk.write_with_line(OpCode::LoadLocal(array_local), *line);

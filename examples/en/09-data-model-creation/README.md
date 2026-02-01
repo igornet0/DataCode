@@ -48,26 +48,26 @@ This section demonstrates how to build a complete database model from CSV files 
 
 ```bash
 # Working with files
-cargo run examples/en/09-data-model-creation/01-file-operations.dc
+datacode examples/en/09-data-model-creation/01-file-operations.dc
 
 # Merging tables
-cargo run examples/en/09-data-model-creation/02-merge-tables.dc
+datacode examples/en/09-data-model-creation/02-merge-tables.dc
 
 # Creating relations
-cargo run examples/en/09-data-model-creation/03-create-relations.dc
+datacode examples/en/09-data-model-creation/03-create-relations.dc
 
 # Loading quarterly data
-cargo run examples/en/09-data-model-creation/04-load-quarterly-data.dc
+datacode examples/en/09-data-model-creation/04-load-quarterly-data.dc
 
 # Table JOIN operations
-cargo run examples/en/09-data-model-creation/05-table-joins.dc
+datacode examples/en/09-data-model-creation/05-table-joins.dc
 ```
 
 ### Running Complete Example
 
 ```bash
 # Load all data and create SQLite database
-cargo run examples/en/09-data-model-creation/load_model_data.dc --build_model
+datacode examples/en/09-data-model-creation/load_model_data.dc --build_model
 ```
 
 This will:

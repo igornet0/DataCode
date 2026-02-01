@@ -1,0 +1,30 @@
+# Practical example: loading app config from .env
+# Combining load_env, config with prefix, and using fields
+
+from settings_env import load_env, Settings
+
+# Simple load without prefix — all keys from simple.env
+let app_env = load_env("simple.env")
+if app_env != null {
+    print("App config (simple.env):")
+    print("  app_name: " + app_env["app_name"])
+    print("  env: " + app_env["env"])
+    print("  debug: " + app_env["debug"])
+}
+
+# Load with prefix APP__ from dev.env — app variables only
+let cfg = Settings.config(env_prefix="APP__")
+let env_only = load_env("dev.env", [], cfg)
+if env_only != null {
+    print("Variables with prefix APP__:")
+    print("  env: " + env_only["env"])
+    print("  debug: " + env_only["debug"])
+}
+
+# Load DB__ only from dev.env — database config
+let db_cfg = Settings.config(env_prefix="DB__")
+let db_env = load_env("dev.env", [], db_cfg)
+if db_env != null {
+    print("DB config (prefix DB__):")
+    print("  url: " + db_env["url"])
+}

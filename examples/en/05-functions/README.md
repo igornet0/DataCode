@@ -15,7 +15,7 @@ This section contains examples of creating and using functions.
 
 **Run**:
 ```bash
-cargo run examples/en/05-functions/simple_functions.dc
+datacode examples/en/05-functions/simple_functions.dc
 ```
 
 ### 2. `recursion.dc` - Recursion
@@ -28,7 +28,7 @@ cargo run examples/en/05-functions/simple_functions.dc
 
 **Run**:
 ```bash
-cargo run examples/en/05-functions/recursion.dc
+datacode examples/en/05-functions/recursion.dc
 ```
 
 ### 3. `nested_functions.dc` - Nested Functions
@@ -41,7 +41,7 @@ cargo run examples/en/05-functions/recursion.dc
 
 **Run**:
 ```bash
-cargo run examples/en/05-functions/nested_functions.dc
+datacode examples/en/05-functions/nested_functions.dc
 ```
 
 ### 4. `typed_functions.dc` - Typed Functions
@@ -57,7 +57,7 @@ cargo run examples/en/05-functions/nested_functions.dc
 
 **Run**:
 ```bash
-cargo run examples/en/05-functions/typed_functions.dc
+datacode examples/en/05-functions/typed_functions.dc
 ```
 
 ## 🎯 Concepts Covered

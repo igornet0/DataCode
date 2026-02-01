@@ -484,6 +484,18 @@ mod tests {
         ]);
     }
 
+    /// Локализующий тест: sum изолированно должен возвращать 15 для [1,2,3,4,5].
+    #[test]
+    fn test_sum_isolated() {
+        assert_number_result("sum([1, 2, 3, 4, 5])", 15.0);
+    }
+
+    /// Локализующий тест: count изолированно должен возвращать 5 для [1,2,3,4,5].
+    #[test]
+    fn test_count_isolated() {
+        assert_number_result("count([1, 2, 3, 4, 5])", 5.0);
+    }
+
     #[test]
     fn test_sum_average_relationship() {
         let source = r#"

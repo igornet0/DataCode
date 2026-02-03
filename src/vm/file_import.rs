@@ -261,9 +261,9 @@ fn compile_and_run_module(source: &str, module_base_path: Option<PathBuf>) -> Re
     // Базовый путь модуля — чтобы при run() thread-local не затирался в None и вложенные импорты (from config import Config) работали
     vm.set_base_path(module_base_path.or_else(get_base_path));
     // Сначала регистрируем нативные глобалы и встроенные модули, чтобы set_functions
-    // не сопоставлял имена модуля (например "Settings") с индексами 0..70 (print и т.д.)
+    // не сопоставлял имена модуля (например "Settings") с индексами 0..74 (print и т.д.)
     let max_global_index = chunk.global_names.keys().max().copied().unwrap_or(0);
-    let needed_size = (max_global_index + 1).max(70);
+    let needed_size = (max_global_index + 1).max(74);
     if vm.get_globals().len() < needed_size {
         vm.get_globals_mut().resize(needed_size, Value::Null);
     }

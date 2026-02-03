@@ -299,6 +299,14 @@ impl Resolver {
                 }
             }
             Expr::Ellipsis { .. } => {}
+            Expr::InterpolatedString { segments, .. } => {
+                use crate::parser::ast::InterpolatedSegment;
+                for seg in segments {
+                    if let InterpolatedSegment::Expr(e) = seg {
+                        self.resolve_expr(e)?;
+                    }
+                }
+            }
         }
         Ok(())
     }

@@ -1,15 +1,22 @@
 //! DPM: DataCode Package Manager — virtual env from dpm.toml, cache or in-project.
 
+pub mod adapters_lib;
 pub mod config;
 pub mod env;
+pub mod add_database;
+pub mod init_database;
+pub mod init_wizard;
 pub mod install;
 pub mod lock;
 pub mod manifest;
 
 pub use config::{virtualenvs_in_project, set_virtualenvs_in_project, config_file_path};
 pub use env::{env_root, package_paths, packages_dir};
+pub use add_database::run_add_database;
+pub use init_database::run_init_database;
 pub use lock::{load_lock, write_lock, lock_file_name, DpmLock, LockPackage};
 pub use manifest::{find_project_root, load_manifest, project_name_for_env, datacode_version_satisfies, DpmManifest};
+pub use init_wizard::run_init_wizard;
 pub use install::install_package;
 
 use std::path::Path;

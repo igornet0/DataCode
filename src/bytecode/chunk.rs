@@ -259,6 +259,10 @@ impl Chunk {
                 output.push_str("POP\n");
                 offset + 1
             }
+            OpCode::Dup => {
+                output.push_str("DUP\n");
+                offset + 1
+            }
             OpCode::BeginTry(handler_index) => {
                 output.push_str(&format!("BEGIN_TRY handler={}\n", handler_index));
                 offset + 1

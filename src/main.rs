@@ -1,7 +1,7 @@
 use data_code::compile;
 use data_code::sqlite_export;
 use data_code::common::debug;
-use data_code::vm::{cli, repl, gui, websocket};
+use data_code::vm::{cli, repl, gui, websocket, http_server};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -19,9 +19,15 @@ fn main() {
         Ok(cli::CliArgs::WebSocket(config)) => {
             if let Err(e) = websocket::start_websocket_server(config) {
                 eprintln!("{}", e);
-                                std::process::exit(1);
-                            }
-                        }
+                std::process::exit(1);
+            }
+        }
+        Ok(cli::CliArgs::HttpServer(config)) => {
+            if let Err(e) = http_server::start_http_server(config) {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
         Ok(cli::CliArgs::FileExecution(config)) => {
             // Set debug mode if flag is present
             debug::set_debug(config.debug);

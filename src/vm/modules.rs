@@ -6,7 +6,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 /// Built-in module names (for error messages and is_known_module)
-const BUILTIN_MODULE_NAMES: &[&str] = &["ml", "plot", "settings_env", "uuid"];
+const BUILTIN_MODULE_NAMES: &[&str] = &["ml", "plot", "settings_env", "uuid", "database"];
 
 /// Check if a name is a known module name
 pub fn is_known_module(name: &str) -> bool {
@@ -31,6 +31,7 @@ pub fn register_module(
         "plot" => register_plot_module(natives, globals, global_names),
         "settings_env" => register_settings_env_module(natives, globals, global_names),
         "uuid" => register_uuid_module(natives, globals, global_names),
+        "database" => register_database_module(natives, globals, global_names),
         _ => Err(LangError::runtime_error(
             format!("Unknown module: {}", module_name),
             0,
@@ -463,5 +464,56 @@ fn register_uuid_module(
     
     globals[uuid_index] = Value::Object(Rc::new(RefCell::new(uuid_object)));
     
+    Ok(())
+}
+
+fn register_database_module(
+    natives: &mut Vec<fn(&[Value]) -> Value>,
+    globals: &mut Vec<Value>,
+    global_names: &mut std::collections::HashMap<usize, String>,
+) -> Result<(), LangError> {
+    use crate::database::natives;
+
+    let db_native_start = natives.len();
+    natives.push(natives::native_engine);
+    natives.push(natives::native_engine_connect);
+    natives.push(natives::native_engine_execute);
+    natives.push(natives::native_engine_query);
+    natives.push(natives::native_metadata);
+    natives.push(natives::native_column);
+    natives.push(natives::native_now_call);
+    natives.push(natives::native_select);
+    natives.push(natives::native_engine_run);
+    natives.push(natives::native_cluster);
+    natives.push(natives::native_cluster_add);
+    natives.push(natives::native_cluster_get);
+    natives.push(natives::native_cluster_names);
+
+    let start = db_native_start;
+    let mut database_object = HashMap::new();
+    database_object.insert("engine".to_string(), Value::NativeFunction(start + 0));
+    database_object.insert("MetaData".to_string(), Value::NativeFunction(start + 4));
+    database_object.insert("Column".to_string(), Value::NativeFunction(start + 5));
+    database_object.insert("Сolumn".to_string(), Value::NativeFunction(start + 5)); // Cyrillic С
+    database_object.insert("now_call".to_string(), Value::NativeFunction(start + 6));
+    database_object.insert("select".to_string(), Value::NativeFunction(start + 7));
+    database_object.insert("DatabaseCluster".to_string(), Value::NativeFunction(start + 9));
+    // connect, execute, query, run are methods on engine - accessed via GetArrayElement on DatabaseEngine
+    // add, get, names are methods on cluster - accessed via GetArrayElement on DatabaseCluster
+
+    let database_index = if let Some((&idx, _)) = global_names.iter().find(|(_, name)| name.as_str() == "database") {
+        if idx >= globals.len() {
+            globals.resize(idx + 1, Value::Null);
+        }
+        idx
+    } else {
+        let idx = globals.len();
+        globals.push(Value::Null);
+        global_names.insert(idx, "database".to_string());
+        idx
+    };
+
+    globals[database_index] = Value::Object(Rc::new(RefCell::new(database_object)));
+
     Ok(())
 }

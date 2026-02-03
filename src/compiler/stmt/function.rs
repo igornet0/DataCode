@@ -10,7 +10,7 @@ use crate::compiler::closure;
 use crate::compiler::stmt;
 
 pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), LangError> {
-    if let Stmt::Function { name, params, return_type, body, is_cached, line } = stmt {
+    if let Stmt::Function { name, params, return_type, body, is_cached, route, line } = stmt {
         *ctx.current_line = *line;
         
         // Находим индекс функции (она уже объявлена в первом проходе)
@@ -25,6 +25,10 @@ pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
         let mut function = ctx.functions[function_index].clone();
         function.arity = params.len();
         function.is_cached = *is_cached;
+        if let Some((ref method, ref path)) = route {
+            function.route_method = Some(method.clone());
+            function.route_path = Some(path.clone());
+        }
         
         // Сохраняем имена параметров, типы и вычисляем значения по умолчанию
         let mut param_names = Vec::new();

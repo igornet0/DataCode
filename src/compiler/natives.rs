@@ -43,6 +43,8 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "split");
     register(globals, "join");
     register(globals, "contains");
+    register(globals, "isupper");
+    register(globals, "islower");
     
     // Функции массивов
     register(globals, "push");
@@ -86,6 +88,8 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "table_suffixes");
     register(globals, "relate");
     register(globals, "primary_key");
+    register(globals, "enum");
+    register(globals, "Table");
 }
 
 fn register(globals: &mut std::collections::HashMap<String, usize>, name: &str) {
@@ -102,6 +106,7 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         
         // Функции с одним параметром
         "len" => Some(vec!["value".to_string()]),
+        "enum" => Some(vec!["iterable".to_string()]),
         "int" => Some(vec!["value".to_string()]),
         "float" => Some(vec!["value".to_string()]),
         "bool" => Some(vec!["value".to_string()]),
@@ -123,6 +128,8 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "upper" => Some(vec!["str".to_string()]),
         "lower" => Some(vec!["str".to_string()]),
         "trim" => Some(vec!["str".to_string()]),
+        "isupper" => Some(vec!["str".to_string()]),
+        "islower" => Some(vec!["str".to_string()]),
         "pop" => Some(vec!["array".to_string()]),
         "unique" => Some(vec!["array".to_string()]),
         "reverse" => Some(vec!["array".to_string()]),
@@ -159,6 +166,33 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "table_suffixes" => Some(vec!["left".to_string(), "right".to_string(), "left_suffix".to_string(), "right_suffix".to_string()]),
         "relate" => Some(vec!["col1".to_string(), "col2".to_string()]),
         "primary_key" => Some(vec!["col".to_string()]),
+        "Table" => Some(vec!["path".to_string()]),
+        
+        // database module (from database import engine, ...)
+        "engine" => Some(vec![
+            "url".to_string(),
+            "echo".to_string(),
+            "echo_pool".to_string(),
+            "pool_size".to_string(),
+            "max_overflow".to_string(),
+            "timeout".to_string(),
+            "connect_args".to_string(),
+        ]),
+        "MetaData" => Some(vec![
+            "schema".to_string(),
+            "quote_schema".to_string(),
+            "naming_convention".to_string(),
+            "info".to_string(),
+        ]),
+        "Column" | "Сolumn" => Some(vec![
+            "type".to_string(),
+            "primary_key".to_string(),
+            "autoincrement".to_string(),
+            "unique".to_string(),
+            "default".to_string(),
+            "nullable".to_string(),
+            "onupdate".to_string(),
+        ]),
         
         // JOIN функции - они все имеют одинаковую структуру (left, right, on, type?, suffixes?)
         "inner_join" | "left_join" | "right_join" | "full_join" | "semi_join" | "anti_join" | "zip_join" | "asof_join" | "join_on" | "apply_join" => {

@@ -1,0 +1,44 @@
+# DatabaseCluster example: multiple named connections
+# Run from project root: datacode examples/en/14-database-cluster/01-cluster-example.dc
+
+from database import engine, DatabaseCluster
+
+print("DatabaseCluster example")
+print("=======================")
+print()
+
+# Create empty cluster
+cluster = DatabaseCluster()
+print("Created empty cluster: ", cluster)
+print()
+
+# Add two in-memory SQLite engines with names
+cluster.add("primary", engine("sqlite:///:memory:"))
+cluster.add("secondary", engine("sqlite:///:memory:"))
+print("Added connections: primary, secondary")
+print("Cluster: ", cluster)
+print()
+
+# Get connection by name and run DDL
+conn = cluster.get("primary")
+conn.execute("CREATE TABLE IF NOT EXISTS t (id INT, name TEXT)")
+conn.execute("INSERT INTO t (id, name) VALUES (1, 'a')")
+conn.execute("INSERT INTO t (id, name) VALUES (2, 'b')")
+print("Created table and inserted rows on primary")
+print()
+
+# Query via cluster.get(...)
+table = cluster.get("primary").query("SELECT * FROM t")
+print("Query result from primary:")
+show_table(table)
+print()
+
+# List connection names
+names = cluster.names()
+print("Connection names: ", names)
+print()
+
+# Get non-existent name returns null
+other = cluster.get("nonexistent")
+print("cluster.get('nonexistent') is null: ", other == null)
+print("Done.")

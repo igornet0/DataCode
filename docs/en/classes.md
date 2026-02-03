@@ -5,6 +5,7 @@ This document describes how to define and use classes in DataCode: declaration, 
 **Usage examples:**
 - Classes, constructors, fields, methods (EN): [`examples/en/01-basics/classes.dc`](../../examples/en/01-basics/classes.dc)
 - Inheritance, super, visibility (EN): [`examples/en/01-basics/inheritance.dc`](../../examples/en/01-basics/inheritance.dc)
+- Abstract classes (EN): [`examples/en/01-basics/abstract_class.dc`](../../examples/en/01-basics/abstract_class.dc)
 - Classes, constructors, fields, methods (RU): [`examples/ru/01-основы/классы.dc`](../../examples/ru/01-основы/классы.dc)
 - Inheritance, super, visibility (RU): [`examples/ru/01-основы/наследование.dc`](../../examples/ru/01-основы/наследование.dc)
 
@@ -13,13 +14,15 @@ This document describes how to define and use classes in DataCode: declaration, 
 ## Table of Contents
 
 1. [Class Declaration](#class-declaration)
-2. [Visibility Sections](#visibility-sections)
-3. [Fields](#fields)
-4. [Class-Level Variables](#class-level-variables)
-5. [Constructor](#constructor)
-6. [Inheritance](#inheritance)
-7. [Methods](#methods)
-8. [Field Access](#field-access)
+2. [Abstract Classes](#abstract-classes)
+3. [Visibility Sections](#visibility-sections)
+4. [Fields](#fields)
+5. [Class-Level Variables](#class-level-variables)
+6. [Constructor](#constructor)
+7. [Inheritance](#inheritance)
+8. [Methods](#methods)
+9. [The @class parameter](#the-class-parameter)
+10. [Field Access](#field-access)
 
 ---
 
@@ -44,6 +47,34 @@ cls ChildClass(ParentClass) {
 ```
 
 The superclass name in parentheses must refer to a previously defined class.
+
+---
+
+## Abstract Classes
+
+A class can be marked as abstract by placing the `@Abstract` attribute immediately before `cls`. An abstract class cannot be instantiated directly; attempting to call it (e.g. `AbstractBase()`) causes a runtime error: `Cannot instantiate abstract class 'AbstractBase'`. Subclasses of an abstract class are normal classes and can be instantiated. Constructors and `super(...)` in subclasses work as usual.
+
+**Syntax:**
+
+```datacode
+@Abstract
+cls AbstractBase {
+    public:
+        name: str
+    new AbstractBase(name) {
+        this.name = name
+    }
+}
+
+cls Concrete(AbstractBase) {
+    new Concrete(name) {
+        super(name)
+    }
+}
+
+let c = Concrete("ok")   # allowed
+# let b = AbstractBase("x")  # runtime error: Cannot instantiate abstract class 'AbstractBase'
+```
 
 ---
 
@@ -205,6 +236,43 @@ print(calc.add(25))  # 125
 
 ---
 
+## The @class parameter
+
+A method can declare an optional first parameter `@class` to receive the class object (meta-level information about the class). It must be the first parameter in the list. The VM injects the class object automatically when the method is called; the caller does not pass it.
+
+**Syntax:** `fn methodName(@class, otherParams) { body }`
+
+**Example:**
+
+```datacode
+cls User {
+    public:
+        name: str
+    new User(name) {
+        this.name = name
+    }
+    fn info(@class) {
+        print(@class.name)           # "User"
+        print(@class.full_name)      # "User"
+        print(@class.method_names)   # ["info", ...]
+    }
+}
+
+let u = User("Alice")
+u.info()   # @class is injected; prints class name and method list
+```
+
+**@class API (class object properties):**
+
+- **Identity:** `@class.name` (short name), `@class.full_name` (same as name for now)
+- **Hierarchy:** `@class.parent` (superclass name or null)
+- **Modifiers:** `@class.is_abstract` (true if the class is abstract)
+- **Structure:** `@class.method_names` (array of method names)
+
+Use `@class` for ORM registration, serialization, DI, or any logic that needs to know the class at runtime without changing call sites.
+
+---
+
 ## Field Access
 
 - **Inside the class:** use `this.fieldName` to read or assign instance fields in constructors and methods.
@@ -228,5 +296,6 @@ print(p.y)
 **Usage examples:**
 - Classes, constructors, fields, methods (EN): [`examples/en/01-basics/classes.dc`](../../examples/en/01-basics/classes.dc)
 - Inheritance, super, visibility (EN): [`examples/en/01-basics/inheritance.dc`](../../examples/en/01-basics/inheritance.dc)
+- Abstract classes (EN): [`examples/en/01-basics/abstract_class.dc`](../../examples/en/01-basics/abstract_class.dc)
 - Classes, constructors, fields, methods (RU): [`examples/ru/01-основы/классы.dc`](../../examples/ru/01-основы/классы.dc)
 - Inheritance, super, visibility (RU): [`examples/ru/01-основы/наследование.dc`](../../examples/ru/01-основы/наследование.dc)

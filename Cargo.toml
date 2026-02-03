@@ -3,7 +3,7 @@ members = ["datacode_abi", "datacode_sdk"]
 
 [package]
 name = "data-code"
-version = "2.2.0"
+version = "2.2.1"
 edition = "2021"
 description = "ДатаКод - Интерактивный язык программирования для быстрой обработки данных"
 license = "MIT"
@@ -30,6 +30,10 @@ path = "src/main.rs"
 name = "dpm"
 path = "src/dpm_main.rs"
 
+[[bin]]
+name = "datacode-server"
+path = "src/datacode_server_main.rs"
+
 [dependencies]
 datacode_abi = { path = "datacode_abi" }
 
@@ -52,6 +56,13 @@ serde_json = "1.0"
 tokio-tungstenite = "0.21"
 tungstenite = "0.21"
 base64 = "0.22"
+
+# HTTP server (datacode-server)
+axum = "0.7"
+tower = { version = "0.4", features = ["util"] }
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["client", "server", "http1", "tokio"] }
+local-ip-address = "0.6"
 
 # SQLite экспорт для модели данных
 rusqlite = { version = "0.30", features = ["bundled"] }
@@ -80,6 +91,7 @@ uuid = { version = "1", features = ["v3", "v4", "v5", "v7"] }
 # DPM: manifest and config
 toml = "0.8"
 dirs = "5.0"
+dialoguer = "0.11"
 
 # Dynamic native module loading (.so / .dylib)
 libloading = "0.8"

@@ -214,7 +214,19 @@ impl Lexer {
                 let token = self.make_token(kind);
                 return Ok(token);
             }
-            '"' => self.string('"')?,
+            '"' => {
+                // Проверяем, это """ (многострочный комментарий)?
+                if self.peek() == '"' && self.peek_next() == '"' {
+                    // Пропускаем """ и обрабатываем как комментарий
+                    self.advance(); // вторая "
+                    self.advance(); // третья "
+                    self.multiline_comment()?;
+                    return self.next_token();
+                } else {
+                    // Обычная строка
+                    self.string('"')?
+                }
+            }
             '\'' => self.string('\'')?,
             c if c.is_ascii_digit() => {
                 self.current = start;
@@ -257,6 +269,7 @@ impl Lexer {
                     '\\' => value.push('\\'),
                     '"' => value.push('"'),
                     '\'' => value.push('\''),
+                    '$' => value.push('\u{E000}'), // \$ → placeholder for literal "${" (parser replaces with "${")
                     _ => {
                         // Неизвестная escape-последовательность, оставляем как есть
                         value.push('\\');
@@ -283,6 +296,42 @@ impl Lexer {
 
         let lexeme = format!("{}{}{}", delimiter, value, delimiter);
         Ok(Token::new(TokenKind::String, lexeme, start_line))
+    }
+
+    fn multiline_comment(&mut self) -> Result<(), LangError> {
+        let start_line = self.line;
+        
+        // Ищем закрывающие """
+        loop {
+            if self.is_at_end() {
+                return Err(LangError::LexError {
+                    message: "Unterminated multiline comment (missing closing \"\"\")".to_string(),
+                    line: start_line,
+                });
+            }
+            
+            // Отслеживаем переводы строк
+            if self.peek() == '\n' {
+                self.line += 1;
+            }
+            
+            // Проверяем на закрывающие """
+            if self.peek() == '"' {
+                // Проверяем вторую кавычку
+                if self.current + 1 < self.source.len() && self.source[self.current + 1] == '"' {
+                    // Проверяем третью кавычку
+                    if self.current + 2 < self.source.len() && self.source[self.current + 2] == '"' {
+                        // Нашли закрывающие """
+                        self.advance(); // первая "
+                        self.advance(); // вторая "
+                        self.advance(); // третья "
+                        return Ok(());
+                    }
+                }
+            }
+            
+            self.advance();
+        }
     }
 
     fn number(&mut self) -> Token {
@@ -344,6 +393,7 @@ impl Lexer {
             "import" => TokenKind::Import,
             "from" => TokenKind::From,
             "as" => TokenKind::As,
+            "Abstract" => TokenKind::Abstract,
             "cls" => TokenKind::Cls,
             "this" => TokenKind::This,
             "super" => TokenKind::Super,

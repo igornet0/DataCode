@@ -19,6 +19,10 @@ fn check_single_type(value: &Value, type_name: &str) -> bool {
         (Value::Array(_), "array" | "list") => true,
         (Value::Tuple(_), "tuple") => true,
         (Value::Object(_), "object" | "dict" | "dictionary") => true,
+        (Value::Object(map_rc), "table") => {
+            // Object extends Table (cls Base(Table), class User(Base), etc.)
+            map_rc.borrow().get("__extends_table") == Some(&Value::Bool(true))
+        }
         (Value::Table(_), "table") => true,
         // Специальные типы
         (Value::Null, "null" | "none") => true,
@@ -45,6 +49,8 @@ fn check_single_type(value: &Value, type_name: &str) -> bool {
         (Value::Image(_), "image") => true,
         (Value::Figure(_), "figure") => true,
         (Value::Axis(_), "axis") => true,
+        (Value::DatabaseEngine(_), "database_engine") => true,
+        (Value::DatabaseCluster(_), "database_cluster") => true,
         (Value::ColumnReference { .. }, "column") => true,
         _ => false,
     }
@@ -94,7 +100,10 @@ pub fn get_type_name_value(value: &Value) -> &'static str {
         Value::Image(_) => "image",
         Value::Figure(_) => "figure",
         Value::Axis(_) => "axis",
+        Value::DatabaseEngine(_) => "database_engine",
+        Value::DatabaseCluster(_) => "database_cluster",
         Value::ColumnReference { .. } => "column",
+        Value::Enumerate { .. } => "enumerate",
         Value::Ellipsis => "ellipsis",
     }
 }

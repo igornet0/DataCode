@@ -13,8 +13,9 @@ use crate::ml::optimizer::{SGD, Momentum, NAG, Adagrad, RMSprop, Adam, AdamW};
 use crate::ml::dataset::Dataset;
 use crate::ml::layer::{Sequential, LayerId};
 use crate::plot::{Image, Figure, Axis, PlotWindowHandle};
+use crate::database::cluster::DatabaseCluster;
+use crate::database::engine::DatabaseEngine;
 
-#[derive(Debug)]
 pub enum Value {
     Number(f64),
     Bool(bool),
@@ -49,8 +50,72 @@ pub enum Value {
     Image(Rc<RefCell<Image>>),
     Figure(Rc<RefCell<Figure>>),
     Axis(Rc<RefCell<Axis>>),
+    DatabaseEngine(Rc<RefCell<DatabaseEngine>>),
+    DatabaseCluster(Rc<RefCell<DatabaseCluster>>),
+    Enumerate { data: Rc<RefCell<Vec<Value>>>, start: i64 }, // enum(iterable): lazy (idx, element) wrapper
     Null,
     Ellipsis, // ... (e.g. Field(...) for required field)
+}
+
+impl std::fmt::Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Value::Object(map_rc) => {
+                let map = map_rc.borrow();
+                if map.get("__meta").and_then(|v| {
+                    if let Value::Bool(b) = v { Some(*b) } else { None }
+                }).unwrap_or(false) {
+                    let schema = map.get("schema").map(|v| v.to_string()).unwrap_or_else(|| "?".to_string());
+                    return write!(f, "Object(<metadata: schema={}>)", schema);
+                }
+                if map.get("__create_all").and_then(|v| {
+                    if let Value::Bool(b) = v { Some(*b) } else { None }
+                }).unwrap_or(false) {
+                    return write!(f, "Object(<create_all>)");
+                }
+                f.debug_map().entries(map.iter().map(|(k, v)| (k, v))).finish()
+            }
+            _ => {
+                match self {
+                    Value::Number(n) => std::fmt::Debug::fmt(n, f),
+                    Value::Bool(b) => std::fmt::Debug::fmt(b, f),
+                    Value::String(s) => std::fmt::Debug::fmt(s, f),
+                    Value::Array(arr) => f.debug_tuple("Array").field(&arr.borrow()).finish(),
+                    Value::Tuple(tup) => f.debug_tuple("Tuple").field(&tup.borrow()).finish(),
+                    Value::Function(i) => f.debug_tuple("Function").field(i).finish(),
+                    Value::NativeFunction(i) => f.debug_tuple("NativeFunction").field(i).finish(),
+                    Value::Path(p) => f.debug_tuple("Path").field(p).finish(),
+                    Value::Uuid(hi, lo) => f.debug_tuple("Uuid").field(hi).field(lo).finish(),
+                    Value::Table(t) => f.debug_tuple("Table").field(&t.borrow()).finish(),
+                    Value::Object(_) => unreachable!(),
+                    Value::ColumnReference { table, column_name } => f.debug_struct("ColumnReference").field("table", table).field("column_name", column_name).finish(),
+                    Value::Tensor(t) => f.debug_tuple("Tensor").field(&t.borrow()).finish(),
+                    Value::Graph(g) => f.debug_tuple("Graph").field(&g.borrow()).finish(),
+                    Value::LinearRegression(lr) => f.debug_tuple("LinearRegression").field(&lr.borrow()).finish(),
+                    Value::SGD(s) => f.debug_tuple("SGD").field(&s.borrow()).finish(),
+                    Value::Momentum(m) => f.debug_tuple("Momentum").field(&m.borrow()).finish(),
+                    Value::NAG(n) => f.debug_tuple("NAG").field(&n.borrow()).finish(),
+                    Value::Adagrad(a) => f.debug_tuple("Adagrad").field(&a.borrow()).finish(),
+                    Value::RMSprop(r) => f.debug_tuple("RMSprop").field(&r.borrow()).finish(),
+                    Value::Adam(a) => f.debug_tuple("Adam").field(&a.borrow()).finish(),
+                    Value::AdamW(a) => f.debug_tuple("AdamW").field(&a.borrow()).finish(),
+                    Value::Dataset(d) => f.debug_tuple("Dataset").field(&d.borrow()).finish(),
+                    Value::NeuralNetwork(n) => f.debug_tuple("NeuralNetwork").field(&n.borrow()).finish(),
+                    Value::Sequential(s) => f.debug_tuple("Sequential").field(&s.borrow()).finish(),
+                    Value::Layer(id) => f.debug_tuple("Layer").field(id).finish(),
+                    Value::Window(h) => f.debug_tuple("Window").field(h).finish(),
+                    Value::Image(img) => f.debug_tuple("Image").field(&img.borrow()).finish(),
+                    Value::Figure(fig) => f.debug_tuple("Figure").field(&fig.borrow()).finish(),
+                    Value::Axis(ax) => f.debug_tuple("Axis").field(&ax.borrow()).finish(),
+                    Value::DatabaseEngine(e) => f.debug_tuple("DatabaseEngine").field(&e.borrow()).finish(),
+                    Value::DatabaseCluster(c) => f.debug_tuple("DatabaseCluster").field(&c.borrow()).finish(),
+                    Value::Enumerate { data, start } => f.debug_struct("Enumerate").field("data", &data.borrow()).field("start", start).finish(),
+                    Value::Null => write!(f, "Null"),
+                    Value::Ellipsis => write!(f, "Ellipsis"),
+                }
+            }
+        }
+    }
 }
 
 impl PartialEq for Value {
@@ -88,6 +153,9 @@ impl PartialEq for Value {
             (Value::Image(a), Value::Image(b)) => Rc::ptr_eq(a, b),
             (Value::Figure(a), Value::Figure(b)) => Rc::ptr_eq(a, b),
             (Value::Axis(a), Value::Axis(b)) => Rc::ptr_eq(a, b),
+            (Value::DatabaseEngine(a), Value::DatabaseEngine(b)) => Rc::ptr_eq(a, b),
+            (Value::DatabaseCluster(a), Value::DatabaseCluster(b)) => Rc::ptr_eq(a, b),
+            (Value::Enumerate { data: a, start: sa }, Value::Enumerate { data: b, start: sb }) => Rc::ptr_eq(a, b) && sa == sb,
             (Value::Null, Value::Null) => true,
             (Value::Ellipsis, Value::Ellipsis) => true,
             _ => false,
@@ -139,6 +207,9 @@ impl Value {
             Value::Image(_) => true,
             Value::Figure(_) => true,
             Value::Axis(_) => true,
+            Value::DatabaseEngine(_) => true,
+            Value::DatabaseCluster(c) => !c.borrow().connections.is_empty(),
+            Value::Enumerate { data, .. } => !data.borrow().is_empty(),
             Value::Ellipsis => true,
             _ => true,
         }
@@ -223,6 +294,12 @@ impl Value {
             }
             Value::Object(map_rc) => {
                 let map = map_rc.borrow();
+                if map.get("__meta").and_then(|v| {
+                    if let Value::Bool(b) = v { Some(*b) } else { None }
+                }).unwrap_or(false) {
+                    return format!("<metadata: schema={}>",
+                        map.get("schema").map(|v| v.to_string()).unwrap_or_else(|| "?".to_string()));
+                }
                 let pairs: Vec<String> = map.iter()
                     .map(|(k, v)| format!("\"{}\": {}", k, v.to_string()))
                     .collect();
@@ -299,6 +376,15 @@ impl Value {
             }
             Value::Axis(_) => {
                 format!("<axis>")
+            }
+            Value::Enumerate { .. } => "<enumerate>".to_string(),
+            Value::DatabaseEngine(engine) => {
+                let e = engine.borrow();
+                format!("<database_engine: {}>", e.url)
+            }
+            Value::DatabaseCluster(c) => {
+                let n = c.borrow().connections.len();
+                format!("<database_cluster: {} connections>", n)
             }
             Value::Uuid(hi, lo) => {
                 let hi_b = hi.to_be_bytes();
@@ -458,6 +544,9 @@ impl Clone for Value {
                 // Клонируем Rc (shallow copy), чтобы изменения сохранялись
                 Value::Axis(axis.clone())
             },
+            Value::DatabaseEngine(engine) => Value::DatabaseEngine(engine.clone()),
+            Value::DatabaseCluster(cluster) => Value::DatabaseCluster(cluster.clone()),
+            Value::Enumerate { data, start } => Value::Enumerate { data: data.clone(), start: *start },
             Value::Null => Value::Null,
             Value::Ellipsis => Value::Ellipsis,
         }

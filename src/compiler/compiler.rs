@@ -36,6 +36,12 @@ pub struct Compiler {
     class_protected_fields: std::collections::HashMap<String, Vec<String>>,
     /// Subclass name -> superclass name, set when implicit constructor was skipped (superclass has no matching constructor).
     class_superclass: std::collections::HashMap<String, String>,
+    /// Class name -> true if extends Table (directly or indirectly). Used for isinstance(x, Table).
+    class_extends_table: std::collections::HashMap<String, bool>,
+    /// Class name -> (constructor_name, function_index). For extends_table classes with implicit field constructor; used to resolve named-arg calls.
+    class_constructor: std::collections::HashMap<String, (String, usize)>,
+    /// Class names marked with @Abstract (so calls load class object for VM __abstract check).
+    abstract_classes: std::collections::HashSet<String>,
 }
 
 impl Compiler {
@@ -55,6 +61,9 @@ impl Compiler {
             class_private_fields: std::collections::HashMap::new(),
             class_protected_fields: std::collections::HashMap::new(),
             class_superclass: std::collections::HashMap::new(),
+            class_extends_table: std::collections::HashMap::new(),
+            class_constructor: std::collections::HashMap::new(),
+            abstract_classes: std::collections::HashSet::new(),
         };
         compiler.register_natives();
         compiler
@@ -229,7 +238,7 @@ impl Compiler {
     fn collect_all_functions(&mut self, statements: &[Stmt]) -> Result<(), LangError> {
         for stmt in statements {
             match stmt {
-                Stmt::Function { name, params, return_type, body, is_cached, .. } => {
+                Stmt::Function { name, params, return_type, body, is_cached, route, .. } => {
                     // Объявляем функцию с правильной сигнатурой сразу
                     let arity = params.len();
                     let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
@@ -247,6 +256,10 @@ impl Compiler {
                     function.return_type = return_type.clone();
                     // Инициализируем default_values как None для всех параметров (обработаем позже)
                     function.default_values = vec![None; params.len()];
+                    if let Some((ref method, ref path)) = route {
+                        function.route_method = Some(method.clone());
+                        function.route_path = Some(path.clone());
+                    }
                     
                     self.functions.push(function);
                     self.function_names.push(name.clone());
@@ -325,6 +338,9 @@ impl Compiler {
             class_private_fields: &mut self.class_private_fields,
             class_protected_fields: &mut self.class_protected_fields,
             class_superclass: &mut self.class_superclass,
+            class_extends_table: &mut self.class_extends_table,
+            class_constructor: &mut self.class_constructor,
+            abstract_classes: &mut self.abstract_classes,
             current_class: None,
             current_superclass: None,
             in_constructor: false,
@@ -736,7 +752,7 @@ impl Compiler {
                 self.end_scope();
                 self.loop_contexts.pop();
             }
-            Stmt::Function { name, params, return_type, body, is_cached, line } => {
+            Stmt::Function { name, params, return_type, body, is_cached, route, line } => {
                 self.current_line = *line;
                 // Находим индекс функции (она уже объявлена в первом проходе)
                 let function_index = self.function_names.iter()
@@ -750,6 +766,10 @@ impl Compiler {
                 let mut function = self.functions[function_index].clone();
                 function.arity = params.len();
                 function.is_cached = *is_cached;
+                if let Some((ref method, ref path)) = route {
+                    function.route_method = Some(method.clone());
+                    function.route_path = Some(path.clone());
+                }
                 function.param_types = params.iter().map(|p| p.type_annotation.clone()).collect();
                 function.return_type = return_type.clone();
                 
@@ -1400,7 +1420,7 @@ impl Compiler {
                 let processed_args = if name == "isinstance" && resolved_args.len() >= 2 {
                     let mut new_args = resolved_args.clone();
                     if let Arg::Positional(Expr::Variable { name: type_name, .. }) = &resolved_args[1] {
-                        let type_names = vec!["int", "str", "bool", "array", "null", "num", "float"];
+                        let type_names = vec!["int", "str", "bool", "array", "null", "num", "float", "table", "Table"];
                         if type_names.contains(&type_name.as_str()) {
                             new_args[1] = Arg::Positional(Expr::Literal {
                                 value: Value::String(type_name.clone()),
@@ -1963,6 +1983,23 @@ impl Compiler {
                             self.chunk.write_with_line(OpCode::Call(resolved_args.len()), *line);
                         }
                     }
+            }
+            Expr::InterpolatedString { segments, line } => {
+                use crate::parser::ast::InterpolatedSegment;
+                for (i, seg) in segments.iter().enumerate() {
+                    match seg {
+                        InterpolatedSegment::Literal(s) => {
+                            let idx = self.chunk.add_constant(Value::String(s.clone()));
+                            self.chunk.write_with_line(OpCode::Constant(idx), *line);
+                        }
+                        InterpolatedSegment::Expr(e) => {
+                            self.compile_expr(e)?;
+                        }
+                    }
+                    if i > 0 {
+                        self.chunk.write_with_line(OpCode::Add, *line);
+                    }
+                }
             }
         }
         Ok(())

@@ -2,7 +2,8 @@
 
 use data_code::dpm::{
     env_root, find_project_root, install_package, load_lock, load_manifest, lock_file_name,
-    packages_dir, set_virtualenvs_in_project, write_lock, LockPackage,
+    packages_dir, run_add_database, run_init_database, run_init_wizard, set_virtualenvs_in_project,
+    write_lock, LockPackage,
 };
 use std::path::Path;
 
@@ -37,7 +38,9 @@ fn print_help() {
     println!("DPM - DataCode Package Manager");
     println!();
     println!("Usage:");
-    println!("  dpm init              Initialize virtual env from dpm.toml (in current directory)");
+    println!("  dpm init              Create dpm.toml interactively (if missing) or install deps from existing dpm.toml");
+    println!("  dpm init database     Create core/database module interactively");
+    println!("  dpm add database       Add another database connection (new folder under core/database)");
     println!("  dpm add <name> <source>  Add dependency (source: git+https://...)");
     println!("  dpm config virtualenvs.in-project <true|false>  Use .dpm in project (default: cache)");
     println!();
@@ -49,6 +52,20 @@ fn print_help() {
 
 fn cmd_init(args: &[String]) -> Result<(), String> {
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    if args.first().map(|s| s.as_str()) == Some("database") {
+        let project_root = if let Some(dir) = args.get(1) {
+            let p = Path::new(dir);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                cwd.join(p)
+            }
+        } else {
+            cwd.clone()
+        };
+        let flags = args.get(2..).unwrap_or(&[]);
+        return run_init_database(&project_root, flags);
+    }
     let project_root = if let Some(dir) = args.first() {
         let p = Path::new(dir);
         if p.is_absolute() {
@@ -61,10 +78,8 @@ fn cmd_init(args: &[String]) -> Result<(), String> {
     };
     let manifest_path = project_root.join("dpm.toml");
     if !manifest_path.exists() {
-        return Err(format!(
-            "dpm.toml not found in {} (run from project root or create dpm.toml)",
-            project_root.display()
-        ));
+        run_init_wizard(&project_root)?;
+        return Ok(());
     }
     let manifest = load_manifest(&project_root)?;
     let lock_file = lock_file_name(&manifest);
@@ -88,12 +103,26 @@ fn cmd_init(args: &[String]) -> Result<(), String> {
 }
 
 fn cmd_add(args: &[String]) -> Result<(), String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    if args.first().map(|s| s.as_str()) == Some("database") {
+        let project_root = if let Some(dir) = args.get(1) {
+            let p = Path::new(dir);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                cwd.join(p)
+            }
+        } else {
+            find_project_root(&cwd).ok_or("No dpm.toml found (run from project with dpm.toml)")?
+        };
+        let flags = args.get(2..).unwrap_or(&[]);
+        return run_add_database(&project_root, flags);
+    }
     let (name, source) = match args {
         [n, s, ..] => (n.as_str(), s.as_str()),
         [n] => return Err(format!("Source required: dpm add {} git+<url>", n)),
         _ => return Err("Usage: dpm add <package_name> <source> (e.g. git+https://...)".to_string()),
     };
-    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let project_root = find_project_root(&cwd).ok_or("No dpm.toml found (run from project with dpm.toml)")?;
     let mut manifest = load_manifest(&project_root)?;
     manifest.dependencies.insert(name.to_string(), source.to_string());

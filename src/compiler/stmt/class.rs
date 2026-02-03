@@ -6,7 +6,7 @@
 const MODEL_CONFIG_CLASS_LOAD_INDEX: usize = 0x0FFF_FFFF;
 
 use crate::debug_println;
-use crate::parser::ast::{Arg, Expr, Stmt};
+use crate::parser::ast::{Arg, Expr, Stmt, Param};
 use crate::bytecode::{OpCode, Function};
 use crate::common::error::LangError;
 use crate::common::value::Value;
@@ -16,6 +16,20 @@ use crate::compiler::expr;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+
+/// Emit bytecode to set this.__extends_table when the class extends Table (for isinstance(x, Table)).
+fn emit_instance_extends_table(ctx: &mut CompilationContext, line: usize, this_slot: usize, class_name: &str) {
+    if !ctx.class_extends_table.get(class_name).copied().unwrap_or(false) {
+        return;
+    }
+    let extends_const = ctx.chunk.add_constant(Value::Bool(true));
+    ctx.chunk.write_with_line(OpCode::Constant(extends_const), line);
+    let key_const = ctx.chunk.add_constant(Value::String("__extends_table".to_string()));
+    ctx.chunk.write_with_line(OpCode::Constant(key_const), line);
+    ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), line);
+    ctx.chunk.write_with_line(OpCode::SetArrayElement, line);
+    ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), line);
+}
 
 /// Emit bytecode to set this.__private_fields, this.__private_field_defining_class, and this.__class_name on the instance (for VM privacy checks).
 /// private_field_defining_class maps field name -> class that defined it (for subclass private access check).
@@ -136,10 +150,33 @@ fn emit_instance_protected_metadata(
     ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), line);
 }
 
+/// Emit bytecode to set this.__class on the instance (for @class parameter injection in methods).
+fn emit_instance_class_reference(
+    ctx: &mut CompilationContext,
+    line: usize,
+    this_slot: usize,
+    class_global_index: usize,
+) {
+    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), line);
+    let key_const = ctx.chunk.add_constant(Value::String("__class".to_string()));
+    ctx.chunk.write_with_line(OpCode::Constant(key_const), line);
+    ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), line);
+    ctx.chunk.write_with_line(OpCode::SetArrayElement, line);
+    ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), line);
+}
+
 pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), LangError> {
-    if let Stmt::Class { name, superclass, private_fields, protected_fields, public_fields, private_variables, protected_variables, public_variables, constructors, methods, line } = stmt {
+    if let Stmt::Class { name, superclass, is_abstract, private_fields, protected_fields, public_fields, private_variables, protected_variables, public_variables, constructors, methods, line } = stmt {
         *ctx.current_line = *line;
-        
+        if *is_abstract {
+            ctx.abstract_classes.insert(name.clone());
+        }
+        // Compute class_extends_table: true if superclass is Table or extends Table
+        let extends_table = superclass.as_ref().map(|s| {
+            s == "Table" || ctx.class_extends_table.get(s).copied().unwrap_or(false)
+        }).unwrap_or(false);
+        ctx.class_extends_table.insert(name.clone(), extends_table);
+
         // Создаем класс-объект с метаданными
         let mut class_metadata = HashMap::new();
         
@@ -151,6 +188,9 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
         let class_protected_var_names: Vec<String> = protected_variables.iter().map(|v| v.name.clone()).collect();
         
         class_metadata.insert("__class_name".to_string(), Value::String(name.clone()));
+        if *is_abstract {
+            class_metadata.insert("__abstract".to_string(), Value::Bool(true));
+        }
         if let Some(ref super_name) = superclass {
             class_metadata.insert("__superclass".to_string(), Value::String(super_name.clone()));
         }
@@ -179,6 +219,31 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
                 class_protected_var_names.iter().map(|n| Value::String(n.clone())).collect()
             ))
         ));
+        // ORM: column names in declaration order (for CREATE TABLE column order)
+        if extends_table {
+            let col_names: Vec<Value> = private_fields.iter().chain(protected_fields.iter()).chain(public_fields.iter())
+                .filter(|f| f.default_value.is_some())
+                .map(|f| Value::String(f.name.clone()))
+                .collect();
+            class_metadata.insert("__col_names".to_string(), Value::Array(Rc::new(RefCell::new(col_names))));
+        }
+        // API for @class parameter: identity, hierarchy, structure
+        class_metadata.insert("name".to_string(), Value::String(name.clone()));
+        class_metadata.insert("full_name".to_string(), Value::String(name.clone()));
+        class_metadata.insert(
+            "parent".to_string(),
+            superclass
+                .as_ref()
+                .map(|s| Value::String(s.clone()))
+                .unwrap_or(Value::Null),
+        );
+        if *is_abstract {
+            class_metadata.insert("is_abstract".to_string(), Value::Bool(true));
+        }
+        let method_names_value = Value::Array(Rc::new(RefCell::new(
+            methods.iter().map(|m| Value::String(m.name.clone())).collect(),
+        )));
+        class_metadata.insert("method_names".to_string(), method_names_value);
         
         // ВАЖНО: Сначала объявляем все методы (forward declaration), чтобы их индексы были известны
         // при компиляции конструкторов (конструкторы должны добавлять методы в объект)
@@ -186,14 +251,25 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
         for method in methods.iter() {
             let method_name = format!("{}::method_{}", name, method.name);
             
-            // Создаем функцию для метода (первый параметр - this)
-            let mut method_function = Function::new(method_name.clone(), method.params.len() + 1);
+            // Check if method has @class as first parameter (injected by VM at call time)
+            let has_at_class = method.params.first().map(|p| p.name == "@class").unwrap_or(false);
+            let user_params: Vec<_> = if has_at_class {
+                method.params.iter().skip(1).collect()
+            } else {
+                method.params.iter().collect()
+            };
+            let arity = 1 + (if has_at_class { 1 } else { 0 }) + user_params.len();
             
-            // Первый параметр - this (неявный)
+            let mut method_function = Function::new(method_name.clone(), arity);
+            
+            // First parameter - this (implicit); second - @class if present (injected by VM)
             let mut param_names = vec!["this".to_string()];
             let mut param_types = vec![None];
-            
-            for param in &method.params {
+            if has_at_class {
+                param_names.push("@class".to_string());
+                param_types.push(None);
+            }
+            for param in &user_params {
                 param_names.push(param.name.clone());
                 param_types.push(param.type_annotation.clone());
             }
@@ -228,6 +304,153 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
         };
 
         if superclass.is_some() && constructors.is_empty() {
+            // For extends_table: generate implicit constructor that takes one param per instance field (ORM-style).
+            // Use all instance fields (private + protected + public) so classes without "public:" still get the constructor.
+            let all_instance_fields: Vec<&crate::parser::ast::ClassField> = private_fields
+                .iter()
+                .chain(protected_fields.iter())
+                .chain(public_fields.iter())
+                .collect();
+            if extends_table && !all_instance_fields.is_empty() {
+                let params: Vec<Param> = all_instance_fields
+                    .iter()
+                    .map(|f| Param {
+                        name: f.name.clone(),
+                        type_annotation: f.type_annotation.clone(),
+                        default_value: f.default_value.clone(),
+                    })
+                    .collect();
+                let n = params.len();
+                let constructor_name = format!("{}::new_{}", name, n);
+                let mut constructor_function = Function::new(constructor_name.clone(), n);
+                constructor_function.param_names = params.iter().map(|p| p.name.clone()).collect();
+                constructor_function.param_types = params.iter().map(|p| p.type_annotation.clone()).collect();
+                // ORM constructor: params without constant default get Null when omitted (per plan); use false for bool columns
+                let mut default_values = Vec::with_capacity(n);
+                for param in &params {
+                    let default = match param.default_value.as_ref().and_then(|e| crate::compiler::constant_fold::evaluate_constant_expr(e).ok().flatten()) {
+                        Some(v) => Some(v),
+                        None => {
+                            let ty_lower = param.type_annotation.as_ref().map(|tys| tys.iter().map(|t| t.to_lowercase()).collect::<Vec<_>>());
+                            let default = if param.name == "id" && param.type_annotation.as_ref().map(|tys| tys.iter().any(|t| t.to_lowercase().contains("int"))).unwrap_or(false) {
+                                Value::Null
+                            } else if ty_lower.as_ref().map(|tys| tys.iter().any(|t| t.contains("bool"))).unwrap_or(false) {
+                                Value::Bool(false)
+                            } else if ty_lower.as_ref().map(|tys| tys.iter().any(|t| t.contains("int") || t.contains("float") || t.contains("number") || t.contains("num"))).unwrap_or(false) {
+                                Value::Number(0.0)
+                            } else if ty_lower.as_ref().map(|tys| tys.iter().any(|t| t.contains("str") || t.contains("string"))).unwrap_or(false) {
+                                Value::String(String::new())
+                            } else {
+                                Value::Null
+                            };
+                            Some(default)
+                        }
+                    };
+                    default_values.push(default);
+                }
+                constructor_function.default_values = default_values;
+
+                // Allow null for params that have default Null (e.g. id with autoincrement)
+                for (i, default_val) in constructor_function.default_values.iter().enumerate() {
+                    if default_val.as_ref() == Some(&Value::Null) {
+                        if let Some(ref mut types) = constructor_function.param_types[i] {
+                            let null_s = "null".to_string();
+                            if !types.contains(&null_s) {
+                                types.push(null_s);
+                            }
+                        } else {
+                            constructor_function.param_types[i] = Some(vec!["null".to_string()]);
+                        }
+                    }
+                }
+
+                // ORM constructor receives row values (str, int, etc.), not Column refs; skip type check
+                constructor_function.param_types = vec![None; n];
+
+                let function_index = ctx.functions.len();
+                ctx.functions.push(constructor_function.clone());
+                ctx.function_names.push(constructor_name.clone());
+
+                let global_index = ctx.scope.globals.len();
+                ctx.scope.globals.insert(constructor_name.clone(), global_index);
+                ctx.chunk.global_names.insert(global_index, constructor_name.clone());
+
+                let saved_chunk = std::mem::replace(&mut *ctx.chunk, constructor_function.chunk.clone());
+                let saved_function = ctx.current_function;
+                let saved_local_count = ctx.scope.local_count;
+
+                ctx.current_function = Some(function_index);
+                ctx.scope.local_count = 0;
+                ctx.scope.begin_scope();
+
+                for param in &params {
+                    ctx.scope.declare_local(&param.name);
+                }
+                let this_slot = ctx.scope.declare_local("this");
+                ctx.chunk.global_names.insert(class_global_index, name.clone());
+
+                let table_global_index = *ctx.scope.globals.get("Table").ok_or_else(|| LangError::ParseError {
+                    message: "Table not found in scope (required for extends_table class with implicit field constructor)".to_string(),
+                    line: *line,
+                })?;
+                ctx.chunk.write_with_line(OpCode::LoadGlobal(table_global_index), *line);
+                ctx.chunk.write_with_line(OpCode::Call(0), *line);
+                ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
+
+                let class_name_const = ctx.chunk.add_constant(Value::String(name.clone()));
+                let class_key_const = ctx.chunk.add_constant(Value::String("__class_name".to_string()));
+                ctx.chunk.write_with_line(OpCode::Constant(class_name_const), *line);
+                ctx.chunk.write_with_line(OpCode::Constant(class_key_const), *line);
+                ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), *line);
+                ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
+
+                let extends_true_const = ctx.chunk.add_constant(Value::Bool(true));
+                let extends_key_const = ctx.chunk.add_constant(Value::String("__extends_table".to_string()));
+                ctx.chunk.write_with_line(OpCode::Constant(extends_true_const), *line);
+                ctx.chunk.write_with_line(OpCode::Constant(extends_key_const), *line);
+                ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), *line);
+                ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
+
+                for (i, field) in all_instance_fields.iter().enumerate() {
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(i), *line);
+                    let field_name_const = ctx.chunk.add_constant(Value::String(field.name.clone()));
+                    ctx.chunk.write_with_line(OpCode::Constant(field_name_const), *line);
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), *line);
+                    ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                    ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
+                }
+
+                emit_instance_class_reference(ctx, *line, this_slot, class_global_index);
+
+                for (_, method) in methods.iter().enumerate() {
+                    if let Some(&method_function_index) = method_indices.get(&method.name) {
+                        let method_function_const = ctx.chunk.add_constant(Value::Function(method_function_index));
+                        ctx.chunk.write_with_line(OpCode::Constant(method_function_const), *line);
+                        let method_name_const = ctx.chunk.add_constant(Value::String(method.name.clone()));
+                        ctx.chunk.write_with_line(OpCode::Constant(method_name_const), *line);
+                        ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), *line);
+                        ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                        ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
+                    }
+                }
+
+                ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), *line);
+                ctx.chunk.write_with_line(OpCode::Return, *line);
+
+                ctx.functions[function_index].chunk = std::mem::replace(&mut *ctx.chunk, saved_chunk);
+                ctx.scope.end_scope();
+                ctx.current_function = saved_function;
+                ctx.scope.local_count = saved_local_count;
+
+                ctx.chunk.global_names.insert(global_index, constructor_name.clone());
+                let constructor_constant_index = ctx.chunk.add_constant(Value::Function(function_index));
+                ctx.chunk.write_with_line(OpCode::Constant(constructor_constant_index), *line);
+                ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+
+                ctx.class_constructor.insert(name.clone(), (constructor_name.clone(), function_index));
+            } else {
             let superclass_name = superclass.as_ref().unwrap();
             // Если суперкласс — класс, вызываем его конструктор (Parent::new_1); иначе — функцию (Base)
             // Если суперкласс не имеет конструктора с 1 аргументом — пропускаем генерацию неявного конструктора
@@ -312,6 +535,25 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
                 ctx.chunk.write_with_line(OpCode::Call(1), *line);
             }
             ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
+            // Update __class_name and __superclass when subclassing (e.g. Base(Table)); parent may return object with its own __class_name
+            if superclass_name != "Settings" {
+                let class_name_const = ctx.chunk.add_constant(Value::String(name.clone()));
+                ctx.chunk.write_with_line(OpCode::Constant(class_name_const), *line);
+                let class_key_const = ctx.chunk.add_constant(Value::String("__class_name".to_string()));
+                ctx.chunk.write_with_line(OpCode::Constant(class_key_const), *line);
+                ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), *line);
+                ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
+                let super_const = ctx.chunk.add_constant(Value::String(superclass_name.clone()));
+                ctx.chunk.write_with_line(OpCode::Constant(super_const), *line);
+                let super_key_const = ctx.chunk.add_constant(Value::String("__superclass".to_string()));
+                ctx.chunk.write_with_line(OpCode::Constant(super_key_const), *line);
+                ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), *line);
+                ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
+                emit_instance_extends_table(ctx, *line, this_slot, name);
+            }
+            emit_instance_class_reference(ctx, *line, this_slot, class_global_index);
             // For Settings subclasses: fill missing fields that have default_factory (e.g. db: DatabaseConfig = Field(default_factory=DatabaseConfig))
             let pending_jumps_before_default_factory = ctx.labels.pending_jumps.len();
             if is_settings_subclass {
@@ -374,6 +616,7 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
             ctx.chunk.write_with_line(OpCode::Constant(constructor_constant_index), *line);
             ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
             } // end if let Some(super_callable)
+            } // end else (path-based implicit constructor)
         }
 
         for constructor in constructors_to_compile {
@@ -452,6 +695,7 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
                     for f in &parent_private { defining_class.insert(f.clone(), super_name.clone()); }
                     for f in &private_field_names { defining_class.insert(f.clone(), name.clone()); }
                     emit_instance_private_metadata(ctx, *line, this_slot, name, &merged_private, &defining_class);
+                    emit_instance_extends_table(ctx, *line, this_slot, name);
                     let parent_protected = ctx.class_protected_fields.get(super_name).cloned().unwrap_or_default();
                     let merged_protected: Vec<String> = parent_protected
                         .iter()
@@ -459,6 +703,7 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
                         .cloned()
                         .collect();
                     emit_instance_protected_metadata(ctx, *line, this_slot, &merged_protected);
+                    emit_instance_class_reference(ctx, *line, this_slot, class_global_index);
                 } else {
                     // No delegate_args - check for explicit super(args) in body
                     // The first statement MUST be super(args) when extending a class
@@ -530,6 +775,7 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
                     for f in &parent_private { defining_class.insert(f.clone(), super_name.clone()); }
                     for f in &private_field_names { defining_class.insert(f.clone(), name.clone()); }
                     emit_instance_private_metadata(ctx, *line, this_slot, name, &merged_private, &defining_class);
+                    emit_instance_extends_table(ctx, *line, this_slot, name);
                     let parent_protected = ctx.class_protected_fields.get(super_name).cloned().unwrap_or_default();
                     let merged_protected: Vec<String> = parent_protected
                         .iter()
@@ -537,6 +783,7 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
                         .cloned()
                         .collect();
                     emit_instance_protected_metadata(ctx, *line, this_slot, &merged_protected);
+                    emit_instance_class_reference(ctx, *line, this_slot, class_global_index);
                 }
             } else {
                 // Создаем пустой объект-экземпляр
@@ -544,9 +791,11 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
                 ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
                 let defining_class: HashMap<String, String> = private_field_names.iter().map(|f| (f.clone(), name.clone())).collect();
                 emit_instance_private_metadata(ctx, *line, this_slot, name, &private_field_names, &defining_class);
+                emit_instance_extends_table(ctx, *line, this_slot, name);
                 emit_instance_protected_metadata(ctx, *line, this_slot, &protected_field_names);
+                emit_instance_class_reference(ctx, *line, this_slot, class_global_index);
             }
-            
+
             // Инициализируем поля значениями по умолчанию
             // Сначала private поля
             for field in private_fields.iter() {
@@ -706,6 +955,12 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
                 line: *line,
             })?;
             let method_function = &ctx.functions[function_index];
+            let has_at_class = method.params.first().map(|p| p.name == "@class").unwrap_or(false);
+            let user_params: Vec<_> = if has_at_class {
+                method.params.iter().skip(1).collect()
+            } else {
+                method.params.iter().collect()
+            };
             
             // Компилируем тело метода в chunk этой функции (уже объявленной)
             let saved_chunk = std::mem::replace(&mut *ctx.chunk, method_function.chunk.clone());
@@ -716,10 +971,12 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
             ctx.scope.local_count = 0;
             ctx.scope.begin_scope();
             
-            // Первый параметр - this
+            // First parameter - this; second - @class if method has it (injected by VM at call time)
             ctx.scope.declare_local("this");
-            // Остальные параметры
-            for param in &method.params {
+            if has_at_class {
+                ctx.scope.declare_local("@class");
+            }
+            for param in &user_params {
                 ctx.scope.declare_local(&param.name);
             }
             
@@ -763,6 +1020,21 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
             ctx.chunk.write_with_line(OpCode::Constant(name_const), *line);
             ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
             ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+        }
+        
+        // Для extends_table: добавляем Column-дескрипторы в объект класса под ключом __col_<name>
+        // (обход проверки приватности; run_create_all ищет __col_* для DDL)
+        if extends_table {
+            for field in private_fields.iter().chain(protected_fields.iter()).chain(public_fields.iter()) {
+                if let Some(ref default_expr) = field.default_value {
+                    expr::compile_expr(ctx, default_expr)?;
+                    let col_key = format!("__col_{}", field.name);
+                    let name_const = ctx.chunk.add_constant(Value::String(col_key));
+                    ctx.chunk.write_with_line(OpCode::Constant(name_const), *line);
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                    ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                }
+            }
         }
         
         // Store this class's private and protected field names for subclass constructors (merge with parent)

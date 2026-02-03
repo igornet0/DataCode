@@ -125,6 +125,9 @@ datacode filename.dc --build_model output.db  # Экспортировать в 
 datacode --websocket       # Запустить WebSocket сервер (ws://127.0.0.1:8080)
 datacode --websocket --host 0.0.0.0 --port 8899  # Кастомный хост/порт
 datacode --websocket --use-ve  # Режим виртуальной среды (изоляция сессий)
+datacode --http            # Запустить HTTP сервер (или datacode-server)
+datacode --http app.dc --port 8080  # HTTP сервер с приложением на DataCode
+datacode-server app.dc --port 8080  # То же через бинарник datacode-server
 datacode --help            # Показать справку
 ```
 
@@ -833,6 +836,7 @@ cargo run examples/ru/09-создание\ модели\ данных/05-table-j
 - **[docs/ru/data_types.md](docs/ru/data_types.md)** - Подробное описание типов данных
 - **[docs/ru/table_create_function.md](docs/ru/table_create_function.md)** - Работа с таблицами
 - **[docs/ru/websocket_server.md](docs/ru/websocket_server.md)** - WebSocket сервер для удаленного выполнения
+- **HTTP сервер (datacode-server)** — маршрутизация `@route("METHOD", "/path")`, Request/Response, примеры в [sandbox/web_api](sandbox/web_api), Nginx: [packaging/nginx](packaging/nginx)
 
 ---
 

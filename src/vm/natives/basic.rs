@@ -61,6 +61,7 @@ pub fn native_len(args: &[Value]) -> Value {
                 let batch_size = dataset.borrow().batch_size();
                 Value::Number(batch_size as f64)
             },
+            Value::Enumerate { data, .. } => Value::Number(data.borrow().len() as f64),
             _ => Value::Null,
         }
     } else {
@@ -134,6 +135,23 @@ pub fn native_range(args: &[Value]) -> Value {
     }
     
     Value::Array(Rc::new(RefCell::new(result)))
+}
+
+/// enum(iterable): returns lazy (idx, element) wrapper; for (i, x) in enum(arr) yields pairs.
+pub fn native_enum(args: &[Value]) -> Value {
+    let iterable = match args.first() {
+        Some(v) => v,
+        None => return Value::Null,
+    };
+    match iterable {
+        Value::Array(rc) => Value::Enumerate { data: Rc::clone(rc), start: 0 },
+        Value::Tuple(rc) => Value::Enumerate { data: Rc::clone(rc), start: 0 },
+        Value::String(s) => {
+            let elements: Vec<Value> = s.chars().map(|c| Value::String(c.to_string())).collect();
+            Value::Enumerate { data: Rc::new(RefCell::new(elements)), start: 0 }
+        }
+        _ => Value::Null,
+    }
 }
 
 // Функции преобразования типов
@@ -393,6 +411,9 @@ pub fn native_typeof(args: &[Value]) -> Value {
         Value::Image(_) => "image",
         Value::Figure(_) => "figure",
         Value::Axis(_) => "axis",
+        Value::DatabaseEngine(_) => "database_engine",
+        Value::DatabaseCluster(_) => "database_cluster",
+        Value::Enumerate { .. } => "enumerate",
         Value::Ellipsis => "ellipsis",
     };
     Value::String(type_name.to_string())
@@ -402,8 +423,47 @@ pub fn native_isinstance(args: &[Value]) -> Value {
     if args.len() < 2 {
         return Value::Bool(false);
     }
-    
+    native_isinstance_impl(args)
+}
+
+/// Check if an Object's __class_name or __superclass chain includes target_class.
+fn object_class_chain_contains(obj: &Value, target_class: &str) -> bool {
+    let Value::Object(map_rc) = obj else { return false };
+    let map = map_rc.borrow();
+    if let Some(Value::String(ref cn)) = map.get("__class_name") {
+        if cn == target_class {
+            return true;
+        }
+        if let Some(Value::String(ref super_name)) = map.get("__superclass") {
+            if super_name == target_class {
+                return true;
+            }
+        }
+        // For Table: check __extends_table (set by compiler for classes inheriting from Table)
+        if target_class == "Table" {
+            if let Some(Value::Bool(true)) = map.get("__extends_table") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn native_isinstance_impl(args: &[Value]) -> Value {
     let value = &args[0];
+    // Если второй аргумент — класс (Object с __class_name), проверяем наследование
+    if let Value::Object(class_map_rc) = &args[1] {
+        let class_map = class_map_rc.borrow();
+        if let Some(Value::String(ref target_class)) = class_map.get("__class_name") {
+            let target = target_class.as_str();
+            return Value::Bool(match value {
+                Value::Table(_) => target == "Table",
+                Value::Object(_) => object_class_chain_contains(value, target),
+                _ => false,
+            });
+        }
+    }
+
     // Извлекаем имя типа из второго аргумента
     // Поддерживаем как строки, так и другие типы (для констант типов, которые являются строками)
     let type_name_str = match &args[1] {
@@ -420,6 +480,7 @@ pub fn native_isinstance(args: &[Value]) -> Value {
                 10 => "date".to_string(),
                 11 => "money".to_string(),
                 12 => "path".to_string(),
+                73 => "table".to_string(),
                 _ => "unknown".to_string(),
             }
         }
@@ -465,7 +526,15 @@ pub fn native_isinstance(args: &[Value]) -> Value {
         Value::Array(_) => type_name_lower == "array" || type_name_lower == "list",
         Value::Tuple(_) => type_name_lower == "tuple",
         Value::Table(_) => type_name_lower == "table",
-        Value::Object(_) => type_name_lower == "object" || type_name_lower == "dict" || type_name_lower == "dictionary",
+        Value::Object(map_rc) => {
+            if type_name_lower == "object" || type_name_lower == "dict" || type_name_lower == "dictionary" {
+                true
+            } else if type_name_lower == "table" {
+                map_rc.borrow().get("__extends_table") == Some(&Value::Bool(true))
+            } else {
+                false
+            }
+        }
         Value::ColumnReference { .. } => type_name_lower == "column",
         Value::Null => type_name_lower == "null" || type_name_lower == "none",
         Value::Function(_) | Value::NativeFunction(_) => type_name_lower == "function",
@@ -487,9 +556,25 @@ pub fn native_isinstance(args: &[Value]) -> Value {
         Value::Image(_) => type_name_lower == "image",
         Value::Figure(_) => type_name_lower == "figure",
         Value::Axis(_) => type_name_lower == "axis",
+        Value::DatabaseEngine(_) => type_name_lower == "database_engine",
+        Value::DatabaseCluster(_) => type_name_lower == "database_cluster",
+        Value::Enumerate { .. } => type_name_lower == "enumerate",
         Value::Ellipsis => type_name_lower == "ellipsis",
     };
     
     Value::Bool(matches)
 }
 
+/// Built-in Table class constructor. Called as Table() or Table(path) when used as superclass.
+/// Returns an Object with __class_name="Table" for inheritance (e.g. cls Base(Table) { ... }).
+pub fn native_table_class(args: &[Value]) -> Value {
+    use std::collections::HashMap;
+    let mut obj = HashMap::new();
+    obj.insert("__class_name".to_string(), Value::String("Table".to_string()));
+    obj.insert("__builtin_table".to_string(), Value::Bool(true));
+    obj.insert("__extends_table".to_string(), Value::Bool(true));
+    if let Some(arg) = args.first() {
+        obj.insert("__path".to_string(), arg.clone());
+    }
+    Value::Object(Rc::new(RefCell::new(obj)))
+}

@@ -2,22 +2,22 @@
 
 use crate::common::value::Value;
 
-/// Канонические имена встроенных глобалов по индексу 0..70 (для merge_globals_from: не перезаписывать правильное значение ошибочным).
-pub const BUILTIN_GLOBAL_NAMES: [&str; 70] = [
+/// Канонические имена встроенных глобалов по индексу 0..74 (для merge_globals_from: не перезаписывать правильное значение ошибочным).
+pub const BUILTIN_GLOBAL_NAMES: [&str; 74] = [
     "print", "len", "range", "int", "float", "bool", "str", "array", "typeof", "isinstance",
     "date", "money", "path", "path_name", "path_parent", "path_exists", "path_is_file", "path_is_dir",
     "path_extension", "path_stem", "path_len", "abs", "sqrt", "pow", "min", "max", "round",
-    "upper", "lower", "trim", "split", "join", "contains", "push", "pop", "unique", "reverse",
+    "upper", "lower", "trim", "split", "join", "contains", "isupper", "islower", "push", "pop", "unique", "reverse",
     "sort", "sum", "average", "count", "any", "all", "table", "read_file", "table_info", "table_head",
     "table_tail", "table_select", "table_sort", "table_where", "show_table", "merge_tables", "now",
     "getcwd", "list_files", "inner_join", "left_join", "right_join", "full_join", "cross_join",
     "semi_join", "anti_join", "zip_join", "asof_join", "apply_join", "join_on", "table_suffixes",
-    "relate", "primary_key",
+    "relate", "primary_key", "enum", "Table",
 ];
 
-/// Возвращает каноническое имя встроенной глобальной переменной по индексу (0..70).
+/// Возвращает каноническое имя встроенной глобальной переменной по индексу (0..74).
 pub fn builtin_global_name(index: usize) -> Option<&'static str> {
-    (index < 70).then(|| BUILTIN_GLOBAL_NAMES[index])
+    (index < 74).then(|| BUILTIN_GLOBAL_NAMES[index])
 }
 
 /// Возвращает канонический индекс встроенной глобальной переменной по имени (для set_functions).
@@ -33,9 +33,9 @@ pub fn register_native_globals(
     globals: &mut Vec<Value>,
     global_names: &mut std::collections::HashMap<usize, String>,
 ) {
-    // Ensure globals vector is large enough for native functions (70) and any globals from compiler
-    let max_global_index = global_names.keys().max().copied().unwrap_or(69);
-    let min_size = (70).max(max_global_index + 1);
+    // Ensure globals vector is large enough for native functions (74) and any globals from compiler
+    let max_global_index = global_names.keys().max().copied().unwrap_or(73);
+    let min_size = (74).max(max_global_index + 1);
     globals.resize(min_size, Value::Null);
 
     for (index, name) in BUILTIN_GLOBAL_NAMES.iter().enumerate() {

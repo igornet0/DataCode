@@ -942,6 +942,9 @@ fn get_value_type_name(value: &Value) -> &str {
         Value::Image(_) => "Image",
         Value::Figure(_) => "Figure",
         Value::Axis(_) => "Axis",
+        Value::DatabaseEngine(_) => "DatabaseEngine",
+        Value::DatabaseCluster(_) => "DatabaseCluster",
+        Value::Enumerate { .. } => "Enumerate",
         Value::Ellipsis => "Ellipsis",
     }
 }

@@ -105,7 +105,7 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
         
         // Общий случай: метод может быть нативной функцией или обычной функцией в объекте
         debug_println!("[DEBUG compile_method_call] Метод '{}' не распознан как метод класса, используем compile_generic_method", method);
-        compile_generic_method(ctx, method, call_args, *line)
+        compile_generic_method(ctx, object, method, call_args, *line)
     } else {
         Err(LangError::ParseError {
             message: "Expected MethodCall expression".to_string(),
@@ -259,6 +259,7 @@ fn compile_join_method(
 
 fn compile_generic_method(
     ctx: &mut CompilationContext,
+    object: &Expr,
     method: &str,
     args: &[Arg],
     line: usize,
@@ -269,16 +270,36 @@ fn compile_generic_method(
     
     // Проверяем, является ли это методом объекта (например, axis.imshow)
     // или функцией модуля (например, ml.load_mnist)
+    // ml.add/sum/... are module functions (no receiver); cluster.add/array.sum need receiver.
+    let is_ml_receiver = matches!(object, Expr::Variable { name, .. } if name == "ml");
     let is_axis_method = matches!(method, "imshow" | "set_title" | "axis");
     let is_nn_method = matches!(method, "device" | "get_device" | "save" | "train" | "train_sh");
     let is_layer_method = matches!(method, "freeze" | "unfreeze");
+    let is_string_method = matches!(method, "lower" | "upper" | "isupper" | "islower" | "trim" | "split" | "join" | "contains");
+    // ml.sum/mean are module functions (no receiver); array.sum/average need receiver.
+    let is_array_method = if is_ml_receiver {
+        matches!(method, "push" | "pop" | "unique" | "reverse" | "sort" | "average" | "count" | "any" | "all")
+    } else {
+        matches!(method, "push" | "pop" | "unique" | "reverse" | "sort" | "sum" | "average" | "count" | "any" | "all")
+    };
+    let is_db_receiver_method = if is_ml_receiver {
+        matches!(method, "get" | "names" | "connect" | "execute" | "query" | "run")
+    } else {
+        matches!(method, "add" | "get" | "names" | "connect" | "execute" | "query" | "run")
+    };
     
-    if is_nn_method {
+    if is_db_receiver_method {
+        compile_db_receiver_method(ctx, method, args, temp_object_slot, line)
+    } else if is_nn_method {
         compile_nn_method(ctx, method, args, temp_object_slot, line)
     } else if is_axis_method {
         compile_axis_method(ctx, method, args, temp_object_slot, line)
     } else if is_layer_method {
         compile_layer_method(ctx, method, args, temp_object_slot, line)
+    } else if is_string_method {
+        compile_string_method(ctx, method, args, temp_object_slot, line)
+    } else if is_array_method {
+        compile_array_method(ctx, method, args, temp_object_slot, line)
     } else {
         compile_module_method(ctx, method, args, temp_object_slot, line)
     }
@@ -417,6 +438,110 @@ fn compile_axis_method(
     
     // Вызываем метод
     ctx.chunk.write_with_line(OpCode::Call(args.len() + 1), line);
+    Ok(())
+}
+
+/// Database engine/cluster methods (add, get, names, connect, execute, query, run) need receiver as first arg.
+/// Stack before Call: [receiver, arg1, ..., method_fn]. VM pops (arity+1) and passes (receiver, arg1, ...) to native.
+fn compile_db_receiver_method(
+    ctx: &mut CompilationContext,
+    method: &str,
+    args: &[Arg],
+    temp_object_slot: usize,
+    line: usize,
+) -> Result<(), LangError> {
+    // Push receiver first, then args, then receiver again for GetArrayElement, then get method; Call(1 + n).
+    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    for arg in args {
+        match arg {
+            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
+            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+        }
+    }
+    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
+    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
+    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
+    ctx.chunk.write_with_line(OpCode::Call(1 + args.len()), line);
+    Ok(())
+}
+
+fn compile_array_method(
+    ctx: &mut CompilationContext,
+    method: &str,
+    args: &[Arg],
+    temp_object_slot: usize,
+    line: usize,
+) -> Result<(), LangError> {
+    // Array methods (push, pop, unique, reverse, sort, sum, average, count, any, all) expect (array, ...args).
+    // Call(arity) pops function then arity args; after reverse, args[0] = first pushed.
+    // Push receiver first, then method args, then get method; stack: [receiver, arg1, ..., method_fn], Call(1 + n).
+    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    for arg in args {
+        match arg {
+            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
+            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+        }
+    }
+    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
+    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
+    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
+    ctx.chunk.write_with_line(OpCode::Call(1 + args.len()), line);
+    Ok(())
+}
+
+fn compile_string_method(
+    ctx: &mut CompilationContext,
+    method: &str,
+    args: &[Arg],
+    temp_object_slot: usize,
+    line: usize,
+) -> Result<(), LangError> {
+    // String methods: native receives (receiver, ...args) except join which expects (array, delim).
+    // For "".join(chars): receiver is delim, arg is array; native_join(array, delim).
+    // So for join we push arg first then receiver; stack [arg, receiver, fn], Call(2) -> args after reverse = [receiver, arg] -> we need [arg, receiver], so push arg, receiver.
+    let n = args.len();
+    if method == "join" {
+        if n != 1 {
+            return Err(LangError::ParseError {
+                message: "string.join() takes exactly 1 argument (array)".to_string(),
+                line,
+            });
+        }
+        for arg in args {
+            match arg {
+                Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
+                Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+            }
+        }
+        ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    } else {
+        if matches!(method, "lower" | "upper" | "isupper" | "islower" | "trim") && n != 0 {
+            return Err(LangError::ParseError {
+                message: format!("string.{}() takes no arguments", method),
+                line,
+            });
+        }
+        if matches!(method, "split" | "contains") && n != 1 {
+            return Err(LangError::ParseError {
+                message: format!("string.{}() takes exactly 1 argument", method),
+                line,
+            });
+        }
+        ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+        for arg in args {
+            match arg {
+                Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
+                Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+            }
+        }
+    }
+    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
+    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
+    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
+    ctx.chunk.write_with_line(OpCode::Call(1 + n), line);
     Ok(())
 }
 

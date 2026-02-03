@@ -72,6 +72,53 @@ mod tests {
     }
 
     #[test]
+    fn test_parser_class_abstract() {
+        let source = r#"
+            @Abstract
+            cls AbstractBase {
+            }
+        "#;
+        let stmts = parse(source);
+        assert_eq!(stmts.len(), 1);
+        if let Stmt::Class { name, is_abstract, .. } = &stmts[0] {
+            assert_eq!(name, "AbstractBase");
+            assert!(*is_abstract, "expected is_abstract = true");
+        } else {
+            panic!("Expected Class statement, got {:?}", stmts[0]);
+        }
+    }
+
+    #[test]
+    fn test_runtime_abstract_cannot_instantiate() {
+        let source = r#"
+            @Abstract
+            cls AbstractBase {
+                public: name: str
+                new AbstractBase(name) { this.name = name }
+            }
+            let _ = AbstractBase("x")
+        "#;
+        assert_runtime_error(source, "Cannot instantiate abstract class");
+    }
+
+    #[test]
+    fn test_abstract_subclass_can_instantiate() {
+        let source = r#"
+            @Abstract
+            cls AbstractBase {
+                public: name: str
+                new AbstractBase(name) { this.name = name }
+            }
+            cls Concrete(AbstractBase) {
+                new Concrete(name) { super(name) }
+            }
+            let c = Concrete("ok")
+            print(c.name)
+        "#;
+        run_ok(source);
+    }
+
+    #[test]
     fn test_parser_class_variable_without_public_goes_to_private() {
         let source = r#"
             cls Config {
@@ -284,6 +331,46 @@ mod tests {
         } else {
             panic!("Expected Class with method");
         }
+    }
+
+    #[test]
+    fn test_parser_class_method_with_at_class_param() {
+        let source = r#"
+            cls User {
+                public:
+                    name: str
+                new User(name) { this.name = name }
+                fn info(@class) { return @class.name }
+            }
+        "#;
+        let stmts = parse(source);
+        assert_eq!(stmts.len(), 1);
+        if let Stmt::Class { name, methods, .. } = &stmts[0] {
+            assert_eq!(name, "User");
+            assert_eq!(methods.len(), 1);
+            assert_eq!(methods[0].name, "info");
+            assert_eq!(methods[0].params.len(), 1);
+            assert_eq!(methods[0].params[0].name, "@class");
+        } else {
+            panic!("Expected Class with method(@class)");
+        }
+    }
+
+    #[test]
+    fn test_parser_at_class_must_be_first_param() {
+        let source = r#"
+            cls C {
+                fn bad(x, @class) { }
+            }
+        "#;
+        let mut lexer = Lexer::new(source);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        let result = parser.parse();
+        assert!(result.is_err(), "expected parse error when @class is not first param");
+        let err = result.unwrap_err();
+        let err_msg = format!("{:?}", err);
+        assert!(err_msg.contains("@class can only be the first"), "expected message about @class first, got {}", err_msg);
     }
 
     #[test]
@@ -1012,5 +1099,163 @@ mod tests {
             Child(10)
         "#;
         assert_runtime_error(source, "private in 'Parent'");
+    }
+
+    // ========== Built-in Table class for inheritance ==========
+
+    #[test]
+    fn test_table_builtin_inheritance() {
+        // cls Base(Table) - Base extends built-in Table
+        let source = r#"
+            cls Base(Table) {
+                public:
+                    name: str
+            }
+            let b = Base("schema")
+            b.name = "my_base"
+            b.name
+        "#;
+        let v = run_ok(source);
+        assert!(matches!(v, Value::String(ref s) if s == "my_base"), "expected String(my_base), got {:?}", v);
+    }
+
+    #[test]
+    fn test_isinstance_table_native() {
+        // isinstance(Value::Table, Table) = true
+        let source = r#"
+            let t = table([[1, 2], [3, 4]], ["a", "b"])
+            isinstance(t, Table)
+        "#;
+        let v = run_ok(source);
+        assert!(matches!(v, Value::Bool(true)), "expected true, got {:?}", v);
+    }
+
+    #[test]
+    fn test_isinstance_table_subclass() {
+        // isinstance(Base instance, Table) = true when Base extends Table
+        // extends_table classes get field-based constructor (Base(x)), not path-based Base("path")
+        let source = r#"
+            cls Base(Table) {
+                public:
+                    x: int
+            }
+            let b = Base(x=42)
+            isinstance(b, Table)
+        "#;
+        let v = run_ok(source);
+        assert!(matches!(v, Value::Bool(true)), "expected true, got {:?}", v);
+    }
+
+    #[test]
+    fn test_isinstance_table_multilevel() {
+        // isinstance(User instance, Table) = true when User extends Base extends Table
+        let source = r#"
+            cls Base(Table) {
+                public:
+                    created: str
+            }
+            cls User(Base) {
+                public:
+                    name: str
+                new User(name) {
+                    super("default")
+                    this.name = name
+                }
+            }
+            let u = User("alice")
+            isinstance(u, Table)
+        "#;
+        let v = run_ok(source);
+        assert!(matches!(v, Value::Bool(true)), "expected true, got {:?}", v);
+    }
+
+    #[test]
+    fn test_isinstance_table_string() {
+        // isinstance(x, "table") works
+        let source = r#"
+            let t = table([[1]], ["col"])
+            isinstance(t, "table")
+        "#;
+        let v = run_ok(source);
+        assert!(matches!(v, Value::Bool(true)), "expected true, got {:?}", v);
+    }
+
+    #[test]
+    fn test_table_constructor_returns_object() {
+        // Table() returns Object with __class_name=Table
+        let source = r#"
+            let obj = Table("test_path")
+            obj.__class_name == "Table" and obj.__builtin_table == true
+        "#;
+        let v = run_ok(source);
+        assert!(matches!(v, Value::Bool(true)), "expected true, got {:?}", v);
+    }
+
+    // ========== @class parameter ==========
+
+    #[test]
+    fn test_runtime_at_class_injected_and_name() {
+        // Method with @class receives class object; @class.name matches class name
+        let source = r#"
+            cls User {
+                public:
+                    name: str
+                new User(name) { this.name = name }
+                fn get_class_name(@class) { return @class.name }
+            }
+            let u = User("Alice")
+            u.get_class_name()
+        "#;
+        let v = run_ok(source);
+        if let Value::String(s) = v {
+            assert_eq!(s, "User", "expected class name 'User', got {}", s);
+        } else {
+            panic!("expected String(\"User\"), got {:?}", v);
+        }
+    }
+
+    #[test]
+    fn test_runtime_at_class_full_name_and_method_names() {
+        // @class.full_name and @class.method_names work
+        let source = r#"
+            cls Model {
+                public: x: int
+                new Model(x) { this.x = x }
+                fn check_full_name(@class) {
+                    return @class.full_name == "Model"
+                }
+                fn check_method_names(@class) {
+                    return len(@class.method_names) >= 1
+                }
+            }
+            let m = Model(1)
+            m.check_full_name() and m.check_method_names()
+        "#;
+        let v = run_ok(source);
+        assert!(matches!(v, Value::Bool(true)), "expected true, got {:?}", v);
+    }
+
+    #[test]
+    fn test_runtime_at_class_parent() {
+        // @class.parent is superclass name for subclass
+        let source = r#"
+            cls Base {
+                public: id: int
+                new Base(id) { this.id = id }
+                fn parent_name(@class) { return @class.parent }
+            }
+            cls Child(Base) {
+                new Child(id) { super(id) }
+                fn parent_name(@class) { return @class.parent }
+            }
+            let c = Child(1)
+            c.parent_name()
+        "#;
+        let v = run_ok(source);
+        if let Value::String(s) = v {
+            assert_eq!(s, "Base", "expected parent name 'Base', got {}", s);
+        } else {
+            panic!("expected String(\"Base\"), got {:?}", v);
+        }
     }
 }

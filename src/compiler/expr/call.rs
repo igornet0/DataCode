@@ -33,11 +33,9 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         if let Some(function_index) = ctx.function_names.iter().position(|n| n == &constructor_name) {
             // Это вызов конструктора
             debug_println!("[DEBUG compile_call] Найден конструктор '{}' с индексом функции {} в function_names", constructor_name, function_index);
-            // Сохраняем количество аргументов до компиляции
             let arg_count = call_args.len();
             debug_println!("[DEBUG compile_call] Сохранено количество аргументов: {} для конструктора '{}' (function_names)", arg_count, constructor_name);
             
-            // Компилируем аргументы ПЕРЕД загрузкой конструктора
             for (i, arg) in call_args.iter().enumerate() {
                 match arg {
                     Arg::Positional(expr) => {
@@ -51,7 +49,13 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                 }
             }
             
-            // Вызываем конструктор
+            if ctx.abstract_classes.contains(name) {
+                let class_global_index = *ctx.scope.globals.get(name).expect("abstract class must be in globals");
+                ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                ctx.chunk.write_with_line(OpCode::Call(arg_count), *line);
+                return Ok(());
+            }
+            
             let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
             let constant_ip = ctx.chunk.code.len();
             ctx.chunk.write_with_line(OpCode::Constant(constant_index), *line);
@@ -60,7 +64,6 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             debug_println!("[DEBUG compile_call] Сгенерирован OpCode::Constant({}) на IP {}, OpCode::Call({}) на IP {} для конструктора '{}' (function_names)", 
                 constant_index, constant_ip, arg_count, call_ip, constructor_name);
             
-            // Проверяем, что инструкция действительно записана правильно
             if let Some(OpCode::Call(recorded_arity)) = ctx.chunk.code.get(call_ip) {
                 if *recorded_arity != arg_count {
                     debug_println!("[ERROR compile_call] КРИТИЧЕСКАЯ ОШИБКА: Записано Call({}), но ожидалось Call({})!", recorded_arity, arg_count);
@@ -77,11 +80,9 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         if ctx.scope.globals.contains_key(name) && ctx.scope.globals.contains_key(&constructor_name) {
             let &global_index = ctx.scope.globals.get(&constructor_name).unwrap();
             debug_println!("[DEBUG compile_call] Найден конструктор '{}' в globals с индексом {}", constructor_name, global_index);
-            // Сохраняем количество аргументов до компиляции
             let arg_count = call_args.len();
             debug_println!("[DEBUG compile_call] Сохранено количество аргументов: {} для конструктора '{}' (globals)", arg_count, constructor_name);
             
-            // Компилируем аргументы ПЕРЕД загрузкой конструктора
             for (i, arg) in call_args.iter().enumerate() {
                 match arg {
                     Arg::Positional(expr) => {
@@ -95,7 +96,13 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                 }
             }
             
-            // Загружаем конструктор из глобальной переменной и вызываем его
+            if ctx.abstract_classes.contains(name) {
+                let class_global_index = *ctx.scope.globals.get(name).unwrap();
+                ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                ctx.chunk.write_with_line(OpCode::Call(arg_count), *line);
+                return Ok(());
+            }
+            
             let load_global_ip = ctx.chunk.code.len();
             ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
             let call_ip = ctx.chunk.code.len();
@@ -103,7 +110,6 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             debug_println!("[DEBUG compile_call] Сгенерирован OpCode::LoadGlobal({}) на IP {}, OpCode::Call({}) на IP {} для конструктора '{}' (globals)", 
                 global_index, load_global_ip, arg_count, call_ip, constructor_name);
             
-            // Проверяем, что инструкция действительно записана правильно
             if let Some(OpCode::Call(recorded_arity)) = ctx.chunk.code.get(call_ip) {
                 if *recorded_arity != arg_count {
                     debug_println!("[ERROR compile_call] КРИТИЧЕСКАЯ ОШИБКА: Записано Call({}), но ожидалось Call({})!", recorded_arity, arg_count);
@@ -120,11 +126,9 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             || ctx.function_names.iter().any(|n| n == &constructor_name);
         if ctx.scope.globals.contains_key(name) && has_constructor {
             debug_println!("[DEBUG compile_call] Класс '{}' найден в globals, генерируем код для проверки конструктора во время выполнения", name);
-            // Сохраняем количество аргументов до компиляции
             let arg_count = call_args.len();
             debug_println!("[DEBUG compile_call] Сохранено количество аргументов: {} для конструктора '{}' (класс в globals)", arg_count, constructor_name);
             
-            // Компилируем аргументы ПЕРЕД загрузкой конструктора
             for (i, arg) in call_args.iter().enumerate() {
                 match arg {
                     Arg::Positional(expr) => {
@@ -138,12 +142,16 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                 }
             }
             
-            // Загружаем конструктор из глобальной переменной по имени конструктора
-            // Если конструктор не найден в scope.globals, создаем новый индекс для него
+            if ctx.abstract_classes.contains(name) {
+                let class_global_index = *ctx.scope.globals.get(name).unwrap();
+                ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                ctx.chunk.write_with_line(OpCode::Call(arg_count), *line);
+                return Ok(());
+            }
+            
             let constructor_global_index = if let Some(&idx) = ctx.scope.globals.get(&constructor_name) {
                 idx
             } else {
-                // Создаем новый индекс для конструктора (он будет установлен во время выполнения)
                 let idx = ctx.scope.globals.len();
                 ctx.scope.globals.insert(constructor_name.clone(), idx);
                 ctx.chunk.global_names.insert(idx, constructor_name.clone());
@@ -157,7 +165,6 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             debug_println!("[DEBUG compile_call] Сгенерирован OpCode::LoadGlobal({}) на IP {}, OpCode::Call({}) на IP {} для конструктора '{}' (класс в globals)", 
                 constructor_global_index, load_global_ip, arg_count, call_ip, constructor_name);
             
-            // Проверяем, что инструкция действительно записана правильно
             if let Some(OpCode::Call(recorded_arity)) = ctx.chunk.code.get(call_ip) {
                 if *recorded_arity != arg_count {
                     debug_println!("[ERROR compile_call] КРИТИЧЕСКАЯ ОШИБКА: Записано Call({}), но ожидалось Call({})!", recorded_arity, arg_count);
@@ -292,7 +299,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         // а вызов конструктора — слот Config::new_N заполнится при выполнении ImportFrom.
         // Только для файловых модулей: встроенные (settings_env, ml, plot, uuid) не экспортируют конструкторы в globals так же, оставляем старый путь (LoadGlobal(name)+Call).
         fn is_builtin_module(name: &str) -> bool {
-            matches!(name, "ml" | "plot" | "settings_env" | "uuid")
+            matches!(name, "ml" | "plot" | "settings_env" | "uuid" | "database")
         }
         if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
             && ctx.imported_symbols.get(name).map_or(false, |m| !is_builtin_module(m))
@@ -330,6 +337,36 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         
         debug_println!("[DEBUG compile_call] Конструктор '{}' не найден ни в function_names, ни в globals, класс '{}' тоже не найден, проверяем как обычную функцию", constructor_name, name);
         }
+
+        // If constructor not found by arity but we have named args: resolve via class_constructor (extends_table field-based constructor)
+        if !is_lowercase {
+            let has_named = call_args.iter().any(|a| matches!(a, Arg::Named { .. }));
+            if has_named {
+                let ctor_info = ctx.class_constructor.get(name).map(|(c, i)| (c.clone(), *i));
+                if let Some((ctor_name, function_index)) = ctor_info {
+                    let function = &ctx.functions[function_index];
+                    let function_info = (function_index, function);
+                    let resolved_args = args::resolve_function_args(name, call_args, Some(function_info), *line)?;
+                    let arity = resolved_args.len();
+                    for arg in &resolved_args {
+                        match arg {
+                            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
+                            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                        }
+                    }
+                    if let Some(&global_index) = ctx.scope.globals.get(&ctor_name) {
+                        ctx.chunk.global_names.insert(global_index, ctor_name.clone());
+                        ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                        ctx.chunk.write_with_line(OpCode::Call(arity), *line);
+                        return Ok(());
+                    }
+                    let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
+                    ctx.chunk.write_with_line(OpCode::Constant(constant_index), *line);
+                    ctx.chunk.write_with_line(OpCode::Call(arity), *line);
+                    return Ok(());
+                }
+            }
+        }
         
         // Обработка обычной функции (для функций, начинающихся с маленькой буквы, или если конструктор не найден)
         // Находим функцию для получения информации о параметрах. Сначала проверяем function_names,
@@ -355,7 +392,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         let processed_args = if name == "isinstance" && resolved_args.len() >= 2 {
             let mut new_args = resolved_args.clone();
             if let Arg::Positional(Expr::Variable { name: type_name, .. }) = &resolved_args[1] {
-                let type_names = vec!["int", "str", "bool", "array", "null", "num", "float"];
+                let type_names = vec!["int", "str", "bool", "array", "null", "num", "float", "table", "Table"];
                 if type_names.contains(&type_name.as_str()) {
                     new_args[1] = Arg::Positional(Expr::Literal {
                         value: Value::String(type_name.clone()),

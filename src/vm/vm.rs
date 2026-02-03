@@ -114,8 +114,10 @@ impl Vm {
         self.natives.push(natives::native_split);        // 30
         self.natives.push(natives::native_join);         // 31
         self.natives.push(natives::native_contains);     // 32
+        self.natives.push(natives::native_isupper);      // 33
+        self.natives.push(natives::native_islower);      // 34
         // Функции массивов
-        self.natives.push(natives::native_push);         // 33
+        self.natives.push(natives::native_push);         // 35
         self.natives.push(natives::native_pop);          // 34
         self.natives.push(natives::native_unique);       // 35
         self.natives.push(natives::native_reverse);      // 36
@@ -154,6 +156,8 @@ impl Vm {
         self.natives.push(natives::native_table_suffixes); // 67
         self.natives.push(natives::native_relate);      // 68
         self.natives.push(natives::native_primary_key); // 69
+        self.natives.push(natives::native_enum);       // 70
+        self.natives.push(natives::native_table_class); // 71 - Table (built-in class for inheritance)
     }
 
     /// Добавляет в VM слоты для всех имён из chunk.global_names, которых ещё нет в VM.
@@ -525,6 +529,15 @@ impl Vm {
         
         for (real_global_idx, name) in &chunk_global_names {
             debug_println!("[DEBUG set_functions] Обрабатываем '{}' из chunk -> слот {}", name, real_global_idx);
+            // Не перезаписывать слоты встроенных нативов (0..BUILTIN_GLOBAL_NAMES.len()) пользовательской функцией с тем же именем
+            if *real_global_idx < globals::BUILTIN_GLOBAL_NAMES.len() {
+                if let Some(canonical) = globals::builtin_global_name(*real_global_idx) {
+                    if canonical == name.as_str() {
+                        debug_println!("[DEBUG set_functions] Пропуск перезаписи встроенного натива '{}' в слоте {}", name, real_global_idx);
+                        continue;
+                    }
+                }
+            }
             if *real_global_idx < self.globals.len() {
                 debug_println!("[DEBUG set_functions] Проверяем globals[{}] для '{}'", real_global_idx, name);
                 if let Value::Function(old_fn_idx) = &self.globals[*real_global_idx] {
@@ -577,6 +590,16 @@ impl Vm {
                     .map(|(idx, _)| *idx) {
                     // Нашли в chunk's global_names, используем mapped index
                     let real_global_idx = global_idx;
+                    // Не перезаписывать слоты встроенных нативов пользовательской функцией с тем же именем
+                    if real_global_idx < globals::BUILTIN_GLOBAL_NAMES.len() {
+                        if let Some(canonical) = globals::builtin_global_name(real_global_idx) {
+                            if canonical == function_name.as_str() {
+                                debug_println!("[DEBUG set_functions] Пропуск перезаписи встроенного натива '{}' в слоте {} (второй цикл)", function_name, real_global_idx);
+                                found_in_chunk = true;
+                                break;
+                            }
+                        }
+                    }
                     if real_global_idx < self.globals.len() {
                         if let Value::Function(old_fn_idx) = &self.globals[real_global_idx] {
                             if *old_fn_idx != new_fn_idx {
@@ -771,6 +794,7 @@ impl Vm {
         modules::register_module("plot", &mut self.natives, &mut self.globals, &mut self.global_names)?;
         modules::register_module("settings_env", &mut self.natives, &mut self.globals, &mut self.global_names)?;
         modules::register_module("uuid", &mut self.natives, &mut self.globals, &mut self.global_names)?;
+        modules::register_module("database", &mut self.natives, &mut self.globals, &mut self.global_names)?;
         Ok(())
     }
 
@@ -908,8 +932,8 @@ impl Vm {
     /// Объединяет глобальные переменные из другого VM в этот VM
     /// Используется для передачи глобальных переменных из __lib__.dc в основной файл
     pub fn merge_globals_from(&mut self, other: &Vm) {
-        const BUILTIN_COUNT: usize = 70;
-        // Чтобы NativeFunction(i) из модуля (i >= 70) был валиден в self, добавляем нативы модуля.
+        const BUILTIN_COUNT: usize = 74;
+        // Чтобы NativeFunction(i) из модуля (i >= 73) был валиден в self, добавляем нативы модуля.
         let other_natives = other.get_natives();
         if other_natives.len() > BUILTIN_COUNT {
             self.natives.extend_from_slice(&other_natives[BUILTIN_COUNT..]);
@@ -1057,7 +1081,7 @@ impl Vm {
                     .map(|(idx, _)| *idx)
                     .collect();
                 if let Some(&existing_index) = existing_indices.iter().min() {
-                    // Не перезаписывать слоты 0..70 (канонические нативы) значениями из модуля.
+                    // Не перезаписывать слоты 0..71 (канонические нативы) значениями из модуля.
                     if existing_index < BUILTIN_COUNT {
                         debug_println!("[DEBUG merge_globals_from] Пропуск перезаписи '{}' (слот {} — канонический натив)", name, existing_index);
                         continue;
@@ -1068,7 +1092,7 @@ impl Vm {
                         debug_println!("[DEBUG merge_globals_from] Пропуск перезаписи '{}' (встроенный модуль)", name);
                         continue;
                     }
-                    // Не перезаписывать корректное значение ошибочным: если value_to_store — встроенный натив (0..70),
+                    // Не перезаписывать корректное значение ошибочным: если value_to_store — встроенный натив (0..71),
                     // но имя переменной не совпадает с каноническим именем этого натива, пропускаем перезапись.
                     if let Value::NativeFunction(i) = value_to_store {
                         if i < BUILTIN_COUNT {
@@ -1098,7 +1122,7 @@ impl Vm {
                         self.globals[existing_index] = value_to_store;
                     }
                 } else {
-                    // Не создавать глобальную с ошибочным встроенным: если value — встроенный натив (0..70),
+                    // Не создавать глобальную с ошибочным встроенным: если value — встроенный натив (0..71),
                     // но имя не совпадает с каноническим, пропускаем (дубликат из модуля вроде (0, "Settings")).
                     if let Value::NativeFunction(i) = value_to_store {
                         if i < BUILTIN_COUNT {

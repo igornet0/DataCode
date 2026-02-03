@@ -112,3 +112,22 @@ pub fn native_contains(args: &[Value]) -> Value {
     Value::Bool(s.contains(substr))
 }
 
+pub fn native_isupper(args: &[Value]) -> Value {
+    if args.is_empty() {
+        return Value::Bool(false);
+    }
+    match &args[0] {
+        Value::String(s) => Value::Bool(s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)),
+        _ => Value::Bool(false),
+    }
+}
+
+pub fn native_islower(args: &[Value]) -> Value {
+    if args.is_empty() {
+        return Value::Bool(false);
+    }
+    match &args[0] {
+        Value::String(s) => Value::Bool(s.chars().next().map(|c| c.is_lowercase()).unwrap_or(false)),
+        _ => Value::Bool(false),
+    }
+}

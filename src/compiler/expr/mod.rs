@@ -1,5 +1,6 @@
 /// Модуль компиляции выражений
 
+pub mod interpolated;
 pub mod literal;
 pub mod variable;
 pub mod assign;
@@ -52,6 +53,7 @@ pub fn compile_expr(
         Expr::Super { .. } => super_expr::compile_super(ctx, expr),
         Expr::SuperCall { .. } => super_expr::compile_super_call(ctx, expr),
         Expr::SuperMethodCall { .. } => super_expr::compile_super_method_call(ctx, expr),
+        Expr::InterpolatedString { .. } => interpolated::compile_interpolated_string(ctx, expr),
     }
 }
 

@@ -14,6 +14,15 @@ pub struct WebSocketConfig {
     pub build_model: bool,
 }
 
+/// Configuration for HTTP server (datacode-server)
+#[derive(Debug, Clone)]
+pub struct HttpServerConfig {
+    pub host: String,
+    pub port: u16,
+    /// Optional app entry file (e.g. app.dc) with @route handlers; if None, GET / returns fixed string.
+    pub app_file: Option<String>,
+}
+
 /// Configuration for file execution
 #[derive(Debug, Clone)]
 pub struct FileExecutionConfig {
@@ -34,6 +43,7 @@ pub enum CliArgs {
     Help,
     Version,
     WebSocket(WebSocketConfig),
+    HttpServer(HttpServerConfig),
     FileExecution(FileExecutionConfig),
     Repl,
 }
@@ -50,6 +60,7 @@ pub fn print_help() {
     println!("  datacode main.dc --no-gui       # Run in main thread (script output visible, no plot windows)");
     println!("  datacode --base-dir <dir> main.dc  # Resolve script and .env paths from <dir> (see Path resolution below)");
     println!("  datacode --websocket       # Start WebSocket server for remote code execution");
+    println!("  datacode --http            # Start HTTP server (or use datacode-server binary)");
     println!("  datacode --help            # Show this help");
     println!();
     println!("File Execution:");
@@ -85,7 +96,13 @@ pub fn print_help() {
     println!("    - Session folder is deleted on disconnect");
     println!("  • Send JSON: {{\"code\": \"print('Hello World')\"}}");
     println!("  • Receive JSON: {{\"success\": true, \"output\": \"Hello World\\n\", \"error\": null}}");
-    println!("  • Upload file: {{\"type\": \"upload_file\", \"filename\": \"test.txt\", \"content\": \"...\"}}");
+    println!("      • Upload file: {{\"type\": \"upload_file\", \"filename\": \"test.txt\", \"content\": \"...\"}}");
+    println!();
+    println!("HTTP Server (datacode-server):");
+    println!("  • Start: datacode --http  or  datacode-server");
+    println!("  • Default: http://127.0.0.1:8080");
+    println!("  • Custom: datacode-server --host 0.0.0.0 --port 3000");
+    println!("  • GET / returns \"Hello from DataCode\" (Stage 1)");
     println!();
     println!("Features:");
     println!("  • Interactive REPL with multiline support");
@@ -190,6 +207,54 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
                     use_ve,
                     build_model,
                 }));
+            }
+            "--http" => {
+                let mut host = "127.0.0.1".to_string();
+                let mut port = 8080u16;
+                let mut app_file: Option<String> = None;
+                if let Ok(addr) = env::var("DATACODE_HTTP_ADDRESS") {
+                    if let Some(colon_pos) = addr.find(':') {
+                        host = addr[..colon_pos].to_string();
+                        if let Ok(p) = addr[colon_pos + 1..].parse::<u16>() {
+                            port = p;
+                        }
+                    } else {
+                        host = addr;
+                    }
+                }
+                let mut i = 2;
+                while i < args.len() {
+                    match args[i].as_str() {
+                        "--host" => {
+                            if i + 1 < args.len() {
+                                host = args[i + 1].clone();
+                                i += 2;
+                            } else {
+                                return Err("Ошибка: --host требует значение".to_string());
+                            }
+                        }
+                        "--port" => {
+                            if i + 1 < args.len() {
+                                if let Ok(p) = args[i + 1].parse::<u16>() {
+                                    port = p;
+                                    i += 2;
+                                } else {
+                                    return Err("Ошибка: неверный номер порта".to_string());
+                                }
+                            } else {
+                                return Err("Ошибка: --port требует значение".to_string());
+                            }
+                        }
+                        arg if !arg.starts_with('-') && arg.ends_with(".dc") => {
+                            app_file = Some(arg.to_string());
+                            i += 1;
+                        }
+                        _ => {
+                            i += 1;
+                        }
+                    }
+                }
+                return Ok(CliArgs::HttpServer(HttpServerConfig { host, port, app_file }));
             }
             _ => {
                 // Check if it's an option (starts with -)

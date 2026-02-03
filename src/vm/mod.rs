@@ -22,13 +22,15 @@ pub mod repl;
 pub mod gui;
 pub mod window_events;
 pub mod websocket;
+pub mod http_server;
 
 pub use vm::Vm;
 pub use types::{ExplicitRelation, ExplicitPrimaryKey};
 
 // Re-export public APIs
-pub use cli::{CliArgs, WebSocketConfig, FileExecutionConfig, parse_args, print_help, print_version, version};
+pub use cli::{CliArgs, WebSocketConfig, HttpServerConfig, FileExecutionConfig, parse_args, print_help, print_version, version};
 pub use repl::run_repl;
 pub use gui::run_with_event_loop;
 pub use websocket::start_websocket_server;
+pub use http_server::start_http_server;
 

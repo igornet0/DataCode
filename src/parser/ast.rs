@@ -180,6 +180,18 @@ pub enum Expr {
     Ellipsis {
         line: usize,
     },
+    /// String interpolation: "Hello ${name}" → segments of literals and expressions
+    InterpolatedString {
+        segments: Vec<InterpolatedSegment>,
+        line: usize,
+    },
+}
+
+/// Сегмент интерполированной строки: литерал или выражение.
+#[derive(Debug, Clone)]
+pub enum InterpolatedSegment {
+    Literal(String),   // обычный текст (после замены "\\${" → "${" в литералах)
+    Expr(Box<Expr>),
 }
 
 impl Expr {
@@ -204,6 +216,7 @@ impl Expr {
             Expr::SuperCall { line, .. } => *line,
             Expr::SuperMethodCall { line, .. } => *line,
             Expr::Ellipsis { line, .. } => *line,
+            Expr::InterpolatedString { line, .. } => *line,
         }
     }
 }
@@ -243,6 +256,8 @@ pub enum Stmt {
         return_type: Option<Vec<String>>, // Тип возвращаемого значения (может быть union типом)
         body: Vec<Stmt>,
         is_cached: bool,
+        /// Web route: (method, path) e.g. ("GET", "/") from @route("GET", "/")
+        route: Option<(String, String)>,
         line: usize,
     },
     Return {
@@ -273,6 +288,7 @@ pub enum Stmt {
     Class {
         name: String,
         superclass: Option<String>,
+        is_abstract: bool,
         private_fields: Vec<ClassField>,
         protected_fields: Vec<ClassField>,
         public_fields: Vec<ClassField>,

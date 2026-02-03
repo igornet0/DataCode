@@ -22,6 +22,8 @@ pub mod plot;
 pub mod settings_env;
 #[path = "lib/uuid/mod.rs"]
 pub mod uuid;
+#[path = "lib/database/mod.rs"]
+pub mod database;
 
 // Публичный API для запуска интерпретатора
 pub use common::{error::LangError, value::Value};
@@ -410,6 +412,14 @@ fn run_with_vm_internal_with_args(
         }
     }
     
+    // Восстанавливаем слоты встроенных нативов (0..BUILTIN_GLOBAL_NAMES.len()), чтобы пользовательские функции с тем же именем не перезаписывали их
+    use crate::vm::globals;
+    for (idx, &name) in globals::BUILTIN_GLOBAL_NAMES.iter().enumerate() {
+        if vm.get_global_names().get(&idx).map(|s| s.as_str()) == Some(name) {
+            vm.get_globals_mut()[idx] = Value::NativeFunction(idx);
+        }
+    }
+
     // Use explicit base path when provided (e.g. from run_with_vm_and_path), else thread-local
     vm.set_base_path(explicit_base_path.or_else(file_import::get_base_path));
     let result = vm.run(&chunk)?;

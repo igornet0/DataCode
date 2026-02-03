@@ -41,6 +41,12 @@ pub struct CompilationContext<'a> {
     pub class_protected_fields: &'a mut std::collections::HashMap<String, Vec<String>>,
     /// Subclass name -> superclass name, set when implicit constructor was skipped (superclass has no matching constructor).
     pub class_superclass: &'a mut std::collections::HashMap<String, String>,
+    /// Class name -> true if the class extends Table (directly or indirectly). Used for isinstance(x, Table).
+    pub class_extends_table: &'a mut std::collections::HashMap<String, bool>,
+    /// Class name -> (constructor_name, function_index). Used to resolve named-arg constructor calls (e.g. User(name="Alice")) for extends_table classes.
+    pub class_constructor: &'a mut std::collections::HashMap<String, (String, usize)>,
+    /// Class names marked with @Abstract; calls to these must load the class object (not constructor) so VM can check __abstract.
+    pub abstract_classes: &'a mut std::collections::HashSet<String>,
     /// Current class being compiled (for super.method() resolution).
     pub current_class: Option<String>,
     /// Superclass of current class (for super() and super.method() resolution).

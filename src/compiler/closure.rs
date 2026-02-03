@@ -1,6 +1,6 @@
 /// Работа с замыканиями: поиск захваченных переменных
 
-use crate::parser::ast::{Expr, Stmt, UnpackPattern};
+use crate::parser::ast::{Expr, InterpolatedSegment, Stmt, UnpackPattern};
 
 /// Собирает имена переменных из паттерна распаковки
 pub fn collect_unpack_pattern_variables(pattern: &[UnpackPattern], vars: &mut std::collections::HashSet<String>) {
@@ -91,6 +91,13 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
                     Arg::Named { value, .. } => {
                         vars.extend(find_used_variables_in_expr(value));
                     }
+                }
+            }
+        }
+        Expr::InterpolatedString { segments, .. } => {
+            for seg in segments {
+                if let InterpolatedSegment::Expr(e) = seg {
+                    vars.extend(find_used_variables_in_expr(e));
                 }
             }
         }

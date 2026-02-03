@@ -14,6 +14,7 @@ pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
         Expr::TupleLiteral { .. } => Ok(None), // Не можем вычислить во время компиляции
         Expr::Property { .. } => Ok(None), // Не можем вычислить во время компиляции
         Expr::MethodCall { .. } => Ok(None), // Не можем вычислить во время компиляции
+        Expr::InterpolatedString { .. } => Ok(None), // Содержит выражения — вычисляем в рантайме
         Expr::Binary { left, op, right, .. } => {
             // Пытаемся вычислить бинарное выражение, если оба операнда константы
             let left_val = evaluate_constant_expr(left)?;

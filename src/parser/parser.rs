@@ -1,7 +1,7 @@
 // Recursive Descent Parser
 
 use crate::lexer::{Token, TokenKind};
-use crate::parser::ast::{Expr, Stmt, Param, Arg, UnpackPattern, ImportItem, ImportStmt, ClassVariable};
+use crate::parser::ast::{Expr, InterpolatedSegment, Stmt, Param, Arg, UnpackPattern, ImportItem, ImportStmt, ClassVariable};
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use std::rc::Rc;
@@ -41,9 +41,26 @@ impl Parser {
             Ok(Stmt::Let { name, value, is_global: true, line: global_line })
         } else if self.match_token(TokenKind::Let) {
             self.variable_declaration()
+        } else if self.check(TokenKind::At) {
+            self.advance(); // consume @
+            // @class in expression (e.g. inside method body: @class.name) — parse as statement, not decorator
+            if self.check(TokenKind::Identifier) && self.peek().lexeme == "class" {
+                self.current = self.current.saturating_sub(1); // put @ back so statement() parses @class...
+                return self.statement();
+            }
+            // @Abstract cls ... or @cache / @route fn ...
+            if self.check(TokenKind::Abstract) {
+                self.advance(); // consume Abstract
+                self.consume(TokenKind::Cls, "Expect 'cls' after @Abstract")?;
+                self.class_declaration(true)
+            } else {
+                let (is_cached, route) = self.parse_function_decorators_after_at()?;
+                self.consume(TokenKind::Fn, "Expect 'fn' after decorators")?;
+                self.function_declaration_body(is_cached, route)
+            }
         } else if self.match_token(TokenKind::Cls) {
-            self.class_declaration()
-        } else if self.check(TokenKind::At) || self.check(TokenKind::Fn) {
+            self.class_declaration(false)
+        } else if self.check(TokenKind::Fn) {
             self.function_declaration()
         } else {
             self.statement()
@@ -167,17 +184,89 @@ impl Parser {
         Ok(Stmt::Let { name, value, is_global: false, line: let_line })
     }
 
+    /// Parse function decorators when we have already consumed '@' and current token is the first decorator name.
+    fn parse_function_decorators_after_at(&mut self) -> Result<(bool, Option<(String, String)>), LangError> {
+        let mut is_cached = false;
+        let mut route: Option<(String, String)> = None;
+        loop {
+            if self.match_token(TokenKind::Cache) {
+                is_cached = true;
+            } else if self.check(TokenKind::Identifier) && self.peek().lexeme == "route" {
+                self.advance(); // consume "route"
+                self.consume(TokenKind::LParen, "Expect '(' after @route")?;
+                let method_expr = self.expression()?;
+                let method = Self::expr_to_string(&method_expr).ok_or_else(|| LangError::ParseError {
+                    message: "@route first argument must be a string literal (e.g. \"GET\")".to_string(),
+                    line: self.previous().line,
+                })?;
+                self.consume(TokenKind::Comma, "Expect ',' in @route(...)")?;
+                let path_expr = self.expression()?;
+                let path = Self::expr_to_string(&path_expr).ok_or_else(|| LangError::ParseError {
+                    message: "@route second argument must be a string literal (e.g. \"/\")".to_string(),
+                    line: self.previous().line,
+                })?;
+                self.consume(TokenKind::RParen, "Expect ')' after @route(...)")?;
+                route = Some((method, path));
+            } else {
+                let got = if self.check(TokenKind::Identifier) {
+                    self.peek().lexeme.clone()
+                } else {
+                    "non-identifier".to_string()
+                };
+                return Err(LangError::ParseError {
+                    message: format!("Expect 'cache' or 'route(...)' after '@', got '{}'", got),
+                    line: self.peek().line,
+                });
+            }
+            if !self.match_token(TokenKind::At) {
+                break;
+            }
+        }
+        Ok((is_cached, route))
+    }
+
     fn function_declaration(&mut self) -> Result<Stmt, LangError> {
-        // Проверяем наличие аннотации @cache
-        let is_cached = if self.match_token(TokenKind::At) {
-            self.consume(TokenKind::Cache, "Expect 'cache' after '@'")?;
-            true
-        } else {
-            false
-        };
-        
-        // Парсим fn
+        // Parse decorators: @cache and/or @route("METHOD", "/path")
+        let mut is_cached = false;
+        let mut route: Option<(String, String)> = None;
+        while self.match_token(TokenKind::At) {
+            if self.match_token(TokenKind::Cache) {
+                is_cached = true;
+            } else if self.check(TokenKind::Identifier) && self.peek().lexeme == "route" {
+                self.advance();
+                self.consume(TokenKind::LParen, "Expect '(' after @route")?;
+                let method_expr = self.expression()?;
+                let method = Self::expr_to_string(&method_expr).ok_or_else(|| LangError::ParseError {
+                    message: "@route first argument must be a string literal (e.g. \"GET\")".to_string(),
+                    line: self.previous().line,
+                })?;
+                self.consume(TokenKind::Comma, "Expect ',' in @route(...)")?;
+                let path_expr = self.expression()?;
+                let path = Self::expr_to_string(&path_expr).ok_or_else(|| LangError::ParseError {
+                    message: "@route second argument must be a string literal (e.g. \"/\")".to_string(),
+                    line: self.previous().line,
+                })?;
+                self.consume(TokenKind::RParen, "Expect ')' after @route(...)")?;
+                route = Some((method, path));
+            } else {
+                let dec_name = if self.check(TokenKind::Identifier) {
+                    self.peek().lexeme.clone()
+                } else {
+                    "".to_string()
+                };
+                return Err(LangError::ParseError {
+                    message: format!("Expect 'cache' or 'route(...)' after '@', got '{}'", dec_name),
+                    line: self.peek().line,
+                });
+            }
+        }
+
         self.consume(TokenKind::Fn, "Expect 'fn'")?;
+        self.function_declaration_body(is_cached, route)
+    }
+
+    /// Parse function name, params, return type and body. Caller must have consumed 'fn' so previous() is 'fn'.
+    fn function_declaration_body(&mut self, is_cached: bool, route: Option<(String, String)>) -> Result<Stmt, LangError> {
         let fn_line = self.previous().line;
         let name = self.consume(TokenKind::Identifier, "Expect function name")?.lexeme.clone();
         self.consume(TokenKind::LParen, "Expect '(' after function name")?;
@@ -242,10 +331,19 @@ impl Parser {
 
         let body = self.block()?;
 
-        Ok(Stmt::Function { name, params, return_type, body, is_cached, line: fn_line })
+        Ok(Stmt::Function { name, params, return_type, body, is_cached, route, line: fn_line })
     }
 
-    fn class_declaration(&mut self) -> Result<Stmt, LangError> {
+    /// Extract string value from a string literal expression (for @route("GET", "/")).
+    fn expr_to_string(expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Literal { value: Value::String(s), .. } => Some(s.clone()),
+            Expr::InterpolatedString { .. } => None, // interpolated string is not a literal
+            _ => None,
+        }
+    }
+
+    fn class_declaration(&mut self, is_abstract: bool) -> Result<Stmt, LangError> {
         let cls_line = self.previous().line;
         let name = self.consume(TokenKind::Identifier, "Expect class name after 'cls'")?.lexeme.clone();
         let superclass = if self.match_token(TokenKind::LParen) {
@@ -404,6 +502,7 @@ impl Parser {
         Ok(Stmt::Class {
             name,
             superclass,
+            is_abstract,
             private_fields,
             protected_fields,
             public_fields,
@@ -573,7 +672,24 @@ impl Parser {
                     });
                 }
                 
-                let param_name = self.consume(TokenKind::Identifier, "Expect parameter name")?.lexeme.clone();
+                let param_name = if self.match_token(TokenKind::At) {
+                    self.consume(TokenKind::Identifier, "Expect 'class' after '@'")?;
+                    if self.previous().lexeme != "class" {
+                        return Err(LangError::ParseError {
+                            message: "After '@' only 'class' is allowed as parameter name".to_string(),
+                            line: self.previous().line,
+                        });
+                    }
+                    if !params.is_empty() {
+                        return Err(LangError::ParseError {
+                            message: "@class can only be the first parameter of a method".to_string(),
+                            line: self.previous().line,
+                        });
+                    }
+                    "@class".to_string()
+                } else {
+                    self.consume(TokenKind::Identifier, "Expect parameter name")?.lexeme.clone()
+                };
                 let param_line = self.previous().line;
                 
                 // Проверяем, есть ли аннотация типа
@@ -996,6 +1112,85 @@ impl Parser {
 
     fn expression(&mut self) -> Result<Expr, LangError> {
         self.assignment()
+    }
+
+    /// Parse a single expression from the current token stream; expects only that expression then Eof.
+    pub fn parse_single_expression(&mut self) -> Result<Expr, LangError> {
+        let expr = self.expression()?;
+        if !self.is_at_end() {
+            return Err(LangError::ParseError {
+                message: format!("Expected end of expression in interpolation, found {:?}", self.peek().kind),
+                line: self.peek().line,
+            });
+        }
+        Ok(expr)
+    }
+
+    /// Parse one expression from source string (used for "${...}" contents).
+    fn parse_expression_from_source(source: &str, _line: usize) -> Result<Expr, LangError> {
+        let mut lexer = crate::lexer::Lexer::new(source);
+        let tokens = lexer.tokenize()?;
+        let mut sub_parser = Parser::new(tokens);
+        sub_parser.parse_single_expression()
+    }
+
+    /// Unescape literal segments: lexer \$ pushes placeholder \u{E000}; we replace it with "$" (the "{" is already in the string)
+    fn unescape_literal(s: &str) -> String {
+        s.replace('\u{E000}', "$")
+    }
+
+    /// Split string content into interpolation segments; returns segments or error if unclosed "${".
+    fn parse_interpolated_segments(raw: &str, line: usize) -> Result<Vec<InterpolatedSegment>, LangError> {
+        let mut segments = Vec::new();
+        let bytes = raw.as_bytes();
+        let mut literal_start = 0;
+        loop {
+            match raw[literal_start..].find("${") {
+                None => {
+                    let lit = Self::unescape_literal(&raw[literal_start..]);
+                    if !lit.is_empty() {
+                        segments.push(InterpolatedSegment::Literal(lit));
+                    }
+                    break;
+                }
+                Some(rel) => {
+                    let pos = literal_start + rel;
+                    if pos > 0 && bytes[pos - 1] == b'\\' {
+                        literal_start = pos + 1;
+                        continue;
+                    }
+                    let lit = Self::unescape_literal(&raw[literal_start..pos]);
+                    if !lit.is_empty() {
+                        segments.push(InterpolatedSegment::Literal(lit));
+                    }
+                    let mut depth: i32 = 1;
+                    let mut end_byte = None;
+                    for (byte_off, c) in raw[pos + 2..].char_indices() {
+                        let abs_byte = pos + 2 + byte_off;
+                        match c {
+                            '{' => depth += 1,
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    end_byte = Some(abs_byte);
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    let end_byte = end_byte.ok_or_else(|| LangError::ParseError {
+                        message: format!("Unclosed interpolation at line {}", line),
+                        line,
+                    })?;
+                    let expr_source = raw[pos + 2..end_byte].trim();
+                    let expr = Self::parse_expression_from_source(expr_source, line)?;
+                    segments.push(InterpolatedSegment::Expr(Box::new(expr)));
+                    literal_start = end_byte + 1;
+                }
+            }
+        }
+        Ok(segments)
     }
 
     fn assignment(&mut self) -> Result<Expr, LangError> {
@@ -1639,8 +1834,36 @@ impl Parser {
         if self.match_token(TokenKind::String) {
             let line = self.previous().line;
             let lexeme = self.previous().lexeme.clone();
-            let value = lexeme[1..lexeme.len() - 1].to_string(); // Убираем кавычки
-            return Ok(Expr::Literal { value: Value::String(value), line });
+            let raw = lexeme[1..lexeme.len() - 1].to_string(); // Убираем кавычки
+            if raw.contains("${") {
+                let mut has_interpolation = false;
+                let bytes = raw.as_bytes();
+                let mut start = 0;
+                while let Some(rel) = raw[start..].find("${") {
+                    let pos = start + rel;
+                    if pos == 0 || bytes[pos - 1] != b'\\' {
+                        has_interpolation = true;
+                        break;
+                    }
+                    start = pos + 1;
+                }
+                if has_interpolation {
+                    let segments = Self::parse_interpolated_segments(&raw, line)?;
+                    return Ok(Expr::InterpolatedString { segments, line });
+                }
+            }
+            return Ok(Expr::Literal { value: Value::String(Self::unescape_literal(&raw)), line });
+        }
+        if self.match_token(TokenKind::At) {
+            let line = self.previous().line;
+            self.consume(TokenKind::Identifier, "Expect 'class' after '@' in expression")?;
+            if self.previous().lexeme != "class" {
+                return Err(LangError::ParseError {
+                    message: "After '@' only 'class' is allowed (e.g. @class.name)".to_string(),
+                    line: self.previous().line,
+                });
+            }
+            return Ok(Expr::Variable { name: "@class".to_string(), line });
         }
         if self.match_token(TokenKind::Identifier) {
             let line = self.previous().line;
@@ -1850,13 +2073,25 @@ impl Parser {
         }
     }
 
-    /// Парсит один тип - может быть идентификатором или ключевым словом null
+    /// Парсит один тип - может быть идентификатором, null, или с подстрочным аргументом (Column[date], str[50])
     fn parse_single_type(&mut self) -> Result<String, LangError> {
         if self.check(TokenKind::Null) {
             self.advance();
             Ok("null".to_string())
         } else if self.check(TokenKind::Identifier) {
-            Ok(self.consume(TokenKind::Identifier, "Expect type name")?.lexeme.clone())
+            let base = self.consume(TokenKind::Identifier, "Expect type name")?.lexeme.clone();
+            if self.match_token(TokenKind::LBracket) {
+                let inner = if self.check(TokenKind::Number) {
+                    self.consume(TokenKind::Number, "Expect number in type subscript")?.lexeme.clone()
+                } else {
+                    let inner_types = self.parse_type_name()?;
+                    inner_types.join(" | ")
+                };
+                self.consume(TokenKind::RBracket, "Expect ']' after type parameter")?;
+                Ok(format!("{}[{}]", base, inner))
+            } else {
+                Ok(base)
+            }
         } else {
             Err(LangError::ParseError {
                 message: "Expect type name (identifier or 'null')".to_string(),

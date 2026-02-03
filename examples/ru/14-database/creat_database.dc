@@ -1,0 +1,23 @@
+from database import engine
+
+# Create SQLite engine
+db = engine("sqlite:///./test_db.sqlite", false, false, 5, 10)
+print("Engine created:", db)
+
+# Connect (for SQLite, returns same engine)
+conn = db.connect()
+print("Connected:", conn)
+
+# Create table
+conn.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)", [])
+print("Table created")
+
+# Insert
+conn.execute("INSERT INTO users (name) VALUES (?)", ["Alice"])
+conn.execute("INSERT INTO users (name) VALUES (?)", ["Bob"])
+print("Inserted rows")
+
+# Query
+t = conn.query("SELECT * FROM users", [])
+print("Query result:", t)
+print("Rows:", t.rows)

@@ -80,6 +80,7 @@ pub enum TokenKind {
     Cache,    // cache
 
     // Ключевые слова для классов
+    Abstract, // @Abstract for abstract class
     Cls,      // cls
     This,     // this
     Super,    // super

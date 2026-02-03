@@ -119,6 +119,9 @@ pub struct Function {
     pub captured_vars: Vec<CapturedVar>, // Information about captured variables
     pub is_cached: bool, // Флаг, указывающий, что функция должна кэшироваться
     pub cache: Option<Rc<RefCell<FnCache>>>, // Кэш для мемоизации (если is_cached = true)
+    /// Web route: (method, path) from @route("METHOD", "/path")
+    pub route_method: Option<String>,
+    pub route_path: Option<String>,
 }
 
 impl Function {
@@ -134,6 +137,8 @@ impl Function {
             captured_vars: Vec::new(),
             is_cached: false,
             cache: None,
+            route_method: None,
+            route_path: None,
         }
     }
 
@@ -149,6 +154,8 @@ impl Function {
             captured_vars: Vec::new(),
             is_cached: true,
             cache: Some(Rc::new(RefCell::new(FnCache::new()))),
+            route_method: None,
+            route_path: None,
         }
     }
 }
@@ -166,6 +173,8 @@ impl Clone for Function {
             captured_vars: self.captured_vars.clone(),
             is_cached: self.is_cached,
             cache: self.cache.clone(),
+            route_method: self.route_method.clone(),
+            route_path: self.route_path.clone(),
         }
     }
 }

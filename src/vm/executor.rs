@@ -813,6 +813,90 @@ pub fn execute_instruction(
                             table_rc.borrow_mut().set_name(var_name.clone());
                         }
                     }
+                    // Register class with parent's metadata (ORM: Base.metadata.tables)
+                    if let Value::Object(class_rc) = &value {
+                        let class_obj = class_rc.borrow();
+                        let super_name = class_obj.get("__superclass").and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
+                        drop(class_obj);
+                        if let Some(parent_name) = super_name {
+                            let parent_global_idx = global_names.iter().find(|(_, n)| n.as_str() == parent_name).map(|(i, _)| *i);
+                            if let Some(parent_idx) = parent_global_idx {
+                                if parent_idx < globals.len() {
+                                    if let Value::Object(parent_rc) = &globals[parent_idx] {
+                                        let meta_opt = parent_rc.borrow().get("metadata").cloned();
+                                        if let Some(Value::Object(meta_rc)) = meta_opt {
+                                            let is_meta = meta_rc.borrow().get("__meta").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false);
+                                            if is_meta {
+                                                if let Some(Value::Array(tables_rc)) = meta_rc.borrow().get("tables") {
+                                                    tables_rc.borrow_mut().push(value.clone());
+                                                }
+                                                // Register ancestors in metadata.classes so run_create_all can resolve __superclass (class is fully built by now)
+                                                let mut meta = meta_rc.borrow_mut();
+                                                if !meta.contains_key("classes") {
+                                                    meta.insert("classes".to_string(), Value::Object(Rc::new(RefCell::new(std::collections::HashMap::new()))));
+                                                }
+                                                let classes_rc_opt = meta.get("classes").cloned();
+                                                drop(meta);
+                                                if let Some(Value::Object(classes_rc)) = classes_rc_opt {
+                                                    let mut classes = classes_rc.borrow_mut();
+                                                    let mut current_name = parent_name.clone();
+                                                    loop {
+                                                        let ancestor_idx = global_names.iter().find(|(_, n)| n.as_str() == current_name).map(|(i, _)| *i);
+                                                        let (ancestor_has_meta, next_super) = if let Some(idx) = ancestor_idx {
+                                                            if idx < globals.len() {
+                                                                if let Value::Object(ancestor_rc) = &globals[idx] {
+                                                                    let a = ancestor_rc.borrow();
+                                                                    let has_meta = a.contains_key("metadata");
+                                                                    let next = a.get("__superclass").and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
+                                                                    (has_meta, next)
+                                                                } else {
+                                                                    (false, None)
+                                                                }
+                                                            } else {
+                                                                (false, None)
+                                                            }
+                                                        } else {
+                                                            (false, None)
+                                                        };
+                                                        if ancestor_has_meta {
+                                                            if let Some(idx) = ancestor_idx {
+                                                                if idx < globals.len() {
+                                                                    classes.insert(current_name.clone(), globals[idx].clone());
+                                                                }
+                                                            }
+                                                        }
+                                                        if let Some(next) = next_super {
+                                                            current_name = next;
+                                                        } else {
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Register class in metadata.classes when it has metadata (so run_create_all can resolve it as parent later)
+                    if let Value::Object(class_rc) = &value {
+                        let class_name = class_rc.borrow().get("__class_name").and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
+                        let meta_opt = class_rc.borrow().get("metadata").cloned();
+                        if let Some(name) = class_name {
+                            if let Some(Value::Object(meta_rc)) = meta_opt {
+                                let mut meta = meta_rc.borrow_mut();
+                                if !meta.contains_key("classes") {
+                                    meta.insert("classes".to_string(), Value::Object(Rc::new(RefCell::new(std::collections::HashMap::new()))));
+                                }
+                                let classes_rc_opt = meta.get("classes").cloned();
+                                drop(meta);
+                                if let Some(Value::Object(classes_rc)) = classes_rc_opt {
+                                    classes_rc.borrow_mut().insert(name, value.clone());
+                                }
+                            }
+                        }
+                    }
                     // Clone уже создает глубокую копию для массивов и таблиц
                     if index >= globals.len() {
                         globals.resize(index + 1, Value::Null);
@@ -1088,7 +1172,18 @@ pub fn execute_instruction(
                     let actual_callee: Value = {
                         if let Value::Object(obj_rc) = &function_value {
                             let class_name_opt = obj_rc.borrow().get("__class_name").cloned();
-                            if let Some(Value::String(class_name)) = class_name_opt {
+                            if let Some(Value::String(ref class_name)) = class_name_opt {
+                                if matches!(obj_rc.borrow().get("__abstract"), Some(Value::Bool(true))) {
+                                    let error = ExceptionHandler::runtime_error(
+                                        &frames,
+                                        format!("Cannot instantiate abstract class '{}'", class_name),
+                                        line,
+                                    );
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        Ok(()) => return Ok(VMStatus::Continue),
+                                        Err(e) => return Err(e),
+                                    }
+                                }
                                 let constructor_name = format!("{}::new_{}", class_name, arity);
                                 let constructor_value = global_names
                                     .iter()
@@ -1150,22 +1245,6 @@ pub fn execute_instruction(
                                 let current_ip_debug = frames.last().map(|f| f.ip - 1).unwrap_or(0);
                                 debug_println!("[DEBUG executor Call] ВНИМАНИЕ: Вызывается метод класса '{}' с индексом функции {} на IP {}", function.name, function_index, current_ip_debug);
                                 debug_println!("[DEBUG executor Call] Размер стека перед извлечением аргументов: {}, ожидается аргументов: {}", stack.len(), arity);
-                            }
-                            
-                            // Проверяем количество аргументов
-                            if arity != function.arity {
-                                let error = ExceptionHandler::runtime_error(
-                            &frames,
-                                    format!(
-                                        "Expected {} arguments but got {}",
-                                        function.arity, arity
-                                    ),
-                                    line,
-                                );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
-                                Ok(()) => return Ok(VMStatus::Continue),
-                                Err(e) => return Err(e),
-                            }
                             }
                             
                             // Собираем аргументы со стека (в обратном порядке, так как они были положены последними)
@@ -1253,6 +1332,39 @@ pub fn execute_instruction(
                                 debug_println!("[DEBUG executor Call] Всего извлечено аргументов: {}, после reverse: {:?}", args.len(), args);
                             }
                             // Если arity == 0, args остается пустым вектором
+                            
+                            // Inject @class for methods that declare it: get class from args[0].__class and insert at position 1
+                            if function.param_names.get(1).map(|s| s.as_str()) == Some("@class")
+                                && args.len() + 1 == function.arity
+                                && !args.is_empty()
+                            {
+                                let this_val = &args[0];
+                                let class_val = match this_val {
+                                    Value::Object(obj_rc) => obj_rc
+                                        .borrow()
+                                        .get("__class")
+                                        .cloned()
+                                        .unwrap_or(Value::Null),
+                                    _ => Value::Null,
+                                };
+                                args.insert(1, class_val);
+                            }
+                            
+                            // Проверяем количество аргументов (после возможной инъекции @class)
+                            if args.len() != function.arity {
+                                let error = ExceptionHandler::runtime_error(
+                                    &frames,
+                                    format!(
+                                        "Expected {} arguments but got {}",
+                                        function.arity, args.len()
+                                    ),
+                                    line,
+                                );
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    Ok(()) => return Ok(VMStatus::Continue),
+                                    Err(e) => return Err(e),
+                                }
+                            }
                             
                             // Проверяем типы аргументов, если указаны аннотации типов
                             for (i, (arg, expected_types)) in args.iter().zip(&function.param_types).enumerate() {
@@ -1394,8 +1506,58 @@ pub fn execute_instruction(
                                 natives[native_index] as *const (),
                                 ml_natives::native_min_idx as *const ()
                             );
+
+                            // Специальная обработка для методов database engine: connect, execute, query
+                            // Engine находится на стеке перед функцией
+                            use crate::database::natives as db_natives;
+                            let is_db_connect = native_index < builtin_count && std::ptr::eq(
+                                natives[native_index] as *const (),
+                                db_natives::native_engine_connect as *const ()
+                            );
+                            let is_db_execute = native_index < builtin_count && std::ptr::eq(
+                                natives[native_index] as *const (),
+                                db_natives::native_engine_execute as *const ()
+                            );
+                            let is_db_query = native_index < builtin_count && std::ptr::eq(
+                                natives[native_index] as *const (),
+                                db_natives::native_engine_query as *const ()
+                            );
+                            let is_db_run = native_index < builtin_count && std::ptr::eq(
+                                natives[native_index] as *const (),
+                                db_natives::native_engine_run as *const ()
+                            );
+                            let is_db_cluster_add = native_index < builtin_count && std::ptr::eq(
+                                natives[native_index] as *const (),
+                                db_natives::native_cluster_add as *const ()
+                            );
+                            let is_db_cluster_get = native_index < builtin_count && std::ptr::eq(
+                                natives[native_index] as *const (),
+                                db_natives::native_cluster_get as *const ()
+                            );
+                            let is_db_cluster_names = native_index < builtin_count && std::ptr::eq(
+                                natives[native_index] as *const (),
+                                db_natives::native_cluster_names as *const ()
+                            );
+                            let is_db_engine_method = is_db_connect || is_db_execute || is_db_query || is_db_run
+                                || is_db_cluster_add || is_db_cluster_get || is_db_cluster_names;
                             
                             let mut args = Vec::new();
+                            if is_db_engine_method {
+                                // Call(arity) already popped the method; stack has [receiver, arg1, ..., argN], arity = num args. Pop (arity+1) to include receiver; find receiver in all_popped; native gets (receiver, arg1, ...).
+                                let frame = frames.last().unwrap();
+                                let available = stack.len().saturating_sub(frame.stack_start);
+                                let to_pop_total = (arity + 1).min(available);
+                                let mut all_popped = Vec::new();
+                                for _ in 0..to_pop_total {
+                                    all_popped.push(stack.pop().unwrap_or(Value::Null));
+                                }
+                                all_popped.reverse();
+                                if let Some(engine_idx) = all_popped.iter().position(|v| matches!(v, Value::DatabaseEngine(_) | Value::DatabaseCluster(_))) {
+                                    let receiver = all_popped.remove(engine_idx);
+                                    args.push(receiver);
+                                }
+                                args.extend(all_popped);
+                            }
                             if (is_max_idx || is_min_idx) && arity == 0 {
                                 // Для методов тензора с arity=0, используем тензор со стека как первый аргумент
                                 // Тензор был помещен на стек перед функцией при доступе к свойству
@@ -1415,7 +1577,7 @@ pub fn execute_instruction(
                                         Err(e) => return Err(e),
                                     }
                                 }
-                            } else {
+                            } else if !is_db_engine_method {
                                 // Обычная обработка аргументов
                                 // ВАЖНО: Безопасно извлекаем аргументы, проверяя стек перед извлечением
                                 let frame = frames.last().unwrap();
@@ -1498,6 +1660,19 @@ pub fn execute_instruction(
                                 Err(e) => return Err(e),
                             }
                                         }
+                                    }
+                                }
+                            }
+                            // enum(iterable): ровно 1 аргумент (индекс 72)
+                            if native_index == 72 {
+                                if arity != 1 {
+                                    let error = ExceptionHandler::runtime_error(&frames,
+                                        format!("enum() expects 1 argument, got {}", arity),
+                                        line,
+                                    );
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        Ok(()) => return Ok(VMStatus::Continue),
+                                        Err(e) => return Err(e),
                                     }
                                 }
                             }
@@ -1818,6 +1993,11 @@ pub fn execute_instruction(
                         }
                     }
                 }
+                OpCode::Dup => {
+                    let top = stack::pop(stack, frames, exception_handlers)?;
+                    stack::push(stack, top.clone());
+                    stack::push(stack, top);
+                }
                 OpCode::MakeArray(count) => {
                     let mut elements = Vec::new();
                     for _ in 0..count {
@@ -1922,15 +2102,22 @@ pub fn execute_instruction(
                             let batch_size = dataset.borrow().batch_size();
                             stack::push(stack, Value::Number(batch_size as f64));
                         }
+                        Value::Enumerate { data, .. } => {
+                            stack::push(stack, Value::Number(data.borrow().len() as f64));
+                        }
+                        Value::Tuple(tuple) => {
+                            stack::push(stack, Value::Number(tuple.borrow().len() as f64));
+                        }
                         _ => {
+                            let got_type = crate::vm::calls::get_type_name_value(&array);
                             let error = ExceptionHandler::runtime_error(
-                            &frames,
-                                "Expected array, column reference, or dataset for GetArrayLength".to_string(),
+                                &frames,
+                                format!("Expected array, column reference, dataset, enumerate, or tuple for GetArrayLength, got {}", got_type),
                                 line,
                             );
                             match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
-                                Ok(()) => return Ok(VMStatus::Continue), // Исключение обработано, продолжаем выполнение
-                                Err(e) => return Err(e), // Исключение не обработано
+                                Ok(()) => return Ok(VMStatus::Continue),
+                                Err(e) => return Err(e),
                             }
                         }
                     }
@@ -1944,6 +2131,7 @@ pub fn execute_instruction(
                     
                     let container_type = match &container {
                         Value::Array(_) => "Array",
+                        Value::Enumerate { .. } => "Enumerate",
                         Value::Object(_) => "Object",
                         Value::Table(_) => "Table",
                         Value::Path(_) => "Path",
@@ -1959,6 +2147,35 @@ pub fn execute_instruction(
                     
                     match container {
                         Value::Array(arr) => {
+                            if let Value::String(key) = &index_value {
+                                // Array methods: push=35, pop=36, unique=37, reverse=38, sort=39, sum=40, average=41, count=42, any=43, all=44
+                                let method_index = match key.as_str() {
+                                    "push" => Some(35),
+                                    "pop" => Some(36),
+                                    "unique" => Some(37),
+                                    "reverse" => Some(38),
+                                    "sort" => Some(39),
+                                    "sum" => Some(40),
+                                    "average" => Some(41),
+                                    "count" => Some(42),
+                                    "any" => Some(43),
+                                    "all" => Some(44),
+                                    _ => None,
+                                };
+                                if let Some(idx) = method_index {
+                                    stack::push(stack, Value::NativeFunction(idx));
+                                    return Ok(VMStatus::Continue);
+                                }
+                                let error = ExceptionHandler::runtime_error(
+                                    &frames,
+                                    format!("Array has no property '{}'. Available: push, pop, unique, reverse, sort, sum, average, count, any, all, or use numeric index", key),
+                                    line,
+                                );
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    Ok(()) => return Ok(VMStatus::Continue),
+                                    Err(e) => return Err(e),
+                                }
+                            }
                             let index = match index_value {
                                 Value::Number(n) => {
                                     let idx = n as i64;
@@ -2013,6 +2230,8 @@ pub fn execute_instruction(
                                 Value::Window(handle) => Value::Window(*handle), // PlotWindowHandle is Copy
                                 Value::Tensor(tensor_rc) => Value::Tensor(Rc::clone(tensor_rc)),
                                 Value::Object(obj_rc) => Value::Object(obj_rc.clone()), // Object uses Rc<RefCell>, clone Rc
+                                Value::DatabaseEngine(engine_rc) => Value::DatabaseEngine(Rc::clone(engine_rc)),
+                                Value::DatabaseCluster(cluster_rc) => Value::DatabaseCluster(Rc::clone(cluster_rc)),
                                 _ => element.clone(), // Простые типы клонируем
                             };
                             stack::push(stack, value);
@@ -2071,6 +2290,69 @@ pub fn execute_instruction(
                                 _ => element.clone(),
                             };
                             stack::push(stack, value);
+                            return Ok(VMStatus::Continue);
+                        }
+                        Value::Enumerate { data, start } => {
+                            let index = match index_value {
+                                Value::Number(n) => {
+                                    let idx = n as i64;
+                                    if idx < 0 {
+                                        let error = ExceptionHandler::runtime_error(
+                                            &frames,
+                                            "Enumerate index must be non-negative".to_string(),
+                                            line,
+                                        );
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            Ok(()) => return Ok(VMStatus::Continue),
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                    idx as usize
+                                }
+                                _ => {
+                                    let error = ExceptionHandler::runtime_error(
+                                        &frames,
+                                        "Enumerate index must be a number".to_string(),
+                                        line,
+                                    );
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        Ok(()) => return Ok(VMStatus::Continue),
+                                        Err(e) => return Err(e),
+                                    }
+                                }
+                            };
+                            let data_ref = data.borrow();
+                            if index >= data_ref.len() {
+                                let error = ExceptionHandler::runtime_error_with_type(
+                                    &frames,
+                                    format!("Enumerate index {} out of bounds (length: {})", index, data_ref.len()),
+                                    line,
+                                    ErrorType::IndexError,
+                                );
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    Ok(()) => return Ok(VMStatus::Continue),
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                            let element = &data_ref[index];
+                            let value = match element {
+                                Value::Array(arr_rc) => Value::Array(Rc::clone(arr_rc)),
+                                Value::Table(table_rc) => Value::Table(Rc::clone(table_rc)),
+                                Value::Axis(axis_rc) => Value::Axis(Rc::clone(axis_rc)),
+                                Value::Figure(fig_rc) => Value::Figure(Rc::clone(fig_rc)),
+                                Value::Image(img_rc) => Value::Image(Rc::clone(img_rc)),
+                                Value::Window(handle) => Value::Window(*handle),
+                                Value::Tensor(tensor_rc) => Value::Tensor(Rc::clone(tensor_rc)),
+                                Value::Object(obj_rc) => Value::Object(obj_rc.clone()),
+                                Value::DatabaseEngine(engine_rc) => Value::DatabaseEngine(Rc::clone(engine_rc)),
+                                Value::DatabaseCluster(cluster_rc) => Value::DatabaseCluster(Rc::clone(cluster_rc)),
+                                _ => element.clone(),
+                            };
+                            let pair = Value::Tuple(Rc::new(RefCell::new(vec![
+                                Value::Number((start + index as i64) as f64),
+                                value,
+                            ])));
+                            stack::push(stack, pair);
                             return Ok(VMStatus::Continue);
                         }
                         Value::Table(table) => {
@@ -3081,6 +3363,210 @@ pub fn execute_instruction(
                             }
                             return Ok(VMStatus::Continue);
                         }
+                        Value::DatabaseEngine(engine_rc) => {
+                            // Access to engine methods: connect, execute, query
+                            match &index_value {
+                                Value::String(property_name) => {
+                                    use crate::database::natives;
+                                    let (connect_fn, execute_fn, query_fn, run_fn) = (
+                                        natives::native_engine_connect as *const (),
+                                        natives::native_engine_execute as *const (),
+                                        natives::native_engine_query as *const (),
+                                        natives::native_engine_run as *const (),
+                                    );
+                                    let method_index = match property_name.as_str() {
+                                        "connect" => natives.iter().position(|&f| std::ptr::eq(f as *const (), connect_fn)),
+                                        "execute" => natives.iter().position(|&f| std::ptr::eq(f as *const (), execute_fn)),
+                                        "query" => natives.iter().position(|&f| std::ptr::eq(f as *const (), query_fn)),
+                                        "run" => natives.iter().position(|&f| std::ptr::eq(f as *const (), run_fn)),
+                                        _ => {
+                                            let error = ExceptionHandler::runtime_error(&frames,
+                                                format!("DatabaseEngine has no property '{}'. Available: connect, execute, query, run", property_name),
+                                                line,
+                                            );
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                Ok(()) => return Ok(VMStatus::Continue),
+                                                Err(e) => return Err(e),
+                                            }
+                                        }
+                                    };
+                                    if let Some(idx) = method_index {
+                                        stack::push(stack, Value::DatabaseEngine(Rc::clone(&engine_rc)));
+                                        stack::push(stack, Value::NativeFunction(idx));
+                                    } else {
+                                        let error = ExceptionHandler::runtime_error(&frames,
+                                            format!("Database engine method '{}' not found", property_name),
+                                            line,
+                                        );
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            Ok(()) => return Ok(VMStatus::Continue),
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    let error = ExceptionHandler::runtime_error(&frames,
+                                        "DatabaseEngine property access requires string key (connect, execute, query, run)".to_string(),
+                                        line,
+                                    );
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        Ok(()) => return Ok(VMStatus::Continue),
+                                        Err(e) => return Err(e),
+                                    }
+                                }
+                            }
+                            return Ok(VMStatus::Continue);
+                        }
+                        Value::DatabaseCluster(cluster_rc) => {
+                            match &index_value {
+                                Value::String(property_name) => {
+                                    use crate::database::natives;
+                                    let (add_fn, get_fn, names_fn) = (
+                                        natives::native_cluster_add as *const (),
+                                        natives::native_cluster_get as *const (),
+                                        natives::native_cluster_names as *const (),
+                                    );
+                                    let method_index = match property_name.as_str() {
+                                        "add" => natives.iter().position(|&f| std::ptr::eq(f as *const (), add_fn)),
+                                        "get" => natives.iter().position(|&f| std::ptr::eq(f as *const (), get_fn)),
+                                        "names" => natives.iter().position(|&f| std::ptr::eq(f as *const (), names_fn)),
+                                        _ => {
+                                            let error = ExceptionHandler::runtime_error(&frames,
+                                                format!("DatabaseCluster has no property '{}'. Available: add, get, names", property_name),
+                                                line,
+                                            );
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                Ok(()) => return Ok(VMStatus::Continue),
+                                                Err(e) => return Err(e),
+                                            }
+                                        }
+                                    };
+                                    if let Some(idx) = method_index {
+                                        stack::push(stack, Value::DatabaseCluster(Rc::clone(&cluster_rc)));
+                                        stack::push(stack, Value::NativeFunction(idx));
+                                    } else {
+                                        let error = ExceptionHandler::runtime_error(&frames,
+                                            format!("Database cluster method '{}' not found", property_name),
+                                            line,
+                                        );
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            Ok(()) => return Ok(VMStatus::Continue),
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    let error = ExceptionHandler::runtime_error(&frames,
+                                        "DatabaseCluster property access requires string key (add, get, names)".to_string(),
+                                        line,
+                                    );
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        Ok(()) => return Ok(VMStatus::Continue),
+                                        Err(e) => return Err(e),
+                                    }
+                                }
+                            }
+                            return Ok(VMStatus::Continue);
+                        }
+                        Value::String(s) => {
+                            match index_value {
+                                Value::Number(n) => {
+                                    let idx = n as i64;
+                                    if idx < 0 {
+                                        let error = ExceptionHandler::runtime_error(
+                                            &frames,
+                                            "String index must be non-negative".to_string(),
+                                            line,
+                                        );
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            Ok(()) => return Ok(VMStatus::Continue),
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                    let idx_usize = idx as usize;
+                                    if let Some(ch) = s.chars().nth(idx_usize) {
+                                        stack::push(stack, Value::String(ch.to_string()));
+                                    } else {
+                                        let error = ExceptionHandler::runtime_error_with_type(
+                                            &frames,
+                                            format!("String index {} out of bounds (length: {})", idx_usize, s.chars().count()),
+                                            line,
+                                            ErrorType::IndexError,
+                                        );
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            Ok(()) => return Ok(VMStatus::Continue),
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                }
+                                Value::String(key) => {
+                                    // String methods: upper=27, lower=28, trim=29, split=30, join=31, contains=32, isupper=33, islower=34
+                                    let method_index = match key.as_str() {
+                                        "upper" => Some(27),
+                                        "lower" => Some(28),
+                                        "trim" => Some(29),
+                                        "split" => Some(30),
+                                        "join" => Some(31),
+                                        "contains" => Some(32),
+                                        "isupper" => Some(33),
+                                        "islower" => Some(34),
+                                        _ => None,
+                                    };
+                                    if let Some(idx) = method_index {
+                                        stack::push(stack, Value::NativeFunction(idx));
+                                    } else {
+                                        let error = ExceptionHandler::runtime_error(
+                                            &frames,
+                                            format!("String has no property '{}'. Available: upper, lower, trim, split, join, contains, isupper, islower, or use numeric index", key),
+                                            line,
+                                        );
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            Ok(()) => return Ok(VMStatus::Continue),
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    let error = ExceptionHandler::runtime_error(
+                                        &frames,
+                                        "String index must be a number or a method name (upper, lower, trim, split, join, contains, isupper, islower)".to_string(),
+                                        line,
+                                    );
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        Ok(()) => return Ok(VMStatus::Continue),
+                                        Err(e) => return Err(e),
+                                    }
+                                }
+                            }
+                            return Ok(VMStatus::Continue);
+                        }
+                        Value::NativeFunction(native_index) => {
+                            // str[N] -> type descriptor for Column (string with max length N)
+                            use crate::vm::natives::basic::native_str;
+                            if native_index < natives.len()
+                                && std::ptr::eq(natives[native_index] as *const (), native_str as *const ())
+                            {
+                                if let Value::Number(n) = index_value {
+                                    let idx = n as i64;
+                                    if idx >= 0 && n.fract() == 0.0 {
+                                        let mut desc = std::collections::HashMap::new();
+                                        desc.insert("__type".to_string(), Value::String("str".to_string()));
+                                        desc.insert("__length".to_string(), Value::Number(idx as f64));
+                                        stack::push(stack, Value::Object(Rc::new(RefCell::new(desc))));
+                                        return Ok(VMStatus::Continue);
+                                    }
+                                }
+                            }
+                            let error = ExceptionHandler::runtime_error(
+                                &frames,
+                                "Expected array, tuple, column reference, table, object, path, dataset, tensor, neural network, database engine, or database cluster for GetArrayElement".to_string(),
+                                line,
+                            );
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                Ok(()) => return Ok(VMStatus::Continue),
+                                Err(e) => return Err(e),
+                            }
+                        }
                         Value::Null => {
                             let error = ExceptionHandler::runtime_error(
                             &frames,
@@ -3095,7 +3581,7 @@ pub fn execute_instruction(
                         _ => {
                             let error = ExceptionHandler::runtime_error(
                             &frames,
-                                "Expected array, tuple, column reference, table, object, path, dataset, tensor, or neural network for GetArrayElement".to_string(),
+                                "Expected array, tuple, column reference, table, object, path, dataset, tensor, neural network, database engine, or database cluster for GetArrayElement".to_string(),
                                 line,
                             );
                             match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {

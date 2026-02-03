@@ -1,0 +1,22 @@
+# @Abstract class: cannot instantiate directly; subclasses can.
+
+@Abstract
+cls AbstractBase {
+    public:
+        name: str
+    new AbstractBase(name) {
+        this.name = name
+    }
+}
+
+cls Concrete(AbstractBase) {
+    new Concrete(name) {
+        super(name)
+    }
+}
+
+let c = Concrete("ok")
+print(c.name)  # ok
+
+# Uncomment to see runtime error: Cannot instantiate abstract class 'AbstractBase'
+# let b = AbstractBase("x")

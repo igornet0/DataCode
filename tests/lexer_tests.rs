@@ -106,5 +106,94 @@ mod tests {
             TokenKind::Number,
         ]);
     }
+
+    #[test]
+    fn test_multiline_comment_basic() {
+        let source = r#"let x = 10
+"""
+This is a multiline comment
+It can span multiple lines
+"""
+let y = 20"#;
+        let tokens = tokenize(source);
+        assert_eq!(tokens, vec![
+            TokenKind::Let,
+            TokenKind::Identifier,
+            TokenKind::Equal,
+            TokenKind::Number,
+            TokenKind::Let,
+            TokenKind::Identifier,
+            TokenKind::Equal,
+            TokenKind::Number,
+        ]);
+    }
+
+    #[test]
+    fn test_multiline_comment_in_function() {
+        let source = r#"fn test() {
+    """
+    Function documentation
+    """
+    return 42
+}"#;
+        let tokens = tokenize(source);
+        assert_eq!(tokens, vec![
+            TokenKind::Fn,
+            TokenKind::Identifier,
+            TokenKind::LParen,
+            TokenKind::RParen,
+            TokenKind::LBrace,
+            TokenKind::Return,
+            TokenKind::Number,
+            TokenKind::RBrace,
+        ]);
+    }
+
+    #[test]
+    fn test_multiline_comment_with_quotes_inside() {
+        let source = r#"let x = 10
+"""
+This comment has "quotes" inside
+And 'single quotes' too
+"""
+let y = 20"#;
+        let tokens = tokenize(source);
+        assert_eq!(tokens, vec![
+            TokenKind::Let,
+            TokenKind::Identifier,
+            TokenKind::Equal,
+            TokenKind::Number,
+            TokenKind::Let,
+            TokenKind::Identifier,
+            TokenKind::Equal,
+            TokenKind::Number,
+        ]);
+    }
+
+    #[test]
+    fn test_unterminated_multiline_comment() {
+        let source = r#"let x = 10
+"""
+This comment is not closed
+let y = 20"#;
+        let mut lexer = Lexer::new(source);
+        let result = lexer.tokenize();
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(format!("{:?}", err).contains("Unterminated multiline comment"));
+    }
+
+    #[test]
+    fn test_string_vs_multiline_comment() {
+        // Обычная строка не должна интерпретироваться как комментарий
+        let source = r#"let s = "hello""#;
+        let tokens = tokenize(source);
+        assert_eq!(tokens, vec![
+            TokenKind::Let,
+            TokenKind::Identifier,
+            TokenKind::Equal,
+            TokenKind::String,
+        ]);
+    }
 }
 

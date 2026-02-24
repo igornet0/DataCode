@@ -1784,11 +1784,61 @@ impl Parser {
         }
     }
 
+    /// Парсит выражение внутри [] для индекса/фильтра. Не допускает присваивание,
+    /// чтобы "age" = 28 разбиралось как сравнение (Binary), а не как Assign.
+    fn parse_index_expression(&mut self) -> Result<Expr, LangError> {
+        let left = self.or_expression()?;
+        if self.match_token(TokenKind::Equal)
+            || self.match_token(TokenKind::EqualEqual)
+            || self.match_token(TokenKind::BangEqual)
+            || self.match_token(TokenKind::Less)
+            || self.match_token(TokenKind::Greater)
+            || self.match_token(TokenKind::LessEqual)
+            || self.match_token(TokenKind::GreaterEqual)
+        {
+            let op_line = self.previous().line;
+            let op = self.previous().kind.clone();
+            let right = self.or_expression()?;
+            return Ok(Expr::Binary {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+                line: op_line,
+            });
+        }
+        Ok(left)
+    }
+
     fn finish_array_index(&mut self, array: Expr) -> Result<Expr, LangError> {
         let index_line = self.previous().line; // Номер строки открывающей скобки (LBracket)
-        let index = self.expression()?;
+        let index = self.parse_index_expression()?;
         self.consume(TokenKind::RBracket, "Expect ']' after array index")?;
-        
+
+        // Распознаём table["col" op value] как TableFilter (только строковый литерал слева)
+        if let Expr::Binary { left, op, right, line } = &index {
+            let is_comparison = matches!(
+                op,
+                TokenKind::Equal
+                    | TokenKind::EqualEqual
+                    | TokenKind::BangEqual
+                    | TokenKind::Less
+                    | TokenKind::Greater
+                    | TokenKind::LessEqual
+                    | TokenKind::GreaterEqual
+            );
+            if is_comparison {
+                if let Expr::Literal { value: Value::String(column), .. } = left.as_ref() {
+                    return Ok(Expr::TableFilter {
+                        table: Box::new(array),
+                        column: column.clone(),
+                        op: op.clone(),
+                        value: right.clone(),
+                        line: *line,
+                    });
+                }
+            }
+        }
+
         Ok(Expr::ArrayIndex {
             array: Box::new(array),
             index: Box::new(index),

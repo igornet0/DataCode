@@ -1,8 +1,10 @@
 /// Компиляция массивов, кортежей и индексации
 
 use crate::parser::ast::Expr;
+use crate::lexer::TokenKind;
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
+use crate::common::value::Value;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
 
@@ -58,8 +60,29 @@ pub fn compile_array(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
             ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
             Ok(())
         }
+        Expr::TableFilter { table, column, op, value, line } => {
+            *ctx.current_line = *line;
+            expr::compile_expr(ctx, table)?;
+            let column_index = ctx.chunk.add_constant(Value::String(column.clone()));
+            ctx.chunk.write_with_line(OpCode::Constant(column_index), *line);
+            let op_str = match op {
+                TokenKind::Equal => "=",
+                TokenKind::EqualEqual => "==",
+                TokenKind::BangEqual => "!=",
+                TokenKind::Less => "<",
+                TokenKind::Greater => ">",
+                TokenKind::LessEqual => "<=",
+                TokenKind::GreaterEqual => ">=",
+                _ => "==",
+            };
+            let op_index = ctx.chunk.add_constant(Value::String(op_str.to_string()));
+            ctx.chunk.write_with_line(OpCode::Constant(op_index), *line);
+            expr::compile_expr(ctx, value)?;
+            ctx.chunk.write_with_line(OpCode::TableFilter, *line);
+            Ok(())
+        }
         _ => Err(LangError::ParseError {
-            message: "Expected ArrayLiteral, TupleLiteral, ObjectLiteral, or ArrayIndex expression".to_string(),
+            message: "Expected ArrayLiteral, TupleLiteral, ObjectLiteral, ArrayIndex, or TableFilter expression".to_string(),
             line: expr.line(),
         }),
     }

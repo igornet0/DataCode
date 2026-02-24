@@ -263,6 +263,10 @@ impl Chunk {
                 output.push_str("SET_ARRAY_ELEMENT\n");
                 offset + 1
             }
+            OpCode::TableFilter => {
+                output.push_str("TABLE_FILTER\n");
+                offset + 1
+            }
             OpCode::Clone => {
                 output.push_str("CLONE\n");
                 offset + 1

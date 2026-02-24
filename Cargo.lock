@@ -729,7 +729,7 @@ dependencies = [
 
 [[package]]
 name = "data-code"
-version = "2.2.2"
+version = "2.2.3"
 dependencies = [
  "axum",
  "base64",

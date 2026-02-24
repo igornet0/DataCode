@@ -141,8 +141,10 @@ show_table(head_table)
 global names_only = table_select(my_table, ["name", "age"])
 show_table(names_only)
 
-# Filter data
+# Filter data (two equivalent forms)
 global adults = table_where(my_table, "age", ">", 30)
+# or bracket syntax: table["column" operator value]
+global adults2 = my_table["age" > 30]
 show_table(adults)
 
 # Sort by age
@@ -224,7 +226,7 @@ Use whichever name feels more natural in your code. `table_create` may be more s
 - `table_head(table, n)` - Get first n rows
 - `table_tail(table, n)` - Get last n rows
 - `table_select(table, columns)` - Select specific columns
-- `table_where(table, column, operator, value)` - Filter rows
+- `table_where(table, column, operator, value)` - Filter rows (alternative: `data["column" op value]`, e.g. `data["age" = 28]` or `data["age" > 30]`)
 - `table_sort(table, column)` - Sort by column
 - `table_distinct(table, column)` - Get unique values
 - `table_sample(table, n)` - Random row sample

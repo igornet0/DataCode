@@ -68,6 +68,7 @@ pub enum OpCode {
     GetArrayLength,   // Получить длину массива
     GetArrayElement,  // Получить элемент массива по индексу (индекс и массив на стеке)
     SetArrayElement,  // Установить элемент массива/объекта по индексу (значение, индекс, массив/объект на стеке)
+    TableFilter,      // Фильтр таблицы: stack [table, column, op, value] → отфильтрованная таблица
     Clone,            // Глубокое клонирование значения на стеке (для массивов и таблиц)
     
     // Кортежи
@@ -142,6 +143,7 @@ impl OpCode {
             OpCode::GetArrayLength => "GetArrayLength",
             OpCode::GetArrayElement => "GetArrayElement",
             OpCode::SetArrayElement => "SetArrayElement",
+            OpCode::TableFilter => "TableFilter",
             OpCode::Clone => "Clone",
             OpCode::MakeTuple(_) => "MakeTuple",
             OpCode::MakeObject(_) => "MakeObject",

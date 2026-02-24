@@ -2829,6 +2829,82 @@ pub fn execute_instruction(
                         }
                     }
                 }
+                OpCode::TableFilter => {
+                    let value_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let op_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let column_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let table_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let value_id = tagged_to_value_id(value_tv, value_store);
+                    let op_id = tagged_to_value_id(op_tv, value_store);
+                    let column_id = tagged_to_value_id(column_tv, value_store);
+                    let table_id = tagged_to_value_id(table_tv, value_store);
+                    let table_val = load_value(table_id, value_store, heavy_store);
+                    let column_val = load_value(column_id, value_store, heavy_store);
+                    let op_val = load_value(op_id, value_store, heavy_store);
+                    let filter_value = load_value(value_id, value_store, heavy_store);
+                    let column_str = match &column_val {
+                        Value::String(s) => s.as_str(),
+                        _ => {
+                            let error = ExceptionHandler::runtime_error(
+                                &frames,
+                                "Table filter column must be a string".to_string(),
+                                line,
+                            );
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                Ok(()) => return Ok(VMStatus::Continue),
+                                Err(e) => return Err(e),
+                            }
+                        }
+                    };
+                    let op_str = match &op_val {
+                        Value::String(s) => s.as_str(),
+                        _ => {
+                            let error = ExceptionHandler::runtime_error(
+                                &frames,
+                                "Table filter operator must be a string".to_string(),
+                                line,
+                            );
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                Ok(()) => return Ok(VMStatus::Continue),
+                                Err(e) => return Err(e),
+                            }
+                        }
+                    };
+                    if let Value::Table(table_rc) = &table_val {
+                        VM_CALL_CONTEXT.with(|ctx| {
+                            *ctx.borrow_mut() = Some(vm_ptr);
+                        });
+                        let result = crate::vm::natives::table::table_where_impl(
+                            table_rc,
+                            column_str,
+                            op_str,
+                            &filter_value,
+                        );
+                        VM_CALL_CONTEXT.with(|ctx| {
+                            *ctx.borrow_mut() = None;
+                        });
+                        stack::push_id(stack, store_value(result, value_store, heavy_store));
+                    } else {
+                        let got = match &table_val {
+                            Value::Array(_) => "Array",
+                            Value::Object(_) => "Object",
+                            Value::Null => "Null",
+                            Value::Number(_) => "Number",
+                            Value::String(_) => "String",
+                            Value::Bool(_) => "Bool",
+                            _ => "other type",
+                        };
+                        let error = ExceptionHandler::runtime_error(
+                            &frames,
+                            format!("Table filter requires a table, got {}", got),
+                            line,
+                        );
+                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                            Ok(()) => {}
+                            Err(e) => return Err(e),
+                        }
+                    }
+                }
                 OpCode::GetArrayElement => {
                     let index_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
                     let container_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;

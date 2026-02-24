@@ -815,6 +815,73 @@ pub fn native_table_sort(args: &[Value]) -> Value {
     }
 }
 
+/// Ядро фильтрации таблицы. Используется из native_table_where и из opcode TableFilter в VM.
+pub fn table_where_impl(
+    table: &Rc<RefCell<Table>>,
+    column_name: &str,
+    operator: &str,
+    filter_value: &Value,
+) -> Value {
+    let headers = table.borrow().headers().clone();
+    let is_view = table.borrow().is_view();
+
+    let filter_column: Vec<Value> = if is_view {
+        crate::vm::vm::with_current_stores(|store, heap| {
+            let mut t = table.borrow_mut();
+            crate::vm::table_ops::get_column(&mut *t, column_name, store, heap)
+        })
+        .unwrap_or_default()
+    } else {
+        table
+            .borrow_mut()
+            .get_column(column_name)
+            .map(|c| c.clone())
+            .unwrap_or_default()
+    };
+
+    let matching_indices: Vec<usize> = filter_column
+        .iter()
+        .enumerate()
+        .filter(|(_, val)| {
+            match operator {
+                ">" => compare_values(val, filter_value) == std::cmp::Ordering::Greater,
+                "<" => compare_values(val, filter_value) == std::cmp::Ordering::Less,
+                ">=" => {
+                    let cmp = compare_values(val, filter_value);
+                    cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
+                }
+                "<=" => {
+                    let cmp = compare_values(val, filter_value);
+                    cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
+                }
+                "==" | "=" => compare_values(val, filter_value) == std::cmp::Ordering::Equal,
+                "!=" | "<>" => compare_values(val, filter_value) != std::cmp::Ordering::Equal,
+                _ => false,
+            }
+        })
+        .map(|(i, _)| i)
+        .collect();
+
+    let new_rows: Vec<Vec<Value>> = if is_view {
+        crate::vm::vm::with_current_stores(|store, heap| {
+            let t = table.borrow();
+            matching_indices
+                .iter()
+                .filter_map(|&idx| crate::vm::table_ops::get_row(&*t, idx, store, heap))
+                .collect()
+        })
+    } else {
+        let table_ref = table.borrow();
+        matching_indices
+            .iter()
+            .filter_map(|&idx| table_ref.get_row(idx).map(|r| r.to_vec()))
+            .collect()
+    };
+
+    let new_table = Table::from_data(new_rows, Some(headers));
+    Value::Table(Rc::new(RefCell::new(new_table)))
+}
+
 pub fn native_table_where(args: &[Value]) -> Value {
     if args.len() < 4 {
         return Value::Null;
@@ -833,57 +900,7 @@ pub fn native_table_where(args: &[Value]) -> Value {
     let filter_value = args[3].clone();
 
     match &args[0] {
-        Value::Table(table) => {
-            let headers = table.borrow().headers().clone();
-            let is_view = table.borrow().is_view();
-
-            let filter_column: Vec<Value> = if is_view {
-                crate::vm::vm::with_current_stores(|store, heap| {
-                    let mut t = table.borrow_mut();
-                    crate::vm::table_ops::get_column(&mut *t, &column_name, store, heap)
-                }).unwrap_or_default()
-            } else {
-                table.borrow_mut().get_column(&column_name).map(|c| c.clone()).unwrap_or_default()
-            };
-
-            let matching_indices: Vec<usize> = filter_column.iter().enumerate()
-                .filter(|(_, val)| {
-                    match operator {
-                        ">" => compare_values(val, &filter_value) == std::cmp::Ordering::Greater,
-                        "<" => compare_values(val, &filter_value) == std::cmp::Ordering::Less,
-                        ">=" => {
-                            let cmp = compare_values(val, &filter_value);
-                            cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
-                        }
-                        "<=" => {
-                            let cmp = compare_values(val, &filter_value);
-                            cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
-                        }
-                        "==" | "=" => compare_values(val, &filter_value) == std::cmp::Ordering::Equal,
-                        "!=" | "<>" => compare_values(val, &filter_value) != std::cmp::Ordering::Equal,
-                        _ => false,
-                    }
-                })
-                .map(|(i, _)| i)
-                .collect();
-
-            let new_rows: Vec<Vec<Value>> = if is_view {
-                crate::vm::vm::with_current_stores(|store, heap| {
-                    let t = table.borrow();
-                    matching_indices.iter()
-                        .filter_map(|&idx| crate::vm::table_ops::get_row(&*t, idx, store, heap))
-                        .collect()
-                })
-            } else {
-                let table_ref = table.borrow();
-                matching_indices.iter()
-                    .filter_map(|&idx| table_ref.get_row(idx).map(|r| r.to_vec()))
-                    .collect()
-            };
-
-            let new_table = Table::from_data(new_rows, Some(headers));
-            Value::Table(Rc::new(RefCell::new(new_table)))
-        }
+        Value::Table(table) => table_where_impl(table, &column_name, operator, &filter_value),
         _ => Value::Null,
     }
 }

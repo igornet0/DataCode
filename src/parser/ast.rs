@@ -148,6 +148,14 @@ pub enum Expr {
         index: Box<Expr>,
         line: usize,
     },
+    /// Фильтр таблицы: table["col" op value] → только строки, где col op value
+    TableFilter {
+        table: Box<Expr>,
+        column: String,
+        op: TokenKind,
+        value: Box<Expr>,
+        line: usize,
+    },
     Property {
         object: Box<Expr>,
         name: String,
@@ -209,6 +217,7 @@ impl Expr {
             Expr::ObjectLiteral { line, .. } => *line,
             Expr::TupleLiteral { line, .. } => *line,
             Expr::ArrayIndex { line, .. } => *line,
+            Expr::TableFilter { line, .. } => *line,
             Expr::Property { line, .. } => *line,
             Expr::MethodCall { line, .. } => *line,
             Expr::This { line, .. } => *line,

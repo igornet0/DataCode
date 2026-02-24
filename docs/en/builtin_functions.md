@@ -987,6 +987,8 @@ table_where(data, "Salary", ">=", 50000)
 table_where(data, "Status", "!=", "inactive")
 ```
 
+**Alternative syntax:** you can write a filter with brackets: `table["column" operator value]`, e.g. `data["Age" = 30]`, `data["Name" == "John"]`, `data["Salary" > 50000]`. Operators: `=`, `==`, `!=`, `<`, `>`, `<=`, `>=`. The result is a new table with filtered rows; you can chain filters: `data["Age" > 25]["City" == "Moscow"]`.
+
 ---
 
 ### `show_table(table)`

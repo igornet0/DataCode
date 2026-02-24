@@ -665,6 +665,77 @@ mod tests {
         assert_number_result(source, 2.0);
     }
 
+    #[test]
+    fn test_table_filter_syntax_bracket() {
+        // Фильтр через синтаксис data["col" = value] и data["col" == value]
+        let source = r#"
+            let data = [[1, "Alice", 28], [2, "Bob", 35], [3, "Charlie", 28]]
+            let headers = ["id", "name", "age"]
+            let my_table = table(data, headers)
+            let filtered_eq = my_table["age" = 28]
+            let filtered_eq2 = my_table["age" == 28]
+            len(filtered_eq["age"]) + len(filtered_eq2["age"])
+        "#;
+        // Каждый фильтр даёт 2 строки, сумма 4
+        assert_number_result(source, 4.0);
+    }
+
+    #[test]
+    fn test_table_filter_syntax_operators() {
+        // data["age" > 30] эквивалентно table_where(data, "age", ">", 30)
+        let source = r#"
+            let data = [[1, "Alice", 28], [2, "Bob", 35], [3, "Charlie", 42]]
+            let headers = ["id", "name", "age"]
+            let my_table = table(data, headers)
+            let filtered = my_table["age" > 30]
+            len(filtered["age"])
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_filter_chain() {
+        // Цепочка фильтров: data["Age" = 30]["name" == "Bob"]
+        let source = r#"
+            let data = [[1, "Alice", 28], [2, "Bob", 35], [3, "Charlie", 35]]
+            let headers = ["id", "name", "age"]
+            let my_table = table(data, headers)
+            let step1 = my_table["age" = 35]
+            let step2 = step1["name" == "Bob"]
+            len(step2["id"])
+        "#;
+        assert_number_result(source, 1.0);
+    }
+
+    #[test]
+    fn test_table_filter_non_table_error() {
+        // Не таблица слева от ["col" = val] → ошибка
+        let source = r#"
+            let a = [1, 2, 3]
+            a["x" = 1]
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected runtime error for table filter on array, got {:?}", result);
+        let err = result.unwrap_err();
+        let err_str = format!("{:?}", err);
+        assert!(err_str.contains("Table filter") && err_str.contains("Array"), "Expected 'Table filter requires a table, got Array', got: {}", err_str);
+    }
+
+    #[test]
+    fn test_table_index_regression_after_filter() {
+        // data[i], data[0], data["age"] по-прежнему работают (не фильтр)
+        let source = r#"
+            let data = [[1, "Alice", 28], [2, "Bob", 35]]
+            let headers = ["id", "name", "age"]
+            let my_table = table(data, headers)
+            let col = my_table["age"]
+            let row0 = my_table[0]
+            len(col) + len(row0)
+        "#;
+        // 2 элемента в колонке + 3 в первой строке
+        assert_number_result(source, 5.0);
+    }
+
     // ========== 5. Интеграционные тесты ==========
 
     #[test]

@@ -44,7 +44,7 @@ pub fn compile_expr(
         Expr::Unary { .. } => unary::compile_unary(ctx, expr),
         Expr::Binary { .. } => binary::compile_binary(ctx, expr),
         Expr::Call { .. } => call::compile_call(ctx, expr),
-        Expr::ArrayLiteral { .. } | Expr::TupleLiteral { .. } | Expr::ObjectLiteral { .. } | Expr::ArrayIndex { .. } => {
+        Expr::ArrayLiteral { .. } | Expr::TupleLiteral { .. } | Expr::ObjectLiteral { .. } | Expr::ArrayIndex { .. } | Expr::TableFilter { .. } => {
             array::compile_array(ctx, expr)
         }
         Expr::Property { .. } => property::compile_property(ctx, expr),

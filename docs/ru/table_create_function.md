@@ -141,8 +141,10 @@ show_table(head_table)
 global names_only = table_select(my_table, ["name", "age"])
 show_table(names_only)
 
-# Фильтровать данные
+# Фильтровать данные (два варианта записи)
 global adults = table_where(my_table, "age", ">", 30)
+# или через синтаксис скобок: таблица["колонка" оператор значение]
+global adults2 = my_table["age" > 30]
 show_table(adults)
 
 # Сортировать по возрасту
@@ -224,7 +226,7 @@ global table2 = table_create(data)
 - `table_head(table, n)` - Получить первые n строк
 - `table_tail(table, n)` - Получить последние n строк
 - `table_select(table, columns)` - Выбрать определенные колонки
-- `table_where(table, column, operator, value)` - Фильтровать строки
+- `table_where(table, column, operator, value)` - Фильтровать строки (альтернатива: `data["колонка" op значение]`, например `data["age" = 28]` или `data["age" > 30]`)
 - `table_sort(table, column)` - Сортировать по колонке
 - `table_distinct(table, column)` - Получить уникальные значения
 - `table_sample(table, n)` - Случайная выборка строк

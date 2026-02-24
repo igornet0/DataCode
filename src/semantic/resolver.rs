@@ -251,6 +251,10 @@ impl Resolver {
                 self.resolve_expr(array)?;
                 self.resolve_expr(index)?;
             }
+            Expr::TableFilter { table, value, .. } => {
+                self.resolve_expr(table)?;
+                self.resolve_expr(value)?;
+            }
             Expr::Property { object, .. } => {
                 self.resolve_expr(object)?;
             }

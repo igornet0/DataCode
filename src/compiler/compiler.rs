@@ -1566,6 +1566,10 @@ impl Compiler {
                 // Получаем элемент массива по индексу
                 self.chunk.write_with_line(OpCode::GetArrayElement, *line);
             }
+            Expr::TableFilter { .. } => {
+                let mut ctx = self.create_context();
+                expr::compile_expr(&mut ctx, expr)?;
+            }
             Expr::Property { object, name, line } => {
                 // Компилируем объект
                 self.compile_expr(object)?;

@@ -77,6 +77,10 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
             vars.extend(find_used_variables_in_expr(array));
             vars.extend(find_used_variables_in_expr(index));
         }
+        Expr::TableFilter { table, value, .. } => {
+            vars.extend(find_used_variables_in_expr(table));
+            vars.extend(find_used_variables_in_expr(value));
+        }
         Expr::Property { object, .. } => {
             vars.extend(find_used_variables_in_expr(object));
         }

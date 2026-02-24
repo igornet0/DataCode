@@ -391,6 +391,11 @@ async fn vm_handler(ConnectInfo(peer_addr): ConnectInfo<SocketAddr>, req: Reques
 
     match result {
         Ok((status, headers, body)) => {
+            HTTP_VM.with(|vm_cell| {
+                if let Some(vm) = vm_cell.borrow_mut().as_mut() {
+                    vm.reset_stores_and_globals_for_stateless();
+                }
+            });
             log_response(
                 &client_ip,
                 &method,

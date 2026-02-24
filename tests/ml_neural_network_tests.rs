@@ -92,10 +92,10 @@ fn test_dataset_batches() {
         vec![Value::Number(10.0), Value::Number(11.0), Value::Number(12.0)],
     ];
     let headers = vec!["x1".to_string(), "x2".to_string(), "y".to_string()];
-    let table = Table::from_data(data, Some(headers));
+    let mut table = Table::from_data(data, Some(headers));
 
     let dataset = Dataset::from_table(
-        &table,
+        &mut table,
         &["x1".to_string(), "x2".to_string()],
         &["y".to_string()],
     ).unwrap();
@@ -124,10 +124,10 @@ fn test_dataset_batches_shuffle() {
         vec![Value::Number(7.0), Value::Number(8.0), Value::Number(9.0)],
     ];
     let headers = vec!["x1".to_string(), "x2".to_string(), "y".to_string()];
-    let table = Table::from_data(data, Some(headers));
+    let mut table = Table::from_data(data, Some(headers));
 
     let dataset = Dataset::from_table(
-        &table,
+        &mut table,
         &["x1".to_string(), "x2".to_string()],
         &["y".to_string()],
     ).unwrap();

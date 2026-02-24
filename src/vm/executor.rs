@@ -1,8 +1,9 @@
-// Opcode execution for VM
+// Opcode execution for VM (Stage 1: stack/globals as Vec<ValueId>; one borrow store per instruction)
 
 use crate::debug_println;
 use crate::bytecode::OpCode;
-use crate::common::{error::LangError, value::Value};
+use crate::common::{error::LangError, value::Value, value_store::{ValueCell, ValueId, ValueStore, NULL_VALUE_ID}, TaggedValue};
+use crate::common::table::Table;
 use crate::vm::types::VMStatus;
 use crate::vm::frame::CallFrame;
 use crate::vm::exceptions::ExceptionHandler;
@@ -10,29 +11,53 @@ use crate::vm::operations;
 use crate::vm::stack;
 use crate::vm::modules;
 use crate::vm::vm::VM_CALL_CONTEXT;
+use crate::vm::global_slot::{GlobalSlot, default_global_slot};
+use crate::vm::store_convert::{store_value, store_value_arena, load_value, update_cell_if_mutable, tagged_to_value_id, tagged_to_value_id_arena, slot_to_value};
+use crate::vm::heavy_store::HeavyStore;
 use crate::ml::tensor::Tensor;
 use crate::common::error::ErrorType;
 use crate::vm::types::{ExplicitRelation, ExplicitPrimaryKey};
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::fmt::Write;
 
-/// Returns [class_name, superclass, ...] for VM protected access checks.
+/// Deterministic global slot by name (min index when multiple; stable across HashMap iteration).
+fn global_index_by_name(global_names: &std::collections::HashMap<usize, String>, name: &str) -> Option<usize> {
+    global_names
+        .iter()
+        .filter(|(_, n)| n.as_str() == name)
+        .map(|(idx, _)| *idx)
+        .min()
+}
+
+/// Returns [class_name, superclass, ...] for VM protected access checks (uses load_value for Object).
+/// Stops at cycle or missing __superclass to avoid infinite loop.
 fn get_superclass_chain(
-    globals: &[Value],
+    globals: &mut [GlobalSlot],
     global_names: &std::collections::HashMap<usize, String>,
     class_name: &str,
+    store: &mut ValueStore,
+    heap: &HeavyStore,
 ) -> Vec<String> {
+    use std::collections::HashSet;
     let mut chain = vec![class_name.to_string()];
+    let mut seen = HashSet::new();
+    seen.insert(class_name.to_string());
     let mut current = class_name.to_string();
     loop {
         let super_name_opt = global_names
             .iter()
             .find(|(_, name)| name.as_str() == current)
-            .and_then(|(idx, _)| globals.get(*idx))
-            .and_then(|v| {
-                if let Value::Object(rc) = v {
-                    let map = rc.borrow();
-                    map.get("__superclass").cloned()
+            .and_then(|(idx, _)| {
+                if *idx < globals.len() {
+                    let id = globals[*idx].resolve_to_value_id(store);
+                    let v = load_value(id, store, heap);
+                    if let Value::Object(rc) = &v {
+                        let map = rc.borrow();
+                        map.get("__superclass").cloned()
+                    } else {
+                        None
+                    }
                 } else {
                     None
                 }
@@ -41,6 +66,10 @@ fn get_superclass_chain(
             Some(Value::String(s)) => s,
             _ => break,
         };
+        if !seen.insert(super_name.clone()) {
+            // Cycle in class hierarchy — stop to avoid infinite loop
+            break;
+        }
         chain.push(super_name.clone());
         current = super_name;
     }
@@ -73,14 +102,14 @@ pub fn step(
 }
 
 /// Execute a single instruction
-/// Returns VMStatus indicating what to do next
-/// vm_ptr is used for VM_CALL_CONTEXT when calling native functions
+/// Returns VMStatus indicating what to do next (Stage 1: stack/globals as Vec<ValueId>; one store borrow per instruction).
+/// vm_ptr is used for VM_CALL_CONTEXT when calling native functions.
 pub fn execute_instruction(
     instruction: OpCode,
     line: usize,
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<TaggedValue>,
     frames: &mut Vec<CallFrame>,
-    globals: &mut Vec<Value>,
+    globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::HashMap<usize, String>,
     explicit_global_names: &std::collections::HashMap<usize, String>,
     functions: &[crate::bytecode::Function],
@@ -92,31 +121,48 @@ pub fn execute_instruction(
     loaded_modules: &mut std::collections::HashSet<String>,
     abi_natives: &mut Vec<crate::abi::NativeAbiFn>,
     loaded_native_libraries: &mut Vec<libloading::Library>,
+    value_store: &mut crate::common::ValueStore,
+    heavy_store: &mut crate::vm::heavy_store::HeavyStore,
+    native_args_buffer: &mut Vec<Value>,
+    reusable_native_arg_ids: &mut Vec<crate::common::value_store::ValueId>,
+    reusable_all_popped: &mut Vec<Value>,
     vm_ptr: *mut crate::vm::vm::Vm,
 ) -> Result<VMStatus, LangError> {
+    #[cfg(feature = "profile")]
+    crate::vm::profile::record_opcode();
+    #[cfg(feature = "profile")]
+    crate::vm::profile::set_current_opcode(&instruction);
+
+    /// Pop one TaggedValue and convert to ValueId (for opcodes that need store id).
+    fn pop_to_value_id(
+        stack: &mut Vec<TaggedValue>,
+        frames: &mut Vec<CallFrame>,
+        exception_handlers: &mut Vec<ExceptionHandler>,
+        value_store: &mut ValueStore,
+        heavy_store: &mut HeavyStore,
+    ) -> Result<ValueId, LangError> {
+        let tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+        Ok(tagged_to_value_id(tv, value_store))
+    }
     let frame = frames.last_mut().unwrap();
     let current_ip = frame.ip - 1; // IP уже инкрементирован в step()
 
     // Логирование выполнения конструктора
     let is_constructor = frame.function.name.contains("::new_");
     
-    if is_constructor {
+    if is_constructor && crate::common::debug::is_debug_enabled() {
         let is_return = matches!(instruction, OpCode::Return);
-        let _is_load_local = matches!(instruction, OpCode::LoadLocal(_));
-        let _is_store_local = matches!(instruction, OpCode::StoreLocal(_));
-        debug_println!("[DEBUG executor constructor] '{}' IP {} line {}: {:?} (stack len {})", 
+        debug_println!("[DEBUG executor constructor] '{}' IP {} line {}: {:?} (stack len {})",
             frame.function.name, current_ip, line, instruction, stack.len());
         if is_return && !stack.is_empty() {
-            let return_value = &stack[stack.len() - 1];
-            let val_type = match return_value {
-                Value::Object(_) => {
-                    if let Value::Object(obj_rc) = return_value {
-                        let map = obj_rc.borrow();
-                        let keys: Vec<String> = map.keys().cloned().collect();
-                        format!("Object с ключами: {:?}", keys)
-                    } else {
-                        "Object".to_string()
-                    }
+            let return_tv = stack[stack.len() - 1];
+            let return_id = tagged_to_value_id(return_tv, value_store);
+            let return_value = load_value(return_id, value_store, heavy_store);
+            let val_type = match &return_value {
+                Value::Object(obj_rc) => {
+                    let map = obj_rc.borrow();
+                    let keys: Vec<String> = map.keys().cloned().collect();
+                    format!("Object с ключами: {:?}", keys)
                 },
                 _ => format!("{:?}", return_value),
             };
@@ -126,29 +172,26 @@ pub fn execute_instruction(
     
     match instruction {
                 OpCode::Import(module_index) => {
-                    let module_name = match &frame.function.chunk.constants[module_index] {
-                        Value::String(name) => name.clone(),
+                    let module_name = match load_value(frame.constant_ids[module_index], value_store, heavy_store) {
+                        Value::String(name) => name,
                         _ => {
                             let error = ExceptionHandler::runtime_error(
                                 &frames,
                                 "Import expects module name as string".to_string(),
                                 line,
                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
                         }
                     };
                     
-                    // Check if module is already loaded
                     if loaded_modules.contains(&module_name) {
                         return Ok(VMStatus::Continue);
                     }
-                    
-                    // Built-in (ml, plot, settings_env), then .dc file, then native ABI module
                     if modules::is_known_module(&module_name) {
-                        modules::register_module(&module_name, natives, globals, global_names)?;
+                        modules::register_module(&module_name, natives, globals, global_names, value_store, heavy_store)?;
                         loaded_modules.insert(module_name);
                         return Ok(VMStatus::Continue);
                     }
@@ -164,11 +207,12 @@ pub fn execute_instruction(
                                     let mut module_obj = module_obj_rc.borrow_mut();
                                     module_obj.insert("__start_function_index".to_string(), Value::Number(start_function_index as f64));
                                 }
-                                if let Some((&idx, _)) = global_names.iter().find(|(_, n)| n.as_str() == module_name.as_str()) {
-                                    if idx < globals.len() { globals[idx] = module_object; } else { globals.resize(idx + 1, Value::Null); globals[idx] = module_object; }
+                                let id = store_value(module_object, value_store, heavy_store);
+                                if let Some(idx) = global_index_by_name(global_names, &module_name) {
+                                    if idx < globals.len() { globals[idx] = GlobalSlot::Heap(id); } else { globals.resize(idx + 1, default_global_slot()); globals[idx] = GlobalSlot::Heap(id); }
                                 } else {
                                     let idx = globals.len();
-                                    globals.push(module_object);
+                                    globals.push(GlobalSlot::Heap(id));
                                     global_names.insert(idx, module_name.clone());
                                 }
                                 loaded_modules.insert(module_name);
@@ -187,11 +231,12 @@ pub fn execute_instruction(
                         loaded_native_libraries,
                     ) {
                         let module_value = Value::Object(Rc::new(RefCell::new(module_object)));
-                        if let Some((&idx, _)) = global_names.iter().find(|(_, n)| n.as_str() == module_name.as_str()) {
-                            if idx < globals.len() { globals[idx] = module_value; } else { globals.resize(idx + 1, Value::Null); globals[idx] = module_value; }
+                        let id = store_value(module_value, value_store, heavy_store);
+                        if let Some(idx) = global_index_by_name(global_names, &module_name) {
+                            if idx < globals.len() { globals[idx] = GlobalSlot::Heap(id); } else { globals.resize(idx + 1, default_global_slot()); globals[idx] = GlobalSlot::Heap(id); }
                         } else {
                             let idx = globals.len();
-                            globals.push(module_value);
+                            globals.push(GlobalSlot::Heap(id));
                             global_names.insert(idx, module_name.clone());
                         }
                         loaded_modules.insert(module_name);
@@ -209,24 +254,21 @@ pub fn execute_instruction(
                     ));
                 }
                 OpCode::ImportFrom(module_index, items_index) => {
-                    // Get module name
-                    let module_name = match &frame.function.chunk.constants[module_index] {
-                        Value::String(name) => name.clone(),
+                    let module_name = match load_value(frame.constant_ids[module_index], value_store, heavy_store) {
+                        Value::String(name) => name,
                         _ => {
                             let error = ExceptionHandler::runtime_error(
-                            &frames,
+                                &frames,
                                 "ImportFrom expects module name as string".to_string(),
                                 line,
                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
                         }
                     };
-                    
-                    // Get items array
-                    let items_array = match &frame.function.chunk.constants[items_index] {
+                    let items_array = match load_value(frame.constant_ids[items_index], value_store, heavy_store) {
                         Value::Array(arr) => arr.borrow().clone(),
                         _ => {
                             let error = ExceptionHandler::runtime_error(
@@ -234,7 +276,7 @@ pub fn execute_instruction(
                                 "ImportFrom expects items array".to_string(),
                                 line,
                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -245,7 +287,7 @@ pub fn execute_instruction(
                     if !loaded_modules.contains(&module_name) {
                         // Сначала попробуем зарегистрировать как встроенный модуль
                         if modules::is_known_module(&module_name) {
-                            modules::register_module(&module_name, natives, globals, global_names)?;
+                            modules::register_module(&module_name, natives, globals, global_names, value_store, heavy_store)?;
                             loaded_modules.insert(module_name.clone());
                         } else {
                             // Попробуем загрузить как локальный файл (VM base_path затем thread-local)
@@ -272,7 +314,9 @@ pub fn execute_instruction(
                                                 crate::vm::vm::Vm::update_chunk_indices_from_names(
                                                     &mut vm_ref.get_functions_mut()[i].chunk,
                                                     &global_names,
-                                                    None, // vm_ref already borrowed mutably for chunk
+                                                    None,
+                                                    Some(value_store),
+                                                    Some(heavy_store),
                                                 );
                                             }
                                             start_idx
@@ -284,7 +328,9 @@ pub fn execute_instruction(
                                             crate::vm::vm::Vm::update_chunk_indices_from_names(
                                                 &mut main_frame.function.chunk,
                                                 global_names,
-                                                Some(globals.as_slice()),
+                                                Some(globals.as_mut_slice()),
+                                                Some(value_store),
+                                                Some(heavy_store),
                                             );
                                         }
 
@@ -296,27 +342,22 @@ pub fn execute_instruction(
                                             debug_println!("[DEBUG ImportFrom] Ключи в объекте модуля: {:?}", module_obj.keys().collect::<Vec<_>>());
                                         }
                                         
-                                        // Регистрируем модуль в глобальных переменных
-                                        // Проверяем, есть ли уже модуль в globals
-                                        if let Some((&idx, _)) = global_names.iter().find(|(_, n)| n.as_str() == module_name.as_str()) {
-                                            // Модуль уже зарегистрирован, обновляем значение
+                                        let module_id = store_value(module_object, value_store, heavy_store);
+                                        if let Some(idx) = global_index_by_name(global_names, &module_name) {
                                             if idx < globals.len() {
-                                                globals[idx] = module_object;
+                                                globals[idx] = GlobalSlot::Heap(module_id);
                                             } else {
-                                                // Индекс выходит за границы, расширяем массив
-                                                globals.resize(idx + 1, Value::Null);
-                                                globals[idx] = module_object;
+                                                globals.resize(idx + 1, default_global_slot());
+                                                globals[idx] = GlobalSlot::Heap(module_id);
                                             }
                                         } else {
-                                            // Новый модуль, создаем новый индекс
                                             let idx = globals.len();
-                                            globals.push(module_object);
+                                            globals.push(GlobalSlot::Heap(module_id));
                                             global_names.insert(idx, module_name.clone());
                                         }
                                         loaded_modules.insert(module_name.clone());
                                     }
                                     Err(load_err) => {
-                                        // Попробуем загрузить как нативный ABI-модуль (.so/.dylib)
                                         match crate::vm::native_loader::try_load_native_module(
                                             &module_name,
                                             Some(&base_path),
@@ -326,16 +367,17 @@ pub fn execute_instruction(
                                         ) {
                                             Ok(module_object) => {
                                                 let module_value = Value::Object(Rc::new(RefCell::new(module_object)));
-                                                if let Some((&idx, _)) = global_names.iter().find(|(_, n)| n.as_str() == module_name.as_str()) {
+                                                let id = store_value(module_value, value_store, heavy_store);
+                                                if let Some(idx) = global_index_by_name(global_names, &module_name) {
                                                     if idx < globals.len() {
-                                                        globals[idx] = module_value;
+                                                        globals[idx] = GlobalSlot::Heap(id);
                                                     } else {
-                                                        globals.resize(idx + 1, Value::Null);
-                                                        globals[idx] = module_value;
+                                                        globals.resize(idx + 1, default_global_slot());
+                                                        globals[idx] = GlobalSlot::Heap(id);
                                                     }
                                                 } else {
                                                     let idx = globals.len();
-                                                    globals.push(module_value);
+                                                    globals.push(GlobalSlot::Heap(id));
                                                     global_names.insert(idx, module_name.clone());
                                                 }
                                                 loaded_modules.insert(module_name.clone());
@@ -346,7 +388,7 @@ pub fn execute_instruction(
                                                     format!("Failed to load module '{}': {}", module_name, load_err),
                                                     line,
                                                 );
-                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                     Ok(()) => return Ok(VMStatus::Continue),
                                                     Err(e) => return Err(e),
                                                 }
@@ -365,7 +407,7 @@ pub fn execute_instruction(
                                     ),
                                     line,
                                 );
-                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                     Ok(()) => return Ok(VMStatus::Continue),
                                     Err(e) => return Err(e),
                                 }
@@ -373,8 +415,8 @@ pub fn execute_instruction(
                         }
                     }
                     
-                    // Get the module object from globals
-                    let module_global_index = if let Some((&idx, _)) = global_names.iter().find(|(_, name)| name.as_str() == module_name) {
+                    // Get the module object from globals (deterministic slot by name)
+                    let module_global_index = if let Some(idx) = global_index_by_name(global_names, &module_name) {
                         idx
                     } else {
                         let error = ExceptionHandler::runtime_error(
@@ -382,19 +424,15 @@ pub fn execute_instruction(
                             format!("Module {} not found in globals", module_name),
                             line,
                         );
-                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                             Ok(()) => return Ok(VMStatus::Continue),
                             Err(e) => return Err(e),
                         }
                     };
                     
-                    // Ensure globals vector is large enough
                     if module_global_index >= globals.len() {
-                        globals.resize(module_global_index + 1, Value::Null);
+                        globals.resize(module_global_index + 1, default_global_slot());
                     }
-                    
-                    // Get the module object from globals
-                    // First verify it exists and is an Object
                     if module_global_index >= globals.len() {
                         let error = ExceptionHandler::runtime_error(
                             &frames,
@@ -402,34 +440,34 @@ pub fn execute_instruction(
                                 module_name, module_global_index, globals.len()),
                             line,
                         );
-                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                             Ok(()) => return Ok(VMStatus::Continue),
                             Err(e) => return Err(e),
                         }
                     }
-                    
-                    // Get the module object - clone the Rc to avoid borrow conflicts
-                    let module_object_rc = match &globals[module_global_index] {
+                    let module_id = globals[module_global_index].resolve_to_value_id(value_store);
+                    let module_value = load_value(module_id, value_store, heavy_store);
+                    let module_object_rc = match &module_value {
                         Value::Object(map_rc) => map_rc.clone(),
                         Value::Null => {
                             let error = ExceptionHandler::runtime_error(
-                            &frames,
+                                &frames,
                                 format!("Module {} is Null - module registration may have failed", module_name),
                                 line,
                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
                         }
                         _ => {
                             let error = ExceptionHandler::runtime_error(
-                            &frames,
+                                &frames,
                                 format!("Module {} is not an object (found: {:?})", module_name, 
-                                    std::mem::discriminant(&globals[module_global_index])),
+                                    std::mem::discriminant(&module_value)),
                                 line,
                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -444,46 +482,31 @@ pub fn execute_instruction(
                             Value::String(item_str) => {
                                 if item_str == "*" {
                                     // Import all items
-                                    // First pass: collect all global indices we need without modifying globals
-                                    let mut indices_to_set: Vec<(usize, String, Value)> = Vec::new();
+                                    let mut indices_to_set: Vec<(usize, String, ValueId)> = Vec::new();
                                     let mut max_index_needed = globals.len();
-                                    let mut new_indices = Vec::new(); // Track new indices we need to create
-                                    
+                                    let mut new_indices = Vec::new();
                                     for (key, value) in &module_object {
-                                        // Find or create global index for this name
-                                        let global_index = global_names.iter()
-                                            .find(|(_, name)| name.as_str() == key.as_str())
-                                            .map(|(&idx, _)| idx);
-                                        
+                                        let global_index = global_index_by_name(global_names, key);
                                         let global_index = match global_index {
                                             Some(idx) => idx,
                                             None => {
-                                                // Name not found - we'll create new global index after calculating all
-                                                // Use a temporary index based on current length + new indices count
                                                 let idx = globals.len() + new_indices.len();
                                                 new_indices.push((idx, key.clone()));
                                                 idx
                                             }
                                         };
-                                        
                                         max_index_needed = max_index_needed.max(global_index + 1);
-                                        indices_to_set.push((global_index, key.clone(), value.clone()));
+                                        let id = store_value(value.clone(), value_store, heavy_store);
+                                        indices_to_set.push((global_index, key.clone(), id));
                                     }
-                                    
-                                    // Resize globals vector once to accommodate all indices
                                     if max_index_needed > globals.len() {
-                                        globals.resize(max_index_needed, Value::Null);
+                                        globals.resize(max_index_needed, default_global_slot());
                                     }
-                                    
-                                    // Register new global names
                                     for (idx, name) in new_indices {
                                         global_names.insert(idx, name);
                                     }
-                                    
-                                    // Second pass: set all values
-                                    for (global_index, _key, value) in indices_to_set {
-                                        // Store the value at the correct index
-                                        globals[global_index] = value;
+                                    for (global_index, _key, id) in indices_to_set {
+                                        globals[global_index] = GlobalSlot::Heap(id);
                                     }
                                 } else if item_str.contains(':') {
                                     // Aliased import: "name:alias"
@@ -493,20 +516,19 @@ pub fn execute_instruction(
                                         let alias = parts[1];
                                         
                                         if let Some(value) = module_object.get(name) {
-                                            // Register the alias in globals
-                                            let global_index = if let Some(&idx) = global_names.iter().find(|(_, n)| n.as_str() == alias).map(|(idx, _)| idx) {
+                                            let id = store_value(value.clone(), value_store, heavy_store);
+                                            let global_index = if let Some(idx) = global_index_by_name(global_names, alias) {
                                                 idx
                                             } else {
                                                 let idx = globals.len();
-                                                globals.push(value.clone());
+                                                globals.push(GlobalSlot::Heap(id));
                                                 global_names.insert(idx, alias.to_string());
                                                 idx
                                             };
-                                            // Update the global value
                                             if global_index >= globals.len() {
-                                                globals.resize(global_index + 1, Value::Null);
+                                                globals.resize(global_index + 1, default_global_slot());
                                             }
-                                            globals[global_index] = value.clone();
+                                            globals[global_index] = GlobalSlot::Heap(id);
                                         } else {
                                             let error = ExceptionHandler::runtime_error_with_type(
                                 &frames,
@@ -514,7 +536,7 @@ pub fn execute_instruction(
                                                 line,
                                                 crate::common::error::ErrorType::KeyError,
                                             );
-                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                 Ok(()) => continue,
                                                 Err(e) => return Err(e),
                                             }
@@ -533,22 +555,21 @@ pub fn execute_instruction(
                                             _ => "Other",
                                         });
                                         
-                                        // Register the name in globals
-                                        let global_index = if let Some(&idx) = global_names.iter().find(|(_, n)| n.as_str() == item_str.as_str()).map(|(idx, _)| idx) {
+                                        let id = store_value(value.clone(), value_store, heavy_store);
+                                        let global_index = if let Some(idx) = global_index_by_name(global_names, &item_str) {
                                             debug_println!("[DEBUG ImportFrom] '{}' уже существует в globals с индексом {}", item_str, idx);
                                             idx
                                         } else {
                                             let idx = globals.len();
-                                            globals.push(value.clone());
+                                            globals.push(GlobalSlot::Heap(id));
                                             global_names.insert(idx, item_str.clone());
                                             debug_println!("[DEBUG ImportFrom] Создан новый глобальный индекс {} для '{}'", idx, item_str);
                                             idx
                                         };
-                                        // Update the global value
                                         if global_index >= globals.len() {
-                                            globals.resize(global_index + 1, Value::Null);
+                                            globals.resize(global_index + 1, default_global_slot());
                                         }
-                                        globals[global_index] = value.clone();
+                                        globals[global_index] = GlobalSlot::Heap(id);
                                         debug_println!("[DEBUG ImportFrom] '{}' установлен в globals[{}]", item_str, global_index);
                                         
                                         // Если импортируется класс (объект с метаданными класса), также импортируем все конструкторы
@@ -559,18 +580,18 @@ pub fn execute_instruction(
                                             // Проверяем, что это класс (имеет метаданные __class_name)
                                             if class_obj.contains_key("__class_name") {
                                                 debug_println!("[DEBUG ImportFrom] '{}' является классом! Импортируем конструкторы...", item_str);
-                                                // Получаем start_function_index из объекта модуля
-                                                // Сначала получаем объект модуля из глобальных переменных
-                                                let start_function_index = if let Some(&module_global_idx) = global_names.iter().find(|(_, n)| n.as_str() == module_name).map(|(idx, _)| idx) {
+                                                let start_function_index = if let Some(module_global_idx) = global_index_by_name(global_names, &module_name) {
                                                     if module_global_idx < globals.len() {
-                                                        if let Value::Object(module_obj_rc) = &globals[module_global_idx] {
+                                                        let mid = globals[module_global_idx].resolve_to_value_id(value_store);
+                                                        let mod_val = load_value(mid, value_store, heavy_store);
+                                                        if let Value::Object(module_obj_rc) = &mod_val {
                                                             let module_obj = module_obj_rc.borrow();
                                                             if let Some(Value::Number(idx)) = module_obj.get("__start_function_index") {
                                                                 debug_println!("[DEBUG ImportFrom] Найден start_function_index={} для модуля '{}'", *idx, module_name);
                                                                 *idx as usize
                                                             } else {
                                                                 debug_println!("[DEBUG ImportFrom] WARNING: start_function_index не найден в модуле '{}', используем 0", module_name);
-                                                                0 // Если не найден, используем 0 (функции уже добавлены)
+                                                                0
                                                             }
                                                         } else {
                                                             debug_println!("[DEBUG ImportFrom] WARNING: Модуль '{}' не является объектом", module_name);
@@ -607,34 +628,31 @@ pub fn execute_instruction(
                                                             }
                                                         };
                                                         
-                                                        // Импортируем конструктор
-                                                        let constructor_global_index = if let Some(&idx) = global_names.iter().find(|(_, n)| n.as_str() == key.as_str()).map(|(idx, _)| idx) {
+                                                        let updated_id = store_value(updated_val.clone(), value_store, heavy_store);
+                                                        let constructor_global_index = if let Some(idx) = global_index_by_name(global_names, key) {
                                                             debug_println!("[DEBUG ImportFrom] Конструктор '{}' уже существует в globals с индексом {}, обновляем индекс функции", key, idx);
-                                                            // Обновляем индекс функции в существующем конструкторе
-                                                            // Это важно, потому что конструктор мог быть создан при merge из __lib__.dc
-                                                            // с неправильным индексом функции (0), и теперь нужно обновить его на правильный
                                                             if idx < globals.len() {
-                                                                if let Value::Function(old_fn_idx) = &globals[idx] {
+                                                                let rid = globals[idx].resolve_to_value_id(value_store);
+                                                                if let Value::Function(old_fn_idx) = &load_value(rid, value_store, heavy_store) {
                                                                     debug_println!("[DEBUG ImportFrom] Старый индекс функции: {}, новый индекс функции: {} (функции из модуля добавлены в VM)", old_fn_idx, new_function_index);
                                                                 }
-                                                                globals[idx] = updated_val.clone();
+                                                                globals[idx] = GlobalSlot::Heap(updated_id);
                                                             } else {
-                                                                globals.resize(idx + 1, Value::Null);
-                                                                globals[idx] = updated_val.clone();
+                                                                globals.resize(idx + 1, default_global_slot());
+                                                                globals[idx] = GlobalSlot::Heap(updated_id);
                                                             }
                                                             idx
                                                         } else {
                                                             let idx = globals.len();
-                                                            globals.push(updated_val.clone());
+                                                            globals.push(GlobalSlot::Heap(updated_id));
                                                             global_names.insert(idx, key.clone());
                                                             debug_println!("[DEBUG ImportFrom] Создан новый глобальный индекс {} для конструктора '{}'", idx, key);
                                                             idx
                                                         };
-                                                        // Update the global value
                                                         if constructor_global_index >= globals.len() {
-                                                            globals.resize(constructor_global_index + 1, Value::Null);
+                                                            globals.resize(constructor_global_index + 1, default_global_slot());
                                                         }
-                                                        globals[constructor_global_index] = updated_val;
+                                                        globals[constructor_global_index] = GlobalSlot::Heap(updated_id);
                                                         debug_println!("[DEBUG ImportFrom] Конструктор '{}' установлен в globals[{}] с индексом функции {}", key, constructor_global_index, new_function_index);
                                                     }
                                                 }
@@ -652,7 +670,7 @@ pub fn execute_instruction(
                                             line,
                                             crate::common::error::ErrorType::KeyError,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => continue,
                                             Err(e) => return Err(e),
                                         }
@@ -665,7 +683,7 @@ pub fn execute_instruction(
                                     "ImportFrom item must be a string".to_string(),
                                     line,
                                 );
-                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                     Ok(()) => continue,
                                     Err(e) => return Err(e),
                                 }
@@ -673,62 +691,79 @@ pub fn execute_instruction(
                         }
                     }
                     
+                    debug_println!(
+                        "[DEBUG ImportFrom] после установки: global_names 75..80: {:?}",
+                        (75..80).filter_map(|i| global_names.get(&i).map(|n| (i, n.as_str()))).collect::<Vec<_>>()
+                    );
                     // After importing items (builtin or file), update main chunk's LoadGlobal/StoreGlobal
                     // to the current global_names so subsequent instructions see the correct slots.
                     if let Some(main_frame) = frames.first_mut() {
                         crate::vm::vm::Vm::update_chunk_indices_from_names(
                             &mut main_frame.function.chunk,
                             global_names,
-                            Some(globals.as_slice()),
+                            Some(globals.as_mut_slice()),
+                            Some(value_store),
+                            Some(heavy_store),
                         );
                     }
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::Constant(index) => {
-                    let value = frame.function.chunk.constants[index].clone();
-                    stack::push(stack, value);
+                    let tv = frame.constant_tagged.get(index)
+                        .and_then(|opt| *opt)
+                        .unwrap_or_else(|| TaggedValue::from_heap(frame.constant_ids[index]));
+                    stack::push(stack, tv);
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::LoadLocal(index) => {
-                    // Для сложных типов (Array, Table) возвращаем ссылку (shallow copy Rc)
-                    // Для простых типов клонируем значение
-                    let value = &frame.slots[index];
-                    let loaded_value = match value {
-                        Value::Array(arr_rc) => Value::Array(Rc::clone(arr_rc)),
-                        Value::Table(table_rc) => Value::Table(Rc::clone(table_rc)),
-                        _ => value.clone(), // Простые типы клонируем
-                    };
-                    stack::push(stack, loaded_value);
+                    let current_ip = frame.ip - 1;
+                    if frame.load_local_cache_ip == Some(current_ip) && frame.load_local_cache_slot == Some(index) {
+                        if let Some(tv) = frame.load_local_cache_tagged {
+                            stack::push(stack, tv);
+                            return Ok(VMStatus::Continue);
+                        }
+                    }
+                    let frame = frames.last_mut().unwrap();
+                    if index >= frame.slots.len() {
+                        frame.ensure_slot(index);
+                    }
+                    let tv = frame.slots[index];
+                    stack::push(stack, tv);
+                    {
+                        let frame = frames.last_mut().unwrap();
+                        frame.load_local_cache_ip = Some(current_ip);
+                        frame.load_local_cache_slot = Some(index);
+                        frame.load_local_cache_tagged = Some(tv);
+                    }
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::StoreLocal(index) => {
-                    let value = stack::pop(stack, frames, exception_handlers)?;
-                    
-                    // Логирование для объектов (проверка клонирования)
-                    if let Value::Object(obj_rc) = &value {
-                        let _obj_ptr = Rc::as_ptr(obj_rc);
-                        let frame = frames.last().unwrap();
-                        let is_constructor = frame.function.name.contains("::new_");
-                        let current_ip = frame.ip - 1;
-                        
-                        if is_constructor {
-                            let map = obj_rc.borrow();
-                            let key_count = map.len();
-                            debug_println!("[DEBUG StoreLocal] constructor '{}' IP {} slot {}: Object ({} keys)", frame.function.name, current_ip, index, key_count);
+                    let tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let frame = frames.last_mut().unwrap();
+                    if frame.load_local_cache_slot == Some(index) {
+                        frame.load_local_cache_slot = None;
+                    }
+                    if index >= frame.slots.len() {
+                        frame.slots.resize(index + 1, TaggedValue::null());
+                    }
+                    frame.slots[index] = tv;
+                    if cfg!(debug_assertions) {
+                        let val = slot_to_value(tv, value_store, heavy_store);
+                        if let Value::Object(obj_rc) = &val {
+                            let _obj_ptr = Rc::as_ptr(obj_rc);
+                            let f = frames.last().unwrap();
+                            let is_constructor = f.function.name.contains("::new_");
+                            let current_ip = f.ip - 1;
+                            if is_constructor {
+                                let map = obj_rc.borrow();
+                                debug_println!("[DEBUG StoreLocal] constructor '{}' IP {} slot {}: Object ({} keys)", f.function.name, current_ip, index, map.len());
+                            }
                         }
                     }
-                    
-                    // Clone уже создает глубокую копию для массивов и таблиц
-                    let frame = frames.last_mut().unwrap();
-                    if index >= frame.slots.len() {
-                        frame.slots.resize(index + 1, Value::Null);
-                    }
-                    frame.slots[index] = value;
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::LoadGlobal(index) => {
                     if index >= globals.len() {
-                        // Check if this is a known module that hasn't been imported
                         let error_message = if let Some(var_name) = global_names.get(&index) {
                             if modules::is_known_module(var_name) && !loaded_modules.contains(var_name) {
                                 format!("Module {} not imported", var_name)
@@ -738,27 +773,21 @@ pub fn execute_instruction(
                         } else {
                             format!("Undefined variable")
                         };
-                        
-                        let error = ExceptionHandler::runtime_error(
-                            &frames,
-                            error_message,
-                            line,
-                        );
-                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
-                            Ok(()) => {
-                                // Исключение обработано, кладем Null на стек
-                                stack::push(stack, Value::Null);
-                            }
-                            Err(e) => return Err(e), // Исключение не обработано
+                        let error = ExceptionHandler::runtime_error(&frames, error_message, line);
+                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                            Ok(()) => stack::push_id(stack, NULL_VALUE_ID),
+                            Err(e) => return Err(e),
                         }
                     } else {
-                        // Для сложных типов (Array, Table) возвращаем ссылку (shallow copy Rc)
-                        // Для простых типов клонируем значение
-                        let value = &globals[index];
-                        // Отладочный вывод для проверки значений
+                        match &globals[index] {
+                            GlobalSlot::Inline(tv) => {
+                                stack::push(stack, *tv);
+                            }
+                            GlobalSlot::Heap(id) => {
                         if let Some(var_name) = global_names.get(&index) {
                             if var_name.contains("Data") || var_name.contains("range") || var_name.contains("print") || var_name.contains("::new_") {
-                                let value_type_str = match value {
+                                let value = load_value(*id, value_store, heavy_store);
+                                let value_type_str = match &value {
                                     Value::Null => "Null".to_string(),
                                     Value::Function(fn_idx) => {
                                         if *fn_idx < functions.len() {
@@ -772,62 +801,98 @@ pub fn execute_instruction(
                                     _ => "Other".to_string(),
                                 };
                                 debug_println!("[DEBUG LoadGlobal] Загружаем '{}' из globals[{}], значение: {}", var_name, index, value_type_str);
-                                
-                                // Дополнительная проверка для конструкторов
                                 if var_name.contains("::new_") {
-                                    if let Value::Function(fn_idx) = value {
+                                    if let Value::Function(fn_idx) = &value {
                                         if *fn_idx < functions.len() {
                                             let func = &functions[*fn_idx];
-                                            debug_println!("[DEBUG LoadGlobal] Конструктор '{}' имеет индекс функции {}, имя функции: '{}', arity: {}", 
-                                                var_name, fn_idx, func.name, func.arity);
+                                            debug_println!("[DEBUG LoadGlobal] Конструктор '{}' имеет индекс функции {}, имя функции: '{}', arity: {}", var_name, fn_idx, func.name, func.arity);
                                         } else {
-                                            debug_println!("[DEBUG LoadGlobal] ОШИБКА: Конструктор '{}' имеет индекс функции {} (выходит за границы, всего функций: {})", 
-                                                var_name, fn_idx, functions.len());
+                                            debug_println!("[DEBUG LoadGlobal] ОШИБКА: Конструктор '{}' имеет индекс функции {} (выходит за границы, всего функций: {})", var_name, fn_idx, functions.len());
                                         }
                                     }
                                 }
                             }
-                        }
-                        if matches!(value, Value::Null) {
-                            // Если значение Null, проверяем, не является ли это функцией, которая должна быть установлена
-                            if let Some(var_name) = global_names.get(&index) {
-                                if var_name.contains("Data") || var_name.contains("range") || var_name.contains("print") {
-                                    debug_println!("[DEBUG LoadGlobal] WARNING: '{}' в globals[{}] равен Null", var_name, index);
-                                }
+                            if *id == NULL_VALUE_ID && (var_name.contains("Data") || var_name.contains("range") || var_name.contains("print")) {
+                                debug_println!("[DEBUG LoadGlobal] WARNING: '{}' в globals[{}] равен Null", var_name, index);
                             }
                         }
-                        let loaded_value = match value {
-                            Value::Array(arr_rc) => Value::Array(Rc::clone(arr_rc)),
-                            Value::Table(table_rc) => Value::Table(Rc::clone(table_rc)),
-                            _ => value.clone(), // Простые типы клонируем
-                        };
-                        stack::push(stack, loaded_value);
+                        stack::push_id(stack, *id);
+                            }
+                        }
                     }
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::StoreGlobal(index) => {
-                    let mut value = stack::pop(stack, frames, exception_handlers)?;
-                    // Если значение - таблица, устанавливаем её имя из global_names
+                    let tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    // Inline path: primitives (number, bool, null, int) — no alloc, no get.
+                    if !tv.is_heap() {
+                        if index >= globals.len() {
+                            globals.resize(index + 1, default_global_slot());
+                        }
+                        globals[index] = GlobalSlot::Inline(tv);
+                        return Ok(VMStatus::Continue);
+                    }
+                    let value_id = tagged_to_value_id_arena(tv, value_store);
+                    // Do not fast-path when value comes from constant pool (shared); copy so globals stay independent.
+                    let from_constant = frames.last().map(|f| f.constant_ids.contains(&value_id)).unwrap_or(false);
+                    // Fast path: types that need no metadata — just store the id, no load_value/store_value copy.
+                    if !from_constant {
+                        if let Some(cell) = value_store.get(value_id) {
+                            let skip_full_path = match cell {
+                                ValueCell::Array(_) | ValueCell::Tuple(_) | ValueCell::Function(_)
+                                | ValueCell::NativeFunction(_) | ValueCell::String(_) | ValueCell::Number(_)
+                                | ValueCell::Bool(_) | ValueCell::Null | ValueCell::Path(_) | ValueCell::Uuid(_, _)
+                                | ValueCell::ColumnReference { .. } | ValueCell::Layer(_) | ValueCell::Window(_)
+                                | ValueCell::Enumerate { .. } | ValueCell::Ellipsis => true,
+                                ValueCell::Object(_) | ValueCell::Heavy(_) => false,
+                            };
+                            if skip_full_path {
+                                if index >= globals.len() {
+                                    globals.resize(index + 1, default_global_slot());
+                                }
+                                globals[index] = GlobalSlot::Heap(value_id);
+                                return Ok(VMStatus::Continue);
+                            }
+                        }
+                    }
+                    let mut value = load_value(value_id, value_store, heavy_store);
                     if let Value::Table(table_rc) = &mut value {
                         if let Some(var_name) = global_names.get(&index) {
                             table_rc.borrow_mut().set_name(var_name.clone());
                         }
+                        // Table is already in heap; no need to store_value again.
+                        if index >= globals.len() {
+                            globals.resize(index + 1, default_global_slot());
+                        }
+                        globals[index] = GlobalSlot::Heap(value_id);
+                        return Ok(VMStatus::Continue);
                     }
-                    // Register class with parent's metadata (ORM: Base.metadata.tables)
-                    if let Value::Object(class_rc) = &value {
+                    let (super_name, class_name, class_meta_opt) = if let Value::Object(class_rc) = &value {
                         let class_obj = class_rc.borrow();
                         let super_name = class_obj.get("__superclass").and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
-                        drop(class_obj);
-                        if let Some(parent_name) = super_name {
-                            let parent_global_idx = global_names.iter().find(|(_, n)| n.as_str() == parent_name).map(|(i, _)| *i);
+                        let class_name = class_obj.get("__class_name").and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
+                        let class_meta_opt = class_obj.get("metadata").cloned();
+                        (super_name, class_name, class_meta_opt)
+                    } else {
+                        (None, None, None)
+                    };
+                    if let Some(parent_name) = super_name {
+                            let parent_global_idx = global_index_by_name(global_names, &parent_name);
                             if let Some(parent_idx) = parent_global_idx {
                                 if parent_idx < globals.len() {
-                                    if let Value::Object(parent_rc) = &globals[parent_idx] {
+                                    let parent_id = globals[parent_idx].resolve_to_value_id(value_store);
+                                    let parent_val = load_value(parent_id, value_store, heavy_store);
+                                    if let Value::Object(parent_rc) = &parent_val {
                                         let meta_opt = parent_rc.borrow().get("metadata").cloned();
                                         if let Some(Value::Object(meta_rc)) = meta_opt {
-                                            let is_meta = meta_rc.borrow().get("__meta").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false);
+                                            let (is_meta, tables_opt) = {
+                                                let meta_ref = meta_rc.borrow();
+                                                let is_m = meta_ref.get("__meta").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false);
+                                                let tables = meta_ref.get("tables").cloned();
+                                                (is_m, tables)
+                                            };
                                             if is_meta {
-                                                if let Some(Value::Array(tables_rc)) = meta_rc.borrow().get("tables") {
+                                                if let Some(Value::Array(tables_rc)) = tables_opt {
                                                     tables_rc.borrow_mut().push(value.clone());
                                                 }
                                                 // Register ancestors in metadata.classes so run_create_all can resolve __superclass (class is fully built by now)
@@ -840,11 +905,17 @@ pub fn execute_instruction(
                                                 if let Some(Value::Object(classes_rc)) = classes_rc_opt {
                                                     let mut classes = classes_rc.borrow_mut();
                                                     let mut current_name = parent_name.clone();
+                                                    let mut seen_ancestors = std::collections::HashSet::new();
                                                     loop {
-                                                        let ancestor_idx = global_names.iter().find(|(_, n)| n.as_str() == current_name).map(|(i, _)| *i);
+                                                        if !seen_ancestors.insert(current_name.clone()) {
+                                                            break; // cycle in __superclass
+                                                        }
+                                                        let ancestor_idx = global_index_by_name(global_names, &current_name);
                                                         let (ancestor_has_meta, next_super) = if let Some(idx) = ancestor_idx {
                                                             if idx < globals.len() {
-                                                                if let Value::Object(ancestor_rc) = &globals[idx] {
+                                                                let aid = globals[idx].resolve_to_value_id(value_store);
+                                                                let anc_val = load_value(aid, value_store, heavy_store);
+                                                                if let Value::Object(ancestor_rc) = &anc_val {
                                                                     let a = ancestor_rc.borrow();
                                                                     let has_meta = a.contains_key("metadata");
                                                                     let next = a.get("__superclass").and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
@@ -861,7 +932,8 @@ pub fn execute_instruction(
                                                         if ancestor_has_meta {
                                                             if let Some(idx) = ancestor_idx {
                                                                 if idx < globals.len() {
-                                                                    classes.insert(current_name.clone(), globals[idx].clone());
+                                                                    let cid = globals[idx].resolve_to_value_id(value_store);
+                                                                    classes.insert(current_name.clone(), load_value(cid, value_store, heavy_store));
                                                                 }
                                                             }
                                                         }
@@ -877,152 +949,424 @@ pub fn execute_instruction(
                                     }
                                 }
                             }
-                        }
                     }
-                    // Register class in metadata.classes when it has metadata (so run_create_all can resolve it as parent later)
-                    if let Value::Object(class_rc) = &value {
-                        let class_name = class_rc.borrow().get("__class_name").and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
-                        let meta_opt = class_rc.borrow().get("metadata").cloned();
-                        if let Some(name) = class_name {
-                            if let Some(Value::Object(meta_rc)) = meta_opt {
-                                let mut meta = meta_rc.borrow_mut();
-                                if !meta.contains_key("classes") {
-                                    meta.insert("classes".to_string(), Value::Object(Rc::new(RefCell::new(std::collections::HashMap::new()))));
-                                }
-                                let classes_rc_opt = meta.get("classes").cloned();
-                                drop(meta);
-                                if let Some(Value::Object(classes_rc)) = classes_rc_opt {
-                                    classes_rc.borrow_mut().insert(name, value.clone());
-                                }
+                    // Register class in metadata.classes when it has metadata (so run_create_all can resolve it as parent later); use class_name/class_meta_opt from single borrow above
+                    if let Some(name) = class_name {
+                        if let Some(Value::Object(meta_rc)) = class_meta_opt {
+                            let mut meta = meta_rc.borrow_mut();
+                            if !meta.contains_key("classes") {
+                                meta.insert("classes".to_string(), Value::Object(Rc::new(RefCell::new(std::collections::HashMap::new()))));
+                            }
+                            let classes_rc_opt = meta.get("classes").cloned();
+                            drop(meta);
+                            if let Some(Value::Object(classes_rc)) = classes_rc_opt {
+                                classes_rc.borrow_mut().insert(name, value.clone());
                             }
                         }
                     }
-                    // Clone уже создает глубокую копию для массивов и таблиц
+                    let final_id = store_value_arena(value, value_store, heavy_store);
                     if index >= globals.len() {
-                        globals.resize(index + 1, Value::Null);
+                        globals.resize(index + 1, default_global_slot());
                     }
-                    // Важно: присваиваем value после установки имени, чтобы имя сохранилось
-                    globals[index] = value;
+                    globals[index] = GlobalSlot::Heap(final_id);
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::Add => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::binary_add(&a, &b, frames, stack, exception_handlers)?;
-                    stack::push(stack, result);
+                    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    {
+                        let frame = frames.last_mut().unwrap();
+                        let cache_hit = frame.add_cache_ip == Some(current_ip) && frame.add_cache_both_number;
+                        if cache_hit && a_tv.is_number() && b_tv.is_number() {
+                            stack::push(stack, TaggedValue::from_f64(a_tv.get_f64() + b_tv.get_f64()));
+                            return Ok(VMStatus::Continue);
+                        }
+                        if cache_hit {
+                            frame.add_cache_both_number = false;
+                        }
+                        if a_tv.is_number() && b_tv.is_number() {
+                            frame.add_cache_ip = Some(current_ip);
+                            frame.add_cache_both_number = true;
+                            stack::push(stack, TaggedValue::from_f64(a_tv.get_f64() + b_tv.get_f64()));
+                            return Ok(VMStatus::Continue);
+                        }
+                        frame.add_cache_both_number = false;
+                    }
+                    let a_id = tagged_to_value_id(a_tv, value_store);
+                    let b_id = tagged_to_value_id(b_tv, value_store);
+                    if let (Some(ValueCell::String(sid)), Some(ValueCell::Number(n))) =
+                        (value_store.get(a_id), value_store.get(b_id))
+                    {
+                        if let Some(prefix) = value_store.get_string(*sid) {
+                            let mut buf = String::with_capacity(prefix.len() + 24);
+                            buf.push_str(prefix);
+                            let _ = write!(buf, "{}", n);
+                            let new_sid = value_store.intern_string(buf);
+                            let result_id = value_store.allocate(ValueCell::String(new_sid));
+                            stack::push_id(stack, result_id);
+                            return Ok(VMStatus::Continue);
+                        }
+                    }
+                    if let (Some(ValueCell::Number(n)), Some(ValueCell::String(sid))) =
+                        (value_store.get(a_id), value_store.get(b_id))
+                    {
+                        if let Some(suffix) = value_store.get_string(*sid) {
+                            let mut buf = String::with_capacity(24 + suffix.len());
+                            let _ = write!(buf, "{}", n);
+                            buf.push_str(suffix);
+                            let new_sid = value_store.intern_string(buf);
+                            let result_id = value_store.allocate(ValueCell::String(new_sid));
+                            stack::push_id(stack, result_id);
+                            return Ok(VMStatus::Continue);
+                        }
+                    }
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
+                    let result = match (&a, &b) {
+                        (Value::Number(n1), Value::Number(n2)) => Value::Number(n1 + n2),
+                        _ => operations::binary_add(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+                    };
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
+                    return Ok(VMStatus::Continue);
+                }
+                OpCode::RegAdd(rd, r1, r2) => {
+                    let frame = frames.last_mut().unwrap();
+                    let (rd, r1, r2) = (rd as usize, r1 as usize, r2 as usize);
+                    let n = 1 + rd.max(r1).max(r2);
+                    if frame.regs.len() < n {
+                        frame.regs.resize(n, TaggedValue::null());
+                    }
+                    let a = frame.regs[r1];
+                    let b = frame.regs[r2];
+                    if a.is_number() && b.is_number() {
+                        frame.regs[rd] = TaggedValue::from_f64(a.get_f64() + b.get_f64());
+                    }
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::Sub => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::binary_sub(&a, &b, frames, stack, exception_handlers)?;
-                    stack::push(stack, result);
+                    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if a_tv.is_number() && b_tv.is_number() {
+                        stack::push(stack, TaggedValue::from_f64(a_tv.get_f64() - b_tv.get_f64()));
+                        return Ok(VMStatus::Continue);
+                    }
+                    {
+                        let frame = frames.last_mut().unwrap();
+                        if frame.sub_cache_ip == Some(current_ip) {
+                            frame.sub_cache_both_number = false;
+                        }
+                    }
+                    let a_id = tagged_to_value_id(a_tv, value_store);
+                    let b_id = tagged_to_value_id(b_tv, value_store);
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
+                    let result = match (&a, &b) {
+                        (Value::Number(n1), Value::Number(n2)) => Value::Number(n1 - n2),
+                        (Value::Null, Value::Number(n2)) => Value::Number(-n2),
+                        (Value::Number(n1), Value::Null) => Value::Number(*n1),
+                        _ => operations::binary_sub(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+                    };
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::Mul => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::binary_mul(&a, &b, frames, stack, exception_handlers)?;
-                    stack::push(stack, result);
+                    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if a_tv.is_number() && b_tv.is_number() {
+                        stack::push(stack, TaggedValue::from_f64(a_tv.get_f64() * b_tv.get_f64()));
+                        return Ok(VMStatus::Continue);
+                    }
+                    {
+                        let frame = frames.last_mut().unwrap();
+                        if frame.mul_cache_ip == Some(current_ip) {
+                            frame.mul_cache_both_number = false;
+                        }
+                    }
+                    let a_id = tagged_to_value_id(a_tv, value_store);
+                    let b_id = tagged_to_value_id(b_tv, value_store);
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
+                    let result = match (&a, &b) {
+                        (Value::Number(n1), Value::Number(n2)) => Value::Number(n1 * n2),
+                        _ => operations::binary_mul(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+                    };
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::Div => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::binary_div(&a, &b, frames, stack, exception_handlers)?;
-                    stack::push(stack, result);
+                    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if a_tv.is_number() && b_tv.is_number() {
+                        let n2 = b_tv.get_f64();
+                        if n2 != 0.0 {
+                            stack::push(stack, TaggedValue::from_f64(a_tv.get_f64() / n2));
+                            return Ok(VMStatus::Continue);
+                        }
+                    }
+                    {
+                        let frame = frames.last_mut().unwrap();
+                        if frame.div_cache_ip == Some(current_ip) {
+                            frame.div_cache_both_number = false;
+                        }
+                    }
+                    let a_id = tagged_to_value_id(a_tv, value_store);
+                    let b_id = tagged_to_value_id(b_tv, value_store);
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
+                    let result = match (&a, &b) {
+                        (Value::Number(n1), Value::Number(n2)) if *n2 != 0.0 => Value::Number(n1 / n2),
+                        (Value::Number(_), Value::Number(_)) | _ => operations::binary_div(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+                    };
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::IntDiv => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::binary_int_div(&a, &b, frames, stack, exception_handlers)?;
-                    stack::push(stack, result);
+                    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if a_tv.is_number() && b_tv.is_number() {
+                        let n2 = b_tv.get_f64();
+                        if n2 != 0.0 {
+                            stack::push(stack, TaggedValue::from_f64((a_tv.get_f64() / n2).floor()));
+                            return Ok(VMStatus::Continue);
+                        }
+                    }
+                    {
+                        let frame = frames.last_mut().unwrap();
+                        if frame.intdiv_cache_ip == Some(current_ip) {
+                            frame.intdiv_cache_both_number = false;
+                        }
+                    }
+                    let a_id = tagged_to_value_id(a_tv, value_store);
+                    let b_id = tagged_to_value_id(b_tv, value_store);
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
+                    let result = operations::binary_int_div(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?;
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::Mod => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::binary_mod(&a, &b, frames, stack, exception_handlers)?;
-                    stack::push(stack, result);
+                    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if a_tv.is_number() && b_tv.is_number() {
+                        let n2 = b_tv.get_f64();
+                        if n2 != 0.0 {
+                            stack::push(stack, TaggedValue::from_f64(a_tv.get_f64() % n2));
+                            return Ok(VMStatus::Continue);
+                        }
+                    }
+                    {
+                        let frame = frames.last_mut().unwrap();
+                        if frame.mod_cache_ip == Some(current_ip) {
+                            frame.mod_cache_both_number = false;
+                        }
+                    }
+                    let a_id = tagged_to_value_id(a_tv, value_store);
+                    let b_id = tagged_to_value_id(b_tv, value_store);
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
+                    let result = operations::binary_mod(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?;
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::Pow => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::binary_pow(&a, &b, frames, stack, exception_handlers)?;
-                    stack::push(stack, result);
+                    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if a_tv.is_number() && b_tv.is_number() {
+                        stack::push(stack, TaggedValue::from_f64(a_tv.get_f64().powf(b_tv.get_f64())));
+                        return Ok(VMStatus::Continue);
+                    }
+                    let a_id = tagged_to_value_id(a_tv, value_store);
+                    let b_id = tagged_to_value_id(b_tv, value_store);
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
+                    let result = operations::binary_pow(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?;
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                 }
                 OpCode::Negate => {
-                    let value = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::unary_negate(&value, frames, stack, exception_handlers)?;
-                    stack::push(stack, result);
+                    let val_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if val_tv.is_number() {
+                        stack::push(stack, TaggedValue::from_f64(-val_tv.get_f64()));
+                        return Ok(VMStatus::Continue);
+                    }
+                    let val_id = tagged_to_value_id(val_tv, value_store);
+                    let value = load_value(val_id, value_store, heavy_store);
+                    let result = operations::unary_negate(&value, frames, stack, exception_handlers, value_store, heavy_store)?;
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                 }
                 OpCode::Not => {
-                    let value = stack::pop(stack, frames, exception_handlers)?;
+                    let val_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if val_tv.is_bool() {
+                        stack::push(stack, TaggedValue::from_bool(!val_tv.get_bool()));
+                        return Ok(VMStatus::Continue);
+                    }
+                    let val_id = tagged_to_value_id(val_tv, value_store);
+                    let value = load_value(val_id, value_store, heavy_store);
                     let result = operations::unary_not(&value);
-                    stack::push(stack, result);
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                 }
                 OpCode::Or => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
+                    let b_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if let Some(ValueCell::Bool(a)) = value_store.get(a_id) {
+                        if *a {
+                            stack::push_id(stack, a_id);
+                            return Ok(VMStatus::Continue);
+                        }
+                        stack::push_id(stack, b_id);
+                        return Ok(VMStatus::Continue);
+                    }
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
                     let result = operations::binary_or(&a, &b);
-                    stack::push(stack, result);
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                 }
                 OpCode::And => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
+                    let b_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if let Some(ValueCell::Bool(a)) = value_store.get(a_id) {
+                        if !*a {
+                            stack::push_id(stack, a_id);
+                            return Ok(VMStatus::Continue);
+                        }
+                        stack::push_id(stack, b_id);
+                        return Ok(VMStatus::Continue);
+                    }
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
                     let result = operations::binary_and(&a, &b);
-                    stack::push(stack, result);
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                 }
                 OpCode::Equal => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::binary_equal(&a, &b);
-                    stack::push(stack, result);
+                    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if a_tv.is_number() && b_tv.is_number() {
+                        stack::push(stack, TaggedValue::from_bool(a_tv.get_f64() == b_tv.get_f64()));
+                        return Ok(VMStatus::Continue);
+                    }
+                    if a_tv.is_bool() && b_tv.is_bool() {
+                        stack::push(stack, TaggedValue::from_bool(a_tv.get_bool() == b_tv.get_bool()));
+                        return Ok(VMStatus::Continue);
+                    }
+                    if a_tv.is_null() && b_tv.is_null() {
+                        stack::push(stack, TaggedValue::from_bool(true));
+                        return Ok(VMStatus::Continue);
+                    }
+                    let a_id = tagged_to_value_id(a_tv, value_store);
+                    let b_id = tagged_to_value_id(b_tv, value_store);
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
+                    let result = match (&a, &b) {
+                        (Value::Number(n1), Value::Number(n2)) => Value::Bool(n1 == n2),
+                        _ => operations::binary_equal(&a, &b),
+                    };
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                 }
                 OpCode::NotEqual => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::binary_not_equal(&a, &b);
-                    stack::push(stack, result);
+                    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if a_tv.is_number() && b_tv.is_number() {
+                        stack::push(stack, TaggedValue::from_bool(a_tv.get_f64() != b_tv.get_f64()));
+                        return Ok(VMStatus::Continue);
+                    }
+                    if a_tv.is_bool() && b_tv.is_bool() {
+                        stack::push(stack, TaggedValue::from_bool(a_tv.get_bool() != b_tv.get_bool()));
+                        return Ok(VMStatus::Continue);
+                    }
+                    if a_tv.is_null() && b_tv.is_null() {
+                        stack::push(stack, TaggedValue::from_bool(false));
+                        return Ok(VMStatus::Continue);
+                    }
+                    let a_id = tagged_to_value_id(a_tv, value_store);
+                    let b_id = tagged_to_value_id(b_tv, value_store);
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
+                    let result = match (&a, &b) {
+                        (Value::Number(n1), Value::Number(n2)) => Value::Bool(n1 != n2),
+                        _ => operations::binary_not_equal(&a, &b),
+                    };
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                 }
                 OpCode::Greater => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::binary_greater(&a, &b, frames, stack, exception_handlers)?;
-                    stack::push(stack, result);
+                    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if a_tv.is_number() && b_tv.is_number() {
+                        stack::push(stack, TaggedValue::from_bool(a_tv.get_f64() > b_tv.get_f64()));
+                        return Ok(VMStatus::Continue);
+                    }
+                    let a_id = tagged_to_value_id(a_tv, value_store);
+                    let b_id = tagged_to_value_id(b_tv, value_store);
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
+                    let result = match (&a, &b) {
+                        (Value::Number(n1), Value::Number(n2)) => Value::Bool(n1 > n2),
+                        _ => operations::binary_greater(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+                    };
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::Less => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::binary_less(&a, &b, frames, stack, exception_handlers)?;
-                    stack::push(stack, result);
+                    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if a_tv.is_number() && b_tv.is_number() {
+                        stack::push(stack, TaggedValue::from_bool(a_tv.get_f64() < b_tv.get_f64()));
+                        return Ok(VMStatus::Continue);
+                    }
+                    let a_id = tagged_to_value_id(a_tv, value_store);
+                    let b_id = tagged_to_value_id(b_tv, value_store);
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
+                    let result = match (&a, &b) {
+                        (Value::Number(n1), Value::Number(n2)) => Value::Bool(n1 < n2),
+                        _ => operations::binary_less(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+                    };
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::GreaterEqual => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::binary_greater_equal(&a, &b, frames, stack, exception_handlers)?;
-                    stack::push(stack, result);
+                    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if a_tv.is_number() && b_tv.is_number() {
+                        stack::push(stack, TaggedValue::from_bool(a_tv.get_f64() >= b_tv.get_f64()));
+                        return Ok(VMStatus::Continue);
+                    }
+                    let a_id = tagged_to_value_id(a_tv, value_store);
+                    let b_id = tagged_to_value_id(b_tv, value_store);
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
+                    let result = match (&a, &b) {
+                        (Value::Number(n1), Value::Number(n2)) => Value::Bool(n1 >= n2),
+                        _ => operations::binary_greater_equal(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+                    };
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::LessEqual => {
-                    let b = stack::pop(stack, frames, exception_handlers)?;
-                    let a = stack::pop(stack, frames, exception_handlers)?;
-                    let result = operations::binary_less_equal(&a, &b, frames, stack, exception_handlers)?;
-                    stack::push(stack, result);
+                    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if a_tv.is_number() && b_tv.is_number() {
+                        stack::push(stack, TaggedValue::from_bool(a_tv.get_f64() <= b_tv.get_f64()));
+                        return Ok(VMStatus::Continue);
+                    }
+                    let a_id = tagged_to_value_id(a_tv, value_store);
+                    let b_id = tagged_to_value_id(b_tv, value_store);
+                    let a = load_value(a_id, value_store, heavy_store);
+                    let b = load_value(b_id, value_store, heavy_store);
+                    let result = match (&a, &b) {
+                        (Value::Number(n1), Value::Number(n2)) => Value::Bool(n1 <= n2),
+                        _ => operations::binary_less_equal(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+                    };
+                    stack::push_id(stack, store_value(result, value_store, heavy_store));
                 }
                 OpCode::In => {
-                    let array = stack::pop(stack, frames, exception_handlers)?; // Правый операнд - массив
-                    let value = stack::pop(stack, frames, exception_handlers)?; // Левый операнд - значение для поиска
-                    
+                    let array_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let array = load_value(array_id, value_store, heavy_store);
+                    let value = load_value(value_id, value_store, heavy_store);
                     match array {
                         Value::Array(arr) => {
                             let arr_ref = arr.borrow();
                             let found = arr_ref.iter().any(|item| item == &value);
-                            stack::push(stack, Value::Bool(found));
+                            stack::push_id(stack, store_value(Value::Bool(found), value_store, heavy_store));
                         }
                         _ => {
                             let error = ExceptionHandler::runtime_error(
@@ -1030,7 +1374,7 @@ pub fn execute_instruction(
                                 "Right operand of 'in' operator must be an array".to_string(),
                                 line,
                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -1047,21 +1391,24 @@ pub fn execute_instruction(
                     frame.ip = (frame.ip as i64 + offset as i64) as usize;
                 }
                 OpCode::JumpIfFalse8(offset) => {
-                    let condition = stack::pop(stack, frames, exception_handlers)?;
+                    let cond_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let condition = load_value(cond_id, value_store, heavy_store);
                     let frame = frames.last_mut().unwrap();
                     if !condition.is_truthy() {
                         frame.ip = (frame.ip as i32 + offset as i32) as usize;
                     }
                 }
                 OpCode::JumpIfFalse16(offset) => {
-                    let condition = stack::pop(stack, frames, exception_handlers)?;
+                    let cond_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let condition = load_value(cond_id, value_store, heavy_store);
                     let frame = frames.last_mut().unwrap();
                     if !condition.is_truthy() {
                         frame.ip = (frame.ip as i32 + offset as i32) as usize;
                     }
                 }
                 OpCode::JumpIfFalse32(offset) => {
-                    let condition = stack::pop(stack, frames, exception_handlers)?;
+                    let cond_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let condition = load_value(cond_id, value_store, heavy_store);
                     let frame = frames.last_mut().unwrap();
                     if !condition.is_truthy() {
                         frame.ip = (frame.ip as i64 + offset as i64) as usize;
@@ -1073,113 +1420,116 @@ pub fn execute_instruction(
                         frame.function.chunk.get_line(frame.ip),
                     ));
                 }
-                OpCode::Call(arity) => {
-                    let frame = frames.last().unwrap();
-                    let current_ip = frame.ip - 1; // IP уже инкрементирован в step(), возвращаемся назад
-                    debug_println!("[DEBUG executor OpCode::Call] Получен OpCode::Call({}) на строке {}, IP: {}", arity, line, current_ip);
-                    
-                    // Проверяем, что инструкция в байткоде действительно имеет правильный arity
-                    if let Some(OpCode::Call(recorded_arity)) = frame.function.chunk.code.get(current_ip) {
-                        if *recorded_arity != arity {
-                            debug_println!("[ERROR executor OpCode::Call] КРИТИЧЕСКАЯ ОШИБКА: В байткоде на IP {} записано Call({}), но прочитано Call({})!", 
-                                current_ip, recorded_arity, arity);
-                            // Дополнительная отладка: показываем окружающие инструкции
-                            let start = current_ip.saturating_sub(5);
-                            let end = (current_ip + 5).min(frame.function.chunk.code.len());
-                            debug_println!("[ERROR executor OpCode::Call] Окружающие инструкции (IP {} - {}):", start, end);
-                            for i in start..end {
-                                let marker = if i == current_ip { " <-- ТЕКУЩАЯ" } else { "" };
-                                debug_println!("[ERROR executor OpCode::Call]   IP {}: {:?}{}", i, frame.function.chunk.code.get(i), marker);
-                            }
-                        } else {
-                            debug_println!("[DEBUG executor OpCode::Call] Подтверждено: Call({}) правильно прочитан из байткода на IP {}", arity, current_ip);
-                        }
-                    } else {
-                        debug_println!("[ERROR executor OpCode::Call] КРИТИЧЕСКАЯ ОШИБКА: На IP {} не найдена инструкция Call!", current_ip);
-                        // Показываем, что там на самом деле
-                        if let Some(opcode) = frame.function.chunk.code.get(current_ip) {
-                            debug_println!("[ERROR executor OpCode::Call] На IP {} найдена инструкция: {:?}", current_ip, opcode);
-                        }
-                    }
-                    
-                    // Получаем функцию со стека
-                    // Используем stack::pop для правильного номера строки при ошибке
-                    let stack_size_before_pop = stack.len();
-                    debug_println!("[DEBUG executor OpCode::Call] Размер стека перед извлечением функции: {}", stack_size_before_pop);
-                    
-                    // Детальное логирование стека для IP 15 и IP 40 (вызовы методов)
-                    if current_ip == 15 || current_ip == 40 {
-                        debug_println!("[DEBUG executor OpCode::Call] ДЕТАЛЬНОЕ ЛОГИРОВАНИЕ СТЕКА для IP 15:");
-                        debug_println!("[DEBUG executor OpCode::Call] Размер стека: {}", stack.len());
-                        debug_println!("[DEBUG executor OpCode::Call] stack_start текущего frame: {}", frame.stack_start);
-                        debug_println!("[DEBUG executor OpCode::Call] Байткод вокруг IP 15:");
-                        let start = current_ip.saturating_sub(5);
-                        let end = (current_ip + 5).min(frame.function.chunk.code.len());
-                        for i in start..end {
-                            let marker = if i == current_ip { " <-- ТЕКУЩАЯ" } else { "" };
-                            debug_println!("[DEBUG executor OpCode::Call]   IP {}: {:?}{}", i, frame.function.chunk.code.get(i), marker);
-                        }
-                        for (i, val) in stack.iter().enumerate() {
-                            let val_type = match val {
-                                Value::Number(_) => "Number".to_string(),
-                                Value::String(_) => "String".to_string(),
-                                Value::Bool(_) => "Bool".to_string(),
-                                Value::Array(_) => "Array".to_string(),
-                                Value::Object(_) => "Object".to_string(),
-                                Value::Function(fn_idx) => {
-                                    if *fn_idx < functions.len() {
-                                        format!("Function({}, имя: '{}')", fn_idx, functions[*fn_idx].name)
-                                    } else {
-                                        format!("Function({}, OUT OF BOUNDS!)", fn_idx)
-                                    }
-                                },
-                                Value::NativeFunction(_) => "NativeFunction".to_string(),
-                                Value::Null => "Null".to_string(),
-                                _ => "Other".to_string(),
-                            };
-                            debug_println!("[DEBUG executor OpCode::Call]   Стек[{}]: {} ({:?})", i, val_type, val);
-                        }
-                    }
-                    
-                    let function_value = stack::pop(stack, frames, exception_handlers)?;
-                    let stack_size_after_pop = stack.len();
-                    debug_println!("[DEBUG executor OpCode::Call] Размер стека после извлечения функции: {}", stack_size_after_pop);
-                    
-                    // Отладочный вывод для проверки вызываемой функции
-                    let function_type = match &function_value {
-                        Value::Null => "Null",
-                        Value::Function(_) => "Function",
-                        Value::NativeFunction(_) => "NativeFunction",
-                        _ => "Other",
+                OpCode::ForRange(var_slot, start_const, end_const, step_const, end_offset) => {
+                    let frame = frames.last_mut().unwrap();
+                    let read_const = |store: &ValueStore, f: &CallFrame, idx: usize| -> i64 {
+                        let id = f.constant_ids.get(idx).copied().unwrap_or(NULL_VALUE_ID);
+                        store.get(id).and_then(|c| match c {
+                            ValueCell::Number(n) => Some(*n as i64),
+                            _ => None,
+                        }).unwrap_or(0)
                     };
-                    debug_println!("[DEBUG executor OpCode::Call] Значение на стеке перед вызовом: тип = {}, значение = {:?}", function_type, function_value);
-                    
-                    // Дополнительное логирование для IP 15 и IP 40
-                    if current_ip == 15 || current_ip == 40 {
-                        debug_println!("[DEBUG executor OpCode::Call] Извлечена функция для IP {}: {:?}", current_ip, function_value);
-                        if let Value::Function(fn_idx) = &function_value {
-                            if *fn_idx < functions.len() {
-                                debug_println!("[DEBUG executor OpCode::Call] Функция на IP {}: индекс={}, имя='{}', arity={}, ожидается аргументов: {}", 
-                                    current_ip, fn_idx, functions[*fn_idx].name, functions[*fn_idx].arity, arity);
+                    // Pop only if the top state belongs to this loop (same var_slot); otherwise it's an outer loop's state (nested ForRange).
+                    let (current, end, step, _continued) = match frame.for_range_stack.last() {
+                        Some((_, _, _, slot)) if *slot == var_slot => {
+                            let s = frame.for_range_stack.pop().unwrap();
+                            (s.0, s.1, s.2, true)
+                        },
+                        _ => {
+                            let start = read_const(value_store, frame, start_const);
+                            let end_val = read_const(value_store, frame, end_const);
+                            let step_val = read_const(value_store, frame, step_const);
+                            (start, end_val, step_val, false)
+                        },
+                    };
+                    let done = if step > 0 { current >= end } else { current <= end };
+                    if done {
+                        frame.ip = (frame.ip as i32 + end_offset) as usize;
+                    } else {
+                        frame.for_range_stack.push((current, end, step, var_slot));
+                        frame.ensure_slot(var_slot);
+                        frame.slots[var_slot] = TaggedValue::from_f64(current as f64);
+                        if frame.load_local_cache_slot == Some(var_slot) {
+                            frame.load_local_cache_slot = None;
+                        }
+                    }
+                }
+                OpCode::ForRangeNext(back_offset) => {
+                    let frame = frames.last_mut().unwrap();
+                    let Some((cur, end, step, vslot)) = frame.for_range_stack.pop() else {
+                        // Defensive: loop was exited (e.g. end_offset jump landed here or state was lost).
+                        // Treat as loop end: do not jump back; ip already advanced in step(), so continue to next instruction.
+                        return Ok(VMStatus::Continue);
+                    };
+                    let next_val = cur + step;
+                    let done = if step > 0 { next_val >= end } else { next_val <= end };
+                    if done {
+                        // Exit loop: do not push state, do not jump back; next instruction is after the loop.
+                        return Ok(VMStatus::Continue);
+                    }
+                    frame.for_range_stack.push((next_val, end, step, vslot));
+                    frame.ip = (frame.ip as i32 - back_offset) as usize;
+                }
+                OpCode::PopForRange => {
+                    let frame = frames.last_mut().unwrap();
+                    let _ = frame.for_range_stack.pop();
+                }
+                OpCode::Call(arity) => {
+                    let callee_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let current_ip = frames.last().unwrap().ip - 1;
+                    let mut function_index_opt: Option<usize> = None;
+                    {
+                        let frame = frames.last_mut().unwrap();
+                        if frame.call_cache_ip == Some(current_ip) && frame.call_cache_is_user_function && callee_tv.is_heap() {
+                            let id = callee_tv.get_heap_id();
+                            if let Some(ValueCell::Function(i)) = value_store.get(id) {
+                                function_index_opt = Some(*i);
+                            } else {
+                                frame.call_cache_is_user_function = false;
                             }
                         }
                     }
-                    if matches!(&function_value, Value::Null) {
-                        debug_println!("[DEBUG Call] Пытаемся вызвать Null с {} аргументами на строке {}", arity, line);
-                    }
-                    // If callee is a class Object (from import), resolve to constructor from globals or from class object
-                    // If callee is Object without __class_name but has __call__, use __call__ as the actual callee (e.g. Settings)
-                    let actual_callee: Value = {
+                    let actual_callee: Value = if function_index_opt.is_none() {
+                        let frame = frames.last().unwrap();
+                        debug_println!("[DEBUG executor OpCode::Call] Получен OpCode::Call({}) на строке {}, IP: {}", arity, line, current_ip);
+                        if let Some(OpCode::Call(recorded_arity)) = frame.function.chunk.code.get(current_ip) {
+                            if *recorded_arity != arity {
+                                debug_println!("[ERROR executor OpCode::Call] КРИТИЧЕСКАЯ ОШИБКА: В байткоде на IP {} записано Call({}), но прочитано Call({})!",
+                                    current_ip, recorded_arity, arity);
+                            }
+                        }
+                        let function_value_id = tagged_to_value_id(callee_tv, value_store);
+                        let function_value = load_value(function_value_id, value_store, heavy_store);
+                        let function_type = match &function_value {
+                            Value::Null => "Null",
+                            Value::Function(_) => "Function",
+                            Value::NativeFunction(_) => "NativeFunction",
+                            _ => "Other",
+                        };
+                        debug_println!("[DEBUG executor OpCode::Call] Значение на стеке перед вызовом: тип = {}, значение = {:?}", function_type, function_value);
+                        if matches!(&function_value, Value::Null) {
+                            debug_println!("[DEBUG Call] Пытаемся вызвать Null с {} аргументами на строке {}", arity, line);
+                        }
+                        // If callee is a class Object (from import), resolve to constructor; if Object has __call__, use it (e.g. Settings)
+                        let ac: Value = {
                         if let Value::Object(obj_rc) = &function_value {
-                            let class_name_opt = obj_rc.borrow().get("__class_name").cloned();
+                            let (class_name_opt, is_abstract, method_new, call_opt) = {
+                                let obj_ref = obj_rc.borrow();
+                                let class_name = obj_ref.get("__class_name").cloned();
+                                let abstract_val = obj_ref.get("__abstract").cloned();
+                                let method_key = format!("new_{}", arity);
+                                let method_new = obj_ref.get(&method_key).cloned();
+                                let call_ = obj_ref.get("__call__").cloned();
+                                (class_name, abstract_val, method_new, call_)
+                            };
                             if let Some(Value::String(ref class_name)) = class_name_opt {
-                                if matches!(obj_rc.borrow().get("__abstract"), Some(Value::Bool(true))) {
+                                if matches!(is_abstract.as_ref(), Some(Value::Bool(true))) {
                                     let error = ExceptionHandler::runtime_error(
                                         &frames,
                                         format!("Cannot instantiate abstract class '{}'", class_name),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
@@ -1188,42 +1538,57 @@ pub fn execute_instruction(
                                 let constructor_value = global_names
                                     .iter()
                                     .find(|(_, n)| *n == &constructor_name)
-                                    .and_then(|(idx, _)| globals.get(*idx).cloned());
-                                if let Some(Value::Function(constructor_fn_idx)) = constructor_value {
+                                    .and_then(|(idx, _)| {
+                                        if *idx < globals.len() {
+                                            let id = globals[*idx].resolve_to_value_id(value_store);
+                                            Some(load_value(id, value_store, heavy_store))
+                                        } else {
+                                            None
+                                        }
+                                    });
+                                if let Some(Value::Function(constructor_fn_idx)) = constructor_value.as_ref() {
                                     debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to constructor '{}'", class_name, constructor_name);
+                                    Value::Function(*constructor_fn_idx)
+                                } else if let Some(Value::Function(constructor_fn_idx)) = method_new {
+                                    debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to constructor from class key '{}'", class_name, format!("new_{}", arity));
                                     Value::Function(constructor_fn_idx)
-                                } else {
-                                    // Fallback: constructor may live only on the class object (e.g. after import)
-                                    let method_key = format!("new_{}", arity);
-                                    let from_class = obj_rc.borrow().get(&method_key).cloned();
-                                    if let Some(Value::Function(constructor_fn_idx)) = from_class {
-                                        debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to constructor from class key '{}'", class_name, method_key);
-                                        Value::Function(constructor_fn_idx)
-                                    } else {
-                                        function_value
-                                    }
-                                }
-                            } else {
-                                let call_opt = obj_rc.borrow().get("__call__").cloned();
-                                if let Some(Value::Function(_)) | Some(Value::NativeFunction(_)) = call_opt.as_ref() {
-                                    call_opt.unwrap()
                                 } else {
                                     function_value
                                 }
+                            } else if let Some(Value::Function(_)) | Some(Value::NativeFunction(_)) = call_opt.as_ref() {
+                                call_opt.unwrap()
+                            } else {
+                                function_value
                             }
                         } else {
                             function_value
                         }
+                        };
+                        if let Value::Function(i) = &ac {
+                            function_index_opt = Some(*i);
+                            let fr = frames.last_mut().unwrap();
+                            fr.call_cache_ip = Some(current_ip);
+                            fr.call_cache_is_user_function = true;
+                        } else {
+                            let fr = frames.last_mut().unwrap();
+                            fr.call_cache_ip = Some(current_ip);
+                            fr.call_cache_is_user_function = false;
+                        }
+                        ac
+                    } else {
+                        Value::Null
                     };
-                    match actual_callee {
-                        Value::Function(function_index) => {
+                    if let Some(function_index) = function_index_opt {
+                        let frame = frames.last_mut().unwrap();
+                        frame.call_cache_ip = Some(current_ip);
+                        frame.call_cache_is_user_function = true;
                             if function_index >= functions.len() {
                                 let error = ExceptionHandler::runtime_error(
                             &frames,
                                     format!("Function index {} out of bounds", function_index),
                                     line,
                                 );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -1248,8 +1613,8 @@ pub fn execute_instruction(
                             }
                             
                             // Собираем аргументы со стека (в обратном порядке, так как они были положены последними)
-                            // ВАЖНО: Проверяем стек перед извлечением аргументов, чтобы избежать ошибки stack underflow
                             let mut args = Vec::new();
+                            let mut arg_tvs: Vec<TaggedValue> = Vec::new();
                             
                             if arity > 0 {
                                 let frame = frames.last().unwrap();
@@ -1257,26 +1622,29 @@ pub fn execute_instruction(
                                 // Аргументы и функция были помещены на стек после stack_start
                                 // После извлечения функции стек должен содержать минимум arity аргументов
                                 let stack_size_before = stack.len();
-                                debug_println!("[DEBUG executor Call] Размер стека перед извлечением аргументов: {}, stack_start: {}, ожидается аргументов: {}", 
+                                debug_println!("[DEBUG executor Call] Размер стека перед извлечением аргументов: {}, stack_start: {}, ожидается аргументов: {}",
                                     stack_size_before, frame.stack_start, arity);
-                                
-                                // Дополнительная отладка: показываем все элементы стека
-                                debug_println!("[DEBUG executor Call] Полное содержимое стека ({} элементов):", stack.len());
-                                for (i, val) in stack.iter().enumerate() {
-                                    let val_type = match val {
-                                        Value::Number(_) => "Number",
-                                        Value::String(_) => "String",
-                                        Value::Bool(_) => "Bool",
-                                        Value::Array(_) => "Array",
-                                        Value::Object(_) => "Object",
-                                        Value::Function(_) => "Function",
-                                        Value::NativeFunction(_) => "NativeFunction",
-                                        Value::Null => "Null",
-                                        _ => "Other",
-                                    };
-                                    debug_println!("[DEBUG executor Call]   Стек[{}]: {} ({:?})", i, val_type, val);
+
+                                if crate::common::debug::is_debug_enabled() {
+                                    debug_println!("[DEBUG executor Call] Полное содержимое стека ({} элементов):", stack.len());
+                                    for (i, val_tv) in stack.iter().enumerate() {
+                                        let val_id = tagged_to_value_id(*val_tv, value_store);
+                                        let val = load_value(val_id, value_store, heavy_store);
+                                        let val_type = match &val {
+                                            Value::Number(_) => "Number",
+                                            Value::String(_) => "String",
+                                            Value::Bool(_) => "Bool",
+                                            Value::Array(_) => "Array",
+                                            Value::Object(_) => "Object",
+                                            Value::Function(_) => "Function",
+                                            Value::NativeFunction(_) => "NativeFunction",
+                                            Value::Null => "Null",
+                                            _ => "Other",
+                                        };
+                                        debug_println!("[DEBUG executor Call]   Стек[{}]: {} ({:?})", i, val_type, val);
+                                    }
                                 }
-                                
+
                                 if stack.len() <= frame.stack_start {
                                     let error = ExceptionHandler::runtime_error(
                                         &frames,
@@ -1286,7 +1654,7 @@ pub fn execute_instruction(
                                         ),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
@@ -1294,18 +1662,19 @@ pub fn execute_instruction(
                                 
                                 // Проверяем, что на стеке достаточно аргументов (после извлечения функции)
                                 let available_args = stack.len() - frame.stack_start;
-                                debug_println!("[DEBUG executor Call] Доступно аргументов на стеке: {} (размер стека: {}, stack_start: {})", 
+                                debug_println!("[DEBUG executor Call] Доступно аргументов на стеке: {} (размер стека: {}, stack_start: {})",
                                     available_args, stack.len(), frame.stack_start);
-                                
-                                // Логируем содержимое стека для отладки
-                                if available_args > 0 {
+
+                                if crate::common::debug::is_debug_enabled() && available_args > 0 {
                                     debug_println!("[DEBUG executor Call] Содержимое стека (последние {} элементов):", available_args.min(10));
                                     let start_idx = stack.len().saturating_sub(available_args.min(10));
-                                    for (i, val) in stack.iter().skip(start_idx).enumerate() {
+                                    for (i, val_tv) in stack.iter().skip(start_idx).enumerate() {
+                                        let val_id = tagged_to_value_id(*val_tv, value_store);
+                                        let val = load_value(val_id, value_store, heavy_store);
                                         debug_println!("[DEBUG executor Call]   Стек[{}]: {:?}", start_idx + i, val);
                                     }
                                 }
-                                
+
                                 if available_args < arity {
                                     let error = ExceptionHandler::runtime_error(
                                         &frames,
@@ -1316,22 +1685,25 @@ pub fn execute_instruction(
                                         ),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
                                 }
                                 
+                                arg_tvs.reserve(arity);
                                 for i in 0..arity {
-                                    // Безопасно извлекаем аргументы напрямую, так как мы уже проверили стек
-                                    let arg = stack.pop().unwrap_or(Value::Null);
+                                    let arg_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                    arg_tvs.push(arg_tv);
+                                    let arg = slot_to_value(arg_tv, value_store, heavy_store);
                                     debug_println!("[DEBUG executor Call] Извлечен аргумент {}: {:?}", i, arg);
                                     args.push(arg);
                                 }
-                                args.reverse(); // Теперь args[0] - первый аргумент
+                                arg_tvs.reverse();
+                                args.reverse();
                                 debug_println!("[DEBUG executor Call] Всего извлечено аргументов: {}, после reverse: {:?}", args.len(), args);
                             }
-                            // Если arity == 0, args остается пустым вектором
+                            // Если arity == 0, args и arg_tvs остаются пустыми
                             
                             // Inject @class for methods that declare it: get class from args[0].__class and insert at position 1
                             if function.param_names.get(1).map(|s| s.as_str()) == Some("@class")
@@ -1347,7 +1719,10 @@ pub fn execute_instruction(
                                         .unwrap_or(Value::Null),
                                     _ => Value::Null,
                                 };
+                                let class_id = store_value(class_val.clone(), value_store, heavy_store);
+                                let class_tv = TaggedValue::from_heap(class_id);
                                 args.insert(1, class_val);
+                                arg_tvs.insert(1, class_tv);
                             }
                             
                             // Проверяем количество аргументов (после возможной инъекции @class)
@@ -1360,7 +1735,7 @@ pub fn execute_instruction(
                                     ),
                                     line,
                                 );
-                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                     Ok(()) => return Ok(VMStatus::Continue),
                                     Err(e) => return Err(e),
                                 }
@@ -1383,7 +1758,7 @@ pub fn execute_instruction(
                                             line,
                                             ErrorType::TypeError,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => return Ok(VMStatus::Continue),
                                             Err(e) => return Err(e),
                                         }
@@ -1403,9 +1778,9 @@ pub fn execute_instruction(
                                         
                                         // Проверяем, есть ли результат в кэше
                                         if let Some(cached_result) = cache.map.get(&cache_key) {
-                                            // Результат найден в кэше - возвращаем его без выполнения функции
-                                            stack::push(stack, cached_result.clone());
-                                            return Ok(VMStatus::Continue); // Пропускаем выполнение функции
+                                            let id = store_value(cached_result.clone(), value_store, heavy_store);
+                                            stack::push_id(stack, id);
+                                            return Ok(VMStatus::Continue);
                                         }
                                         
                                         // Результат не найден - освобождаем borrow и продолжим выполнение
@@ -1419,67 +1794,48 @@ pub fn execute_instruction(
                                 // просто выполняем функцию без кэширования
                             }
                             
-                            // Создаем новый CallFrame
+                            // Use popped arg_tvs so callee slots hold TaggedValue (immediates without store).
                             let stack_start = stack.len();
                             let mut new_frame = if function.is_cached {
-                                // Сохраняем аргументы для кэширования
-                                CallFrame::new_with_cache(function.clone(), stack_start, args.clone())
+                                CallFrame::new_with_cache(function.clone(), stack_start, arg_tvs.clone(), value_store, heavy_store)
                             } else {
-                                CallFrame::new(function.clone(), stack_start)
+                                CallFrame::new(function.clone(), stack_start, value_store, heavy_store)
                             };
-                            
-                            // Копируем таблицу типов ошибок из chunk функции в VM
                             if !function.chunk.error_type_table.is_empty() {
                                 *error_type_table = function.chunk.error_type_table.clone();
                             }
-                            
-                            // Копируем захваченные переменные из родительских frames (если есть)
-                            // Используем ancestor_depth для поиска переменной в правильном предке
                             if !frames.is_empty() && !function.captured_vars.is_empty() {
                                 for captured_var in &function.captured_vars {
-                                    // Убеждаемся, что слот существует в новом frame
                                     if captured_var.local_slot_index >= new_frame.slots.len() {
-                                        new_frame.slots.resize(captured_var.local_slot_index + 1, Value::Null);
+                                        new_frame.slots.resize(captured_var.local_slot_index + 1, TaggedValue::null());
                                     }
-                                    
-                                    // Находим предка на нужной глубине
-                                    // ancestor_depth = 0 означает ближайший родитель (последний frame в стеке)
-                                    // ancestor_depth = 1 означает дедушку (предпоследний frame) и т.д.
                                     let ancestor_index = frames.len().saturating_sub(1 + captured_var.ancestor_depth);
-                                    
                                     if ancestor_index < frames.len() {
                                         let ancestor_frame = &frames[ancestor_index];
-                                        
-                                        // Копируем значение из предка
                                         if captured_var.parent_slot_index < ancestor_frame.slots.len() {
-                                            let captured_value = ancestor_frame.slots[captured_var.parent_slot_index].clone();
-                                            
-                                            new_frame.slots[captured_var.local_slot_index] = captured_value;
+                                            new_frame.slots[captured_var.local_slot_index] = ancestor_frame.slots[captured_var.parent_slot_index];
                                         } else {
-                                            // Если слот не существует в предке, используем Null
-                                            new_frame.slots[captured_var.local_slot_index] = Value::Null;
+                                            new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
                                         }
                                     } else {
-                                        // Если предок не существует, используем Null
-                                        new_frame.slots[captured_var.local_slot_index] = Value::Null;
+                                        new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
                                     }
                                 }
                             }
-                            
-                            // Инициализируем параметры функции в slots (после захваченных переменных)
                             let param_start_index = function.captured_vars.len();
-                            for (i, arg) in args.iter().enumerate() {
+                            for (i, &arg_tv) in arg_tvs.iter().enumerate() {
                                 let slot_index = param_start_index + i;
                                 if slot_index >= new_frame.slots.len() {
-                                    new_frame.slots.resize(slot_index + 1, Value::Null);
+                                    new_frame.slots.resize(slot_index + 1, TaggedValue::null());
                                 }
-                                new_frame.slots[slot_index] = arg.clone();
+                                new_frame.slots[slot_index] = arg_tv;
                             }
                             
                             // Добавляем новый frame
                             frames.push(new_frame);
                             return Ok(VMStatus::Continue);
-                        }
+                    }
+                    match actual_callee {
                         Value::NativeFunction(native_index) => {
                             let builtin_count = natives.len();
                             if native_index >= builtin_count + abi_natives.len() {
@@ -1488,12 +1844,246 @@ pub fn execute_instruction(
                                     format!("Native function index {} out of bounds", native_index),
                                     line,
                                 );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
                             }
-                            
+
+                            // Fast path for range(n) / range(start, end) / range(start, end, step): build Array of Number cells in ValueStore
+                            // without calling native_range (no Vec<Value>, no store_value over elements).
+                            const RANGE_NATIVE_INDEX: usize = 2;
+                            if native_index == RANGE_NATIVE_INDEX && (arity == 1 || arity == 2 || arity == 3) {
+                                let frame = frames.last().unwrap();
+                                let available = stack.len().saturating_sub(frame.stack_start);
+                                let need = if arity == 1 { 1 } else if arity == 2 { 2 } else { 3 };
+                                if available >= need {
+                                    let read_number = |store: &ValueStore, id: ValueId| -> Option<i64> {
+                                        store.get(id).and_then(|c| match c {
+                                            ValueCell::Number(n) => {
+                                                let x = *n;
+                                                if x.fract() == 0.0 && x >= i64::MIN as f64 && x <= i64::MAX as f64 {
+                                                    Some(x as i64)
+                                                } else {
+                                                    None
+                                                }
+                                            }
+                                            _ => None,
+                                        })
+                                    };
+                                    let params = if arity == 1 {
+                                        let n_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                        let n_id = tagged_to_value_id(n_tv, value_store);
+                                        read_number(value_store, n_id).map(|n| (0_i64, n.max(0), 1_i64)).map_or_else(
+                                            || { stack::push_id(stack, n_id); None },
+                                            |t| Some(t),
+                                        )
+                                    } else if arity == 2 {
+                                        let end_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                        let start_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                        let end_id = tagged_to_value_id(end_tv, value_store);
+                                        let start_id = tagged_to_value_id(start_tv, value_store);
+                                        match (read_number(value_store, start_id), read_number(value_store, end_id)) {
+                                            (Some(start), Some(end)) => Some((start, end, 1_i64)),
+                                            _ => {
+                                                stack::push_id(stack, start_id);
+                                                stack::push_id(stack, end_id);
+                                                None
+                                            }
+                                        }
+                                    } else {
+                                        let step_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                        let end_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                        let start_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                        let step_id = tagged_to_value_id(step_tv, value_store);
+                                        let end_id = tagged_to_value_id(end_tv, value_store);
+                                        let start_id = tagged_to_value_id(start_tv, value_store);
+                                        match (read_number(value_store, start_id), read_number(value_store, end_id), read_number(value_store, step_id)) {
+                                            (Some(start), Some(end), Some(step)) if step != 0 => Some((start, end, step)),
+                                            _ => {
+                                                stack::push_id(stack, start_id);
+                                                stack::push_id(stack, end_id);
+                                                stack::push_id(stack, step_id);
+                                                None
+                                            }
+                                        }
+                                    };
+                                    if let Some((start, end, step)) = params {
+                                        let len = if step > 0 {
+                                            if start >= end { 0 } else { ((end - start) as u64 / step as u64).min(usize::MAX as u64) as usize }
+                                        } else {
+                                            if start <= end { 0 } else { ((start - end) as u64 / (-step) as u64).min(usize::MAX as u64) as usize }
+                                        };
+                                        value_store.reserve_min(value_store.len() + 1);
+                                        let mut slots = Vec::with_capacity(len);
+                                        if step > 0 {
+                                            let mut cur = start;
+                                            while cur < end {
+                                                slots.push(TaggedValue::from_f64(cur as f64));
+                                                cur += step;
+                                            }
+                                        } else {
+                                            let mut cur = start;
+                                            while cur > end {
+                                                slots.push(TaggedValue::from_f64(cur as f64));
+                                                cur += step;
+                                            }
+                                        }
+                                        let result_id = value_store.allocate_arena(ValueCell::Array(slots));
+                                        stack::push_id(stack, result_id);
+                                        return Ok(VMStatus::Continue);
+                                    }
+                                }
+                            }
+
+                            // Fast path for push(arr, item): mutate array in-place in ValueStore to avoid
+                            // materializing and re-storing the entire array on every push (fixes memory blow-up on large datasets).
+                            const PUSH_NATIVE_INDEX: usize = 35;
+                            if native_index == PUSH_NATIVE_INDEX && arity == 2 {
+                                let frame = frames.last().unwrap();
+                                let available = stack.len().saturating_sub(frame.stack_start);
+                                if available >= 2 {
+                                    let item_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                    let array_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                    let array_id = tagged_to_value_id(array_tv, value_store);
+                                    if let Some(ValueCell::Array(ref mut slots)) = value_store.get_mut(array_id) {
+                                        slots.push(item_tv);
+                                        stack::push_id(stack, array_id);
+                                        return Ok(VMStatus::Continue);
+                                    }
+                                    stack::push_id(stack, array_id);
+                                    stack::push(stack, item_tv);
+                                }
+                            }
+
+                            // Fast path for len(x): avoid load_value/store_value when x is Array or String in ValueStore.
+                            const LEN_NATIVE_INDEX: usize = 1;
+                            if native_index == LEN_NATIVE_INDEX && arity == 1 {
+                                let frame = frames.last().unwrap();
+                                let available = stack.len().saturating_sub(frame.stack_start);
+                                if available >= 1 {
+                                    let arg_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                    let arg_id = tagged_to_value_id(arg_tv, value_store);
+                                    if let Some(cell) = value_store.get(arg_id) {
+                                        if let Some(len) = match cell {
+                                            ValueCell::Array(ids) => Some(ids.len() as f64),
+                                            ValueCell::String(sid) => value_store.get_string(*sid).map(|s| s.len() as f64),
+                                            _ => None,
+                                        } {
+                                            let result_id = value_store.allocate(ValueCell::Number(len));
+                                            stack::push_id(stack, result_id);
+                                            return Ok(VMStatus::Continue);
+                                        }
+                                    }
+                                    stack::push_id(stack, arg_id);
+                                }
+                            }
+
+                            // Fast path for int(x), float(x), str(x), typeof(x): avoid load_value when arg is in ValueStore.
+                            if arity == 1 {
+                                let frame = frames.last().unwrap();
+                                let available = stack.len().saturating_sub(frame.stack_start);
+                                if available >= 1 {
+                                    let arg_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                    let arg_id = tagged_to_value_id(arg_tv, value_store);
+                                    let result_value = value_store.get(arg_id).and_then(|cell| {
+                                        match (native_index, cell) {
+                                            (3, ValueCell::Number(n)) => Some(Value::Number(n.trunc())), // int
+                                            (3, ValueCell::Bool(b)) => Some(Value::Number(if *b { 1.0 } else { 0.0 })),
+                                            (3, ValueCell::Null) => Some(Value::Number(0.0)),
+                                            (4, ValueCell::Number(n)) => Some(Value::Number(*n)), // float
+                                            (4, ValueCell::Bool(b)) => Some(Value::Number(if *b { 1.0 } else { 0.0 })),
+                                            (4, ValueCell::Null) => Some(Value::Number(0.0)),
+                                            (6, ValueCell::Number(n)) => Some(Value::String(n.to_string())), // str
+                                            (6, ValueCell::Bool(b)) => Some(Value::String(if *b { "true".to_string() } else { "false".to_string() })),
+                                            (6, ValueCell::String(sid)) => value_store.get_string(*sid).map(|s| Value::String(s.to_string())),
+                                            (6, ValueCell::Null) => Some(Value::String("null".to_string())),
+                                            (8, ValueCell::Number(n)) => Some(Value::String(if n.fract() == 0.0 { "int".to_string() } else { "float".to_string() })), // typeof
+                                            (8, ValueCell::Bool(_)) => Some(Value::String("bool".to_string())),
+                                            (8, ValueCell::String(_)) => Some(Value::String("string".to_string())),
+                                            (8, ValueCell::Null) => Some(Value::String("null".to_string())),
+                                            (8, ValueCell::Array(_)) => Some(Value::String("array".to_string())),
+                                            (8, ValueCell::Tuple(_)) => Some(Value::String("tuple".to_string())),
+                                            (8, ValueCell::Object(_)) => Some(Value::String("object".to_string())),
+                                            (8, ValueCell::Path(_)) => Some(Value::String("path".to_string())),
+                                            (8, ValueCell::Function(_)) | (8, ValueCell::NativeFunction(_)) => Some(Value::String("function".to_string())),
+                                            _ => None,
+                                        }
+                                    });
+                                    if let Some(v) = result_value {
+                                        let result_id = store_value(v, value_store, heavy_store);
+                                        stack::push_id(stack, result_id);
+                                        return Ok(VMStatus::Continue);
+                                    }
+                                    stack::push_id(stack, arg_id);
+                                }
+                            }
+
+                            // Fast path for table(data, headers): build table from ValueStore row-by-row to avoid
+                            // materializing the entire data array at once (reduces peak memory for large datasets).
+                            const TABLE_NATIVE_INDEX: usize = 43;
+                            if native_index == TABLE_NATIVE_INDEX && arity == 2 {
+                                let frame = frames.last().unwrap();
+                                let available = stack.len().saturating_sub(frame.stack_start);
+                                if available >= 2 {
+                                    let headers_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                    let data_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                    let headers_id = tagged_to_value_id(headers_tv, value_store);
+                                    let data_id = tagged_to_value_id(data_tv, value_store);
+                                    let row_slots_opt = value_store.get(data_id).and_then(|c| if let ValueCell::Array(s) = c { Some(s.clone()) } else { None });
+                                    if let Some(row_slots) = row_slots_opt {
+                                        let num_cols = row_slots.first().and_then(|row_tv| {
+                                            if row_tv.is_heap() {
+                                                value_store.get(row_tv.get_heap_id()).and_then(|c| match c {
+                                                    ValueCell::Array(s) => Some(s.len()),
+                                                    _ => None,
+                                                })
+                                            } else {
+                                                None
+                                            }
+                                        }).unwrap_or(0);
+                                        let mut flat_cell_ids = Vec::with_capacity(row_slots.len() * num_cols.max(1));
+                                        for row_tv in row_slots.iter() {
+                                            if row_tv.is_heap() {
+                                                let row_id = row_tv.get_heap_id();
+                                                let cell_slots: Vec<TaggedValue> = value_store.get(row_id)
+                                                    .and_then(|c| if let ValueCell::Array(s) = c { Some(s.clone()) } else { None })
+                                                    .unwrap_or_default();
+                                                for slot in cell_slots.iter() {
+                                                    flat_cell_ids.push(tagged_to_value_id(*slot, value_store));
+                                                }
+                                            }
+                                        }
+                                        let headers: Vec<String> = {
+                                            let header_slots: Vec<TaggedValue> = value_store.get(headers_id)
+                                                .and_then(|c| if let ValueCell::Array(s) = c { Some(s.clone()) } else { None })
+                                                .unwrap_or_default();
+                                            let mut v = Vec::with_capacity(header_slots.len());
+                                            for slot in header_slots.iter() {
+                                                let val = load_value(tagged_to_value_id(*slot, value_store), value_store, heavy_store);
+                                                v.push(match &val {
+                                                    Value::String(s) => s.clone(),
+                                                    _ => val.to_string(),
+                                                });
+                                            }
+                                            if v.is_empty() {
+                                                (0..num_cols).map(|i| format!("Column_{}", i)).collect()
+                                            } else {
+                                                v
+                                            }
+                                        };
+                                        let table = Table::from_flat_view(flat_cell_ids, headers.len().max(1), headers);
+                                        let table_val = Value::Table(Rc::new(RefCell::new(table)));
+                                        let heavy_idx = heavy_store.push(table_val);
+                                        let result_id = value_store.allocate(ValueCell::Heavy(heavy_idx));
+                                        stack::push_id(stack, result_id);
+                                        return Ok(VMStatus::Continue);
+                                    }
+                                    stack::push_id(stack, data_id);
+                                    stack::push_id(stack, headers_id);
+                                }
+                            }
+
                             // Специальная обработка для методов тензора max_idx и min_idx (только встроенные нативы)
                             // Эти методы могут быть вызваны как tensor.max_idx() с arity=0,
                             // но тензор уже находится на стеке перед функцией
@@ -1541,38 +2131,53 @@ pub fn execute_instruction(
                             let is_db_engine_method = is_db_connect || is_db_execute || is_db_query || is_db_run
                                 || is_db_cluster_add || is_db_cluster_get || is_db_cluster_names;
                             
-                            let mut args = Vec::new();
+                            native_args_buffer.clear();
+                            let mut native_arg_ids: Option<&mut Vec<ValueId>> = None;
                             if is_db_engine_method {
                                 // Call(arity) already popped the method; stack has [receiver, arg1, ..., argN], arity = num args. Pop (arity+1) to include receiver; find receiver in all_popped; native gets (receiver, arg1, ...).
                                 let frame = frames.last().unwrap();
                                 let available = stack.len().saturating_sub(frame.stack_start);
                                 let to_pop_total = (arity + 1).min(available);
-                                let mut all_popped = Vec::new();
+                                reusable_all_popped.clear();
+                                reusable_all_popped.reserve(to_pop_total);
                                 for _ in 0..to_pop_total {
-                                    all_popped.push(stack.pop().unwrap_or(Value::Null));
+                                    let tv = stack.pop().unwrap_or(TaggedValue::null());
+                                    let id = tagged_to_value_id(tv, value_store);
+                                    reusable_all_popped.push(load_value(id, value_store, heavy_store));
                                 }
-                                all_popped.reverse();
-                                if let Some(engine_idx) = all_popped.iter().position(|v| matches!(v, Value::DatabaseEngine(_) | Value::DatabaseCluster(_))) {
-                                    let receiver = all_popped.remove(engine_idx);
-                                    args.push(receiver);
+                                reusable_all_popped.reverse();
+                                if let Some(engine_idx) = reusable_all_popped.iter().position(|v| matches!(v, Value::DatabaseEngine(_) | Value::DatabaseCluster(_))) {
+                                    let receiver = reusable_all_popped.remove(engine_idx);
+                                    native_args_buffer.push(receiver);
                                 }
-                                args.extend(all_popped);
+                                native_args_buffer.extend(reusable_all_popped.drain(..));
                             }
                             if (is_max_idx || is_min_idx) && arity == 0 {
                                 // Для методов тензора с arity=0, используем тензор со стека как первый аргумент
                                 // Тензор был помещен на стек перед функцией при доступе к свойству
                                 // Важно: нужно удалить тензор со стека после использования
-                                if let Some(Value::Tensor(tensor_rc)) = stack.last() {
-                                    args.push(Value::Tensor(Rc::clone(tensor_rc)));
-                                    // Удаляем тензор со стека, так как он был использован как аргумент
-                                    // Безопасно извлекаем тензор напрямую
-                                    stack.pop();
+                                if let Some(&top_tv) = stack.last() {
+                                    let top_id = tagged_to_value_id(top_tv, value_store);
+                                    let top_val = load_value(top_id, value_store, heavy_store);
+                                    if let Value::Tensor(tensor_rc) = &top_val {
+                                        native_args_buffer.push(Value::Tensor(Rc::clone(tensor_rc)));
+                                        stack.pop();
+                                    } else {
+                                        let error = ExceptionHandler::runtime_error(&frames,
+                                            "Tensor method called without tensor on stack".to_string(),
+                                            line,
+                                        );
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                            Ok(()) => return Ok(VMStatus::Continue),
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
                                 } else {
                                     let error = ExceptionHandler::runtime_error(&frames,
                                         "Tensor method called without tensor on stack".to_string(),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
@@ -1592,17 +2197,98 @@ pub fn execute_instruction(
                                         ),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
                                 }
-                                
-                                for _ in 0..arity {
-                                    // Безопасно извлекаем аргументы напрямую, так как мы уже проверили стек
-                                    args.push(stack.pop().unwrap_or(Value::Null));
+                                // Fast path for table(data, headers): build Table as View over ValueStore without
+                                // materializing the full array (avoids ~90k store get() for 10k rows × 8 cols).
+                                const TABLE_NATIVE_INDEX: usize = 45;
+                                if native_index == TABLE_NATIVE_INDEX && arity == 2 {
+                                    let headers_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                    let data_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                    let headers_id = tagged_to_value_id(headers_tv, value_store);
+                                    let data_id = tagged_to_value_id(data_tv, value_store);
+                                    let row_slots_opt2 = value_store.get(data_id).and_then(|c| if let ValueCell::Array(s) = c { Some(s.clone()) } else { None });
+                                    if let Some(row_slots) = row_slots_opt2 {
+                                        let num_cols = row_slots.first().and_then(|row_tv| {
+                                            if row_tv.is_heap() {
+                                                value_store.get(row_tv.get_heap_id()).and_then(|c| match c {
+                                                    ValueCell::Array(slots) => Some(slots.len()),
+                                                    _ => None,
+                                                })
+                                            } else {
+                                                None
+                                            }
+                                        }).unwrap_or(0);
+                                        if num_cols > 0 && !row_slots.is_empty() {
+                                            let mut flat_cell_ids =
+                                                Vec::with_capacity(row_slots.len() * num_cols);
+                                            let mut ok = true;
+                                            for row_tv in row_slots.iter() {
+                                                if !row_tv.is_heap() {
+                                                    ok = false;
+                                                    break;
+                                                }
+                                                let row_id = row_tv.get_heap_id();
+                                                let cell_slots: Vec<TaggedValue> = value_store.get(row_id)
+                                                    .and_then(|c| if let ValueCell::Array(s) = c { Some(s.clone()) } else { None })
+                                                    .unwrap_or_default();
+                                                if cell_slots.len() >= num_cols {
+                                                    for slot in cell_slots.iter().take(num_cols) {
+                                                        flat_cell_ids.push(tagged_to_value_id(*slot, value_store));
+                                                    }
+                                                } else {
+                                                    ok = false;
+                                                    break;
+                                                }
+                                            }
+                                            if ok && flat_cell_ids.len() == row_slots.len() * num_cols
+                                            {
+                                                let headers_val =
+                                                    load_value(headers_id, value_store, heavy_store);
+                                                let header_strings: Vec<String> =
+                                                    match &headers_val {
+                                                        Value::Array(rc) => rc
+                                                            .borrow()
+                                                            .iter()
+                                                            .map(|v| v.to_string())
+                                                            .collect(),
+                                                        _ => Vec::new(),
+                                                    };
+                                                if header_strings.len() >= num_cols {
+                                                    let table = Table::from_flat_view(
+                                                        flat_cell_ids,
+                                                        num_cols,
+                                                        header_strings,
+                                                    );
+                                                    let idx = heavy_store.push(Value::Table(
+                                                        Rc::new(RefCell::new(table)),
+                                                    ));
+                                                    let result_id =
+                                                        value_store.allocate(ValueCell::Heavy(idx));
+                                                    stack::push_id(stack, result_id);
+                                                    return Ok(VMStatus::Continue);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    stack::push_id(stack, data_id);
+                                    stack::push_id(stack, headers_id);
                                 }
-                                args.reverse(); // Теперь args[0] - первый аргумент
+                                reusable_native_arg_ids.clear();
+                                reusable_native_arg_ids.reserve(arity);
+                                native_args_buffer.reserve(arity);
+                                for _ in 0..arity {
+                                    let arg_tv = stack.pop().unwrap_or(TaggedValue::null());
+                                    let arg_id = tagged_to_value_id(arg_tv, value_store);
+                                    reusable_native_arg_ids.push(arg_id);
+                                    native_args_buffer.push(load_value(arg_id, value_store, heavy_store));
+                                }
+                                reusable_native_arg_ids.reverse();
+                                native_args_buffer.reverse();
+                                native_arg_ids = Some(reusable_native_arg_ids);
                             }
                             
                             // Debug: log axis method calls
@@ -1629,19 +2315,19 @@ pub fn execute_instruction(
                                         format!("range() expects 1, 2, or 3 arguments, got {}", arity),
                                         line,
                                     );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
                                 }
                                 // Проверяем типы аргументов - все должны быть числами
-                                for arg in &args {
+                                for arg in native_args_buffer.iter() {
                                     if !matches!(arg, Value::Number(_)) {
                                         let error = ExceptionHandler::runtime_error(&frames,
                                             "range() arguments must be numbers".to_string(),
                                             line,
                                         );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -1649,13 +2335,13 @@ pub fn execute_instruction(
                                 }
                                 // Проверяем, что step не равен 0 (если передан)
                                 if arity == 3 {
-                                    if let Value::Number(step) = &args[2] {
+                                    if let Value::Number(step) = &native_args_buffer[2] {
                                         if *step == 0.0 {
                                             let error = ExceptionHandler::runtime_error(&frames,
                                                 "range() step cannot be zero".to_string(),
                                                 line,
                                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -1670,9 +2356,21 @@ pub fn execute_instruction(
                                         format!("enum() expects 1 argument, got {}", arity),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
+                                    }
+                                }
+                            }
+                            
+                            // ml.dataset(table, ...) requires get_column; View tables have get_column = None. Materialize View to Owned when first arg is a View table and arity is 3 (dataset(table, feature_cols, target_cols)).
+                            if native_args_buffer.len() == 3 {
+                                if let Some(Value::Table(rc)) = native_args_buffer.get(0) {
+                                    let t = rc.borrow();
+                                    if t.is_view() {
+                                        let owned = t.materialize_with(|id| load_value(id, value_store, heavy_store));
+                                        drop(t);
+                                        native_args_buffer[0] = Value::Table(Rc::new(RefCell::new(owned)));
                                     }
                                 }
                             }
@@ -1680,11 +2378,11 @@ pub fn execute_instruction(
                             // Вызываем нативную функцию (встроенную или ABI)
                             let result = if native_index < builtin_count {
                                 let native_fn = natives[native_index];
-                                native_fn(&args)
+                                native_fn(native_args_buffer)
                             } else {
                                 crate::vm::native_loader::call_abi_native(
                                     abi_natives[native_index - builtin_count],
-                                    &args,
+                                    native_args_buffer,
                                 )
                             };
                             
@@ -1695,32 +2393,32 @@ pub fn execute_instruction(
                             
                             // Проверяем ABI-ошибку (throw_error из нативного модуля)
                             if let Some(abi_err) = crate::vm::native_loader::take_last_abi_error() {
-                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, abi_err) {
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, abi_err, value_store, heavy_store) {
                                     Ok(()) => return Ok(VMStatus::Continue),
                                     Err(e) => return Err(e),
                                 }
                             }
                             
-                            // Если это relate(), получаем связи из thread-local storage
+                            // Если это relate(), получаем связи из VM-owned pending (natives push there when VM_CALL_CONTEXT is set)
                             if native_index == 65 {
                                 // relate() - индекс 65
-                                use crate::vm::natives::take_relations;
-                                let relations = take_relations();
+                                let relations = unsafe { (*vm_ptr).take_pending_relations() };
                                 
-                                // Находим имена таблиц по указателям
-                                for (table1_ptr, col1_name, table2_ptr, col2_name) in relations {
+                                // Находим имена таблиц по идентичности Rc (без сырых указателей)
+                                for (table1_rc, col1_name, table2_rc, col2_name) in relations {
                                     let mut found_table1_name = None;
                                     let mut found_table2_name = None;
                                     
-                                    // Ищем таблицы в глобальных переменных
-                                    for (index, value) in globals.iter().enumerate() {
-                                        if let Value::Table(table) = value {
-                                            if Rc::as_ptr(table) == table1_ptr {
+                                    for (index, slot) in globals.iter_mut().enumerate() {
+                                        let value_id = slot.resolve_to_value_id(value_store);
+                                        let value = load_value(value_id, value_store, heavy_store);
+                                        if let Value::Table(table) = &value {
+                                            if Rc::ptr_eq(table, &table1_rc) {
                                                 if let Some(var_name) = explicit_global_names.get(&index) {
                                                     found_table1_name = Some(var_name.clone());
                                                 }
                                             }
-                                            if Rc::as_ptr(table) == table2_ptr {
+                                            if Rc::ptr_eq(table, &table2_rc) {
                                                 if let Some(var_name) = explicit_global_names.get(&index) {
                                                     found_table2_name = Some(var_name.clone());
                                                 }
@@ -1743,20 +2441,20 @@ pub fn execute_instruction(
                                 }
                             }
                             
-                            // Если это primary_key(), получаем первичные ключи из thread-local storage
+                            // Если это primary_key(), получаем первичные ключи из VM-owned pending
                             if native_index == 66 {
                                 // primary_key() - индекс 66
-                                use crate::vm::natives::take_primary_keys;
-                                let primary_keys = take_primary_keys();
+                                let primary_keys = unsafe { (*vm_ptr).take_pending_primary_keys() };
                                 
-                                // Находим имена таблиц по указателям
-                                for (table_ptr, col_name) in primary_keys {
+                                // Находим имена таблиц по идентичности Rc (без сырых указателей)
+                                for (table_rc, col_name) in primary_keys {
                                     let mut found_table_name = None;
                                     
-                                    // Ищем таблицу в глобальных переменных
-                                    for (index, value) in globals.iter().enumerate() {
-                                        if let Value::Table(table) = value {
-                                            if Rc::as_ptr(table) == table_ptr {
+                                    for (index, slot) in globals.iter_mut().enumerate() {
+                                        let value_id = slot.resolve_to_value_id(value_store);
+                                        let value = load_value(value_id, value_store, heavy_store);
+                                        if let Value::Table(table) = &value {
+                                            if Rc::ptr_eq(table, &table_rc) {
                                                 if let Some(var_name) = explicit_global_names.get(&index) {
                                                     found_table_name = Some(var_name.clone());
                                                 }
@@ -1801,15 +2499,23 @@ pub fn execute_instruction(
                                         line,
                                         error_type,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue), // Исключение обработано
                                         Err(e) => return Err(e), // Исключение не обработано
                                     }
                                 }
                             }
                             
-                            // Помещаем результат на стек
-                            stack::push(stack, result);
+                            // Write back any Array/Object args that the native may have mutated (e.g. push)
+                            if let Some(ref ids) = native_arg_ids {
+                                for (i, &id) in ids.iter().enumerate() {
+                                    if i < native_args_buffer.len() {
+                                        update_cell_if_mutable(id, &native_args_buffer[i], value_store, heavy_store);
+                                    }
+                                }
+                            }
+                            
+                            stack::push_id(stack, store_value(result, value_store, heavy_store));
                             return Ok(VMStatus::Continue);
                         }
                         Value::Layer(layer_id) => {
@@ -1820,24 +2526,21 @@ pub fn execute_instruction(
                                     format!("Layer call expects 1 argument (input tensor), got {}", arity),
                                     line,
                                 );
-                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                     Ok(()) => {
-                                        stack::push(stack, Value::Null);
+                                        stack::push_id(stack, NULL_VALUE_ID);
                                         return Ok(VMStatus::Continue);
                                     }
                                     Err(e) => return Err(e),
                                 }
                             }
                             
-                            // Get input tensor from stack
-                            let input_value = stack::pop(stack, frames, exception_handlers)?;
-                            
-                            // Call native layer_call function directly
+                            let input_value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                            let input_value = load_value(input_value_id, value_store, heavy_store);
                             use crate::ml::natives;
                             let args = vec![Value::Layer(layer_id), input_value];
                             let result = natives::native_layer_call(&args);
-                            
-                            stack::push(stack, result);
+                            stack::push_id(stack, store_value(result, value_store, heavy_store));
                             return Ok(VMStatus::Continue);
                         }
                         Value::NeuralNetwork(_) | Value::LinearRegression(_) => {
@@ -1848,24 +2551,21 @@ pub fn execute_instruction(
                                     format!("Model call expects 1 argument (input tensor), got {}", arity),
                                     line,
                                 );
-                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                     Ok(()) => {
-                                        stack::push(stack, Value::Null);
+                                        stack::push_id(stack, NULL_VALUE_ID);
                                         return Ok(VMStatus::Continue);
                                     }
                                     Err(e) => return Err(e),
                                 }
                             }
                             
-                            // Get input tensor from stack
-                            let input_value = stack::pop(stack, frames, exception_handlers)?;
-                            
-                            // Call native_nn_forward function (it handles both NeuralNetwork and LinearRegression)
+                            let input_value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                            let input_value = load_value(input_value_id, value_store, heavy_store);
                             use crate::ml::natives;
                             let args = vec![actual_callee.clone(), input_value];
                             let result = natives::native_nn_forward(&args);
-                            
-                            stack::push(stack, result);
+                            stack::push_id(stack, store_value(result, value_store, heavy_store));
                             return Ok(VMStatus::Continue);
                         }
                         _ => {
@@ -1884,11 +2584,11 @@ pub fn execute_instruction(
                             };
                             let error = ExceptionHandler::runtime_error(
                             &frames,error_msg, line);
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => {
                                     // Exception handled, but we need to push null to maintain stack consistency
                                     // since the caller expects a return value
-                                    stack::push(stack, Value::Null);
+                                    stack::push_id(stack, NULL_VALUE_ID);
                                     return Ok(VMStatus::Continue);
                                 }
                                 Err(e) => return Err(e),
@@ -1907,72 +2607,43 @@ pub fn execute_instruction(
                         debug_println!("[DEBUG executor Return] constructor '{}' line {} Return (stack len {}, stack_start {})", frame.function.name, line, stack.len(), frame.stack_start);
                     }
                     
-                    // ВАЖНО: Проверяем, что стек не ниже stack_start (это может произойти
-                    // если цикл или другой statement оставил стек в некорректном состоянии)
-                    // Используем безопасное извлечение без вызова stack::pop, чтобы избежать
-                    // ошибки stack underflow, которая может быть неправильно обработана
-                    let return_value = if stack.len() > frame.stack_start {
-                        // Безопасно извлекаем значение напрямую, так как мы уже проверили
-                        // что стек не пуст относительно stack_start
-                        Some(stack.pop().unwrap_or(Value::Null))
+                    let return_value_id = if stack.len() > frame.stack_start {
+                        let tv = stack.pop().unwrap_or(TaggedValue::null());
+                        tagged_to_value_id(tv, value_store)
                     } else {
-                        // Стек пуст или ниже stack_start - возвращаем Null
-                        // Это нормальная ситуация для функций без явного return
-                        Some(Value::Null)
+                        NULL_VALUE_ID
                     };
-                    
-                    // Отладка: логируем содержимое объекта после выполнения конструктора
-                    if let Some(ref ret_val) = return_value {
-                        if let Value::Object(obj_rc) = ret_val {
-                            // Проверяем, является ли это конструктором (по имени функции)
+                    if cfg!(debug_assertions) {
+                        let ret_val = load_value(return_value_id, value_store, heavy_store);
+                        if let Value::Object(obj_rc) = &ret_val {
                             if frame.function.name.contains("::new_") {
                                 let key_count = obj_rc.borrow().len();
                                 debug_println!("[DEBUG Return] constructor '{}' line {} returns Object ({} keys)", frame.function.name, line, key_count);
                             }
                         }
                     }
-                    
                     let frames_count = frames.len();
                     if frames_count > 1 {
-                        // Сохраняем результат в кэш, если функция кэшируемая
                         if let Some(frame) = frames.last() {
                             if frame.function.is_cached {
                                 if let Some(ref cached_args) = frame.cached_args {
                                     use crate::bytecode::function::CacheKey;
-                                    
-                                    // Пытаемся создать ключ кэша
-                                    if let Some(cache_key) = CacheKey::new(cached_args) {
-                                        // Получаем доступ к кэшу функции
+                                    let cached_vals: Vec<Value> = cached_args.iter().map(|&tv| slot_to_value(tv, value_store, heavy_store)).collect();
+                                    if let Some(cache_key) = CacheKey::new(&cached_vals) {
                                         if let Some(cache_rc) = &frame.function.cache {
                                             let mut cache = cache_rc.borrow_mut();
-                                            
-                                            // Сохраняем результат в кэш
-                                            if let Some(ref result) = return_value {
-                                                cache.map.insert(cache_key, result.clone());
-                                            }
+                                            let result_val = load_value(return_value_id, value_store, heavy_store);
+                                            cache.map.insert(cache_key, result_val);
                                         }
                                     }
                                 }
                             }
                         }
-                        
-                        // Возврат из функции - удаляем текущий frame
                         frames.pop();
-                        
-                        // Помещаем возвращаемое значение на стек для вызывающей функции
-                        if let Some(value) = return_value {
-                            stack::push(stack, value);
-                        }
-                        // Продолжаем выполнение вызывающей функции
+                        stack::push_id(stack, return_value_id);
                         return Ok(VMStatus::Continue);
                     } else {
-                        // Возврат из главной функции - завершаем выполнение
-                        // Возвращаем значение со стека, если есть
-                        if let Some(value) = return_value {
-                            return Ok(VMStatus::Return(value));
-                        } else {
-                            return Ok(VMStatus::Return(Value::Null));
-                        }
+                        return Ok(VMStatus::Return(return_value_id));
                     }
                 }
                 OpCode::Pop => {
@@ -1994,119 +2665,155 @@ pub fn execute_instruction(
                     }
                 }
                 OpCode::Dup => {
-                    let top = stack::pop(stack, frames, exception_handlers)?;
-                    stack::push(stack, top.clone());
-                    stack::push(stack, top);
+                    let top = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    stack::push_id(stack, top);
+                    stack::push_id(stack, top);
                 }
                 OpCode::MakeArray(count) => {
-                    let mut elements = Vec::new();
+                    let cap = if count == 0 { 16384 } else { count };
+                    let mut slots = Vec::with_capacity(cap);
                     for _ in 0..count {
-                        elements.push(stack::pop(stack, frames, exception_handlers)?);
+                        slots.push(stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?);
                     }
-                    elements.reverse(); // Восстанавливаем правильный порядок
-                    stack::push(stack, Value::Array(Rc::new(RefCell::new(elements))));
+                    slots.reverse();
+                    let result_id = value_store.allocate_arena(ValueCell::Array(slots));
+                    stack::push_id(stack, result_id);
                 }
                 OpCode::MakeTuple(count) => {
-                    let mut elements = Vec::new();
+                    let mut element_ids = Vec::with_capacity(count);
                     for _ in 0..count {
-                        elements.push(stack::pop(stack, frames, exception_handlers)?);
+                        element_ids.push(pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?);
                     }
-                    elements.reverse(); // Восстанавливаем правильный порядок
-                    stack::push(stack, Value::Tuple(Rc::new(RefCell::new(elements))));
+                    element_ids.reverse();
+                    let result_id = value_store.allocate(ValueCell::Tuple(element_ids));
+                    stack::push_id(stack, result_id);
                 }
                 OpCode::MakeObject(pair_count) => {
                     use std::collections::HashMap;
-                    let mut object = HashMap::new();
-                    // Извлекаем пары (ключ, значение) со стека
-                    // На стеке: [key1, value1, key2, value2, ...]
-                    // Извлекаем в обратном порядке: сначала последнюю пару
+                    let mut map: HashMap<String, ValueId> = HashMap::with_capacity(pair_count);
                     for _ in 0..pair_count {
-                        let value = stack::pop(stack, frames, exception_handlers)?;
-                        let key_value = stack::pop(stack, frames, exception_handlers)?;
-                        let key = match key_value {
-                            Value::String(s) => s,
-                            _ => {
-                                return Err(ExceptionHandler::runtime_error(
-                                    &frames,
-                                    "Object key must be a string".to_string(),
-                                    line,
-                                ));
+                        let value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                        let key_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                        let key = match value_store.get(key_id) {
+                            Some(ValueCell::String(sid)) => value_store.get_string(*sid).map(|s| s.to_string()),
+                            _ => None,
+                        };
+                        let key = match key {
+                            Some(k) => k,
+                            None => {
+                                let key_value = load_value(key_id, value_store, heavy_store);
+                                match key_value {
+                                    Value::String(s) => s,
+                                    _ => {
+                                        return Err(ExceptionHandler::runtime_error(
+                                            &frames,
+                                            "Object key must be a string".to_string(),
+                                            line,
+                                        ));
+                                    }
+                                }
                             }
                         };
-                        object.insert(key, value);
+                        map.insert(key, value_id);
                     }
-                    stack::push(stack, Value::Object(Rc::new(RefCell::new(object))));
+                    let result_id = value_store.allocate(ValueCell::Object(map));
+                    stack::push_id(stack, result_id);
                 }
                 OpCode::MakeArrayDynamic => {
-                    // Размер массива находится на стеке
-                    let count_value = stack::pop(stack, frames, exception_handlers)?;
-                    let count = match count_value {
-                        Value::Number(n) => {
-                            let idx = n as i64;
+                    let count_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let count = match value_store.get(count_id) {
+                        Some(ValueCell::Number(n)) => {
+                            let idx = *n as i64;
                             if idx < 0 {
                                 let error = ExceptionHandler::runtime_error(
-                            &frames,
+                                    &frames,
                                     "Array size must be non-negative".to_string(),
                                     line,
                                 );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
-                                Ok(()) => return Ok(VMStatus::Continue),
-                                Err(e) => return Err(e),
-                            }
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                    Ok(()) => return Ok(VMStatus::Continue),
+                                    Err(e) => return Err(e),
+                                }
                             }
                             idx as usize
                         }
                         _ => {
-                            let error = ExceptionHandler::runtime_error(
-                            &frames,
-                                "Array size must be a number".to_string(),
-                                line,
-                            );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
-                                Ok(()) => return Ok(VMStatus::Continue),
-                                Err(e) => return Err(e),
+                            let count_value = load_value(count_id, value_store, heavy_store);
+                            match count_value {
+                                Value::Number(n) => {
+                                    let idx = n as i64;
+                                    if idx < 0 {
+                                        let error = ExceptionHandler::runtime_error(
+                                            &frames,
+                                            "Array size must be non-negative".to_string(),
+                                            line,
+                                        );
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                            Ok(()) => return Ok(VMStatus::Continue),
+                                            Err(e) => return Err(e),
+                                        }
+                                    }
+                                    idx as usize
+                                }
+                                _ => {
+                                    let error = ExceptionHandler::runtime_error(
+                                        &frames,
+                                        "Array size must be a number".to_string(),
+                                        line,
+                                    );
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                        Ok(()) => return Ok(VMStatus::Continue),
+                                        Err(e) => return Err(e),
+                                    }
+                                }
                             }
                         }
                     };
-                    
-                    let mut elements = Vec::new();
+                    let mut slots = Vec::with_capacity(count);
                     for _ in 0..count {
-                        elements.push(stack::pop(stack, frames, exception_handlers)?);
+                        slots.push(stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?);
                     }
-                    elements.reverse(); // Восстанавливаем правильный порядок
-                    stack::push(stack, Value::Array(Rc::new(RefCell::new(elements))));
+                    slots.reverse();
+                    let result_id = value_store.allocate_arena(ValueCell::Array(slots));
+                    stack::push_id(stack, result_id);
                 }
                 OpCode::GetArrayLength => {
-                    let array = stack::pop(stack, frames, exception_handlers)?;
+                    let array_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if let Some(ValueCell::Array(ref arr)) = value_store.get(array_id) {
+                        let result_id = value_store.allocate(ValueCell::Number(arr.len() as f64));
+                        stack::push_id(stack, result_id);
+                        return Ok(VMStatus::Continue);
+                    }
+                    let array = load_value(array_id, value_store, heavy_store);
                     match array {
                         Value::Array(arr) => {
-                            stack::push(stack, Value::Number(arr.borrow().len() as f64));
+                            stack::push_id(stack, store_value(Value::Number(arr.borrow().len() as f64), value_store, heavy_store));
                         }
                         Value::ColumnReference { table, column_name } => {
-                            let table_ref = table.borrow();
-                            if let Some(column) = table_ref.get_column(&column_name) {
-                                stack::push(stack, Value::Number(column.len() as f64));
+                            let t = table.borrow();
+                            if let Some(len) = crate::vm::table_ops::column_len(&*t, &column_name) {
+                                stack::push_id(stack, store_value(Value::Number(len as f64), value_store, heavy_store));
                             } else {
                                 let error = ExceptionHandler::runtime_error(
-                            &frames,
+                                    &frames,
                                     format!("Column '{}' not found", column_name),
                                     line,
                                 );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
-                                Ok(()) => return Ok(VMStatus::Continue),
-                                Err(e) => return Err(e),
-                            }
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                    Ok(()) => return Ok(VMStatus::Continue),
+                                    Err(e) => return Err(e),
+                                }
                             }
                         }
                         Value::Dataset(dataset) => {
                             let batch_size = dataset.borrow().batch_size();
-                            stack::push(stack, Value::Number(batch_size as f64));
+                            stack::push_id(stack, store_value(Value::Number(batch_size as f64), value_store, heavy_store));
                         }
                         Value::Enumerate { data, .. } => {
-                            stack::push(stack, Value::Number(data.borrow().len() as f64));
+                            stack::push_id(stack, store_value(Value::Number(data.borrow().len() as f64), value_store, heavy_store));
                         }
                         Value::Tuple(tuple) => {
-                            stack::push(stack, Value::Number(tuple.borrow().len() as f64));
+                            stack::push_id(stack, store_value(Value::Number(tuple.borrow().len() as f64), value_store, heavy_store));
                         }
                         _ => {
                             let got_type = crate::vm::calls::get_type_name_value(&array);
@@ -2115,7 +2822,7 @@ pub fn execute_instruction(
                                 format!("Expected array, column reference, dataset, enumerate, or tuple for GetArrayLength, got {}", got_type),
                                 line,
                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -2123,12 +2830,93 @@ pub fn execute_instruction(
                     }
                 }
                 OpCode::GetArrayElement => {
-                    let frame = frames.last().unwrap();
-                    let current_ip = frame.ip - 1; // IP уже инкрементирован в step()
-                    
-                    let index_value = stack::pop(stack, frames, exception_handlers)?;
-                    let container = stack::pop(stack, frames, exception_handlers)?;
-                    
+                    let index_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let container_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let current_ip = {
+                        let frame = frames.last().unwrap();
+                        frame.ip - 1
+                    };
+                    {
+                        let frame = frames.last_mut().unwrap();
+                        let cache_array = frame.get_array_element_cache_ip == Some(current_ip) && frame.get_array_element_cache_array_number;
+                        let cache_obj = frame.get_array_element_cache_ip == Some(current_ip) && frame.get_array_element_cache_object_string;
+                        if cache_array && container_tv.is_heap() && index_tv.is_number() {
+                            let container_id = container_tv.get_heap_id();
+                            let idx = index_tv.get_f64() as i64;
+                            if idx >= 0 {
+                                if let Some(ValueCell::Array(ref vec)) = value_store.get(container_id) {
+                                    let u = idx as usize;
+                                    if u < vec.len() {
+                                        stack::push(stack, vec[u]);
+                                        frame.get_array_element_cache_ip = Some(current_ip);
+                                        frame.get_array_element_cache_array_number = true;
+                                        frame.get_array_element_cache_object_string = false;
+                                        return Ok(VMStatus::Continue);
+                                    }
+                                }
+                            }
+                            frame.get_array_element_cache_array_number = false;
+                        }
+                        if cache_obj && container_tv.is_heap() && index_tv.is_heap() {
+                            let container_id = container_tv.get_heap_id();
+                            let index_value_id = index_tv.get_heap_id();
+                            if let (Some(ValueCell::Object(ref map)), Some(ValueCell::String(key_id))) =
+                                (value_store.get(container_id), value_store.get(index_value_id))
+                            {
+                                if !map.contains_key("__class_name") {
+                                    if let Some(key_str) = value_store.get_string(*key_id) {
+                                        let element_id = map.get(key_str).copied().unwrap_or(NULL_VALUE_ID);
+                                        stack::push_id(stack, element_id);
+                                        frame.get_array_element_cache_ip = Some(current_ip);
+                                        frame.get_array_element_cache_array_number = false;
+                                        frame.get_array_element_cache_object_string = true;
+                                        return Ok(VMStatus::Continue);
+                                    }
+                                }
+                            }
+                            frame.get_array_element_cache_object_string = false;
+                        }
+                    }
+                    let index_value_id = tagged_to_value_id(index_tv, value_store);
+                    let container_id = tagged_to_value_id(container_tv, value_store);
+                    if let (Some(ValueCell::Array(ref vec)), Some(ValueCell::Number(n))) =
+                        (value_store.get(container_id), value_store.get(index_value_id))
+                    {
+                        let idx = *n as i64;
+                        if idx >= 0 {
+                            let u = idx as usize;
+                            if u < vec.len() {
+                                stack::push(stack, vec[u]);
+                                let frame = frames.last_mut().unwrap();
+                                frame.get_array_element_cache_ip = Some(current_ip);
+                                frame.get_array_element_cache_array_number = true;
+                                frame.get_array_element_cache_object_string = false;
+                                return Ok(VMStatus::Continue);
+                            }
+                        }
+                    }
+                    // Fast path: ValueCell::Object + ValueCell::String key — no load_value for container/index.
+                    // Skip fast path for class instances (they need private/protected checks).
+                    if let (Some(ValueCell::Object(ref map)), Some(ValueCell::String(key_id))) =
+                        (value_store.get(container_id), value_store.get(index_value_id))
+                    {
+                        if !map.contains_key("__class_name") {
+                            if let Some(key_str) = value_store.get_string(*key_id) {
+                                let element_id = map.get(key_str).copied().unwrap_or(NULL_VALUE_ID);
+                                stack::push_id(stack, element_id);
+                                let frame = frames.last_mut().unwrap();
+                                frame.get_array_element_cache_ip = Some(current_ip);
+                                frame.get_array_element_cache_array_number = false;
+                                frame.get_array_element_cache_object_string = true;
+                                return Ok(VMStatus::Continue);
+                            }
+                        }
+                    }
+                    let frame = frames.last_mut().unwrap();
+                    frame.get_array_element_cache_array_number = false;
+                    frame.get_array_element_cache_object_string = false;
+                    let index_value = load_value(index_value_id, value_store, heavy_store);
+                    let container = load_value(container_id, value_store, heavy_store);
                     let container_type = match &container {
                         Value::Array(_) => "Array",
                         Value::Enumerate { .. } => "Enumerate",
@@ -2163,7 +2951,7 @@ pub fn execute_instruction(
                                     _ => None,
                                 };
                                 if let Some(idx) = method_index {
-                                    stack::push(stack, Value::NativeFunction(idx));
+                                    stack::push_id(stack, store_value(Value::NativeFunction(idx), value_store, heavy_store));
                                     return Ok(VMStatus::Continue);
                                 }
                                 let error = ExceptionHandler::runtime_error(
@@ -2171,7 +2959,7 @@ pub fn execute_instruction(
                                     format!("Array has no property '{}'. Available: push, pop, unique, reverse, sort, sum, average, count, any, all, or use numeric index", key),
                                     line,
                                 );
-                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                     Ok(()) => return Ok(VMStatus::Continue),
                                     Err(e) => return Err(e),
                                 }
@@ -2185,7 +2973,7 @@ pub fn execute_instruction(
                                             "Array index must be non-negative".to_string(),
                                             line,
                                         );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -2198,13 +2986,20 @@ pub fn execute_instruction(
                                         "Array index must be a number".to_string(),
                                         line,
                                     );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
                                 }
                             };
                             
+                            // Push the element (TaggedValue) from the store so reference semantics are preserved.
+                            if let Some(ValueCell::Array(slots)) = value_store.get(container_id) {
+                                if index < slots.len() {
+                                    stack::push(stack, slots[index]);
+                                    return Ok(VMStatus::Continue);
+                                }
+                            }
                             let arr_ref = arr.borrow();
                             if index >= arr_ref.len() {
                                 let error = ExceptionHandler::runtime_error_with_type(
@@ -2213,28 +3008,26 @@ pub fn execute_instruction(
                                     line,
                                     ErrorType::IndexError,
                                 );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
                             }
-                            // Для сложных типов (Array, Table, Object, Axis, etc.) возвращаем ссылку (shallow copy Rc)
-                            // Для простых типов клонируем значение
                             let element = &arr_ref[index];
                             let value = match element {
                                 Value::Array(arr_rc) => Value::Array(Rc::clone(arr_rc)),
                                 Value::Table(table_rc) => Value::Table(Rc::clone(table_rc)),
-                                Value::Axis(axis_rc) => Value::Axis(Rc::clone(axis_rc)), // Clone Rc, not the Axis itself
+                                Value::Axis(axis_rc) => Value::Axis(Rc::clone(axis_rc)),
                                 Value::Figure(fig_rc) => Value::Figure(Rc::clone(fig_rc)),
                                 Value::Image(img_rc) => Value::Image(Rc::clone(img_rc)),
-                                Value::Window(handle) => Value::Window(*handle), // PlotWindowHandle is Copy
+                                Value::Window(handle) => Value::Window(*handle),
                                 Value::Tensor(tensor_rc) => Value::Tensor(Rc::clone(tensor_rc)),
-                                Value::Object(obj_rc) => Value::Object(obj_rc.clone()), // Object uses Rc<RefCell>, clone Rc
+                                Value::Object(obj_rc) => Value::Object(obj_rc.clone()),
                                 Value::DatabaseEngine(engine_rc) => Value::DatabaseEngine(Rc::clone(engine_rc)),
                                 Value::DatabaseCluster(cluster_rc) => Value::DatabaseCluster(Rc::clone(cluster_rc)),
-                                _ => element.clone(), // Простые типы клонируем
+                                _ => element.clone(),
                             };
-                            stack::push(stack, value);
+                            stack::push_id(stack, store_value(value, value_store, heavy_store));
                             return Ok(VMStatus::Continue);
                         }
                         Value::Tuple(tuple) => {
@@ -2247,7 +3040,7 @@ pub fn execute_instruction(
                                             "Tuple index must be non-negative".to_string(),
                                             line,
                                         );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -2260,7 +3053,7 @@ pub fn execute_instruction(
                                         "Tuple index must be a number".to_string(),
                                         line,
                                     );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -2275,7 +3068,7 @@ pub fn execute_instruction(
                                     line,
                                     ErrorType::IndexError,
                                 );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -2289,7 +3082,7 @@ pub fn execute_instruction(
                                 Value::Object(_) => element.clone(),
                                 _ => element.clone(),
                             };
-                            stack::push(stack, value);
+                            stack::push_id(stack, store_value(value, value_store, heavy_store));
                             return Ok(VMStatus::Continue);
                         }
                         Value::Enumerate { data, start } => {
@@ -2302,7 +3095,7 @@ pub fn execute_instruction(
                                             "Enumerate index must be non-negative".to_string(),
                                             line,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => return Ok(VMStatus::Continue),
                                             Err(e) => return Err(e),
                                         }
@@ -2315,7 +3108,7 @@ pub fn execute_instruction(
                                         "Enumerate index must be a number".to_string(),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
@@ -2329,7 +3122,7 @@ pub fn execute_instruction(
                                     line,
                                     ErrorType::IndexError,
                                 );
-                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                     Ok(()) => return Ok(VMStatus::Continue),
                                     Err(e) => return Err(e),
                                 }
@@ -2352,49 +3145,59 @@ pub fn execute_instruction(
                                 Value::Number((start + index as i64) as f64),
                                 value,
                             ])));
-                            stack::push(stack, pair);
+                            stack::push_id(stack, store_value(pair, value_store, heavy_store));
                             return Ok(VMStatus::Continue);
                         }
                         Value::Table(table) => {
                             // Доступ к колонке таблицы по имени или строке по индексу
                             match index_value {
                                 Value::String(property) => {
-                                    let table_ref = table.borrow();
-                                    
                                     // Специальные свойства таблицы
                                     if property == "rows" {
-                                        // Возвращаем массив строк (каждая строка - массив значений)
-                                        let rows: Vec<Value> = table_ref.rows.iter()
-                                            .map(|row| {
-                                                Value::Array(Rc::new(RefCell::new(row.clone())))
-                                            })
-                                            .collect();
-                                        stack::push(stack, Value::Array(Rc::new(RefCell::new(rows))));
+                                        let t = table.borrow();
+                                        let rows: Vec<Value> = if t.is_view() {
+                                            (0..t.len())
+                                                .map(|i| {
+                                                    let row = crate::vm::table_ops::get_row(&*t, i, value_store, heavy_store).unwrap_or_default();
+                                                    Value::Array(Rc::new(RefCell::new(row)))
+                                                })
+                                                .collect()
+                                        } else {
+                                            t.rows_ref().unwrap().iter()
+                                                .map(|row| Value::Array(Rc::new(RefCell::new(row.to_vec()))))
+                                                .collect()
+                                        };
+                                        drop(t);
+                                        stack::push_id(stack, store_value(Value::Array(Rc::new(RefCell::new(rows))), value_store, heavy_store));
                                     } else if property == "columns" {
-                                        // Возвращаем массив имен колонок (заголовки)
-                                        let columns: Vec<Value> = table_ref.headers.iter()
+                                        let table_ref = table.borrow();
+                                        let columns: Vec<Value> = table_ref.headers().iter()
                                             .map(|header| Value::String(header.clone()))
                                             .collect();
-                                        stack::push(stack, Value::Array(Rc::new(RefCell::new(columns))));
+                                        stack::push_id(stack, store_value(Value::Array(Rc::new(RefCell::new(columns))), value_store, heavy_store));
                                     } else {
-                                        // Доступ к колонке по имени
-                                        if table_ref.get_column(&property).is_some() {
-                                            // Возвращаем ColumnReference для использования в relate()
-                                            stack::push(stack, Value::ColumnReference {
+                                        let mut table_ref = table.borrow_mut();
+                                        let has_col = if table_ref.is_view() {
+                                            table_ref.has_column(&property)
+                                        } else {
+                                            table_ref.get_column(&property).is_some()
+                                        };
+                                        if has_col {
+                                            stack::push_id(stack, store_value(Value::ColumnReference {
                                                 table: table.clone(),
                                                 column_name: property,
-                                            });
+                                            }, value_store, heavy_store));
                                         } else {
                                             let error = ExceptionHandler::runtime_error_with_type(
-                                &frames,
+                                                &frames,
                                                 format!("Column '{}' not found in table", property),
                                                 line,
                                                 ErrorType::KeyError,
                                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
-                                Ok(()) => return Ok(VMStatus::Continue),
-                                Err(e) => return Err(e),
-                            }
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                                Ok(()) => return Ok(VMStatus::Continue),
+                                                Err(e) => return Err(e),
+                                            }
                                         }
                                     }
                                 }
@@ -2407,45 +3210,50 @@ pub fn execute_instruction(
                                             "Table row index must be non-negative".to_string(),
                                             line,
                                         );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
                                     }
                                     let table_ref = table.borrow();
-                                    if idx as usize >= table_ref.rows.len() {
+                                    let len = table_ref.len();
+                                    if idx as usize >= len {
                                         let error = ExceptionHandler::runtime_error_with_type(
-                                &frames,
-                                            format!("Row index {} out of bounds (length: {})", idx, table_ref.rows.len()),
+                                            &frames,
+                                            format!("Row index {} out of bounds (length: {})", idx, len),
                                             line,
                                             ErrorType::IndexError,
                                         );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
-                                Ok(()) => return Ok(VMStatus::Continue),
-                                Err(e) => return Err(e),
-                            }
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                            Ok(()) => return Ok(VMStatus::Continue),
+                                            Err(e) => return Err(e),
+                                        }
                                     }
-                                    if let Some(row) = table_ref.get_row(idx as usize) {
-                                        // Создаем словарь из строки таблицы
+                                    let row = if table_ref.is_view() {
+                                        crate::vm::table_ops::get_row(&*table_ref, idx as usize, value_store, heavy_store)
+                                    } else {
+                                        table_ref.get_row(idx as usize).map(|r| r.to_vec())
+                                    };
+                                    if let Some(row) = row {
                                         use std::collections::HashMap;
                                         let mut row_dict = HashMap::new();
-                                        for (i, header) in table_ref.headers.iter().enumerate() {
+                                        for (i, header) in table_ref.headers().iter().enumerate() {
                                             if i < row.len() {
                                                 row_dict.insert(header.clone(), row[i].clone());
                                             }
                                         }
-                                        stack::push(stack, Value::Object(Rc::new(RefCell::new(row_dict))));
+                                        stack::push_id(stack, store_value(Value::Object(Rc::new(RefCell::new(row_dict))), value_store, heavy_store));
                                     } else {
                                         let error = ExceptionHandler::runtime_error_with_type(
-                                &frames,
+                                            &frames,
                                             format!("Row index {} out of bounds", idx),
                                             line,
                                             ErrorType::IndexError,
                                         );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
-                                Ok(()) => return Ok(VMStatus::Continue),
-                                Err(e) => return Err(e),
-                            }
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                            Ok(()) => return Ok(VMStatus::Continue),
+                                            Err(e) => return Err(e),
+                                        }
                                     }
                                 }
                                 _ => {
@@ -2454,7 +3262,7 @@ pub fn execute_instruction(
                                         "Table index must be a string (column name) or number (row index)".to_string(),
                                         line,
                                     );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -2475,7 +3283,7 @@ pub fn execute_instruction(
                                                 "Layer index must be non-negative".to_string(),
                                                 line,
                                             );
-                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                 Ok(()) => return Ok(VMStatus::Continue),
                                                 Err(e) => return Err(e),
                                             }
@@ -2487,7 +3295,7 @@ pub fn execute_instruction(
                                             use crate::ml::natives;
                                             let args = vec![Value::NeuralNetwork(Rc::clone(nn_rc)), Value::Number(n)];
                                             let result = natives::native_model_get_layer(&args);
-                                            stack::push(stack, result);
+                                            stack::push_id(stack, store_value(result, value_store, heavy_store));
                                             return Ok(VMStatus::Continue);
                                         }
                                     }
@@ -2496,7 +3304,7 @@ pub fn execute_instruction(
                                             "Layer accessor index must be a number".to_string(),
                                             line,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => return Ok(VMStatus::Continue),
                                             Err(e) => return Err(e),
                                         }
@@ -2526,7 +3334,7 @@ pub fn execute_instruction(
                                                         line,
                                                         ErrorType::ProtectError,
                                                     );
-                                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                         Ok(()) => return Ok(VMStatus::Continue),
                                                         Err(e) => return Err(e),
                                                     }
@@ -2544,7 +3352,7 @@ pub fn execute_instruction(
                                                 let in_hierarchy = if let Some(Value::String(ref obj_class_name)) = class_name_obj {
                                                     frames.iter().any(|f| {
                                                         let frame_class = f.function.name.split("::").next().unwrap_or("");
-                                                        let frame_chain = get_superclass_chain(globals, global_names, frame_class);
+                                                        let frame_chain = get_superclass_chain(globals, global_names, frame_class, value_store, heavy_store);
                                                         frame_chain.iter().any(|c| c == obj_class_name)
                                                     })
                                                 } else {
@@ -2572,7 +3380,7 @@ pub fn execute_instruction(
                                                         line,
                                                         ErrorType::ProtectError,
                                                     );
-                                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                         Ok(()) => return Ok(VMStatus::Continue),
                                                         Err(e) => return Err(e),
                                                     }
@@ -2622,7 +3430,7 @@ pub fn execute_instruction(
                                                     line,
                                                     ErrorType::ProtectError,
                                                 );
-                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                     Ok(()) => return Ok(VMStatus::Continue),
                                                     Err(e) => return Err(e),
                                                 }
@@ -2639,7 +3447,7 @@ pub fn execute_instruction(
                                             if let Value::String(s) = v { s.as_str() == key } else { false }
                                         });
                                         if is_protected_field {
-                                            let instance_chain = get_superclass_chain(globals, global_names, instance_class);
+                                            let instance_chain = get_superclass_chain(globals, global_names, instance_class, value_store, heavy_store);
                                             let in_hierarchy = frames.iter().any(|f| {
                                                 let frame_class = f.function.name.split("::").next().unwrap_or("");
                                                 instance_chain.iter().any(|c| c == frame_class)
@@ -2663,7 +3471,7 @@ pub fn execute_instruction(
                                                     line,
                                                     ErrorType::ProtectError,
                                                 );
-                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                     Ok(()) => return Ok(VMStatus::Continue),
                                                     Err(e) => return Err(e),
                                                 }
@@ -2671,13 +3479,13 @@ pub fn execute_instruction(
                                         }
                                     }
                                     if let Some(value) = map.get(&key) {
-                                        stack::push(stack, value.clone());
+                                        stack::push_id(stack, store_value(value.clone(), value_store, heavy_store));
                                     } else {
                                         debug_println!("[DEBUG GetArrayElement] key '{}' not found, pushing Null", key);
                                         // Для отсутствующих ключей возвращаем null
                                         // Это позволяет классам иметь поля с значениями по умолчанию
                                         // В арифметических операциях null будет преобразован в 0
-                                        stack::push(stack, Value::Null);
+                                        stack::push_id(stack, NULL_VALUE_ID);
                                     }
                                 }
                                 _ => {
@@ -2685,7 +3493,7 @@ pub fn execute_instruction(
                                         "Object index must be a string".to_string(),
                                         line,
                                     );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -2708,7 +3516,7 @@ pub fn execute_instruction(
                                                 }
                                                 axes_array.push(Value::Array(Rc::new(RefCell::new(row_array))));
                                             }
-                                            stack::push(stack, Value::Array(Rc::new(RefCell::new(axes_array))));
+                                            stack::push_id(stack, store_value(Value::Array(Rc::new(RefCell::new(axes_array))), value_store, heavy_store));
                                         }
                                         _ => {
                                             let error = ExceptionHandler::runtime_error_with_type(&frames,
@@ -2716,7 +3524,7 @@ pub fn execute_instruction(
                                                 line,
                                                 ErrorType::KeyError,
                                             );
-                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                 Ok(()) => return Ok(VMStatus::Continue),
                                                 Err(e) => return Err(e),
                                             }
@@ -2728,7 +3536,7 @@ pub fn execute_instruction(
                                         "Figure property access must use string key".to_string(),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
@@ -2753,22 +3561,24 @@ pub fn execute_instruction(
                                                 line,
                                                 ErrorType::KeyError,
                                             );
-                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                 Ok(()) => return Ok(VMStatus::Continue),
                                                 Err(e) => return Err(e),
                                             }
                                         }
                                     };
                                     
-                                    // Get method index from plot object (stored during registration)
-                                    let method_index = if let Some(plot_obj) = globals.iter().find(|v| {
-                                        if let Value::Object(map_rc) = v {
-                                            map_rc.borrow().contains_key("image")
-                                        } else {
-                                            false
+                                    let method_index = if let Some((_plot_id, plot_val)) = globals.iter_mut().find_map(|slot| {
+                                        let plot_id = slot.resolve_to_value_id(value_store);
+                                        let plot_val = load_value(plot_id, value_store, heavy_store);
+                                        if let Value::Object(map_rc) = &plot_val {
+                                            if map_rc.borrow().contains_key("image") {
+                                                return Some((plot_id, plot_val));
+                                            }
                                         }
+                                        None
                                     }) {
-                                        if let Value::Object(map_rc) = plot_obj {
+                                        if let Value::Object(map_rc) = &plot_val {
                                             let map = map_rc.borrow();
                                             let idx_key = match method_name {
                                                 "imshow" => "__axis_imshow_idx",
@@ -2779,7 +3589,7 @@ pub fn execute_instruction(
                                                         format!("Axis method '{}' not found", key),
                                                         line,
                                                     );
-                                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                         Ok(()) => return Ok(VMStatus::Continue),
                                                         Err(e) => return Err(e),
                                                     }
@@ -2792,7 +3602,7 @@ pub fn execute_instruction(
                                                     format!("Axis method '{}' not registered", key),
                                                     line,
                                                 );
-                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                     Ok(()) => return Ok(VMStatus::Continue),
                                                     Err(e) => return Err(e),
                                                 }
@@ -2802,7 +3612,7 @@ pub fn execute_instruction(
                                                 "Plot object not found".to_string(),
                                                 line,
                                             );
-                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                 Ok(()) => return Ok(VMStatus::Continue),
                                                 Err(e) => return Err(e),
                                             }
@@ -2812,21 +3622,21 @@ pub fn execute_instruction(
                                             "Plot module not found".to_string(),
                                             line,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => return Ok(VMStatus::Continue),
                                             Err(e) => return Err(e),
                                         }
                                     };
                                     // Return the native function
                                     // The compiler should arrange for axis to be passed as first argument
-                                    stack::push(stack, Value::NativeFunction(method_index));
+                                    stack::push_id(stack, store_value(Value::NativeFunction(method_index), value_store, heavy_store));
                                 }
                                 _ => {
                                     let error = ExceptionHandler::runtime_error(&frames,
                                         "Axis property access must use string key".to_string(),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
@@ -2848,7 +3658,7 @@ pub fn execute_instruction(
                                                 line,
                                                 ErrorType::KeyError,
                                             );
-                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                 Ok(()) => return Ok(VMStatus::Continue),
                                                 Err(e) => return Err(e),
                                             }
@@ -2856,19 +3666,20 @@ pub fn execute_instruction(
                                     };
                                     
                                     // Get method index from ml object (stored during registration)
-                                    let method_index = if let Some((&ml_idx, _)) = global_names.iter().find(|(_, name)| name.as_str() == "ml") {
+                                    let method_index = if let Some(ml_idx) = global_index_by_name(global_names, "ml") {
                                         if ml_idx >= globals.len() {
                                             let error = ExceptionHandler::runtime_error(&frames,
                                                 "ML module not found in globals".to_string(),
                                                 line,
                                             );
-                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                 Ok(()) => return Ok(VMStatus::Continue),
                                                 Err(e) => return Err(e),
                                             }
                                         }
-                                        
-                                        match &globals[ml_idx] {
+                                        let ml_id = globals[ml_idx].resolve_to_value_id(value_store);
+                                        let ml_val = load_value(ml_id, value_store, heavy_store);
+                                        match &ml_val {
                                             Value::Object(map_rc) => {
                                                 let map = map_rc.borrow();
                                                 match map.get(function_name) {
@@ -2878,7 +3689,7 @@ pub fn execute_instruction(
                                                             format!("Layer method '{}' not registered in ml module", key),
                                                             line,
                                                         );
-                                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                             Ok(()) => return Ok(VMStatus::Continue),
                                                             Err(e) => return Err(e),
                                                         }
@@ -2890,7 +3701,7 @@ pub fn execute_instruction(
                                                     "ML module is not an object".to_string(),
                                                     line,
                                                 );
-                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                     Ok(()) => return Ok(VMStatus::Continue),
                                                     Err(e) => return Err(e),
                                                 }
@@ -2901,7 +3712,7 @@ pub fn execute_instruction(
                                             "ML module not found".to_string(),
                                             line,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => return Ok(VMStatus::Continue),
                                             Err(e) => return Err(e),
                                         }
@@ -2909,14 +3720,14 @@ pub fn execute_instruction(
                                     
                                     // Return the native function
                                     // The compiler should arrange for layer to be passed as first argument
-                                    stack::push(stack, Value::NativeFunction(method_index));
+                                    stack::push_id(stack, store_value(Value::NativeFunction(method_index), value_store, heavy_store));
                                 }
                                 _ => {
                                     let error = ExceptionHandler::runtime_error(&frames,
                                         "Layer property access must use string key".to_string(),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
@@ -2925,7 +3736,6 @@ pub fn execute_instruction(
                             return Ok(VMStatus::Continue);
                         }
                         Value::ColumnReference { table, column_name } => {
-                            // Доступ к элементу колонки по индексу (как массив)
                             let index = match index_value {
                                 Value::Number(n) => {
                                     let idx = n as i64;
@@ -2934,7 +3744,7 @@ pub fn execute_instruction(
                                             "Column index must be non-negative".to_string(),
                                             line,
                                         );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -2946,37 +3756,49 @@ pub fn execute_instruction(
                                         "Column index must be a number".to_string(),
                                         line,
                                     );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
                                 }
                             };
-                            
-                            let table_ref = table.borrow();
-                            if let Some(column) = table_ref.get_column(&column_name) {
-                                if index >= column.len() {
-                                    let error = ExceptionHandler::runtime_error_with_type(&frames,
-                                        format!("Column index {} out of bounds (length: {})", index, column.len()),
+                            // Lazy: one cell via get_cell_value (no full column materialization). Cached column used when already built.
+                            let pushed = if let Some(column) = table.borrow().get_column_cached(&column_name) {
+                                if index < column.len() {
+                                    stack::push_id(stack, store_value(column[index].clone(), value_store, heavy_store));
+                                    true
+                                } else { false }
+                            } else {
+                                let t = table.borrow();
+                                if index < t.len() {
+                                    if let Some(cell) = crate::vm::table_ops::get_cell_value(&*t, index, &column_name, value_store, heavy_store) {
+                                        stack::push_id(stack, store_value(cell, value_store, heavy_store));
+                                        true
+                                    } else { false }
+                                } else { false }
+                            };
+                            if !pushed {
+                                let t = table.borrow();
+                                let has = t.has_column(&column_name);
+                                let len_opt = crate::vm::table_ops::column_len(&*t, &column_name);
+                                let error = if has {
+                                    ExceptionHandler::runtime_error_with_type(&frames,
+                                        format!("Column index {} out of bounds{}", index,
+                                            len_opt.map(|l| format!(" (length: {})", l)).unwrap_or_default()),
                                         line,
                                         ErrorType::IndexError,
-                                    );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
-                                Ok(()) => return Ok(VMStatus::Continue),
-                                Err(e) => return Err(e),
-                            }
+                                    )
+                                } else {
+                                    ExceptionHandler::runtime_error_with_type(&frames,
+                                        format!("Column '{}' not found", column_name),
+                                        line,
+                                        ErrorType::KeyError,
+                                    )
+                                };
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                    Ok(()) => return Ok(VMStatus::Continue),
+                                    Err(e) => return Err(e),
                                 }
-                                stack::push(stack, column[index].clone());
-                            } else {
-                                let error = ExceptionHandler::runtime_error_with_type(&frames,
-                                    format!("Column '{}' not found", column_name),
-                                    line,
-                                    ErrorType::KeyError,
-                                );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
-                                Ok(()) => return Ok(VMStatus::Continue),
-                                Err(e) => return Err(e),
-                            }
                             }
                         }
                         Value::Path(path) => {
@@ -2985,42 +3807,42 @@ pub fn execute_instruction(
                                 Value::String(property_name) => {
                                     match property_name.as_str() {
                                         "is_file" => {
-                                            stack::push(stack, Value::Bool(path.is_file()));
+                                            stack::push_id(stack, store_value(Value::Bool(path.is_file()), value_store, heavy_store));
                                         }
                                         "is_dir" => {
-                                            stack::push(stack, Value::Bool(path.is_dir()));
+                                            stack::push_id(stack, store_value(Value::Bool(path.is_dir()), value_store, heavy_store));
                                         }
                                         "extension" => {
                                             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                                                stack::push(stack, Value::String(ext.to_string()));
+                                                stack::push_id(stack, store_value(Value::String(ext.to_string()), value_store, heavy_store));
                                             } else {
-                                                stack::push(stack, Value::Null);
+                                                stack::push_id(stack, NULL_VALUE_ID);
                                             }
                                         }
                                         "name" => {
                                             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                                                stack::push(stack, Value::String(name.to_string()));
+                                                stack::push_id(stack, store_value(Value::String(name.to_string()), value_store, heavy_store));
                                             } else {
-                                                stack::push(stack, Value::Null);
+                                                stack::push_id(stack, NULL_VALUE_ID);
                                             }
                                         }
                                         "parent" => {
                                             // Используем безопасную функцию для получения parent
                                             use crate::vm::natives::path::safe_path_parent;
                                             match safe_path_parent(&path) {
-                                                Some(parent) => stack::push(stack, Value::Path(parent)),
-                                                None => stack::push(stack, Value::Null),
+                                                Some(parent) => stack::push_id(stack, store_value(Value::Path(parent), value_store, heavy_store)),
+                                                None => stack::push_id(stack, NULL_VALUE_ID),
                                             }
                                         }
                                         "exists" => {
-                                            stack::push(stack, Value::Bool(path.exists()));
+                                            stack::push_id(stack, store_value(Value::Bool(path.exists()), value_store, heavy_store));
                                         }
                                         _ => {
                                             let error = ExceptionHandler::runtime_error(&frames,
                                                 format!("Property '{}' not found on Path", property_name),
                                                 line,
                                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -3032,7 +3854,7 @@ pub fn execute_instruction(
                                         "Path property access requires string index".to_string(),
                                         line,
                                     );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -3048,7 +3870,7 @@ pub fn execute_instruction(
                                             "Dataset index must be non-negative".to_string(),
                                             line,
                                         );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -3060,7 +3882,7 @@ pub fn execute_instruction(
                                         "Dataset index must be a number".to_string(),
                                         line,
                                     );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -3076,7 +3898,7 @@ pub fn execute_instruction(
                                     line,
                                     ErrorType::IndexError,
                                 );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -3110,7 +3932,7 @@ pub fn execute_instruction(
                             // Return [features, target] as array
                             let features_value = Value::Tensor(Rc::new(RefCell::new(features_tensor)));
                             let pair = vec![features_value, target_value];
-                            stack::push(stack, Value::Array(Rc::new(RefCell::new(pair))));
+                            stack::push_id(stack, store_value(Value::Array(Rc::new(RefCell::new(pair))), value_store, heavy_store));
                             return Ok(VMStatus::Continue);
                         }
                         Value::Tensor(tensor) => {
@@ -3123,14 +3945,14 @@ pub fn execute_instruction(
                                             let shape_values: Vec<Value> = tensor_ref.shape.iter()
                                                 .map(|&s| Value::Number(s as f64))
                                                 .collect();
-                                            stack::push(stack, Value::Array(Rc::new(RefCell::new(shape_values))));
+                                            stack::push_id(stack, store_value(Value::Array(Rc::new(RefCell::new(shape_values))), value_store, heavy_store));
                                         }
                                         "data" => {
                                             let tensor_ref = tensor.borrow();
                                             let data_values: Vec<Value> = tensor_ref.data.iter()
                                                 .map(|&d| Value::Number(d as f64))
                                                 .collect();
-                                            stack::push(stack, Value::Array(Rc::new(RefCell::new(data_values))));
+                                            stack::push_id(stack, store_value(Value::Array(Rc::new(RefCell::new(data_values))), value_store, heavy_store));
                                         }
                                         "max_idx" => {
                                             // Return a bound method: push tensor first, then function
@@ -3144,15 +3966,15 @@ pub fn execute_instruction(
                                             
                                             if let Some(idx) = method_index {
                                                 // Push tensor onto stack first (will be used as first argument)
-                                                stack::push(stack, Value::Tensor(Rc::clone(&tensor)));
+                                                stack::push_id(stack, store_value(Value::Tensor(Rc::clone(&tensor)), value_store, heavy_store));
                                                 // Push native function
-                                                stack::push(stack, Value::NativeFunction(idx));
+                                                stack::push_id(stack, store_value(Value::NativeFunction(idx), value_store, heavy_store));
                                             } else {
                                                 let error = ExceptionHandler::runtime_error(&frames,
                                                     "max_idx method not found".to_string(),
                                                     line,
                                                 );
-                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                     Ok(()) => return Ok(VMStatus::Continue),
                                                     Err(e) => return Err(e),
                                                 }
@@ -3169,15 +3991,15 @@ pub fn execute_instruction(
                                             
                                             if let Some(idx) = method_index {
                                                 // Push tensor onto stack first (will be used as first argument)
-                                                stack::push(stack, Value::Tensor(Rc::clone(&tensor)));
+                                                stack::push_id(stack, store_value(Value::Tensor(Rc::clone(&tensor)), value_store, heavy_store));
                                                 // Push native function
-                                                stack::push(stack, Value::NativeFunction(idx));
+                                                stack::push_id(stack, store_value(Value::NativeFunction(idx), value_store, heavy_store));
                                             } else {
                                                 let error = ExceptionHandler::runtime_error(&frames,
                                                     "min_idx method not found".to_string(),
                                                     line,
                                                 );
-                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                     Ok(()) => return Ok(VMStatus::Continue),
                                                     Err(e) => return Err(e),
                                                 }
@@ -3188,7 +4010,7 @@ pub fn execute_instruction(
                                                 format!("Property '{}' not found on Tensor. Available properties: 'shape', 'data', 'max_idx', 'min_idx'", property_name),
                                                 line,
                                             );
-                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                 Ok(()) => return Ok(VMStatus::Continue),
                                                 Err(e) => return Err(e),
                                             }
@@ -3203,7 +4025,7 @@ pub fn execute_instruction(
                                             "Tensor index must be non-negative".to_string(),
                                             line,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => return Ok(VMStatus::Continue),
                                             Err(e) => return Err(e),
                                         }
@@ -3219,17 +4041,17 @@ pub fn execute_instruction(
                                                 line,
                                                 ErrorType::IndexError,
                                             );
-                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                 Ok(()) => return Ok(VMStatus::Continue),
                                                 Err(e) => return Err(e),
                                             }
                                         }
-                                        stack::push(stack, Value::Number(tensor_ref.data[index] as f64));
+                                        stack::push_id(stack, store_value(Value::Number(tensor_ref.data[index] as f64), value_store, heavy_store));
                                     } else {
                                         // For 2D+ tensors, return a slice (row) along first dimension
                                         match tensor_ref.get_row(index) {
                                             Ok(slice_tensor) => {
-                                                stack::push(stack, Value::Tensor(Rc::new(RefCell::new(slice_tensor))));
+                                                stack::push_id(stack, store_value(Value::Tensor(Rc::new(RefCell::new(slice_tensor))), value_store, heavy_store));
                                             }
                                             Err(e) => {
                                                 let error = ExceptionHandler::runtime_error_with_type(&frames,
@@ -3237,7 +4059,7 @@ pub fn execute_instruction(
                                                     line,
                                                     ErrorType::IndexError,
                                                 );
-                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                     Ok(()) => return Ok(VMStatus::Continue),
                                                     Err(e) => return Err(e),
                                                 }
@@ -3250,7 +4072,7 @@ pub fn execute_instruction(
                                         "Tensor property access requires string key (e.g., 'shape', 'data') or numeric index".to_string(),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
@@ -3269,7 +4091,7 @@ pub fn execute_instruction(
                                         use std::collections::HashMap;
                                         let mut layer_accessor = HashMap::new();
                                         layer_accessor.insert("__neural_network".to_string(), Value::NeuralNetwork(Rc::clone(&nn_rc)));
-                                        stack::push(stack, Value::Object(Rc::new(RefCell::new(layer_accessor))));
+                                        stack::push_id(stack, store_value(Value::Object(Rc::new(RefCell::new(layer_accessor))), value_store, heavy_store));
                                         return Ok(VMStatus::Continue);
                                     }
                                     
@@ -3286,7 +4108,7 @@ pub fn execute_instruction(
                                                 line,
                                                 ErrorType::KeyError,
                                             );
-                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                 Ok(()) => return Ok(VMStatus::Continue),
                                                 Err(e) => return Err(e),
                                             }
@@ -3294,21 +4116,20 @@ pub fn execute_instruction(
                                     };
                                     
                                     // Get method index from ml object (stored during registration)
-                                    // Find ml module using global_names
-                                    let method_index = if let Some((&ml_idx, _)) = global_names.iter().find(|(_, name)| name.as_str() == "ml") {
-                                        // Ensure globals vector is large enough
+                                    let method_index = if let Some(ml_idx) = global_index_by_name(global_names, "ml") {
                                         if ml_idx >= globals.len() {
                                             let error = ExceptionHandler::runtime_error(&frames,
                                                 "ML module not found in globals".to_string(),
                                                 line,
                                             );
-                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                 Ok(()) => return Ok(VMStatus::Continue),
                                                 Err(e) => return Err(e),
                                             }
                                         }
-                                        
-                                        match &globals[ml_idx] {
+                                        let ml_id = globals[ml_idx].resolve_to_value_id(value_store);
+                                        let ml_val = load_value(ml_id, value_store, heavy_store);
+                                        match &ml_val {
                                             Value::Object(map_rc) => {
                                                 let map = map_rc.borrow();
                                                 match map.get(function_name) {
@@ -3318,7 +4139,7 @@ pub fn execute_instruction(
                                                             format!("NeuralNetwork method '{}' not registered in ml module", key),
                                                             line,
                                                         );
-                                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                             Ok(()) => return Ok(VMStatus::Continue),
                                                             Err(e) => return Err(e),
                                                         }
@@ -3330,7 +4151,7 @@ pub fn execute_instruction(
                                                     "ML module is not an object".to_string(),
                                                     line,
                                                 );
-                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                     Ok(()) => return Ok(VMStatus::Continue),
                                                     Err(e) => return Err(e),
                                                 }
@@ -3341,21 +4162,21 @@ pub fn execute_instruction(
                                             "ML module not found".to_string(),
                                             line,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => return Ok(VMStatus::Continue),
                                             Err(e) => return Err(e),
                                         }
                                     };
                                     // Return the native function
                                     // The compiler should arrange for neural network to be passed as first argument
-                                    stack::push(stack, Value::NativeFunction(method_index));
+                                    stack::push_id(stack, store_value(Value::NativeFunction(method_index), value_store, heavy_store));
                                 }
                                 _ => {
                                     let error = ExceptionHandler::runtime_error(&frames,
                                         "NeuralNetwork property access must use string key".to_string(),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
@@ -3384,21 +4205,21 @@ pub fn execute_instruction(
                                                 format!("DatabaseEngine has no property '{}'. Available: connect, execute, query, run", property_name),
                                                 line,
                                             );
-                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                 Ok(()) => return Ok(VMStatus::Continue),
                                                 Err(e) => return Err(e),
                                             }
                                         }
                                     };
                                     if let Some(idx) = method_index {
-                                        stack::push(stack, Value::DatabaseEngine(Rc::clone(&engine_rc)));
-                                        stack::push(stack, Value::NativeFunction(idx));
+                                        stack::push_id(stack, store_value(Value::DatabaseEngine(Rc::clone(&engine_rc)), value_store, heavy_store));
+                                        stack::push_id(stack, store_value(Value::NativeFunction(idx), value_store, heavy_store));
                                     } else {
                                         let error = ExceptionHandler::runtime_error(&frames,
                                             format!("Database engine method '{}' not found", property_name),
                                             line,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => return Ok(VMStatus::Continue),
                                             Err(e) => return Err(e),
                                         }
@@ -3409,7 +4230,7 @@ pub fn execute_instruction(
                                         "DatabaseEngine property access requires string key (connect, execute, query, run)".to_string(),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
@@ -3435,21 +4256,21 @@ pub fn execute_instruction(
                                                 format!("DatabaseCluster has no property '{}'. Available: add, get, names", property_name),
                                                 line,
                                             );
-                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                 Ok(()) => return Ok(VMStatus::Continue),
                                                 Err(e) => return Err(e),
                                             }
                                         }
                                     };
                                     if let Some(idx) = method_index {
-                                        stack::push(stack, Value::DatabaseCluster(Rc::clone(&cluster_rc)));
-                                        stack::push(stack, Value::NativeFunction(idx));
+                                        stack::push_id(stack, store_value(Value::DatabaseCluster(Rc::clone(&cluster_rc)), value_store, heavy_store));
+                                        stack::push_id(stack, store_value(Value::NativeFunction(idx), value_store, heavy_store));
                                     } else {
                                         let error = ExceptionHandler::runtime_error(&frames,
                                             format!("Database cluster method '{}' not found", property_name),
                                             line,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => return Ok(VMStatus::Continue),
                                             Err(e) => return Err(e),
                                         }
@@ -3460,7 +4281,7 @@ pub fn execute_instruction(
                                         "DatabaseCluster property access requires string key (add, get, names)".to_string(),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
@@ -3478,14 +4299,14 @@ pub fn execute_instruction(
                                             "String index must be non-negative".to_string(),
                                             line,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => return Ok(VMStatus::Continue),
                                             Err(e) => return Err(e),
                                         }
                                     }
                                     let idx_usize = idx as usize;
                                     if let Some(ch) = s.chars().nth(idx_usize) {
-                                        stack::push(stack, Value::String(ch.to_string()));
+                                        stack::push_id(stack, store_value(Value::String(ch.to_string()), value_store, heavy_store));
                                     } else {
                                         let error = ExceptionHandler::runtime_error_with_type(
                                             &frames,
@@ -3493,7 +4314,7 @@ pub fn execute_instruction(
                                             line,
                                             ErrorType::IndexError,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => return Ok(VMStatus::Continue),
                                             Err(e) => return Err(e),
                                         }
@@ -3513,14 +4334,14 @@ pub fn execute_instruction(
                                         _ => None,
                                     };
                                     if let Some(idx) = method_index {
-                                        stack::push(stack, Value::NativeFunction(idx));
+                                        stack::push_id(stack, store_value(Value::NativeFunction(idx), value_store, heavy_store));
                                     } else {
                                         let error = ExceptionHandler::runtime_error(
                                             &frames,
                                             format!("String has no property '{}'. Available: upper, lower, trim, split, join, contains, isupper, islower, or use numeric index", key),
                                             line,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => return Ok(VMStatus::Continue),
                                             Err(e) => return Err(e),
                                         }
@@ -3532,7 +4353,7 @@ pub fn execute_instruction(
                                         "String index must be a number or a method name (upper, lower, trim, split, join, contains, isupper, islower)".to_string(),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
@@ -3552,7 +4373,7 @@ pub fn execute_instruction(
                                         let mut desc = std::collections::HashMap::new();
                                         desc.insert("__type".to_string(), Value::String("str".to_string()));
                                         desc.insert("__length".to_string(), Value::Number(idx as f64));
-                                        stack::push(stack, Value::Object(Rc::new(RefCell::new(desc))));
+                                        stack::push_id(stack, store_value(Value::Object(Rc::new(RefCell::new(desc))), value_store, heavy_store));
                                         return Ok(VMStatus::Continue);
                                     }
                                 }
@@ -3562,7 +4383,7 @@ pub fn execute_instruction(
                                 "Expected array, tuple, column reference, table, object, path, dataset, tensor, neural network, database engine, or database cluster for GetArrayElement".to_string(),
                                 line,
                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -3573,7 +4394,7 @@ pub fn execute_instruction(
                                 "Cannot access element of null value".to_string(),
                                 line,
                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -3584,7 +4405,7 @@ pub fn execute_instruction(
                                 "Expected array, tuple, column reference, table, object, path, dataset, tensor, neural network, database engine, or database cluster for GetArrayElement".to_string(),
                                 line,
                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -3593,13 +4414,29 @@ pub fn execute_instruction(
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::SetArrayElement => {
-                    // Установка элемента массива/объекта: [value, index/key, container]
-                    // Стек: последний элемент наверху, поэтому порядок обратный
-                    let container = stack::pop(stack, frames, exception_handlers)?;
-                    let index_value = stack::pop(stack, frames, exception_handlers)?;
-                    let value = stack::pop(stack, frames, exception_handlers)?;
-                    
-                    // Универсальное логирование для всех случаев SetArrayElement
+                    // Stack order from compiler: [value, index, container] with container on top.
+                    let container_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let index_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let value_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let value_id = tagged_to_value_id(value_tv, value_store);
+                    // Fast path: ValueCell::Array + number index — store TaggedValue slot
+                    if index_tv.is_number() {
+                        let idx = index_tv.get_f64() as i64;
+                        if idx >= 0 && index_tv.get_f64().fract() == 0.0 {
+                            let u = idx as usize;
+                            if let Some(ValueCell::Array(slots)) = value_store.get_mut(container_id) {
+                                if u >= slots.len() {
+                                    slots.resize(u + 1, TaggedValue::null());
+                                }
+                                slots[u] = value_tv;
+                                stack::push_id(stack, container_id);
+                                return Ok(VMStatus::Continue);
+                            }
+                        }
+                    }
+                    let container = load_value(container_id, value_store, heavy_store);
+                    let index_value = load_value(tagged_to_value_id(index_tv, value_store), value_store, heavy_store);
+                    let value = load_value(value_id, value_store, heavy_store);
                     let container_type = match &container {
                         Value::Array(_) => "Array",
                         Value::Object(_) => "Object",
@@ -3625,7 +4462,7 @@ pub fn execute_instruction(
                     debug_println!("[DEBUG SetArrayElement] line {}, {} key='{}' value={}", line, container_type, key_str, value_type_str);
                     
                     match container {
-                        Value::Array(arr) => {
+                        Value::Array(_) => {
                             let index = match index_value {
                                 Value::Number(n) => {
                                     let idx = n as i64;
@@ -3635,7 +4472,7 @@ pub fn execute_instruction(
                                             "Array index must be non-negative".to_string(),
                                             line,
                                         );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                             Ok(()) => return Ok(VMStatus::Continue),
                                             Err(e) => return Err(e),
                                         }
@@ -3648,21 +4485,26 @@ pub fn execute_instruction(
                                         "Array index must be a number".to_string(),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
                                 }
                             };
-                            
-                            let mut arr_ref = arr.borrow_mut();
-                            if index >= arr_ref.len() {
-                                // Расширяем массив, если индекс выходит за границы
-                                arr_ref.resize(index + 1, Value::Null);
+                            // Update the array cell in place so all references see the change.
+                            let slot_tv = match &value {
+                                Value::Number(n) => TaggedValue::from_f64(*n),
+                                Value::Bool(b) => TaggedValue::from_bool(*b),
+                                Value::Null => TaggedValue::null(),
+                                _ => TaggedValue::from_heap(store_value(value.clone(), value_store, heavy_store)),
+                            };
+                            if let Some(ValueCell::Array(slots)) = value_store.get_mut(container_id) {
+                                if index >= slots.len() {
+                                    slots.resize(index + 1, TaggedValue::null());
+                                }
+                                slots[index] = slot_tv;
                             }
-                            arr_ref[index] = value;
-                            // Возвращаем обновленный массив (через Rc)
-                            stack::push(stack, Value::Array(arr.clone()));
+                            stack::push_id(stack, container_id);
                             return Ok(VMStatus::Continue);
                         }
                         Value::Object(obj_rc) => {
@@ -3675,7 +4517,7 @@ pub fn execute_instruction(
                                         "Object key must be a string".to_string(),
                                         line,
                                     );
-                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                         Ok(()) => return Ok(VMStatus::Continue),
                                         Err(e) => return Err(e),
                                     }
@@ -3706,7 +4548,7 @@ pub fn execute_instruction(
                                     line,
                                     ErrorType::ProtectError,
                                 );
-                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                     Ok(()) => return Ok(VMStatus::Continue),
                                     Err(e) => return Err(e),
                                 }
@@ -3765,7 +4607,7 @@ pub fn execute_instruction(
                                     line,
                                     ErrorType::ProtectError,
                                 );
-                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                     Ok(()) => return Ok(VMStatus::Continue),
                                     Err(e) => return Err(e),
                                 }
@@ -3790,7 +4632,7 @@ pub fn execute_instruction(
                                     let in_hierarchy = obj_class.as_ref().map(|obj_class| {
                                         frames.iter().any(|f| {
                                             let frame_class = f.function.name.split("::").next().unwrap_or("");
-                                            let frame_chain = get_superclass_chain(globals, global_names, frame_class);
+                                            let frame_chain = get_superclass_chain(globals, global_names, frame_class, value_store, heavy_store);
                                             frame_chain.iter().any(|c| c == obj_class)
                                         })
                                     }).unwrap_or(false);
@@ -3821,7 +4663,7 @@ pub fn execute_instruction(
                                     line,
                                     ErrorType::ProtectError,
                                 );
-                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                     Ok(()) => return Ok(VMStatus::Continue),
                                     Err(e) => return Err(e),
                                 }
@@ -3837,7 +4679,7 @@ pub fn execute_instruction(
                                         if let Value::String(s) = v { s.as_str() == key } else { false }
                                     });
                                     let in_hierarchy = {
-                                        let instance_chain = get_superclass_chain(globals, global_names, instance_class);
+                                        let instance_chain = get_superclass_chain(globals, global_names, instance_class, value_store, heavy_store);
                                         frames.iter().any(|f| {
                                             let frame_class = f.function.name.split("::").next().unwrap_or("");
                                             instance_chain.iter().any(|c| c == frame_class)
@@ -3871,15 +4713,17 @@ pub fn execute_instruction(
                                     line,
                                     ErrorType::ProtectError,
                                 );
-                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                     Ok(()) => return Ok(VMStatus::Continue),
                                     Err(e) => return Err(e),
                                 }
                             }
-                            obj_rc.borrow_mut().insert(key.clone(), value);
-                            let keys_after: Vec<String> = obj_rc.borrow().keys().cloned().collect();
-                            debug_println!("[DEBUG SetArrayElement] object key '{}' set, keys now: {}", key, keys_after.len());
-                            stack::push(stack, Value::Object(obj_rc.clone()));
+                            // Update the object cell in place so all references see the change.
+                            if let Some(ValueCell::Object(map)) = value_store.get_mut(container_id) {
+                                map.insert(key.clone(), value_id);
+                                debug_println!("[DEBUG SetArrayElement] object key '{}' set, keys now: {}", key, map.len());
+                            }
+                            stack::push_id(stack, container_id);
                             return Ok(VMStatus::Continue);
                         }
                         _ => {
@@ -3888,7 +4732,7 @@ pub fn execute_instruction(
                                 format!("SetArrayElement only supports arrays and objects, got: {:?}", container),
                                 line,
                             );
-                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                 Ok(()) => return Ok(VMStatus::Continue),
                                 Err(e) => return Err(e),
                             }
@@ -3896,10 +4740,10 @@ pub fn execute_instruction(
                     }
                 }
                 OpCode::Clone => {
-                    // Глубокое клонирование значения на стеке
-                    let value = stack::pop(stack, frames, exception_handlers)?;
-                    let cloned = value.clone(); // Используем реализованный Clone для Value
-                    stack::push(stack, cloned);
+                    let value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let value = load_value(value_id, value_store, heavy_store);
+                    let cloned = value.clone();
+                    stack::push_id(stack, store_value(cloned, value_store, heavy_store));
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::BeginTry(handler_index) => {
@@ -3980,8 +4824,8 @@ pub fn execute_instruction(
                 OpCode::Throw(_) => {
                     // Выбрасывание исключения
                     // Получаем значение со стека (сообщение об ошибке)
-                    let error_value = stack::pop(stack, frames, exception_handlers)?;
-                    
+                    let error_value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let error_value = load_value(error_value_id, value_store, heavy_store);
                     // Преобразуем значение в строку
                     let error_message = error_value.to_string();
                     
@@ -3989,7 +4833,7 @@ pub fn execute_instruction(
                     let error = LangError::runtime_error(error_message, line);
                     
                     // Пытаемся найти обработчик исключения
-                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                         Ok(()) => {
                             // Обработчик найден, выполнение продолжается в catch блоке
                             // handle_exception уже настроил стек и фреймы

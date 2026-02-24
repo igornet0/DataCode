@@ -156,7 +156,7 @@ fn execute_file(config: cli::FileExecutionConfig) {
             if config.build_model {
                 // Execute with SQLite export
                 match data_code::run_with_vm_with_args_and_lib(&source, Some(script_args), lib_path.as_deref(), script_base_path.as_deref()) {
-                    Ok((_, vm)) => {
+                    Ok((_, mut vm)) => {
                         // Determine output database filename
                         let db_filename = if let Some(db) = config.output_db {
                             db
@@ -172,7 +172,7 @@ fn execute_file(config: cli::FileExecutionConfig) {
                         };
                         
                         // Export tables to SQLite
-                        match sqlite_export::export_to_sqlite(&vm, &db_filename) {
+                        match sqlite_export::export_to_sqlite(&mut vm, &db_filename) {
                             Ok(_) => {
                                 println!("✅ База данных создана: {}", db_filename);
                             }

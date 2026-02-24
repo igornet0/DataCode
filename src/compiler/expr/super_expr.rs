@@ -80,11 +80,12 @@ pub fn compile_super_method_call(ctx: &mut CompilationContext, expr: &Expr) -> R
         };
         
         // Load this (first argument for method call)
-        // In methods, this is at slot 0; in constructors, we need to resolve it
-        if let Some(local_index) = ctx.scope.resolve_local("this") {
+        // In methods, this is at slot 0; in constructors, use constructor_this_slot
+        if let Some(slot) = ctx.constructor_this_slot {
+            ctx.chunk.write_with_line(OpCode::LoadLocal(slot), *line);
+        } else if let Some(local_index) = ctx.scope.resolve_local("this") {
             ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
         } else {
-            // Fallback: this is at slot 0 (for methods)
             ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
         }
         

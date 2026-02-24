@@ -1,8 +1,10 @@
-// Function call operations for VM
+// Function call operations for VM (Stage 1: stack/slots as ValueId)
 
 use crate::debug_println;
-use crate::common::{error::{LangError, ErrorType}, value::Value};
+use crate::common::{error::{LangError, ErrorType}, value::Value, value_store::ValueStore, TaggedValue};
 use crate::vm::frame::CallFrame;
+use crate::vm::heavy_store::HeavyStore;
+use crate::vm::store_convert::store_value;
 
 /// Проверяет, соответствует ли значение одному типу
 fn check_single_type(value: &Value, type_name: &str) -> bool {
@@ -108,15 +110,17 @@ pub fn get_type_name_value(value: &Value) -> &'static str {
     }
 }
 
-/// Setup a function call by creating a new call frame and setting up captured variables
-/// Returns the cached result if available, or None if execution is needed
+/// Setup a function call by creating a new call frame and setting up captured variables (Stage 1: stack/slots as ValueId).
+/// Returns the cached result if available (Value), or None if execution is needed.
 pub fn setup_function_call(
     function_index: usize,
     args: &[Value],
     functions: &[crate::bytecode::Function],
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<crate::common::TaggedValue>,
     frames: &mut Vec<CallFrame>,
     error_type_table: &mut Vec<String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
 ) -> Result<Option<Value>, LangError> {
     if function_index >= functions.len() {
         return Err(LangError::runtime_error(
@@ -175,52 +179,48 @@ pub fn setup_function_call(
         }
     }
 
-    // Создаем новый CallFrame
+    let args_tvs: Vec<TaggedValue> =
+        args.iter().map(|a| TaggedValue::from_heap(store_value(a.clone(), store, heap))).collect();
     let stack_start = stack.len();
     let mut new_frame = if function.is_cached {
-        CallFrame::new_with_cache(function.clone(), stack_start, args.to_vec())
+        CallFrame::new_with_cache(function.clone(), stack_start, args_tvs.clone(), store, heap)
     } else {
-        CallFrame::new(function.clone(), stack_start)
+        CallFrame::new(function.clone(), stack_start, store, heap)
     };
 
-    // Копируем таблицу типов ошибок из chunk функции в VM
     if !function.chunk.error_type_table.is_empty() {
         *error_type_table = function.chunk.error_type_table.clone();
     }
 
-    // Копируем захваченные переменные из родительских frames (если есть)
     if !frames.is_empty() && !function.captured_vars.is_empty() {
         for captured_var in &function.captured_vars {
             if captured_var.local_slot_index >= new_frame.slots.len() {
-                new_frame.slots.resize(captured_var.local_slot_index + 1, Value::Null);
+                new_frame.slots.resize(captured_var.local_slot_index + 1, TaggedValue::null());
             }
-            
             let ancestor_index = frames.len().saturating_sub(1 + captured_var.ancestor_depth);
-            
             if ancestor_index < frames.len() {
                 let ancestor_frame = &frames[ancestor_index];
                 if captured_var.parent_slot_index < ancestor_frame.slots.len() {
-                    let captured_value = ancestor_frame.slots[captured_var.parent_slot_index].clone();
-                    new_frame.slots[captured_var.local_slot_index] = captured_value;
+                    new_frame.slots[captured_var.local_slot_index] =
+                        ancestor_frame.slots[captured_var.parent_slot_index];
                 } else {
-                    new_frame.slots[captured_var.local_slot_index] = Value::Null;
+                    new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
                 }
             } else {
-                new_frame.slots[captured_var.local_slot_index] = Value::Null;
+                new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
             }
         }
     }
 
-    // Инициализируем параметры функции в slots
     let param_start_index = function.captured_vars.len();
-    for (i, arg) in args.iter().enumerate() {
+    for (i, &arg_tv) in args_tvs.iter().enumerate() {
         let slot_index = param_start_index + i;
         if slot_index >= new_frame.slots.len() {
-            new_frame.slots.resize(slot_index + 1, Value::Null);
+            new_frame.slots.resize(slot_index + 1, TaggedValue::null());
         }
-        new_frame.slots[slot_index] = arg.clone();
+        new_frame.slots[slot_index] = arg_tv;
     }
 
-    // Добавляем новый frame
-    frames.push(new_frame);    Ok(None) // No cached result, execution needed
+    frames.push(new_frame);
+    Ok(None)
 }

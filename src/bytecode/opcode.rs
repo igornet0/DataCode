@@ -42,6 +42,14 @@ pub enum OpCode {
     JumpLabel(usize),        // Временная метка для безусловного перехода (label_id)
     JumpIfFalseLabel(usize), // Временная метка для условного перехода (label_id)
     
+    // Специализированный цикл for i in range(...): без материализации диапазона
+    /// (var_slot, start_const, end_const, step_const, end_offset). end_offset патчится при finalize.
+    ForRange(usize, usize, usize, usize, i32),
+    /// back_offset: на сколько инструкций откатить IP (к ForRange)
+    ForRangeNext(i32),
+    /// Снять одно состояние с for_range_stack (при break из for i in range(...))
+    PopForRange,
+
     // Финальные инструкции с относительными смещениями
     Jump8(i8),          // Безусловный переход с 8-битным смещением [-128, +127]
     Jump16(i16),        // Безусловный переход с 16-битным смещением [-32768, +32767]
@@ -83,5 +91,72 @@ pub enum OpCode {
     // Модули
     Import(usize), // Импорт модуля (индекс имени модуля в константах)
     ImportFrom(usize, usize), // from-импорт: (индекс имени модуля, индекс массива элементов импорта в константах)
+
+    // Register VM (этап 1): опкоды с регистрами; компилятор пока не эмитирует.
+    /// Add reg[rd] = reg[r1] + reg[r2] (number+number); иначе fallback на store. Регистры — индексы в frame.regs.
+    RegAdd(u8, u8, u8),
+}
+
+impl OpCode {
+    /// Имя варианта опкода без параметров для агрегации в профиле (MakeArray(8) и MakeArray(3) → "MakeArray").
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            OpCode::Constant(_) => "Constant",
+            OpCode::LoadLocal(_) => "LoadLocal",
+            OpCode::StoreLocal(_) => "StoreLocal",
+            OpCode::LoadGlobal(_) => "LoadGlobal",
+            OpCode::StoreGlobal(_) => "StoreGlobal",
+            OpCode::Add => "Add",
+            OpCode::Sub => "Sub",
+            OpCode::Mul => "Mul",
+            OpCode::Div => "Div",
+            OpCode::IntDiv => "IntDiv",
+            OpCode::Mod => "Mod",
+            OpCode::Pow => "Pow",
+            OpCode::Negate => "Negate",
+            OpCode::Not => "Not",
+            OpCode::Or => "Or",
+            OpCode::And => "And",
+            OpCode::Equal => "Equal",
+            OpCode::Greater => "Greater",
+            OpCode::Less => "Less",
+            OpCode::NotEqual => "NotEqual",
+            OpCode::GreaterEqual => "GreaterEqual",
+            OpCode::LessEqual => "LessEqual",
+            OpCode::In => "In",
+            OpCode::JumpLabel(_) => "JumpLabel",
+            OpCode::JumpIfFalseLabel(_) => "JumpIfFalseLabel",
+            OpCode::ForRange(_, _, _, _, _) => "ForRange",
+            OpCode::ForRangeNext(_) => "ForRangeNext",
+            OpCode::PopForRange => "PopForRange",
+            OpCode::Jump8(_) => "Jump8",
+            OpCode::Jump16(_) => "Jump16",
+            OpCode::Jump32(_) => "Jump32",
+            OpCode::JumpIfFalse8(_) => "JumpIfFalse8",
+            OpCode::JumpIfFalse16(_) => "JumpIfFalse16",
+            OpCode::JumpIfFalse32(_) => "JumpIfFalse32",
+            OpCode::Call(_) => "Call",
+            OpCode::Return => "Return",
+            OpCode::MakeArray(_) => "MakeArray",
+            OpCode::MakeArrayDynamic => "MakeArrayDynamic",
+            OpCode::GetArrayLength => "GetArrayLength",
+            OpCode::GetArrayElement => "GetArrayElement",
+            OpCode::SetArrayElement => "SetArrayElement",
+            OpCode::Clone => "Clone",
+            OpCode::MakeTuple(_) => "MakeTuple",
+            OpCode::MakeObject(_) => "MakeObject",
+            OpCode::BeginTry(_) => "BeginTry",
+            OpCode::EndTry => "EndTry",
+            OpCode::Catch(_) => "Catch",
+            OpCode::EndCatch => "EndCatch",
+            OpCode::Throw(_) => "Throw",
+            OpCode::PopExceptionHandler => "PopExceptionHandler",
+            OpCode::Pop => "Pop",
+            OpCode::Dup => "Dup",
+            OpCode::Import(_) => "Import",
+            OpCode::ImportFrom(_, _) => "ImportFrom",
+            OpCode::RegAdd(_, _, _) => "RegAdd",
+        }
+    }
 }
 

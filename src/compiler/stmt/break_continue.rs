@@ -1,5 +1,6 @@
 /// Компиляция break и continue statements
 
+use crate::bytecode::OpCode;
 use crate::parser::ast::Stmt;
 use crate::common::error::LangError;
 use crate::compiler::context::CompilationContext;
@@ -13,8 +14,13 @@ pub fn compile_break(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
                 line: *line,
             });
         }
+        let loop_ctx = ctx.loop_contexts.last().unwrap();
+        // При break из for i in range(...) снять состояние цикла с for_range_stack
+        if loop_ctx.is_for_range {
+            ctx.chunk.write_with_line(OpCode::PopForRange, *line);
+        }
         // Jump к метке конца цикла
-        let break_label = ctx.loop_contexts.last().unwrap().break_label;
+        let break_label = loop_ctx.break_label;
         ctx.labels.emit_jump(ctx.chunk, *ctx.current_line, false, break_label)?;
         Ok(())
     } else {

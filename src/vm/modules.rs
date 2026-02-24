@@ -1,6 +1,9 @@
-// Module operations for VM
+// Module operations for VM (globals as Vec<GlobalSlot>)
 
-use crate::common::{error::LangError, value::Value};
+use crate::common::{error::LangError, value::Value, value_store::ValueStore};
+use crate::vm::global_slot::{GlobalSlot, default_global_slot};
+use crate::vm::heavy_store::HeavyStore;
+use crate::vm::store_convert::{store_value_arena, load_value};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -18,20 +21,30 @@ pub fn builtin_modules_list() -> String {
     BUILTIN_MODULE_NAMES.join(", ")
 }
 
-/// Register a module by name
-/// This function registers native functions for the module and creates the module object in globals
+/// Deterministic global slot by name (min index when multiple; stable across HashMap iteration).
+fn global_index_by_name(global_names: &std::collections::HashMap<usize, String>, name: &str) -> Option<usize> {
+    global_names
+        .iter()
+        .filter(|(_, n)| n.as_str() == name)
+        .map(|(idx, _)| *idx)
+        .min()
+}
+
+/// Register a module by name (globals as Vec<GlobalSlot>, store_value for module object)
 pub fn register_module(
     module_name: &str,
     natives: &mut Vec<fn(&[Value]) -> Value>,
-    globals: &mut Vec<Value>,
+    globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::HashMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
 ) -> Result<(), LangError> {
     match module_name {
-        "ml" => register_ml_module(natives, globals, global_names),
-        "plot" => register_plot_module(natives, globals, global_names),
-        "settings_env" => register_settings_env_module(natives, globals, global_names),
-        "uuid" => register_uuid_module(natives, globals, global_names),
-        "database" => register_database_module(natives, globals, global_names),
+        "ml" => register_ml_module(natives, globals, global_names, store, heap),
+        "plot" => register_plot_module(natives, globals, global_names, store, heap),
+        "settings_env" => register_settings_env_module(natives, globals, global_names, store, heap),
+        "uuid" => register_uuid_module(natives, globals, global_names, store, heap),
+        "database" => register_database_module(natives, globals, global_names, store, heap),
         _ => Err(LangError::runtime_error(
             format!("Unknown module: {}", module_name),
             0,
@@ -41,8 +54,10 @@ pub fn register_module(
 
 fn register_ml_module(
     natives: &mut Vec<fn(&[Value]) -> Value>,
-    globals: &mut Vec<Value>,
+    globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::HashMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
 ) -> Result<(), LangError> {
     use crate::ml::natives;
     
@@ -209,54 +224,46 @@ fn register_ml_module(
     ml_object.insert("layer_freeze".to_string(), Value::NativeFunction(ml_native_start + 67));
     ml_object.insert("layer_unfreeze".to_string(), Value::NativeFunction(ml_native_start + 68));
     
-    // Register ml as a global variable
-    // First, check if "ml" is already in global_names (from compiler)
-    let ml_index = if let Some((&idx, _)) = global_names.iter().find(|(_, name)| name.as_str() == "ml") {
-        // ml is already registered by compiler, use that index
-        // Make sure globals vector is large enough
+    let ml_index = if let Some(idx) = global_index_by_name(global_names, "ml") {
         if idx >= globals.len() {
-            globals.resize(idx + 1, Value::Null);
+            globals.resize(idx + 1, default_global_slot());
         }
         idx
     } else {
-        // Check if ml module already exists by checking for tensor key
-        let ml_idx_opt = globals.iter().position(|v| {
-            if let Value::Object(map_rc) = v {
-                map_rc.borrow().contains_key("tensor")
-            } else {
-                false
+        let ml_idx_opt = globals.iter_mut().enumerate().find_map(|(i, slot)| {
+            let id = slot.resolve_to_value_id(store);
+            let v = load_value(id, store, heap);
+            if let Value::Object(map_rc) = &v {
+                if map_rc.borrow().contains_key("tensor") {
+                    return Some(i);
+                }
             }
+            None
         });
         if let Some(idx) = ml_idx_opt {
-            // ml object already exists at this index
             idx
         } else {
-            // Create new global index
             let idx = globals.len();
-            // Push a placeholder, will be set below
-            globals.push(Value::Null);
+            globals.push(default_global_slot());
             global_names.insert(idx, "ml".to_string());
             idx
         }
     };
-    
-    // Store ml object in globals (always store the original, not a clone)
-    // Ensure the vector is large enough
+
     if ml_index >= globals.len() {
-        globals.resize(ml_index + 1, Value::Null);
+        globals.resize(ml_index + 1, default_global_slot());
     }
-    // Verify ml_object is not empty before storing
     if ml_object.is_empty() {
         return Err(LangError::runtime_error(
             "ML module object is empty - native functions not registered".to_string(),
             0,
         ));
     }
-    // Store the module object
-    globals[ml_index] = Value::Object(Rc::new(RefCell::new(ml_object)));
-    
-    // Verify it was stored correctly
-    match &globals[ml_index] {
+    globals[ml_index] = GlobalSlot::Heap(store_value_arena(Value::Object(Rc::new(RefCell::new(ml_object))), store, heap));
+
+    let id = globals[ml_index].resolve_to_value_id(store);
+    let v = load_value(id, store, heap);
+    match &v {
         Value::Object(map_rc) => {
             let map = map_rc.borrow();
             if map.is_empty() {
@@ -268,20 +275,21 @@ fn register_ml_module(
         }
         _ => {
             return Err(LangError::runtime_error(
-                format!("ML module not stored as Object, found: {:?}", 
-                    std::mem::discriminant(&globals[ml_index])),
+                format!("ML module not stored as Object, found: {:?}", std::mem::discriminant(&v)),
                 0,
             ));
         }
     }
-    
+
     Ok(())
 }
 
 fn register_plot_module(
     natives: &mut Vec<fn(&[Value]) -> Value>,
-    globals: &mut Vec<Value>,
+    globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::HashMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
 ) -> Result<(), LangError> {
     use crate::plot::natives;
     
@@ -335,41 +343,43 @@ fn register_plot_module(
     plot_object.insert("__axis_set_title_idx".to_string(), Value::Number(axis_set_title_idx as f64));
     plot_object.insert("__axis_axis_idx".to_string(), Value::Number(axis_axis_idx as f64));
     
-    // Register plot as a global variable
-    let plot_index = if let Some((&idx, _)) = global_names.iter().find(|(_, name)| name.as_str() == "plot") {
+    let plot_index = if let Some(idx) = global_index_by_name(global_names, "plot") {
         if idx >= globals.len() {
-            globals.resize(idx + 1, Value::Null);
+            globals.resize(idx + 1, default_global_slot());
         }
         idx
     } else {
-        // Check if plot module already exists by checking for image key
-        let plot_idx_opt = globals.iter().position(|v| {
-            if let Value::Object(map_rc) = v {
-                map_rc.borrow().contains_key("image")
-            } else {
-                false
+        let plot_idx_opt = globals.iter_mut().enumerate().find_map(|(i, slot)| {
+            let id = slot.resolve_to_value_id(store);
+            let v = load_value(id, store, heap);
+            if let Value::Object(map_rc) = &v {
+                if map_rc.borrow().contains_key("image") {
+                    return Some(i);
+                }
             }
+            None
         });
         if let Some(idx) = plot_idx_opt {
             idx
         } else {
             let idx = globals.len();
-            globals.push(Value::Object(Rc::new(RefCell::new(plot_object.clone()))));
+            globals.push(GlobalSlot::Heap(store_value_arena(Value::Object(Rc::new(RefCell::new(plot_object.clone()))), store, heap)));
             global_names.insert(idx, "plot".to_string());
             idx
         }
     };
-    
-    // Store plot object in globals
-    globals[plot_index] = Value::Object(Rc::new(RefCell::new(plot_object)));
-    
+
+    globals[plot_index] = GlobalSlot::Heap(store_value_arena(Value::Object(Rc::new(RefCell::new(plot_object))), store, heap));
+
     Ok(())
 }
 
 fn register_settings_env_module(
     natives: &mut Vec<fn(&[Value]) -> Value>,
-    globals: &mut Vec<Value>,
+    globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::HashMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
 ) -> Result<(), LangError> {
     use crate::settings_env::natives;
     
@@ -392,27 +402,29 @@ fn register_settings_env_module(
     settings_env_object.insert("settings".to_string(), settings_value);
     settings_env_object.insert("Field".to_string(), Value::NativeFunction(settings_env_native_start + 2));
     
-    let settings_env_index = if let Some((&idx, _)) = global_names.iter().find(|(_, name)| name.as_str() == "settings_env") {
+    let settings_env_index = if let Some(idx) = global_index_by_name(global_names, "settings_env") {
         if idx >= globals.len() {
-            globals.resize(idx + 1, Value::Null);
+            globals.resize(idx + 1, default_global_slot());
         }
         idx
     } else {
         let idx = globals.len();
-        globals.push(Value::Null);
+        globals.push(default_global_slot());
         global_names.insert(idx, "settings_env".to_string());
         idx
     };
-    
-    globals[settings_env_index] = Value::Object(Rc::new(RefCell::new(settings_env_object)));
-    
+
+    globals[settings_env_index] = GlobalSlot::Heap(store_value_arena(Value::Object(Rc::new(RefCell::new(settings_env_object))), store, heap));
+
     Ok(())
 }
 
 fn register_uuid_module(
     natives: &mut Vec<fn(&[Value]) -> Value>,
-    globals: &mut Vec<Value>,
+    globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::HashMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
 ) -> Result<(), LangError> {
     use crate::uuid::natives;
     
@@ -450,27 +462,29 @@ fn register_uuid_module(
     uuid_object.insert("URL".to_string(), natives::uuid_namespace_url());
     uuid_object.insert("OID".to_string(), natives::uuid_namespace_oid());
     
-    let uuid_index = if let Some((&idx, _)) = global_names.iter().find(|(_, name)| name.as_str() == "uuid") {
+    let uuid_index = if let Some(idx) = global_index_by_name(global_names, "uuid") {
         if idx >= globals.len() {
-            globals.resize(idx + 1, Value::Null);
+            globals.resize(idx + 1, default_global_slot());
         }
         idx
     } else {
         let idx = globals.len();
-        globals.push(Value::Null);
+        globals.push(default_global_slot());
         global_names.insert(idx, "uuid".to_string());
         idx
     };
-    
-    globals[uuid_index] = Value::Object(Rc::new(RefCell::new(uuid_object)));
-    
+
+    globals[uuid_index] = GlobalSlot::Heap(store_value_arena(Value::Object(Rc::new(RefCell::new(uuid_object))), store, heap));
+
     Ok(())
 }
 
 fn register_database_module(
     natives: &mut Vec<fn(&[Value]) -> Value>,
-    globals: &mut Vec<Value>,
+    globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::HashMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
 ) -> Result<(), LangError> {
     use crate::database::natives;
 
@@ -501,19 +515,19 @@ fn register_database_module(
     // connect, execute, query, run are methods on engine - accessed via GetArrayElement on DatabaseEngine
     // add, get, names are methods on cluster - accessed via GetArrayElement on DatabaseCluster
 
-    let database_index = if let Some((&idx, _)) = global_names.iter().find(|(_, name)| name.as_str() == "database") {
+    let database_index = if let Some(idx) = global_index_by_name(global_names, "database") {
         if idx >= globals.len() {
-            globals.resize(idx + 1, Value::Null);
+            globals.resize(idx + 1, default_global_slot());
         }
         idx
     } else {
         let idx = globals.len();
-        globals.push(Value::Null);
+        globals.push(default_global_slot());
         global_names.insert(idx, "database".to_string());
         idx
     };
 
-    globals[database_index] = Value::Object(Rc::new(RefCell::new(database_object)));
+    globals[database_index] = GlobalSlot::Heap(store_value_arena(Value::Object(Rc::new(RefCell::new(database_object))), store, heap));
 
     Ok(())
 }

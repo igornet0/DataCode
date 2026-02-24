@@ -34,7 +34,7 @@ struct ForeignKeyInfo {
 }
 
 /// Главная функция экспорта в SQLite
-pub fn export_to_sqlite(vm: &Vm, output_path: &str) -> Result<(), String> {
+pub fn export_to_sqlite(vm: &mut Vm, output_path: &str) -> Result<(), String> {
     // Получаем все таблицы из глобальных переменных
     let tables = get_global_tables(vm)?;
     
@@ -90,29 +90,27 @@ pub fn export_to_sqlite(vm: &Vm, output_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Получить все таблицы из глобальных переменных VM
-pub fn get_global_tables(vm: &Vm) -> Result<HashMap<String, Rc<RefCell<Table>>>, String> {
+/// Получить все таблицы из глобальных переменных VM (globals are GlobalSlot)
+pub fn get_global_tables(vm: &mut crate::vm::vm::Vm) -> Result<HashMap<String, Rc<RefCell<Table>>>, String> {
+    use crate::vm::store_convert::load_value;
     let mut tables = HashMap::new();
     let globals = vm.get_globals();
     let explicit_global_names = vm.get_explicit_global_names();
-
-    // Итерируемся только по переменным, явно объявленным с ключевым словом 'global'
-    for (index, value) in globals.iter().enumerate() {
-        if let Some(_var_name) = explicit_global_names.get(&index) {
-            // Пропускаем нативные функции
-            if matches!(value, Value::NativeFunction(_) | Value::Function(_)) {
-                continue;
-            }
-
-            // Проверяем, является ли значение таблицей
-            if let Value::Table(table) = value {
-                if let Some(var_name) = explicit_global_names.get(&index) {
-                    tables.insert(var_name.clone(), table.clone());
-                }
-            }
+    let to_scan: Vec<(usize, String)> = globals
+        .iter()
+        .enumerate()
+        .filter_map(|(index, _)| explicit_global_names.get(&index).map(|name| (index, name.clone())))
+        .collect();
+    for (index, var_name) in to_scan {
+        let value_id = vm.resolve_global_to_value_id(index);
+        let value = load_value(value_id, vm.value_store(), vm.heavy_store());
+        if matches!(&value, Value::NativeFunction(_) | Value::Function(_)) {
+            continue;
+        }
+        if let Value::Table(table) = &value {
+            tables.insert(var_name, table.clone());
         }
     }
-
     Ok(tables)
 }
 
@@ -131,22 +129,20 @@ fn export_table(
     sqlite_name: &str,
     table: &Rc<RefCell<Table>>,
 ) -> SqliteResult<()> {
-    let table_ref = table.borrow();
-    
-    if table_ref.headers.is_empty() {
-        return Ok(()); // Пустая таблица, пропускаем
+    let mut table_ref = table.borrow_mut();
+    if table_ref.headers().is_empty() {
+        return Ok(());
     }
-
-    // Определяем типы колонок
-    let column_types: Vec<String> = table_ref.headers.iter()
+    let headers: Vec<String> = table_ref.headers().clone();
+    let column_types: Vec<String> = headers.iter()
         .map(|header| {
-            let column = table_ref.columns.get(header).unwrap();
+            let column = table_ref.get_column(header).unwrap();
             infer_column_type(column)
         })
         .collect();
 
     // Создаем SQL для создания таблицы
-    let columns_sql: Vec<String> = table_ref.headers.iter()
+    let columns_sql: Vec<String> = table_ref.headers().iter()
         .zip(column_types.iter())
         .map(|(header, sql_type)| {
             format!("{} {}", sanitize_column_name(header), sql_type)
@@ -162,14 +158,14 @@ fn export_table(
     conn.execute(&create_sql, [])?;
 
     // Вставляем данные
-    if !table_ref.rows.is_empty() {
-        let placeholders: Vec<String> = (0..table_ref.headers.len())
+    if !table_ref.rows_ref().unwrap().is_empty() {
+        let placeholders: Vec<String> = (0..table_ref.headers().len())
             .map(|_| "?".to_string())
             .collect();
         let insert_sql = format!(
             "INSERT INTO {} ({}) VALUES ({})",
             sqlite_name,
-            table_ref.headers.iter()
+            table_ref.headers().iter()
                 .map(|h| sanitize_column_name(h))
                 .collect::<Vec<_>>()
                 .join(", "),
@@ -178,13 +174,14 @@ fn export_table(
 
         let mut stmt = conn.prepare(&insert_sql)?;
         
-        for row in &table_ref.rows {
+        let rr = table_ref.rows_ref().unwrap();
+        for row in rr.iter() {
             // Преобразуем значения в параметры SQLite
             let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
             for value in row {
                 params_vec.push(match value {
                     Value::Number(n) => {
-                        if n.fract() == 0.0 {
+                        if (*n).fract() == 0.0 {
                             Box::new(*n as i64) as Box<dyn rusqlite::ToSql>
                         } else {
                             Box::new(*n) as Box<dyn rusqlite::ToSql>
@@ -338,13 +335,10 @@ fn detect_primary_keys(table_infos: &[TableInfo], vm: &Vm) -> Result<Vec<Primary
         if tables_with_explicit_pk.contains(&table_info.sqlite_name) {
             continue;
         }
-        
-        let table = table_info.table.borrow();
-        
-        // Проверяем каждую колонку
-        for header in &table.headers {
-            let column = table.columns.get(header).ok_or("Колонка не найдена")?;
-            
+        let mut table = table_info.table.borrow_mut();
+        let headers: Vec<String> = table.headers().clone();
+        for header in &headers {
+            let column = table.get_column(header).ok_or("Колонка не найдена")?;
             // Правило 1: Колонка с именем "id" типа Integer
             if header.to_lowercase() == "id" {
                 if is_integer_column(column) {
@@ -445,10 +439,10 @@ fn detect_foreign_keys(
     }
 
     for table_info in table_infos {
-        let table = table_info.table.borrow();
-        
-        for header in &table.headers {
-            let column = table.columns.get(header).ok_or("Колонка не найдена")?;
+        let mut table = table_info.table.borrow_mut();
+        let headers: Vec<String> = table.headers().clone();
+        for header in &headers {
+            let column = table.get_column(header).ok_or("Колонка не найдена")?;
             
             // Проверяем, является ли колонка ID-подобной
             if !is_id_like_column(header) {
@@ -648,7 +642,7 @@ fn recreate_tables_with_foreign_keys(
     let mut saved_data: HashMap<String, Vec<Vec<Value>>> = HashMap::new();
     for table_info in table_infos {
         let table = table_info.table.borrow();
-        saved_data.insert(table_info.sqlite_name.clone(), table.rows.clone());
+        saved_data.insert(table_info.sqlite_name.clone(), table.rows_ref().unwrap().to_vec());
     }
 
     // Удаляем все таблицы
@@ -666,16 +660,14 @@ fn recreate_tables_with_foreign_keys(
     // Пересоздаем таблицы с FOREIGN KEY constraints в правильном порядке
     for &table_idx in &sorted_indices {
         let table_info = &table_infos[table_idx];
-        let table = table_info.table.borrow();
-        
-        if table.headers.is_empty() {
-            continue; // Пустая таблица, пропускаем
+        let mut table = table_info.table.borrow_mut();
+        if table.headers().is_empty() {
+            continue;
         }
-
-        // Определяем типы колонок
-        let column_types: Vec<String> = table.headers.iter()
+        let headers: Vec<String> = table.headers().clone();
+        let column_types: Vec<String> = headers.iter()
             .map(|header| {
-                let column = table.columns.get(header).unwrap();
+                let column = table.get_column(header).unwrap();
                 infer_column_type(column)
             })
             .collect();
@@ -684,7 +676,7 @@ fn recreate_tables_with_foreign_keys(
         let pk_column = pk_by_table.get(&table_info.sqlite_name);
 
         // Создаем SQL для создания таблицы с FOREIGN KEY constraints
-        let mut columns_sql: Vec<String> = table.headers.iter()
+        let mut columns_sql: Vec<String> = table.headers().iter()
             .zip(column_types.iter())
             .map(|(header, sql_type)| {
                 let col_name = sanitize_column_name(header);
@@ -722,13 +714,13 @@ fn recreate_tables_with_foreign_keys(
         // Вставляем данные обратно
         if let Some(rows) = saved_data.get(&table_info.sqlite_name) {
             if !rows.is_empty() {
-                let placeholders: Vec<String> = (0..table.headers.len())
+                let placeholders: Vec<String> = (0..table.headers().len())
                     .map(|_| "?".to_string())
                     .collect();
                 let insert_sql = format!(
                     "INSERT INTO {} ({}) VALUES ({})",
                     table_info.sqlite_name,
-                    table.headers.iter()
+                    table.headers().iter()
                         .map(|h| sanitize_column_name(h))
                         .collect::<Vec<_>>()
                         .join(", "),
@@ -844,7 +836,7 @@ fn create_indexes(
 /// Создание таблицы метаданных
 fn create_metadata_table(
     conn: &Connection,
-    vm: &Vm,
+    vm: &mut crate::vm::vm::Vm,
     _tables: &HashMap<String, Rc<RefCell<Table>>>,
 ) -> SqliteResult<()> {
     // Создаем таблицу метаданных
@@ -864,6 +856,11 @@ fn create_metadata_table(
 
     let globals = vm.get_globals();
     let explicit_global_names = vm.get_explicit_global_names();
+    let to_export: Vec<(usize, String)> = globals
+        .iter()
+        .enumerate()
+        .filter_map(|(index, _)| explicit_global_names.get(&index).map(|name| (index, name.clone())))
+        .collect();
     let created_at = Utc::now().to_rfc3339();
 
     let mut stmt = conn.prepare(
@@ -872,23 +869,20 @@ fn create_metadata_table(
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)"
     )?;
 
-    // Добавляем информацию только о переменных, явно объявленных с ключевым словом 'global'
-    for (index, value) in globals.iter().enumerate() {
-        if let Some(var_name) = explicit_global_names.get(&index) {
-            // Пропускаем нативные функции
-            if matches!(value, Value::NativeFunction(_) | Value::Function(_)) {
+    for (index, var_name) in to_export {
+            let value_id = vm.resolve_global_to_value_id(index);
+            let value = crate::vm::store_convert::load_value(value_id, vm.value_store(), vm.heavy_store());
+            if matches!(&value, Value::NativeFunction(_) | Value::Function(_)) {
                 continue;
             }
-
-            let var_type = get_value_type_name(value);
-            let (table_name, row_count, column_count) = if let Value::Table(table) = value {
+            let var_type = get_value_type_name(&value);
+            let (table_name, row_count, column_count) = if let Value::Table(table) = &value {
                 let table_ref = table.borrow();
-                let sqlite_name = sanitize_table_name(var_name);
+                let sqlite_name = sanitize_table_name(&var_name);
                 (Some(sqlite_name), Some(table_ref.len() as i64), Some(table_ref.column_count() as i64))
             } else {
                 (None, None, None)
             };
-
             let value_str = value.to_string();
             let description = None::<String>; // Опциональное описание
 
@@ -902,7 +896,6 @@ fn create_metadata_table(
                 description,
                 value_str
             ])?;
-        }
     }
 
     Ok(())

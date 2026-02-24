@@ -559,5 +559,83 @@ mod tests {
         "#;
         assert_number_result(source, 3.0);
     }
+
+    /// Reused VM: after M calls to call_function_by_index with reset after each, store sizes stay bounded (no leak).
+    #[test]
+    fn test_reused_vm_store_bounded_after_reset() {
+        use data_code::run_with_vm_and_path;
+
+        let source = "fn handler() { 1 }";
+        let (_val, mut vm) = run_with_vm_and_path(source, None, None).expect("run");
+        let handler_idx = vm
+            .get_functions()
+            .iter()
+            .position(|f| f.name == "handler")
+            .expect("handler function");
+        const M: usize = 100;
+        for _ in 0..M {
+            vm.call_function_by_index(handler_idx, &[]).expect("call");
+            vm.reset_stores_and_globals_for_stateless();
+        }
+        // After reset: value_store has 1 (Null) + function globals only; heavy_store empty.
+        assert!(
+            vm.value_store().len() < 200,
+            "value_store should stay bounded after {} resets, got {}",
+            M,
+            vm.value_store().len()
+        );
+        assert_eq!(
+            vm.heavy_store().len(),
+            0,
+            "heavy_store should be empty after reset"
+        );
+    }
+
+    /// Stress: repeated StoreGlobal/LoadGlobal with arrays and tables; then multiple run+reset cycles to exercise arena recycling and Inline→Heap cache.
+    #[test]
+    fn test_global_arrays_tables_stress_and_arena_recycling() {
+        use data_code::run_with_vm_and_path;
+
+        // 1) Single run: many global array assignments and reads (Inline cache + arena).
+        let source_arrays = r#"
+            global arr = [1, 2, 3]
+            let n = 0
+            let i = 0
+            while i < 50 {
+                arr = [i, i+1, i+2]
+                n = arr[0] + len(arr)
+                i = i + 1
+            }
+            arr[0] + len(arr)
+        "#;
+        let result = run(source_arrays).expect("run");
+        if let Value::Number(x) = result {
+            assert!(x >= 1.0 && x <= 200.0, "expected reasonable sum, got {}", x);
+        } else {
+            panic!("expected Number, got {:?}", result);
+        }
+
+        // 2) Multiple run+reset cycles with script that creates globals (arrays): exercise arena chunk recycling.
+        let source_with_globals = r#"
+            global g = [10, 20]
+            global h = [30, 40]
+            g[0] + h[0]
+        "#;
+        let (_val, mut vm) = run_with_vm_and_path(source_with_globals, None, None).expect("run");
+        const CYCLES: usize = 30;
+        for _ in 0..CYCLES {
+            let (v, _) = run_with_vm_and_path(source_with_globals, None, Some(&mut vm)).expect("run");
+            if let Value::Number(n) = v {
+                assert_eq!(n, 40.0, "g[0]+h[0] = 10+30");
+            }
+            vm.reset_stores_and_globals_for_stateless();
+        }
+        // Store should stay bounded (recycling keeps chunk count under control).
+        assert!(
+            vm.value_store().len() < 500,
+            "value_store bounded after {} reset cycles",
+            CYCLES
+        );
+    }
 }
 

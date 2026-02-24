@@ -20,7 +20,7 @@ print("Размер тестового набора: ", ml.dataset_features(data
 #  Примечание: Softmax встроен в операцию CrossEntropy loss, поэтому не нужен в Sequential
 
 #  Создание нейронной сети из Sequential
-model_path = path("cpu_model_mnist.nn")
+model_path = path("model_mnist_sh.nn")
 
 if model_path.exists {
     print("Загрузка модели из - ", model_path)

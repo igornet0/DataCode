@@ -343,29 +343,26 @@ fn compile_nn_method(
     } else if method == "train" {
         // Разрешаем именованные аргументы для train метода
         let resolved_args = args::resolve_function_args("nn_train", args, None, line)?;
-        
-        // Компилируем разрешенные аргументы в правильном порядке
-        for arg in &resolved_args {
+        // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
+        for arg in resolved_args.iter().skip(1) {
             match arg {
                 Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                 Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
             }
         }
-        
-        resolved_args.len()
+        // Всего аргументов на стеке: 1 receiver + (resolved_args.len() - 1). Call(arity) принимает arity = это число; мы передаём actual_arg_count+1 в Call, значит actual_arg_count = resolved_args.len() - 1.
+        resolved_args.len() - 1
     } else if method == "train_sh" {
         // Разрешаем именованные аргументы для train_sh метода
         let resolved_args = args::resolve_function_args("nn_train_sh", args, None, line)?;
-        
-        // Компилируем разрешенные аргументы в правильном порядке
-        for arg in &resolved_args {
+        // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
+        for arg in resolved_args.iter().skip(1) {
             match arg {
                 Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                 Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
             }
         }
-        
-        resolved_args.len()
+        resolved_args.len() - 1
     } else {
         // Для device и save компилируем аргументы
         if args.len() != 1 {

@@ -50,12 +50,12 @@ pub fn native_len(args: &[Value]) -> Value {
             Value::Table(table) => Value::Number(table.borrow().len() as f64),
             Value::Object(map_rc) => Value::Number(map_rc.borrow().len() as f64),
             Value::ColumnReference { table, column_name } => {
-                let table_ref = table.borrow();
-                if let Some(column) = table_ref.get_column(column_name) {
-                    Value::Number(column.len() as f64)
-                } else {
-                    Value::Null
-                }
+                crate::vm::vm::with_current_stores(|_store, _heap| {
+                    let t = table.borrow();
+                    crate::vm::table_ops::column_len(&*t, column_name)
+                        .map(|len| Value::Number(len as f64))
+                        .unwrap_or(Value::Null)
+                })
             },
             Value::Dataset(dataset) => {
                 let batch_size = dataset.borrow().batch_size();

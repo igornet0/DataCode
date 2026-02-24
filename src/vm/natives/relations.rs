@@ -1,22 +1,25 @@
 // Relations and primary keys native functions
+//
+// When VM_CALL_CONTEXT is set, natives push to VM-owned pending_relations/pending_primary_keys
+// (no RefCell on hot path). Fallback to thread-local RELATIONS/PRIMARY_KEYS when VM context
+// is not set (e.g. tests). See docs/gil_bottlenecks.md.
 
 use crate::common::value::Value;
 use crate::common::table::Table;
+use crate::vm::vm::VM_CALL_CONTEXT;
 use std::rc::Rc;
 use std::cell::RefCell;
 
-// Thread-local storage для хранения временных связей, созданных через relate()
+// Thread-local fallback when VM_CALL_CONTEXT is not set (e.g. standalone tests).
 thread_local! {
-    static RELATIONS: RefCell<Vec<(*const RefCell<Table>, String, *const RefCell<Table>, String)>> = RefCell::new(Vec::new());
+    static RELATIONS: RefCell<Vec<(Rc<RefCell<Table>>, String, Rc<RefCell<Table>>, String)>> = RefCell::new(Vec::new());
+}
+thread_local! {
+    static PRIMARY_KEYS: RefCell<Vec<(Rc<RefCell<Table>>, String)>> = RefCell::new(Vec::new());
 }
 
-// Thread-local storage для хранения временных первичных ключей, созданных через primary_key()
-thread_local! {
-    static PRIMARY_KEYS: RefCell<Vec<(*const RefCell<Table>, String)>> = RefCell::new(Vec::new());
-}
-
-/// Получить все временные связи (для использования в VM)
-pub fn take_relations() -> Vec<(*const RefCell<Table>, String, *const RefCell<Table>, String)> {
+/// Take relations from thread-local (fallback when executor uses VM-owned pending; kept for tests).
+pub fn take_relations() -> Vec<(Rc<RefCell<Table>>, String, Rc<RefCell<Table>>, String)> {
     RELATIONS.with(|r| {
         let mut relations = r.borrow_mut();
         let result = relations.clone();
@@ -25,8 +28,8 @@ pub fn take_relations() -> Vec<(*const RefCell<Table>, String, *const RefCell<Ta
     })
 }
 
-/// Получить все временные первичные ключи (для использования в VM)
-pub fn take_primary_keys() -> Vec<(*const RefCell<Table>, String)> {
+/// Take primary keys from thread-local (fallback; kept for tests).
+pub fn take_primary_keys() -> Vec<(Rc<RefCell<Table>>, String)> {
     PRIMARY_KEYS.with(|pk| {
         let mut primary_keys = pk.borrow_mut();
         let result = primary_keys.clone();
@@ -51,17 +54,12 @@ pub fn native_relate(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    // Проверяем совместимость типов колонок (оба должны быть одинакового типа)
-    let table1_ref = col1.0.borrow();
-    let table2_ref = col2.0.borrow();
-    
-    let col1_data = match table1_ref.get_column(col1.1) {
-        Some(col) => col,
+    let col1_data = match col1.0.borrow_mut().get_column(col1.1) {
+        Some(col) => col.clone(),
         None => return Value::Null,
     };
-    
-    let col2_data = match table2_ref.get_column(col2.1) {
-        Some(col) => col,
+    let col2_data = match col2.0.borrow_mut().get_column(col2.1) {
+        Some(col) => col.clone(),
         None => return Value::Null,
     };
 
@@ -83,15 +81,20 @@ pub fn native_relate(args: &[Value]) -> Value {
         }
     }
 
-    // Сохраняем связь в thread-local storage
-    RELATIONS.with(|r| {
-        let mut relations = r.borrow_mut();
-        relations.push((
-            Rc::as_ptr(col1.0),
-            col1.1.clone(),
-            Rc::as_ptr(col2.0),
-            col2.1.clone(),
-        ));
+    let relation = (
+        col1.0.clone(),
+        col1.1.clone(),
+        col2.0.clone(),
+        col2.1.clone(),
+    );
+    VM_CALL_CONTEXT.with(|ctx| {
+        if let Some(ptr) = *ctx.borrow() {
+            unsafe {
+                (*ptr).pending_relations.push(relation);
+            }
+        } else {
+            RELATIONS.with(|r| r.borrow_mut().push(relation));
+        }
     });
 
     Value::Null
@@ -108,19 +111,19 @@ pub fn native_primary_key(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    // Проверяем, что колонка существует
-    let table_ref = col.0.borrow();
-    if table_ref.get_column(col.1).is_none() {
+    if col.0.borrow_mut().get_column(col.1).is_none() {
         return Value::Null;
     }
 
-    // Сохраняем первичный ключ в thread-local storage
-    PRIMARY_KEYS.with(|pk| {
-        let mut primary_keys = pk.borrow_mut();
-        primary_keys.push((
-            Rc::as_ptr(col.0),
-            col.1.clone(),
-        ));
+    let pk_entry = (col.0.clone(), col.1.clone());
+    VM_CALL_CONTEXT.with(|ctx| {
+        if let Some(ptr) = *ctx.borrow() {
+            unsafe {
+                (*ptr).pending_primary_keys.push(pk_entry);
+            }
+        } else {
+            PRIMARY_KEYS.with(|pk| pk.borrow_mut().push(pk_entry));
+        }
     });
 
     Value::Null

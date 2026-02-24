@@ -1,10 +1,8 @@
 // Native functions for plot module
 
 use crate::common::value::Value;
-use crate::plot::{Image, Window, Figure, GuiCommand, system, PlotWindowHandle};
+use crate::plot::{Image, Window, Figure, GuiCommand, system, PlotContext, PlotWindowHandle};
 use crate::plot::command::{ChartData as CommandChartData, ChartType as CommandChartType, FigureData, AxisData};
-use crate::plot::window::ImageViewState;
-use crate::plot::renderer::Renderer;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -12,102 +10,26 @@ use winit::window::{WindowId, Icon};
 use std::path::Path;
 use std::sync::{Arc, Mutex, Condvar, mpsc};
 
-// Note: WindowHandle was removed as it's no longer needed
-
-// Note: Window icon is set via WindowBuilder in main.rs
-
-// Thread-local storage for EventLoop and window management
-thread_local! {
-    static WINDOW_DATA: RefCell<HashMap<WindowId, WindowData>> = RefCell::new(HashMap::new());
-    static RENDERERS: RefCell<HashMap<WindowId, Renderer>> = RefCell::new(HashMap::new());
-    static IMAGE_VIEW_STATES: RefCell<HashMap<WindowId, ImageViewState>> = RefCell::new(HashMap::new());
-    static WINDOW_IMAGES: RefCell<HashMap<WindowId, Rc<RefCell<Image>>>> = RefCell::new(HashMap::new());
-    static CURSOR_POSITIONS: RefCell<HashMap<WindowId, (f32, f32)>> = RefCell::new(HashMap::new());
-    static PLOT_STATE: RefCell<PlotState> = RefCell::new(PlotState {
-        xlabel: None,
-        ylabel: None,
-        line_data: Vec::new(),
-        bar_data: Vec::new(),
-        pie_data: Vec::new(),
-        heatmap_data: Vec::new(),
-    });
-    static WINDOW_CHART_DATA: RefCell<HashMap<WindowId, ChartData>> = RefCell::new(HashMap::new());
-    static WINDOW_POINT_STATES: RefCell<HashMap<WindowId, PointState>> = RefCell::new(HashMap::new());
-}
-
-// Thread-local storage for window management
-// Note: Windows are stored in main thread's thread-local storage
-// Runtime thread uses WindowId for communication
-thread_local! {
-    static ACTIVE_WINDOWS: RefCell<HashMap<WindowId, Rc<RefCell<Window>>>> = RefCell::new(HashMap::new());
-    static CLOSED_WINDOWS: RefCell<HashSet<WindowId>> = RefCell::new(HashSet::new());
-}
-
-// Helper functions to access windows from main.rs (main thread can use thread-local)
-pub fn with_active_windows<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut HashMap<WindowId, Rc<RefCell<Window>>>) -> R,
-{
-    ACTIVE_WINDOWS.with(|windows| {
-        f(&mut *windows.borrow_mut())
-    })
-}
-
-pub fn with_closed_windows<F, R>(f: F) -> R
-where
-    F: FnOnce(&mut HashSet<WindowId>) -> R,
-{
-    CLOSED_WINDOWS.with(|closed| {
-        f(&mut *closed.borrow_mut())
-    })
-}
+// Plot state is in PlotContext (VM-owned, set thread-local at run()). No global RefCells.
 
 // Helper function to get PlotSystem (panics if not initialized)
 fn get_plot_system() -> system::PlotSystem {
     system::get_plot_system()
 }
 
-// EventLoop is now created in main.rs - this function is no longer needed
-
-// WindowData - kept for thread-local storage (temporary, will be removed)
-#[allow(dead_code)]
-struct WindowData {
-    renderer: Option<Renderer>,
+// Helper functions: delegate to PlotContext (set by VM at run()). Panic if context not set.
+pub fn with_active_windows<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut HashMap<WindowId, Rc<RefCell<Window>>>) -> R,
+{
+    PlotContext::with_current(|ctx| f(&mut ctx.active_windows))
 }
 
-// ChartType and ChartData - kept for thread-local storage compatibility
-// Using command types for new code, but keeping these for thread-local
-#[allow(dead_code)]
-type ChartType = CommandChartType;
-#[allow(dead_code)]
-type ChartData = CommandChartData;
-
-struct PlotState {
-    xlabel: Option<String>,
-    ylabel: Option<String>,
-    line_data: Vec<(Vec<f64>, Vec<f64>, bool, usize, usize, u32)>, // Множество линий для одного графика: (x_data, y_data, show_points, point_size, line_width, color)
-    bar_data: Vec<(Vec<String>, Vec<f64>, u32)>, // Данные столбчатых диаграмм: (x_labels, y_data, color)
-    pie_data: Vec<(Vec<String>, Vec<f64>, u32)>, // Данные круговых диаграмм: (x_labels, y_data, color)
-    heatmap_data: Vec<(Vec<Vec<f64>>, Option<f64>, Option<f64>, String)>, // Данные тепловых карт: (data, min, max, palette)
-}
-
-// ChartData removed - using command::ChartData instead
-
-// PointState - kept for potential future use
-#[allow(dead_code)]
-struct PointState {
-    hovered: Option<(usize, usize)>, // (line_index, point_index)
-    selected: Option<(usize, usize)>, // (line_index, point_index)
-}
-
-impl PointState {
-    #[allow(dead_code)]
-    fn new() -> Self {
-        Self {
-            hovered: None,
-            selected: None,
-        }
-    }
+pub fn with_closed_windows<F, R>(f: F) -> R
+where
+    F: FnOnce(&mut HashSet<WindowId>) -> R,
+{
+    PlotContext::with_current(|ctx| f(&mut ctx.closed_windows))
 }
 
 /// Load window icon from file
@@ -330,9 +252,10 @@ pub fn native_window_draw(args: &[Value]) -> Value {
         Value::Null
 }
 
-/// Wait for window to close (blocking)
+/// Wait for window to close (blocking).
 /// plot.wait(window) -> Null
-/// Runtime waits for GUI thread to notify via Condvar
+/// **Blocks the runtime thread** until the window is closed (Condvar::wait). While waiting,
+/// the VM does not execute other code. See docs/gil_bottlenecks.md.
 pub fn native_plot_wait(args: &[Value]) -> Value {
     if args.len() != 1 {
         return Value::Null;
@@ -347,9 +270,11 @@ pub fn native_plot_wait(args: &[Value]) -> Value {
 
     // Create a waiter for this window's close event
     let waiter = Arc::new((Mutex::new(false), Condvar::new()));
-    
-    // Register waiter in PlotSystem (accessible from main thread)
-    system::PlotSystem::register_waiter(window_id, waiter.clone());
+    // Send waiter to event loop (no global WINDOW_WAITERS Mutex)
+    let _ = get_plot_system().proxy().send_event(GuiCommand::RegisterWaiter {
+        window_id,
+        waiter: waiter.clone(),
+    });
 
     // Event loop is running in main thread - just wait for window to close
         let (lock, cvar) = &*waiter;
@@ -375,28 +300,14 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         }
     }
 
-    // Check if we have pie data in plot state
-    let has_pie_data = PLOT_STATE.with(|state| {
-        let plot_state = state.borrow();
-        !plot_state.pie_data.is_empty()
-    });
-
-    // Check if we have bar data in plot state
-    let has_bar_data = PLOT_STATE.with(|state| {
-        let plot_state = state.borrow();
-        !plot_state.bar_data.is_empty()
-    });
-
-    // Check if we have heatmap data in plot state
-    let has_heatmap_data = PLOT_STATE.with(|state| {
-        let plot_state = state.borrow();
-        !plot_state.heatmap_data.is_empty()
-    });
-
-    // Check if we have line data in plot state
-    let has_line_data = PLOT_STATE.with(|state| {
-        let plot_state = state.borrow();
-        !plot_state.line_data.is_empty()
+    // Check if we have pie/bar/heatmap/line data in plot state (from PlotContext)
+    let (has_pie_data, has_bar_data, has_heatmap_data, has_line_data) = PlotContext::with_current(|ctx| {
+        (
+            !ctx.plot_state.pie_data.is_empty(),
+            !ctx.plot_state.bar_data.is_empty(),
+            !ctx.plot_state.heatmap_data.is_empty(),
+            !ctx.plot_state.line_data.is_empty(),
+        )
     });
 
     // If we have pie data and no image arguments, render pie chart
@@ -420,21 +331,19 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         };
 
         // Get plot state data
-        let (xlabel, ylabel, pie_data) = PLOT_STATE.with(|state| {
-            let plot_state = state.borrow();
+        let (xlabel, ylabel, pie_data) = PlotContext::with_current(|ctx| {
             (
-                plot_state.xlabel.clone(),
-                plot_state.ylabel.clone(),
-                plot_state.pie_data.clone(),
+                ctx.plot_state.xlabel.clone(),
+                ctx.plot_state.ylabel.clone(),
+                ctx.plot_state.pie_data.clone(),
             )
         });
 
         // Clear plot state after reading
-        PLOT_STATE.with(|state| {
-            let mut plot_state = state.borrow_mut();
-            plot_state.xlabel = None;
-            plot_state.ylabel = None;
-            plot_state.pie_data.clear();
+        PlotContext::with_current(|ctx| {
+            ctx.plot_state.xlabel = None;
+            ctx.plot_state.ylabel = None;
+            ctx.plot_state.pie_data.clear();
         });
 
         // Check if we have pie data
@@ -519,21 +428,19 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         };
 
         // Get plot state data
-        let (xlabel, ylabel, bar_data) = PLOT_STATE.with(|state| {
-            let plot_state = state.borrow();
+        let (xlabel, ylabel, bar_data) = PlotContext::with_current(|ctx| {
             (
-                plot_state.xlabel.clone(),
-                plot_state.ylabel.clone(),
-                plot_state.bar_data.clone(),
+                ctx.plot_state.xlabel.clone(),
+                ctx.plot_state.ylabel.clone(),
+                ctx.plot_state.bar_data.clone(),
             )
         });
 
         // Clear plot state after reading
-        PLOT_STATE.with(|state| {
-            let mut plot_state = state.borrow_mut();
-            plot_state.xlabel = None;
-            plot_state.ylabel = None;
-            plot_state.bar_data.clear();
+        PlotContext::with_current(|ctx| {
+            ctx.plot_state.xlabel = None;
+            ctx.plot_state.ylabel = None;
+            ctx.plot_state.bar_data.clear();
         });
 
         // Check if we have bar data
@@ -616,21 +523,19 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         };
 
         // Get plot state data
-        let (xlabel, ylabel, heatmap_data) = PLOT_STATE.with(|state| {
-            let plot_state = state.borrow();
+        let (xlabel, ylabel, heatmap_data) = PlotContext::with_current(|ctx| {
             (
-                plot_state.xlabel.clone(),
-                plot_state.ylabel.clone(),
-                plot_state.heatmap_data.clone(),
+                ctx.plot_state.xlabel.clone(),
+                ctx.plot_state.ylabel.clone(),
+                ctx.plot_state.heatmap_data.clone(),
             )
         });
 
         // Clear plot state after reading
-        PLOT_STATE.with(|state| {
-            let mut plot_state = state.borrow_mut();
-            plot_state.xlabel = None;
-            plot_state.ylabel = None;
-            plot_state.heatmap_data.clear();
+        PlotContext::with_current(|ctx| {
+            ctx.plot_state.xlabel = None;
+            ctx.plot_state.ylabel = None;
+            ctx.plot_state.heatmap_data.clear();
         });
 
         // Check if we have heatmap data
@@ -713,21 +618,19 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         };
 
         // Get plot state data
-        let (xlabel, ylabel, line_data) = PLOT_STATE.with(|state| {
-            let plot_state = state.borrow();
+        let (xlabel, ylabel, line_data) = PlotContext::with_current(|ctx| {
             (
-                plot_state.xlabel.clone(),
-                plot_state.ylabel.clone(),
-                plot_state.line_data.clone(),
+                ctx.plot_state.xlabel.clone(),
+                ctx.plot_state.ylabel.clone(),
+                ctx.plot_state.line_data.clone(),
             )
         });
 
         // Clear plot state after reading
-        PLOT_STATE.with(|state| {
-            let mut plot_state = state.borrow_mut();
-            plot_state.xlabel = None;
-            plot_state.ylabel = None;
-            plot_state.line_data.clear();
+        PlotContext::with_current(|ctx| {
+            ctx.plot_state.xlabel = None;
+            ctx.plot_state.ylabel = None;
+            ctx.plot_state.line_data.clear();
         });
 
         // Check if we have line data
@@ -1431,9 +1334,8 @@ pub fn native_plot_xlabel(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    PLOT_STATE.with(|state| {
-        let mut plot_state = state.borrow_mut();
-        plot_state.xlabel = Some(label);
+    PlotContext::with_current(|ctx| {
+        ctx.plot_state.xlabel = Some(label);
     });
 
     Value::Null
@@ -1458,9 +1360,8 @@ pub fn native_plot_ylabel(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    PLOT_STATE.with(|state| {
-        let mut plot_state = state.borrow_mut();
-        plot_state.ylabel = Some(label);
+    PlotContext::with_current(|ctx| {
+        ctx.plot_state.ylabel = Some(label);
     });
 
     Value::Null
@@ -1643,9 +1544,8 @@ pub fn native_plot_line(args: &[Value]) -> Value {
         }
     }
     // Add line data to plot state
-    PLOT_STATE.with(|state| {
-        let mut plot_state = state.borrow_mut();
-        plot_state.line_data.push((x_array, y_array, show_points, point_size, line_width, color));
+    PlotContext::with_current(|ctx| {
+        ctx.plot_state.line_data.push((x_array, y_array, show_points, point_size, line_width, color));
     });
 
     Value::Null
@@ -1742,9 +1642,8 @@ pub fn native_plot_bar(args: &[Value]) -> Value {
     }
 
     // Add bar data to plot state
-    PLOT_STATE.with(|state| {
-        let mut plot_state = state.borrow_mut();
-        plot_state.bar_data.push((x_labels, y_array, color));
+    PlotContext::with_current(|ctx| {
+        ctx.plot_state.bar_data.push((x_labels, y_array, color));
     });
 
     Value::Null
@@ -1841,9 +1740,8 @@ pub fn native_plot_pie(args: &[Value]) -> Value {
     }
 
     // Add pie data to plot state
-    PLOT_STATE.with(|state| {
-        let mut plot_state = state.borrow_mut();
-        plot_state.pie_data.push((x_labels, y_array, color));
+    PlotContext::with_current(|ctx| {
+        ctx.plot_state.pie_data.push((x_labels, y_array, color));
     });
 
     Value::Null
@@ -1969,9 +1867,8 @@ pub fn native_plot_heatmap(args: &[Value]) -> Value {
     }
 
     // Add heatmap data to plot state
-    PLOT_STATE.with(|state| {
-        let mut plot_state = state.borrow_mut();
-        plot_state.heatmap_data.push((heatmap_data, min_val, max_val, palette));
+    PlotContext::with_current(|ctx| {
+        ctx.plot_state.heatmap_data.push((heatmap_data, min_val, max_val, palette));
     });
 
     Value::Null

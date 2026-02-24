@@ -7,6 +7,17 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 
+/// If table is View, materialize via with_current_stores so join can use rows_ref(). Otherwise return as-is.
+fn ensure_owned_table(table: Table) -> Table {
+    if !table.is_view() {
+        return table;
+    }
+    crate::vm::vm::with_current_stores(|store, heap| {
+        let rows = crate::vm::table_ops::materialize_rows(&table, store, heap);
+        Table::from_data(rows, Some(table.headers().to_vec()))
+    })
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum JoinType {
     Inner,
@@ -36,8 +47,7 @@ use super::table::compare_values;
 fn parse_join_keys(value: &Value, left_table: &Table, right_table: &Table) -> Result<Vec<JoinKey>, String> {
     match value {
         Value::String(col_name) => {
-            // Автоматическое сопоставление: ищем колонку с таким именем в обеих таблицах
-            if left_table.get_column(col_name).is_some() && right_table.get_column(col_name).is_some() {
+            if left_table.has_column(col_name) && right_table.has_column(col_name) {
                 Ok(vec![JoinKey {
                     left_col: col_name.clone(),
                     right_col: col_name.clone(),
@@ -56,10 +66,10 @@ fn parse_join_keys(value: &Value, left_table: &Table, right_table: &Table) -> Re
             // интерпретируем их как пару [left_col, right_col]
             if arr_ref.len() == 2 {
                 if let (Value::String(left_col), Value::String(right_col)) = (&arr_ref[0], &arr_ref[1]) {
-                    if left_table.get_column(left_col).is_none() {
+                    if !left_table.has_column(left_col) {
                         return Err(format!("Column '{}' not found in left table", left_col));
                     }
-                    if right_table.get_column(right_col).is_none() {
+                    if !right_table.has_column(right_col) {
                         return Err(format!("Column '{}' not found in right table", right_col));
                     }
                     return Ok(vec![JoinKey {
@@ -86,10 +96,10 @@ fn parse_join_keys(value: &Value, left_table: &Table, right_table: &Table) -> Re
                             _ => return Err("Join key must be a string".to_string()),
                         };
                         
-                        if left_table.get_column(&left_col).is_none() {
+                        if !left_table.has_column(&left_col) {
                             return Err(format!("Column '{}' not found in left table", left_col));
                         }
-                        if right_table.get_column(&right_col).is_none() {
+                        if !right_table.has_column(&right_col) {
                             return Err(format!("Column '{}' not found in right table", right_col));
                         }
                         
@@ -97,7 +107,7 @@ fn parse_join_keys(value: &Value, left_table: &Table, right_table: &Table) -> Re
                     }
                     Value::String(col_name) => {
                         // Одиночная строка в массиве - автоматическое сопоставление
-                        if left_table.get_column(col_name).is_some() && right_table.get_column(col_name).is_some() {
+                        if left_table.has_column(col_name) && right_table.has_column(col_name) {
                             keys.push(JoinKey {
                                 left_col: col_name.clone(),
                                 right_col: col_name.clone(),
@@ -141,12 +151,12 @@ fn build_right_hash_table(
 ) -> HashMap<KeyHash, Vec<usize>> {
     let mut hash_map = HashMap::new();
     
-    for (row_idx, row) in right_table.rows.iter().enumerate() {
+    for (row_idx, row) in right_table.rows_ref().unwrap().iter().enumerate() {
         let mut key_values = Vec::new();
         let mut valid_key = true;
         
         for key in keys {
-            if let Some(col_idx) = right_table.headers.iter().position(|h| h == &key.right_col) {
+            if let Some(col_idx) = right_table.headers().iter().position(|h| h == &key.right_col) {
                 if col_idx < row.len() {
                     let val = &row[col_idx];
                     // Если nulls_equal=false и значение NULL, пропускаем эту строку
@@ -179,7 +189,7 @@ fn extract_left_key(left_row: &[Value], keys: &[JoinKey], left_table: &Table) ->
     let mut key_values = Vec::new();
     
     for key in keys {
-        if let Some(col_idx) = left_table.headers.iter().position(|h| h == &key.left_col) {
+        if let Some(col_idx) = left_table.headers().iter().position(|h| h == &key.left_col) {
             if col_idx < left_row.len() {
                 key_values.push(left_row[col_idx].clone());
             } else {
@@ -208,22 +218,22 @@ fn perform_inner_join(
     let mut result_headers = Vec::new();
     
     // Создаем заголовки с учетом алиасов таблиц
-    let left_headers_set: HashSet<String> = left_table.headers.iter().cloned().collect();
-    let right_headers_set: HashSet<String> = right_table.headers.iter().cloned().collect();
+    let left_headers_set: HashSet<String> = left_table.headers().iter().cloned().collect();
+    let right_headers_set: HashSet<String> = right_table.headers().iter().cloned().collect();
     
-    let mut left_headers = apply_column_aliases(&left_table.headers, left_alias, &right_headers_set);
-    let mut right_headers = apply_column_aliases(&right_table.headers, right_alias, &left_headers_set);
+    let mut left_headers = apply_column_aliases(&left_table.headers(), left_alias, &right_headers_set);
+    let mut right_headers = apply_column_aliases(&right_table.headers(), right_alias, &left_headers_set);
     
     result_headers.append(&mut left_headers);
     result_headers.append(&mut right_headers);
     
     // Проходим по левой таблице и ищем совпадения
-    for left_row in left_table.rows.iter() {
+    for left_row in left_table.rows_ref().unwrap().iter() {
         if let Some(left_key) = extract_left_key(left_row, keys, left_table) {
             if let Some(right_indices) = right_hash.get(&left_key) {
                 for &right_idx in right_indices {
                     if let Some(right_row) = right_table.get_row(right_idx) {
-                        let mut new_row = left_row.clone();
+                        let mut new_row = left_row.to_vec();
                         new_row.extend_from_slice(right_row);
                         result_rows.push(new_row);
                     }
@@ -250,39 +260,40 @@ fn perform_left_join(
     let mut result_headers = Vec::new();
     
     // Создаем заголовки с учетом алиасов таблиц
-    let left_headers_set: HashSet<String> = left_table.headers.iter().cloned().collect();
-    let right_headers_set: HashSet<String> = right_table.headers.iter().cloned().collect();
+    let left_headers_set: HashSet<String> = left_table.headers().iter().cloned().collect();
+    let right_headers_set: HashSet<String> = right_table.headers().iter().cloned().collect();
     
-    let mut left_headers = apply_column_aliases(&left_table.headers, left_alias, &right_headers_set);
-    let mut right_headers = apply_column_aliases(&right_table.headers, right_alias, &left_headers_set);
+    let mut left_headers = apply_column_aliases(&left_table.headers(), left_alias, &right_headers_set);
+    let mut right_headers = apply_column_aliases(&right_table.headers(), right_alias, &left_headers_set);
     
     result_headers.append(&mut left_headers);
     result_headers.append(&mut right_headers);
     
     // Создаем NULL-строку для правой таблицы
-    let null_right_row: Vec<Value> = (0..right_table.headers.len()).map(|_| Value::Null).collect();
+    let null_right_row: Vec<Value> = (0..right_table.headers().len()).map(|_| Value::Null).collect();
     
     // Проходим по левой таблице
-    for left_row in left_table.rows.iter() {
+    let left_rr = left_table.rows_ref().unwrap();
+    for left_row in left_rr.iter() {
         if let Some(left_key) = extract_left_key(left_row, keys, left_table) {
             if let Some(right_indices) = right_hash.get(&left_key) {
                 // Есть совпадения - добавляем все совпадения
                 for &right_idx in right_indices {
                     if let Some(right_row) = right_table.get_row(right_idx) {
-                        let mut new_row = left_row.clone();
+                        let mut new_row = left_row.to_vec();
                         new_row.extend_from_slice(right_row);
                         result_rows.push(new_row);
                     }
                 }
             } else {
                 // Нет совпадений - добавляем строку с NULL справа
-                let mut new_row = left_row.clone();
+                let mut new_row = left_row.to_vec();
                 new_row.extend_from_slice(&null_right_row);
                 result_rows.push(new_row);
             }
         } else {
             // Невалидный ключ - добавляем строку с NULL справа
-            let mut new_row = left_row.clone();
+            let mut new_row = left_row.to_vec();
             new_row.extend_from_slice(&null_right_row);
             result_rows.push(new_row);
         }
@@ -313,25 +324,26 @@ fn perform_right_join(
         let table_ref = t.borrow();
         // Меняем порядок заголовков: сначала right, потом left
         let mut new_headers = Vec::new();
-        let right_count = right_table.headers.len();
-        let left_count = left_table.headers.len();
+        let right_count = right_table.headers().len();
+        let left_count = left_table.headers().len();
         
         // Сначала заголовки правой таблицы
         for i in 0..right_count {
-            if i < table_ref.headers.len() {
-                new_headers.push(table_ref.headers[i].clone());
+            if i < table_ref.headers().len() {
+                new_headers.push(table_ref.headers()[i].clone());
             }
         }
         // Потом заголовки левой таблицы
         for i in right_count..(right_count + left_count) {
-            if i < table_ref.headers.len() {
-                new_headers.push(table_ref.headers[i].clone());
+            if i < table_ref.headers().len() {
+                new_headers.push(table_ref.headers()[i].clone());
             }
         }
         
         // Переставляем данные в строках тоже
         let mut new_rows = Vec::new();
-        for row in &table_ref.rows {
+        let rr = table_ref.rows_ref().unwrap();
+        for row in rr.iter() {
             let mut new_row = Vec::new();
             // Сначала данные правой таблицы
             for i in 0..right_count {
@@ -371,49 +383,51 @@ fn perform_full_join(
     let mut result_headers = Vec::new();
     
     // Создаем заголовки с учетом алиасов таблиц
-    let left_headers_set: HashSet<String> = left_table.headers.iter().cloned().collect();
-    let right_headers_set: HashSet<String> = right_table.headers.iter().cloned().collect();
+    let left_headers_set: HashSet<String> = left_table.headers().iter().cloned().collect();
+    let right_headers_set: HashSet<String> = right_table.headers().iter().cloned().collect();
     
-    let mut left_headers = apply_column_aliases(&left_table.headers, left_alias, &right_headers_set);
-    let mut right_headers = apply_column_aliases(&right_table.headers, right_alias, &left_headers_set);
+    let mut left_headers = apply_column_aliases(&left_table.headers(), left_alias, &right_headers_set);
+    let mut right_headers = apply_column_aliases(&right_table.headers(), right_alias, &left_headers_set);
     
     result_headers.append(&mut left_headers);
     result_headers.append(&mut right_headers);
     
     // Создаем NULL-строки
-    let null_left_row: Vec<Value> = (0..left_table.headers.len()).map(|_| Value::Null).collect();
-    let null_right_row: Vec<Value> = (0..right_table.headers.len()).map(|_| Value::Null).collect();
+    let null_left_row: Vec<Value> = (0..left_table.headers().len()).map(|_| Value::Null).collect();
+    let null_right_row: Vec<Value> = (0..right_table.headers().len()).map(|_| Value::Null).collect();
     
     let mut matched_right_indices = HashSet::new();
     
     // Проходим по левой таблице
-    for left_row in &left_table.rows {
+    let left_rr = left_table.rows_ref().unwrap();
+    for left_row in left_rr.iter() {
         if let Some(left_key) = extract_left_key(left_row, keys, left_table) {
             if let Some(right_indices) = right_hash.get(&left_key) {
                 for &right_idx in right_indices {
                     matched_right_indices.insert(right_idx);
                     if let Some(right_row) = right_table.get_row(right_idx) {
-                        let mut new_row = left_row.clone();
+                        let mut new_row = left_row.to_vec();
                         new_row.extend_from_slice(right_row);
                         result_rows.push(new_row);
                     }
                 }
             } else {
                 // Нет совпадений справа - добавляем строку с NULL справа
-                let mut new_row = left_row.clone();
+                let mut new_row = left_row.to_vec();
                 new_row.extend_from_slice(&null_right_row);
                 result_rows.push(new_row);
             }
         } else {
             // Невалидный ключ - добавляем строку с NULL справа
-            let mut new_row = left_row.clone();
+            let mut new_row = left_row.to_vec();
             new_row.extend_from_slice(&null_right_row);
             result_rows.push(new_row);
         }
     }
     
     // Проходим по правой таблице и добавляем несовпадающие строки
-    for (right_idx, right_row) in right_table.rows.iter().enumerate() {
+    let right_rr = right_table.rows_ref().unwrap();
+    for (right_idx, right_row) in right_rr.iter().enumerate() {
         if !matched_right_indices.contains(&right_idx) {
             let mut new_row = null_left_row.clone();
             new_row.extend_from_slice(right_row);
@@ -436,16 +450,17 @@ fn perform_semi_join(
     let mut result_rows = Vec::new();
     
     // Проходим по левой таблице и проверяем наличие совпадений
-    for left_row in &left_table.rows {
+    let left_rr = left_table.rows_ref().unwrap();
+    for left_row in left_rr.iter() {
         if let Some(left_key) = extract_left_key(left_row, keys, left_table) {
             if right_hash.contains_key(&left_key) {
                 // Есть совпадение - добавляем строку из left
-                result_rows.push(left_row.clone());
+                result_rows.push(left_row.to_vec());
             }
         }
     }
     
-    Value::Table(Rc::new(RefCell::new(Table::from_data(result_rows, Some(left_table.headers.clone())))))
+    Value::Table(Rc::new(RefCell::new(Table::from_data(result_rows, Some(left_table.headers().clone())))))
 }
 
 // Выполнение ANTI JOIN (строки left без совпадений в right)
@@ -460,19 +475,20 @@ fn perform_anti_join(
     let mut result_rows = Vec::new();
     
     // Проходим по левой таблице и проверяем отсутствие совпадений
-    for left_row in &left_table.rows {
+    let left_rr = left_table.rows_ref().unwrap();
+    for left_row in left_rr.iter() {
         if let Some(left_key) = extract_left_key(left_row, keys, left_table) {
             if !right_hash.contains_key(&left_key) {
                 // Нет совпадения - добавляем строку из left
-                result_rows.push(left_row.clone());
+                result_rows.push(left_row.to_vec());
             }
         } else {
             // Невалидный ключ - добавляем строку
-            result_rows.push(left_row.clone());
+            result_rows.push(left_row.to_vec());
         }
     }
     
-    Value::Table(Rc::new(RefCell::new(Table::from_data(result_rows, Some(left_table.headers.clone())))))
+    Value::Table(Rc::new(RefCell::new(Table::from_data(result_rows, Some(left_table.headers().clone())))))
 }
 
 // Выполнение CROSS JOIN (декартово произведение)
@@ -486,19 +502,21 @@ fn perform_cross_join(
     let mut result_headers = Vec::new();
     
     // Создаем заголовки с учетом алиасов таблиц
-    let left_headers_set: HashSet<String> = left_table.headers.iter().cloned().collect();
-    let right_headers_set: HashSet<String> = right_table.headers.iter().cloned().collect();
+    let left_headers_set: HashSet<String> = left_table.headers().iter().cloned().collect();
+    let right_headers_set: HashSet<String> = right_table.headers().iter().cloned().collect();
     
-    let mut left_headers = apply_column_aliases(&left_table.headers, left_alias, &right_headers_set);
-    let mut right_headers = apply_column_aliases(&right_table.headers, right_alias, &left_headers_set);
+    let mut left_headers = apply_column_aliases(&left_table.headers(), left_alias, &right_headers_set);
+    let mut right_headers = apply_column_aliases(&right_table.headers(), right_alias, &left_headers_set);
     
     result_headers.append(&mut left_headers);
     result_headers.append(&mut right_headers);
     
     // Декартово произведение
-    for left_row in &left_table.rows {
-        for right_row in &right_table.rows {
-            let mut new_row = left_row.clone();
+    let left_rr = left_table.rows_ref().unwrap();
+    let right_rr = right_table.rows_ref().unwrap();
+    for left_row in left_rr.iter() {
+        for right_row in right_rr.iter() {
+            let mut new_row = left_row.to_vec();
             new_row.extend_from_slice(right_row);
             result_rows.push(new_row);
         }
@@ -523,6 +541,8 @@ pub fn native_table_join(args: &[Value]) -> Value {
         Value::Table(t) => t.borrow().clone(),
         _ => return Value::Null,
     };
+    let left_table = ensure_owned_table(left_table);
+    let right_table = ensure_owned_table(right_table);
 
     // Парсим тип JOIN (по умолчанию inner) - нужно проверить ДО парсинга ключей
     let join_type = if args.len() > 3 {
@@ -924,6 +944,8 @@ pub fn native_zip_join(args: &[Value]) -> Value {
         Value::Table(t) => t.borrow().clone(),
         _ => return Value::Null,
     };
+    let left_table = ensure_owned_table(left_table);
+    let right_table = ensure_owned_table(right_table);
 
     // Используем имена таблиц из table.name, если они установлены
     let left_alias = left_table.name.as_ref()
@@ -976,20 +998,22 @@ pub fn native_zip_join(args: &[Value]) -> Value {
     let mut result_headers = Vec::new();
     
     // Создаем заголовки с учетом алиасов таблиц
-    let left_headers_set: HashSet<String> = left_table.headers.iter().cloned().collect();
-    let right_headers_set: HashSet<String> = right_table.headers.iter().cloned().collect();
+    let left_headers_set: HashSet<String> = left_table.headers().iter().cloned().collect();
+    let right_headers_set: HashSet<String> = right_table.headers().iter().cloned().collect();
     
-    let mut left_headers = apply_column_aliases(&left_table.headers, &left_alias, &right_headers_set);
-    let mut right_headers = apply_column_aliases(&right_table.headers, &right_alias, &left_headers_set);
+    let mut left_headers = apply_column_aliases(&left_table.headers(), &left_alias, &right_headers_set);
+    let mut right_headers = apply_column_aliases(&right_table.headers(), &right_alias, &left_headers_set);
     
     result_headers.append(&mut left_headers);
     result_headers.append(&mut right_headers);
     
     // Соединяем строки по позиции (индексу)
-    let min_len = std::cmp::min(left_table.rows.len(), right_table.rows.len());
+    let left_rr = left_table.rows_ref().unwrap();
+    let right_rr = right_table.rows_ref().unwrap();
+    let min_len = std::cmp::min(left_rr.len(), right_rr.len());
     for i in 0..min_len {
-        let mut new_row = left_table.rows[i].clone();
-        new_row.extend_from_slice(&right_table.rows[i]);
+        let mut new_row = left_rr.row(i).unwrap().to_vec();
+        new_row.extend_from_slice(right_rr.row(i).unwrap());
         result_rows.push(new_row);
     }
     
@@ -1009,6 +1033,7 @@ pub fn native_apply_join(args: &[Value]) -> Value {
         Value::Table(t) => t.borrow().clone(),
         _ => return Value::Null,
     };
+    let left_table = ensure_owned_table(left_table);
 
     // Извлекаем функцию из аргументов
     let function_index = match &args[1] {
@@ -1019,15 +1044,22 @@ pub fn native_apply_join(args: &[Value]) -> Value {
         }
     };
 
-    // Извлекаем тип JOIN (по умолчанию "inner")
-    let join_type = if args.len() > 2 {
-        match &args[2] {
-            Value::String(s) => s.as_str(),
-            _ => "inner",
-        }
-    } else {
-        "inner"
-    };
+    // Извлекаем тип JOIN (по умолчанию "inner"). Копируем в String, т.к. args может мутироваться при реентрантных вызовах VM.
+    let join_type: String = args
+        .iter()
+        .find_map(|v| {
+            if let Value::String(s) = v {
+                let t = s.as_str();
+                if t == "left" || t == "inner" || t == "right" {
+                    Some(t.to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "inner".to_string());
 
     // Получаем доступ к VM через thread-local storage
     let vm_ptr = VM_CALL_CONTEXT.with(|ctx| {
@@ -1039,13 +1071,14 @@ pub fn native_apply_join(args: &[Value]) -> Value {
     let mut result_headers = Vec::new();
 
     // Создаем заголовки результата (начнем с заголовков левой таблицы)
-    result_headers.extend_from_slice(&left_table.headers);
+    result_headers.extend_from_slice(left_table.headers());
 
     // Отслеживаем максимальное количество колонок правой таблицы для корректной обработки NULLs
     let mut max_right_columns = 0;
 
     // Для каждой строки левой таблицы вызываем функцию
-    for left_row in &left_table.rows {
+    let left_rr = left_table.rows_ref().unwrap();
+    for left_row in left_rr.iter() {
         // Восстанавливаем контекст перед каждым вызовом
         if let Some(vm_ptr) = vm_ptr {
             VM_CALL_CONTEXT.with(|ctx| {
@@ -1054,36 +1087,38 @@ pub fn native_apply_join(args: &[Value]) -> Value {
         }
         
         // Вызываем функцию с аргументом - массив значений строки
-        let row_array = Value::Array(Rc::new(RefCell::new(left_row.clone())));
+        let row_array = Value::Array(Rc::new(RefCell::new(left_row.to_vec())));
         let function_result = match call_user_function(function_index, &[row_array]) {
             Ok(result) => result,
             Err(_e) => {
                 // Если произошла ошибка при вызове функции, пропускаем строку для inner join
                 // или добавляем с NULLs для left join
                 if join_type == "left" {
-                    let new_row = left_row.clone();
-                    result_rows.push(new_row);
+                    result_rows.push(left_row.to_vec());
                 }
                 continue;
             }
         };
         
+        let rows_before = result_rows.len();
         match function_result {
             Value::Table(right_table) => {
-                let right_table_ref = right_table.borrow();
-                
+                let right_table_clone = right_table.borrow().clone();
+                let right_owned = ensure_owned_table(right_table_clone);
+                let right_table_ref = &right_owned;
+
                 // Обновляем максимальное количество колонок
-                if right_table_ref.headers.len() > max_right_columns {
-                    max_right_columns = right_table_ref.headers.len();
+                if right_table_ref.headers().len() > max_right_columns {
+                    max_right_columns = right_table_ref.headers().len();
                 }
-                
+
                 // Если заголовки результата еще не установлены полностью, добавляем заголовки правой таблицы
-                if result_headers.len() == left_table.headers.len() {
+                if result_headers.len() == left_table.headers().len() {
                     // Проверяем конфликты имен колонок
-                    let left_headers_set: HashSet<String> = 
-                        left_table.headers.iter().cloned().collect();
+                    let left_headers_set: HashSet<String> =
+                        left_table.headers().iter().cloned().collect();
                     let mut right_headers = Vec::new();
-                    for header in &right_table_ref.headers {
+                    for header in right_table_ref.headers() {
                         if left_headers_set.contains(header) {
                             right_headers.push(format!("right_{}", header));
                         } else {
@@ -1094,34 +1129,41 @@ pub fn native_apply_join(args: &[Value]) -> Value {
                 }
 
                 // Для каждой строки в результате функции добавляем комбинацию left_row + right_row
-                for right_row in &right_table_ref.rows {
-                    let mut new_row = left_row.clone();
+                let right_rr = right_table_ref.rows_ref().unwrap();
+                for right_row in right_rr.iter() {
+                    let mut new_row = left_row.to_vec();
                     new_row.extend_from_slice(right_row);
                     result_rows.push(new_row);
+                }
+                // Left join: если функция вернула пустую таблицу, всё равно сохраняем left row (NULLs добавятся ниже)
+                if join_type == "left" && right_rr.is_empty() {
+                    result_rows.push(left_row.to_vec());
                 }
             }
             Value::Null => {
                 // Если функция вернула Null и это left join, добавляем строку с NULLs
                 if join_type == "left" {
-                    let new_row = left_row.clone();
-                    result_rows.push(new_row);
+                    result_rows.push(left_row.to_vec());
                 }
             }
             _ => {
                 // Если функция вернула что-то другое, игнорируем для inner join
                 // или добавляем с NULLs для left join
                 if join_type == "left" {
-                    let new_row = left_row.clone();
-                    result_rows.push(new_row);
+                    result_rows.push(left_row.to_vec());
                 }
             }
+        }
+        // Left join: если за эту итерацию не добавили ни одной строки, сохраняем left row
+        if join_type == "left" && result_rows.len() == rows_before {
+            result_rows.push(left_row.to_vec());
         }
     }
 
     // Если это left join и были строки без правой части, добавляем NULL значения
     if join_type == "left" && max_right_columns > 0 {
         // Добавляем NULL значения для строк, которые не имеют правой части
-        let expected_length = left_table.headers.len() + max_right_columns;
+        let expected_length = left_table.headers().len() + max_right_columns;
         for row in &mut result_rows {
             while row.len() < expected_length {
                 row.push(Value::Null);
@@ -1147,6 +1189,8 @@ pub fn native_asof_join(args: &[Value]) -> Value {
         Value::Table(t) => t.borrow().clone(),
         _ => return Value::Null,
     };
+    let left_table = ensure_owned_table(left_table);
+    let right_table = ensure_owned_table(right_table);
 
     // Парсим временную колонку
     let time_column = match &args[2] {
@@ -1154,11 +1198,7 @@ pub fn native_asof_join(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    // Проверяем наличие временной колонки в обеих таблицах
-    if left_table.get_column(&time_column).is_none() {
-        return Value::Null;
-    }
-    if right_table.get_column(&time_column).is_none() {
+    if !left_table.has_column(&time_column) || !right_table.has_column(&time_column) {
         return Value::Null;
     }
 
@@ -1240,37 +1280,39 @@ pub fn native_asof_join(args: &[Value]) -> Value {
         });
 
     // Создаем индексы для временной колонки
-    let left_time_idx = left_table.headers.iter().position(|h| h == &time_column).unwrap();
-    let right_time_idx = right_table.headers.iter().position(|h| h == &time_column).unwrap();
+    let left_time_idx = left_table.headers().iter().position(|h| h == &time_column).unwrap();
+    let right_time_idx = right_table.headers().iter().position(|h| h == &time_column).unwrap();
 
     // Если есть by колонки, группируем данные
     let mut result_rows = Vec::new();
     let mut result_headers = Vec::new();
     
     // Создаем заголовки с учетом алиасов таблиц
-    let left_headers_set: HashSet<String> = left_table.headers.iter().cloned().collect();
-    let right_headers_set: HashSet<String> = right_table.headers.iter().cloned().collect();
+    let left_headers_set: HashSet<String> = left_table.headers().iter().cloned().collect();
+    let right_headers_set: HashSet<String> = right_table.headers().iter().cloned().collect();
     
-    let mut left_headers = apply_column_aliases(&left_table.headers, &left_alias, &right_headers_set);
-    let mut right_headers = apply_column_aliases(&right_table.headers, &right_alias, &left_headers_set);
+    let mut left_headers = apply_column_aliases(&left_table.headers(), &left_alias, &right_headers_set);
+    let mut right_headers = apply_column_aliases(&right_table.headers(), &right_alias, &left_headers_set);
     
     result_headers.append(&mut left_headers);
     result_headers.append(&mut right_headers);
 
     // Создаем NULL-строку для правой таблицы
-    let null_right_row: Vec<Value> = (0..right_table.headers.len()).map(|_| Value::Null).collect();
+    let null_right_row: Vec<Value> = (0..right_table.headers().len()).map(|_| Value::Null).collect();
 
     if by_columns.is_empty() {
         // Нет группировки - простой ASOF join
         // Сортируем правую таблицу по времени (для бинарного поиска)
-        let mut right_indices: Vec<usize> = (0..right_table.rows.len()).collect();
+        let right_rr = right_table.rows_ref().unwrap();
+        let mut right_indices: Vec<usize> = (0..right_rr.len()).collect();
         right_indices.sort_by(|&a, &b| {
-            let time_a = &right_table.rows[a][right_time_idx];
-            let time_b = &right_table.rows[b][right_time_idx];
+            let time_a = &right_rr.row(a).unwrap()[right_time_idx];
+            let time_b = &right_rr.row(b).unwrap()[right_time_idx];
             compare_values(time_a, time_b)
         });
 
-        for left_row in &left_table.rows {
+        let left_rr = left_table.rows_ref().unwrap();
+        for left_row in left_rr.iter() {
             let left_time = &left_row[left_time_idx];
             
             // Ищем ближайшую строку в правой таблице
@@ -1278,7 +1320,7 @@ pub fn native_asof_join(args: &[Value]) -> Value {
             let mut best_diff: Option<f64> = None;
 
             for &right_idx in &right_indices {
-                let right_row = &right_table.rows[right_idx];
+                let right_row = right_rr.row(right_idx).unwrap();
                 let right_time = &right_row[right_time_idx];
 
                 // Вычисляем разницу времени (упрощенная версия - только для чисел)
@@ -1321,12 +1363,12 @@ pub fn native_asof_join(args: &[Value]) -> Value {
             }
 
             if let Some(right_idx) = best_match {
-                let mut new_row = left_row.clone();
-                new_row.extend_from_slice(&right_table.rows[right_idx]);
+                let mut new_row = left_row.to_vec();
+                new_row.extend_from_slice(right_rr.row(right_idx).unwrap());
                 result_rows.push(new_row);
             } else {
                 // Нет совпадения - добавляем строку с NULL справа (для left join семантики)
-                let mut new_row = left_row.clone();
+                let mut new_row = left_row.to_vec();
                 new_row.extend_from_slice(&null_right_row);
                 result_rows.push(new_row);
             }
@@ -1338,12 +1380,12 @@ pub fn native_asof_join(args: &[Value]) -> Value {
         let mut by_indices_right = Vec::new();
         
         for by_col in &by_columns {
-            if let Some(idx) = left_table.headers.iter().position(|h| h == by_col) {
+            if let Some(idx) = left_table.headers().iter().position(|h| h == by_col) {
                 by_indices_left.push(idx);
             } else {
                 return Value::Null; // Колонка не найдена
             }
-            if let Some(idx) = right_table.headers.iter().position(|h| h == by_col) {
+            if let Some(idx) = right_table.headers().iter().position(|h| h == by_col) {
                 by_indices_right.push(idx);
             } else {
                 return Value::Null; // Колонка не найдена
@@ -1352,16 +1394,18 @@ pub fn native_asof_join(args: &[Value]) -> Value {
         
         // Группируем левую таблицу по by колонкам
         let mut left_groups: HashMap<Vec<Value>, Vec<Vec<Value>>> = HashMap::new();
-        for row in &left_table.rows {
+        let left_rr = left_table.rows_ref().unwrap();
+        for row in left_rr.iter() {
             let key: Vec<Value> = by_indices_left.iter().map(|&idx| row[idx].clone()).collect();
-            left_groups.entry(key).or_insert_with(Vec::new).push(row.clone());
+            left_groups.entry(key).or_insert_with(Vec::new).push(row.to_vec());
         }
         
         // Группируем правую таблицу по by колонкам
         let mut right_groups: HashMap<Vec<Value>, Vec<Vec<Value>>> = HashMap::new();
-        for row in &right_table.rows {
+        let right_rr = right_table.rows_ref().unwrap();
+        for row in right_rr.iter() {
             let key: Vec<Value> = by_indices_right.iter().map(|&idx| row[idx].clone()).collect();
-            right_groups.entry(key).or_insert_with(Vec::new).push(row.clone());
+            right_groups.entry(key).or_insert_with(Vec::new).push(row.to_vec());
         }
         
         // Для каждой группы в левой таблице выполняем ASOF join
@@ -1406,6 +1450,8 @@ pub fn native_join_on(args: &[Value]) -> Value {
         Value::Table(t) => t.borrow().clone(),
         _ => return Value::Null,
     };
+    let left_table = ensure_owned_table(left_table);
+    let right_table = ensure_owned_table(right_table);
 
     // Парсим условие - пока упрощенная версия
     let condition = &args[2];
@@ -1507,42 +1553,40 @@ pub fn native_join_on(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    // Проверяем наличие колонок
-    if left_table.get_column(&left_col).is_none() {
-        return Value::Null;
-    }
-    if right_table.get_column(&right_col).is_none() {
+    if !left_table.has_column(&left_col) || !right_table.has_column(&right_col) {
         return Value::Null;
     }
 
-    let left_col_idx = left_table.headers.iter().position(|h| h == &left_col).unwrap();
-    let right_col_idx = right_table.headers.iter().position(|h| h == &right_col).unwrap();
+    let left_col_idx = left_table.headers().iter().position(|h| h == &left_col).unwrap();
+    let right_col_idx = right_table.headers().iter().position(|h| h == &right_col).unwrap();
 
     let mut result_rows = Vec::new();
     let mut result_headers = Vec::new();
     
     // Создаем заголовки с учетом алиасов таблиц
-    let left_headers_set: HashSet<String> = left_table.headers.iter().cloned().collect();
-    let right_headers_set: HashSet<String> = right_table.headers.iter().cloned().collect();
+    let left_headers_set: HashSet<String> = left_table.headers().iter().cloned().collect();
+    let right_headers_set: HashSet<String> = right_table.headers().iter().cloned().collect();
     
-    let mut left_headers = apply_column_aliases(&left_table.headers, &left_alias, &right_headers_set);
-    let mut right_headers = apply_column_aliases(&right_table.headers, &right_alias, &left_headers_set);
+    let mut left_headers = apply_column_aliases(&left_table.headers(), &left_alias, &right_headers_set);
+    let mut right_headers = apply_column_aliases(&right_table.headers(), &right_alias, &left_headers_set);
     
     result_headers.append(&mut left_headers);
     result_headers.append(&mut right_headers);
 
     // Создаем NULL-строки
-    let null_left_row: Vec<Value> = (0..left_table.headers.len()).map(|_| Value::Null).collect();
-    let null_right_row: Vec<Value> = (0..right_table.headers.len()).map(|_| Value::Null).collect();
+    let null_left_row: Vec<Value> = (0..left_table.headers().len()).map(|_| Value::Null).collect();
+    let null_right_row: Vec<Value> = (0..right_table.headers().len()).map(|_| Value::Null).collect();
 
     // Nested loop join с проверкой условия
     let mut matched_right_indices = HashSet::new();
+    let left_rr = left_table.rows_ref().unwrap();
+    let right_rr = right_table.rows_ref().unwrap();
 
-    for left_row in &left_table.rows {
+    for left_row in left_rr.iter() {
         let left_val = &left_row[left_col_idx];
         let mut found_match = false;
 
-        for (right_idx, right_row) in right_table.rows.iter().enumerate() {
+        for (right_idx, right_row) in right_rr.iter().enumerate() {
             let right_val = &right_row[right_col_idx];
             
             // Проверяем условие
@@ -1565,7 +1609,7 @@ pub fn native_join_on(args: &[Value]) -> Value {
             if condition_met {
                 found_match = true;
                 matched_right_indices.insert(right_idx);
-                let mut new_row = left_row.clone();
+                let mut new_row = left_row.to_vec();
                 new_row.extend_from_slice(right_row);
                 result_rows.push(new_row);
             }
@@ -1573,7 +1617,7 @@ pub fn native_join_on(args: &[Value]) -> Value {
 
         // Для LEFT JOIN добавляем строки без совпадений
         if !found_match && (join_type == JoinType::Left || join_type == JoinType::Full) {
-            let mut new_row = left_row.clone();
+            let mut new_row = left_row.to_vec();
             new_row.extend_from_slice(&null_right_row);
             result_rows.push(new_row);
         }
@@ -1581,7 +1625,7 @@ pub fn native_join_on(args: &[Value]) -> Value {
 
     // Для RIGHT и FULL JOIN добавляем несовпадающие строки справа
     if join_type == JoinType::Right || join_type == JoinType::Full {
-        for (right_idx, right_row) in right_table.rows.iter().enumerate() {
+        for (right_idx, right_row) in right_rr.iter().enumerate() {
             if !matched_right_indices.contains(&right_idx) {
                 let mut new_row = null_left_row.clone();
                 new_row.extend_from_slice(right_row);
@@ -1599,8 +1643,7 @@ pub fn native_table_suffixes(args: &[Value]) -> Value {
         return Value::Null;
     }
 
-    // Аргументы приходят в порядке: [table, left_suffix, right_suffix]
-    let table = match &args[0] {
+    let mut table = match &args[0] {
         Value::Table(t) => t.borrow().clone(),
         _ => return Value::Null,
     };
@@ -1625,7 +1668,7 @@ pub fn native_table_suffixes(args: &[Value]) -> Value {
     let mut prefix_to_table = HashMap::new(); // prefix -> "left" или "right"
     
     // Сначала проходим по всем заголовкам и собираем уникальные префиксы
-    for header in &table.headers {
+    for header in table.headers() {
         if let Some(dot_pos) = header.find('.') {
             let prefix = &header[..dot_pos];
             if !seen_prefixes.contains(&prefix.to_string()) {
@@ -1648,7 +1691,7 @@ pub fn native_table_suffixes(args: &[Value]) -> Value {
     prefix_to_table.insert("right".to_string(), "right");
     
     // Проходим по всем заголовкам и переименовываем колонки с префиксами
-    for header in &table.headers {
+    for header in table.headers() {
         let new_header = if let Some(dot_pos) = header.find('.') {
             let prefix = &header[..dot_pos];
             let base_name = &header[dot_pos + 1..];
@@ -1679,19 +1722,18 @@ pub fn native_table_suffixes(args: &[Value]) -> Value {
         new_headers.push(new_header);
     }
 
-    // Создаем новую структуру колонок с переименованными ключами
     let mut new_columns = HashMap::new();
     for (old_header, new_header) in &column_mapping {
-        if let Some(column_data) = table.columns.get(old_header) {
+        if let Some(column_data) = table.get_column(old_header) {
             new_columns.insert(new_header.clone(), column_data.clone());
         }
     }
 
-    // Создаем новую таблицу
-    let mut new_table = Table::new();
-    new_table.headers = new_headers;
-    new_table.columns = new_columns;
-    new_table.rows = table.rows.clone();
+    let mut new_table = Table::from_data_with_columns(
+        table.rows_ref().unwrap().to_vec(),
+        new_headers,
+        new_columns,
+    );
     new_table.name = table.name.clone();
 
     Value::Table(Rc::new(RefCell::new(new_table)))

@@ -653,6 +653,14 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
             }
             
             let this_slot = ctx.scope.declare_local("this");
+            assert_eq!(
+                this_slot,
+                constructor.params.len(),
+                "constructor '{}': this_slot ({}) must equal arity ({})",
+                constructor_name,
+                this_slot,
+                constructor.params.len()
+            );
             // Ensure class name is in chunk.global_names so update_chunk_indices_from_names can patch LoadGlobal(class_global_index) correctly when the module is imported.
             ctx.chunk.global_names.insert(class_global_index, name.clone());
             
@@ -877,6 +885,23 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
             ctx.current_superclass = superclass.clone();
             ctx.in_constructor = true;
             
+            // Ensure "this" is in scope when compiling body (otherwise resolve_local("this") would return None and we'd emit LoadLocal(0))
+            match ctx.scope.resolve_local("this") {
+                Some(slot) if slot == this_slot => {}
+                other => {
+                    return Err(LangError::ParseError {
+                        message: format!(
+                            "constructor '{}': 'this' must be in scope for body (resolve_local(\"this\") = {:?}, this_slot = {})",
+                            constructor_name, other, this_slot
+                        ),
+                        line: constructor.line,
+                    });
+                }
+            }
+            // So that assign/this compilers always use the correct slot for "this" in constructor body.
+            // Use arity explicitly so "this" is always at slot [param_count] (params at 0..arity-1, this at arity).
+            ctx.constructor_this_slot = Some(constructor.params.len());
+            
             // Компилируем тело конструктора (this доступен как локальная переменная)
             // Skip first statement(s) if they were already compiled (e.g., explicit super())
             for stmt in constructor.body.iter().skip(body_skip_count) {
@@ -885,6 +910,7 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
             
             // Reset constructor context
             ctx.in_constructor = false;
+            ctx.constructor_this_slot = None;
             
             // ВАЖНО: Добавляем методы класса в объект перед возвратом
             // Методы должны быть доступны через GetArrayElement при вызове методов

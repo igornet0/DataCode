@@ -447,10 +447,14 @@ pub fn native_list_files(args: &[Value]) -> Value {
         let share_name = parts[0];
         let dir_path_on_share = if parts.len() > 1 { parts[1] } else { "" };
         
-        // Получаем SmbManager из thread-local storage
+        // Получаем SmbManager из thread-local storage; hold lock only for list_files, then release before building result.
         if let Some(smb_manager) = crate::vm::file_ops::get_smb_manager() {
             let regex_str = regex_pattern.as_deref();
-            match smb_manager.lock().unwrap().list_files(share_name, dir_path_on_share, regex_str, true) {
+            let list_result = {
+                let guard = smb_manager.lock().unwrap();
+                guard.list_files(share_name, dir_path_on_share, regex_str, true)
+            };
+            match list_result {
                 Ok(files) => {
                     let file_values: Vec<Value> = files.iter()
                         .map(|f| {

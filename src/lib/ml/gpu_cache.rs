@@ -5,7 +5,6 @@ use crate::ml::tensor::Tensor;
 use crate::ml::device::Device;
 use crate::ml::graph::NodeId;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 #[cfg(feature = "gpu")]
 use candle_core::Tensor as CandleTensor;
@@ -164,27 +163,29 @@ pub struct GpuCacheStats {
     pub device: Device,
 }
 
-// Thread-safe global GPU cache
-lazy_static::lazy_static! {
-    static ref GLOBAL_GPU_CACHE: Mutex<Option<GpuTensorCache>> = Mutex::new(None);
-}
+// GPU cache is now owned by MlContext (thread-local, set by VM). No global Mutex.
 
-/// Initialize the global GPU cache with a device
+use crate::ml::context::MlContext;
+
+/// Initialize GPU cache for the current VM context (e.g. from ml.use_device).
 pub fn init_global_gpu_cache(device: Device) {
-    *GLOBAL_GPU_CACHE.lock().unwrap() = Some(GpuTensorCache::new(device));
+    if MlContext::is_set() {
+        MlContext::with_current(|ctx| {
+            ctx.gpu_cache = Some(GpuTensorCache::new(device));
+        });
+    }
 }
 
-/// Get or create a GPU tensor from the global cache
+/// Get or create a GPU tensor from the current VM's cache (no global lock).
 #[cfg(feature = "gpu")]
 pub fn get_gpu_tensor_from_cache(
     node_id: NodeId,
     cpu_tensor: &Tensor,
 ) -> Result<CandleTensor, String> {
-    let mut cache_guard = GLOBAL_GPU_CACHE.lock().unwrap();
-    if let Some(ref mut cache) = *cache_guard {
-        cache.get_or_create_gpu_tensor(node_id, cpu_tensor)
+    if MlContext::is_set() {
+        MlContext::with_current(|ctx| ctx.get_gpu_tensor_from_cache(node_id, cpu_tensor))
     } else {
-        Err("GPU cache not initialized. Call init_global_gpu_cache() first.".to_string())
+        Err("ML context not set. VM must set MlContext before run().".to_string())
     }
 }
 
@@ -196,17 +197,16 @@ pub fn get_gpu_tensor_from_cache(
     Err("GPU support not compiled".to_string())
 }
 
-/// Update a GPU tensor in the global cache
+/// Update a GPU tensor in the current VM's cache.
 #[cfg(feature = "gpu")]
 pub fn update_gpu_tensor_in_cache(
     node_id: NodeId,
     cpu_tensor: &Tensor,
 ) -> Result<(), String> {
-    let mut cache_guard = GLOBAL_GPU_CACHE.lock().unwrap();
-    if let Some(ref mut cache) = *cache_guard {
-        cache.update_gpu_tensor(node_id, cpu_tensor)
+    if MlContext::is_set() {
+        MlContext::with_current(|ctx| ctx.update_gpu_tensor_in_cache(node_id, cpu_tensor))
     } else {
-        Err("GPU cache not initialized".to_string())
+        Err("ML context not set.".to_string())
     }
 }
 
@@ -218,16 +218,20 @@ pub fn update_gpu_tensor_in_cache(
     Ok(())
 }
 
-/// Clear the global GPU cache
+/// Clear the current VM's GPU cache.
 pub fn clear_global_gpu_cache() {
-    if let Some(ref mut cache) = *GLOBAL_GPU_CACHE.lock().unwrap() {
-        cache.clear();
+    if MlContext::is_set() {
+        MlContext::with_current(|ctx| ctx.clear_gpu_cache());
     }
 }
 
-/// Get statistics about the global GPU cache
+/// Get statistics about the current VM's GPU cache.
 pub fn get_gpu_cache_stats() -> Option<GpuCacheStats> {
-    GLOBAL_GPU_CACHE.lock().unwrap().as_ref().map(|c| c.stats())
+    if MlContext::is_set() {
+        MlContext::with_current(|ctx| ctx.gpu_cache_stats())
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]

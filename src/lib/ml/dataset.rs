@@ -27,7 +27,7 @@ impl Dataset {
     /// # Returns
     /// Dataset with features and targets as tensors
     pub fn from_table(
-        table: &Table,
+        table: &mut Table,
         feature_columns: &[String],
         target_columns: &[String],
     ) -> Result<Self, String> {
@@ -38,7 +38,6 @@ impl Dataset {
             return Err("At least one target column is required".to_string());
         }
 
-        // Validate columns exist
         for col_name in feature_columns {
             if table.get_column(col_name).is_none() {
                 return Err(format!("Feature column '{}' not found in table", col_name));
@@ -55,12 +54,11 @@ impl Dataset {
             return Err("Table is empty".to_string());
         }
 
-        // Extract feature columns as tensors
         let mut feature_data = Vec::new();
         for col_name in feature_columns {
             let column = table.get_column(col_name)
                 .ok_or_else(|| format!("Column '{}' not found", col_name))?;
-            
+
             for val in column.iter() {
                 match val {
                     Value::Number(n) => feature_data.push(*n as f32),
@@ -76,12 +74,11 @@ impl Dataset {
         let num_features = feature_columns.len();
         let features = Tensor::new(feature_data, vec![num_rows, num_features])?;
 
-        // Extract target columns as tensors
         let mut target_data = Vec::new();
         for col_name in target_columns {
             let column = table.get_column(col_name)
                 .ok_or_else(|| format!("Column '{}' not found", col_name))?;
-            
+
             for val in column.iter() {
                 match val {
                     Value::Number(n) => target_data.push(*n as f32),
@@ -360,10 +357,10 @@ mod tests {
             vec![Value::Number(4.0), Value::Number(5.0), Value::Number(6.0)],
         ];
         let headers = vec!["x1".to_string(), "x2".to_string(), "y".to_string()];
-        let table = Table::from_data(data, Some(headers));
+        let mut table = Table::from_data(data, Some(headers));
 
         let dataset = Dataset::from_table(
-            &table,
+            &mut table,
             &["x1".to_string(), "x2".to_string()],
             &["y".to_string()],
         ).unwrap();

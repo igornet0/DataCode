@@ -1,6 +1,6 @@
 // Types and structures for VM
 
-use crate::common::value::Value;
+use crate::common::value_store::ValueId;
 
 /// Структура для хранения явной связи между колонками таблиц
 #[derive(Debug, Clone)]
@@ -18,12 +18,12 @@ pub struct ExplicitPrimaryKey {
     pub column_name: String,
 }
 
-/// Статус выполнения одного шага VM
+/// Статус выполнения одного шага VM (Stage 1: Return carries ValueId)
 #[derive(Debug)]
 pub enum VMStatus {
-    Continue,        // Продолжить выполнение
-    Return(Value),   // Возврат из функции с значением
-    FrameEnded,      // Фрейм завершился без return
+    Continue,           // Продолжить выполнение
+    Return(ValueId),    // Возврат из функции (значение в store по id)
+    FrameEnded,         // Фрейм завершился без return
 }
 
 // Thread-local storage для хранения контекста VM во время вызова нативных функций

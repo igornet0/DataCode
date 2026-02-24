@@ -1,5 +1,9 @@
 // Публичный API языка DataCode (новая архитектура Bytecode + VM)
 
+#[cfg(feature = "allocator_jemalloc")]
+#[global_allocator]
+static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
 pub mod abi;
 pub mod common;
 pub mod dpm;
@@ -59,21 +63,18 @@ pub fn run_with_existing_vm(source: &str, existing_vm: Option<&mut Vm>) -> Resul
     let mut chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
 
-    // 5. Выполнение на VM
-    let vm = if let Some(existing) = existing_vm {
-        // Используем существующий VM (глобальные переменные уже установлены)
-        existing
-    } else {
-        // Создаем новый VM
-        Box::leak(Box::new(Vm::new()))
-    };
-    
+    // 5. Выполнение на VM (VM всегда имеет владельца; при отсутствии existing_vm используем локальный VM, без Box::leak)
+    let mut local_vm = Vm::new();
+    let vm: &mut Vm = existing_vm.unwrap_or(&mut local_vm);
+
     vm.register_native_globals();
-    vm.ensure_globals_from_chunk(&chunk);
+    // Main chunk first, preserving indices (75, 76, …) so bytecode LoadGlobal matches VM slots.
+    vm.ensure_globals_from_chunk_preserve_indices(&chunk);
     for f in &functions {
         vm.ensure_globals_from_chunk(&f.chunk);
     }
     vm.register_all_builtin_modules()?;
+    // set_functions patches main chunk and all function chunks via name_to_new_idx.
     vm.set_functions(functions, Some(&mut chunk));
     let result = vm.run(&chunk)?;
 
@@ -168,18 +169,21 @@ pub fn run_with_vm_with_args_and_lib(
     )
 }
 
-/// Извлекает глобальные переменные из VM как HashMap
-pub fn extract_globals_from_vm(vm: &Vm) -> std::collections::HashMap<String, Value> {
+/// Извлекает глобальные переменные из VM как HashMap (globals are GlobalSlot)
+pub fn extract_globals_from_vm(vm: &mut Vm) -> std::collections::HashMap<String, Value> {
+    use crate::vm::store_convert::load_value;
     let mut globals_map = std::collections::HashMap::new();
     let globals = vm.get_globals();
     let global_names = vm.get_global_names();
-    
-    for (index, name) in global_names.iter() {
-        if let Some(value) = globals.get(*index) {
-            globals_map.insert(name.clone(), value.clone());
-        }
+    let to_extract: Vec<(usize, String)> = global_names
+        .iter()
+        .filter_map(|(index, name)| globals.get(*index).map(|_| (*index, name.clone())))
+        .collect();
+    for (_index, name) in to_extract {
+        let value_id = vm.resolve_global_to_value_id(_index);
+        let value = load_value(value_id, vm.value_store(), vm.heavy_store());
+        globals_map.insert(name, value);
     }
-    
     globals_map
 }
 
@@ -341,23 +345,27 @@ fn run_with_vm_internal_with_args(
             crate::vm::vm::Vm::update_chunk_indices_from_names(
                 &mut vm.get_functions_mut()[i].chunk,
                 &global_names,
-                None, // cannot pass globals while borrowing vm mutably for chunk
+                None,
+                None,
+                None,
             );
         }
         debug_println!("[DEBUG run_with_vm_internal_with_args] После объединения __lib__.dc, глобальных переменных: {}", vm.get_global_names().len());
         // Отладочный вывод: проверяем, что Data и Data::new_3 установлены правильно
-        for (idx, name) in vm.get_global_names().iter() {
-            if name.contains("Data") {
-                let value = vm.get_globals().get(*idx);
-                debug_println!("[DEBUG run_with_vm_internal_with_args] После merge: '{}' в globals[{}] = {:?}", name, idx,
-                    match value {
-                        Some(Value::Null) => "Null",
-                        Some(Value::Function(_)) => "Function",
-                        Some(Value::Object(_)) => "Object",
-                        Some(_) => "Other",
-                        None => "None",
-                    });
-            }
+        let debug_merge: Vec<(usize, String)> = vm.get_global_names().iter()
+            .filter(|(_, n)| n.contains("Data"))
+            .filter_map(|(i, n)| vm.get_globals().get(*i).map(|_| (*i, n.clone())))
+            .collect();
+        for (idx, name) in debug_merge {
+            let id = vm.resolve_global_to_value_id(idx);
+            let v = crate::vm::store_convert::load_value(id, vm.value_store(), vm.heavy_store());
+            let type_str = match &v {
+                Value::Null => "Null",
+                Value::Function(_) => "Function",
+                Value::Object(_) => "Object",
+                _ => "Other",
+            };
+            debug_println!("[DEBUG run_with_vm_internal_with_args] После merge: '{}' в globals[{}] = {:?}", name, idx, type_str);
         }
     } else {
         debug_println!("[DEBUG run_with_vm_internal_with_args] __lib__.dc не загружен (lib_path не указан)");
@@ -371,7 +379,8 @@ fn run_with_vm_internal_with_args(
     let argv: Vec<Value> = script_args.iter().map(|s| Value::String(s.clone())).collect();
     let argv_array = Value::Array(Rc::new(RefCell::new(argv)));
     let argv_index = vm.get_globals().len();
-    vm.get_globals_mut().push(argv_array);
+    let argv_id = vm.with_stores_mut(|store, heap| crate::vm::store_convert::store_value(argv_array, store, heap));
+    vm.get_globals_mut().push(crate::vm::global_slot::GlobalSlot::Heap(argv_id));
     vm.get_global_names_mut().insert(argv_index, "argv".to_string());
     
     // Добавляем слоты для глобальных переменных из главного chunk (в т.ч. __main__), которых ещё нет в VM
@@ -397,26 +406,26 @@ fn run_with_vm_internal_with_args(
     // и "Config" резолвился в слот 71 из ensure, а не создавался новый слот 74).
     vm.set_functions(functions, Some(&mut chunk));
     
-    // Отладочный вывод: проверяем, что Data и Data::new_3 установлены правильно после set_functions
-    for (idx, name) in vm.get_global_names().iter() {
-        if name.contains("Data") {
-            let value = vm.get_globals().get(*idx);
-            debug_println!("[DEBUG run_with_vm_internal_with_args] После set_functions: '{}' в globals[{}] = {:?}", name, idx,
-                match value {
-                    Some(Value::Null) => "Null",
-                    Some(Value::Function(_)) => "Function",
-                    Some(Value::Object(_)) => "Object",
-                    Some(_) => "Other",
-                    None => "None",
-                });
-        }
+    let debug_sf: Vec<(usize, String)> = vm.get_global_names().iter()
+        .filter(|(_, n)| n.contains("Data"))
+        .filter_map(|(i, n)| vm.get_globals().get(*i).map(|_| (*i, n.clone())))
+        .collect();
+    for (idx, name) in debug_sf {
+        let id = vm.resolve_global_to_value_id(idx);
+        let v = crate::vm::store_convert::load_value(id, vm.value_store(), vm.heavy_store());
+        let type_str = match &v {
+            Value::Null => "Null",
+            Value::Function(_) => "Function",
+            Value::Object(_) => "Object",
+            _ => "Other",
+        };
+        debug_println!("[DEBUG run_with_vm_internal_with_args] После set_functions: '{}' в globals[{}] = {:?}", name, idx, type_str);
     }
-    
-    // Восстанавливаем слоты встроенных нативов (0..BUILTIN_GLOBAL_NAMES.len()), чтобы пользовательские функции с тем же именем не перезаписывали их
     use crate::vm::globals;
     for (idx, &name) in globals::BUILTIN_GLOBAL_NAMES.iter().enumerate() {
         if vm.get_global_names().get(&idx).map(|s| s.as_str()) == Some(name) {
-            vm.get_globals_mut()[idx] = Value::NativeFunction(idx);
+            let id = vm.with_stores_mut(|store, heap| crate::vm::store_convert::store_value(Value::NativeFunction(idx), store, heap));
+            vm.get_globals_mut()[idx] = crate::vm::global_slot::GlobalSlot::Heap(id);
         }
     }
 

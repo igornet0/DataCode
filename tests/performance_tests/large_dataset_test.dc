@@ -28,6 +28,7 @@ for i in range(10000) {
         'Location_' + loc_mod
     ]
     push(large_data, row)
+    #print("push row - ", i)
 }
 
 print("Dataset created. Creating table...")

@@ -1,5 +1,9 @@
 pub mod vm;
+pub mod run_context;
 pub mod frame;
+pub mod heavy_store;
+pub mod store_convert;
+pub mod table_ops;
 pub mod file_ops;
 pub mod file_import;
 pub mod abi_bridge;
@@ -11,10 +15,12 @@ pub mod types;
 pub mod exceptions;
 pub mod operations;
 pub mod stack;
+pub mod global_slot;
 pub mod globals;
 pub mod modules;
 pub mod calls;
 pub mod executor;
+pub mod profile;
 
 // CLI and runtime modules
 pub mod cli;

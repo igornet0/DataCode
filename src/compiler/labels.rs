@@ -7,6 +7,8 @@ pub struct LabelManager {
     pub label_counter: usize,
     pub labels: std::collections::HashMap<usize, usize>,
     pub pending_jumps: Vec<(usize, usize, bool)>, // (индекс_инструкции, label_id, is_conditional)
+    /// (forrange_instruction_index, end_label_id) — патчим end_offset в ForRange при finalize_jumps
+    pub pending_for_range: Vec<(usize, usize)>,
 }
 
 impl LabelManager {
@@ -15,7 +17,13 @@ impl LabelManager {
             label_counter: 0,
             labels: std::collections::HashMap::new(),
             pending_jumps: Vec::new(),
+            pending_for_range: Vec::new(),
         }
+    }
+
+    /// Регистрирует ForRange для последующей подстановки end_offset при finalize_jumps.
+    pub fn register_for_range_end(&mut self, forrange_instruction_index: usize, end_label_id: usize) {
+        self.pending_for_range.push((forrange_instruction_index, end_label_id));
     }
 
     pub fn create_label(&mut self) -> usize {
@@ -53,6 +61,7 @@ impl LabelManager {
             OpCode::Jump16(_) | OpCode::JumpIfFalse16(_) => 3, // 1 байт opcode + 2 байта смещение
             OpCode::Jump32(_) | OpCode::JumpIfFalse32(_) => 5, // 1 байт opcode + 4 байта смещение
             OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_) => 2, // Временно считаем как Jump8 до финализации
+            OpCode::ForRange(_, _, _, _, _) | OpCode::ForRangeNext(_) | OpCode::PopForRange => 1,
             
             // Инструкции с параметрами
             OpCode::Constant(_) => 2,  // 1 байт opcode + 1 байт индекс константы (usize может быть больше, но упрощаем)
@@ -276,6 +285,20 @@ impl LabelManager {
             chunk.code[*jump_index] = final_opcode;
         }
         
+        // Патчим ForRange: подставляем end_offset по end_label_id
+        let pending = std::mem::take(&mut self.pending_for_range);
+        for (forrange_index, end_label_id) in pending {
+            if forrange_index >= chunk.code.len() {
+                continue;
+            }
+            let dst_instruction_index = *self.labels.get(&end_label_id).unwrap_or(&forrange_index);
+            let src_index = forrange_index;
+            let end_offset = (dst_instruction_index as i64 - (src_index as i64 + 1)) as i32;
+            if let OpCode::ForRange(var_slot, start_c, end_c, step_c, _) = chunk.code[forrange_index] {
+                chunk.code[forrange_index] = OpCode::ForRange(var_slot, start_c, end_c, step_c, end_offset);
+            }
+        }
+        
         self.pending_jumps.clear();
         
         Ok(())
@@ -349,6 +372,7 @@ impl LabelManager {
         self.labels.clear();
         self.label_counter = 0;
         self.pending_jumps.clear();
+        self.pending_for_range.clear();
     }
 }
 

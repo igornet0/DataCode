@@ -1,17 +1,12 @@
 // Plot system for managing EventLoopProxy and window communication
 
 use winit::event_loop::EventLoopProxy;
-use winit::window::WindowId;
 use crate::plot::command::GuiCommand;
-use std::sync::{Arc, Mutex, Condvar, LazyLock};
-use std::collections::HashMap;
+use std::sync::Mutex;
+use std::cell::RefCell;
 
-/// Global window registry mapping WindowId to waiters
-/// Accessed from both main thread (on close) and runtime thread (on wait)
-static WINDOW_WAITERS: LazyLock<Mutex<HashMap<WindowId, Arc<(Mutex<bool>, Condvar)>>>> = 
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Plot system that manages communication with the main thread's EventLoop
+/// Plot system: communication with the main thread's EventLoop.
+/// Window waiters are handled in the event loop closure (no global Mutex).
 pub struct PlotSystem {
     proxy: EventLoopProxy<GuiCommand>,
 }
@@ -27,44 +22,37 @@ impl PlotSystem {
         &self.proxy
     }
 
-    /// Register a waiter for a window close event
-    pub fn register_waiter(window_id: WindowId, waiter: Arc<(Mutex<bool>, Condvar)>) {
-        WINDOW_WAITERS.lock().unwrap().insert(window_id, waiter);
-    }
-
-    /// Get waiter for a window and remove it from registry
-    pub fn get_waiter(window_id: WindowId) -> Option<Arc<(Mutex<bool>, Condvar)>> {
-        WINDOW_WAITERS.lock().unwrap().remove(&window_id)
-    }
-
-    /// Notify that a window has closed
-    pub fn notify_window_closed(window_id: WindowId) {
-        if let Some(waiter) = WINDOW_WAITERS.lock().unwrap().remove(&window_id) {
-            let (lock, cvar) = &*waiter;
-            let mut closed = lock.lock().unwrap();
-            *closed = true;
-            cvar.notify_all();
-        }
-    }
 }
 
-/// Global PlotSystem instance (set by main.rs)
+/// Global PlotSystem instance (set by gui when event loop starts).
+/// EventLoopProxy is not Sync on some platforms (e.g. macOS), so Mutex is required for static storage.
+/// Contention: init once; get_plot_system() locks only on first call per thread, then CACHED_PROXY is used (no lock).
+/// See docs/gil_bottlenecks.md.
 static PLOT_SYSTEM: Mutex<Option<PlotSystem>> = Mutex::new(None);
 
-/// Initialize the plot system with an EventLoopProxy
-/// Must be called from main.rs after creating EventLoop
+// Thread-local cache: first get_plot_system() in a thread locks once and caches proxy; later calls use cache (no lock).
+thread_local! {
+    static CACHED_PROXY: RefCell<Option<EventLoopProxy<GuiCommand>>> = RefCell::new(None);
+}
+
+/// Initialize the plot system with an EventLoopProxy (called from gui when event loop starts).
 pub fn init_plot_system(proxy: EventLoopProxy<GuiCommand>) {
     *PLOT_SYSTEM.lock().unwrap() = Some(PlotSystem::new(proxy));
 }
 
-/// Get the PlotSystem (panics if not initialized)
+/// Get the PlotSystem (panics if not initialized). Uses thread-local cache after first call to avoid lock on every command.
 pub fn get_plot_system() -> PlotSystem {
-    let system = PLOT_SYSTEM.lock().unwrap();
-    if let Some(ref sys) = *system {
-        // Clone the proxy (EventLoopProxy is Clone)
-        PlotSystem::new(sys.proxy().clone())
-    } else {
-        panic!("PlotSystem not initialized. Call init_plot_system() first.");
-    }
+    CACHED_PROXY.with(|cell| {
+        if let Some(ref proxy) = *cell.borrow() {
+            return PlotSystem::new(proxy.clone());
+        }
+        let proxy = {
+            let system = PLOT_SYSTEM.lock().unwrap();
+            system.as_ref().expect("PlotSystem not initialized. Call init_plot_system() first.")
+                .proxy().clone()
+        };
+        *cell.borrow_mut() = Some(proxy.clone());
+        PlotSystem::new(proxy)
+    })
 }
 

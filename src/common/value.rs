@@ -183,8 +183,7 @@ impl Value {
             Value::Table(table) => table.borrow().len() > 0,  // Таблица не пустая = true
             Value::Object(map_rc) => !map_rc.borrow().is_empty(),  // Объект не пустой = true
             Value::ColumnReference { table, column_name } => {
-                let table_ref = table.borrow();
-                if let Some(column) = table_ref.get_column(column_name) {
+                if let Some(column) = table.borrow_mut().get_column(column_name) {
                     !column.is_empty()
                 } else {
                     false
@@ -280,12 +279,10 @@ impl Value {
                 format!("<table: {} rows, {} columns>", t.len(), t.column_count())
             }
             Value::ColumnReference { table, column_name } => {
-                let t = table.borrow();
+                let mut t = table.borrow_mut();
+                let name: String = t.name.as_ref().map(|n| n.as_str()).unwrap_or("table").to_string();
                 if let Some(column) = t.get_column(column_name) {
-                    format!("<column: {}.{} ({} values)>", 
-                        t.name.as_ref().map(|n| n.as_str()).unwrap_or("table"),
-                        column_name,
-                        column.len())
+                    format!("<column: {}.{} ({} values)>", name, column_name, column.len())
                 } else {
                     format!("<column: {}.{} (not found)>",
                         t.name.as_ref().map(|n| n.as_str()).unwrap_or("table"),

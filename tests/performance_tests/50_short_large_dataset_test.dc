@@ -1,0 +1,40 @@
+# Large Dataset Processing Performance Test
+# This test creates and processes a large dataset to identify bottlenecks
+
+print("=== LARGE DATASET PROCESSING PERFORMANCE TEST ===")
+print("Creating large dataset with 50,000 rows...")
+
+# Create large dataset
+large_data = []
+headers = ['id', 'employee_name', 'department', 'salary', 'age', 'performance_score', 'hire_date', 'location']
+
+# Generate 50,000 rows of realistic employee data
+for i in range(50000) {
+    dept_id = i - (i / 15) * 15
+    salary_mod = i - (i / 75000) * 75000
+    age_mod = i - (i / 43) * 43
+    perf_mod = i - (i / 100) * 100
+    date_mod = i - (i / 28) * 28
+    loc_mod = i - (i / 8) * 8
+
+    row = [
+        i,
+        'Employee_' + i,
+        'Department_' + dept_id,
+        45000 + salary_mod,
+        22 + age_mod,
+        perf_mod / 100.0,
+        '2020-01-' + (date_mod + 1),
+        'Location_' + loc_mod
+    ]
+    push(large_data, row)
+    #print("push row - ", i)
+}
+
+print("Dataset created. Creating table...")
+employees = table(large_data, headers)
+print("Table created successfully!")
+
+large_data = []
+
+print("Short large dataset performance test completed successfully!")

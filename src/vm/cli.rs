@@ -133,6 +133,69 @@ pub fn print_version() {
     println!("DataCode v{}", VERSION);
 }
 
+/// Parse --build_model, --debug, --no-gui, --base-dir and script args from a slice.
+/// skip_script_arg_index: if Some(i), args[i] is the .dc filename and is not added to script_args.
+fn parse_file_execution_flags(
+    args: &[String],
+    skip_script_arg_index: Option<usize>,
+) -> Result<
+    (
+        bool,
+        Option<String>,
+        bool,
+        bool,
+        Option<String>,
+        Vec<String>,
+    ),
+    String,
+> {
+    let mut build_model = false;
+    let mut output_db: Option<String> = None;
+    let mut debug = false;
+    let mut no_gui = false;
+    let mut base_dir: Option<String> = None;
+    let mut script_args = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--build_model" | "--build-model" => {
+                build_model = true;
+                if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                    output_db = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--debug" => {
+                debug = true;
+                i += 1;
+            }
+            "--no-gui" => {
+                no_gui = true;
+                i += 1;
+            }
+            "--base-dir" | "--base_dir" => {
+                if i + 1 < args.len() {
+                    base_dir = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    return Err("Ошибка: --base-dir требует значение (путь к директории)".to_string());
+                }
+            }
+            arg => {
+                if !arg.starts_with('-') {
+                    if Some(i) != skip_script_arg_index {
+                        script_args.push(arg.to_string());
+                    }
+                }
+                i += 1;
+            }
+        }
+    }
+    Ok((build_model, output_db, debug, no_gui, base_dir, script_args))
+}
+
 /// Parse CLI arguments
 pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
     if args.len() > 1 {
@@ -257,59 +320,44 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
                 return Ok(CliArgs::HttpServer(HttpServerConfig { host, port, app_file }));
             }
             _ => {
-                // Check if it's an option (starts with -)
+                // Allow flags before filename (e.g. datacode --no-gui script.dc); if first arg is a flag, find .dc file in args
                 if arg.starts_with('-') {
+                    let dc_idx = args[1..].iter().position(|a| a.ends_with(".dc"));
+                    let dc_idx = dc_idx.map(|i| i + 1);
+                    if let Some(idx) = dc_idx {
+                        let filename = args[idx].clone();
+                        let (build_model, output_db, debug, no_gui, base_dir, script_args) =
+                            parse_file_execution_flags(&args[1..], Some(idx - 1))?;
+                        let script_path_for_check: std::path::PathBuf = if let Some(ref b) = base_dir {
+                            Path::new(b).join(&filename)
+                        } else {
+                            Path::new(&filename).to_path_buf()
+                        };
+                        if !script_path_for_check.exists() {
+                            return Err(format!("Ошибка: файл '{}' не найден", script_path_for_check.display()));
+                        }
+                        if !filename.ends_with(".dc") {
+                            eprintln!("Предупреждение: файл '{}' не имеет расширения .dc", filename);
+                        }
+                        return Ok(CliArgs::FileExecution(FileExecutionConfig {
+                            filename,
+                            base_dir,
+                            build_model,
+                            output_db,
+                            debug,
+                            no_gui,
+                            script_args,
+                        }));
+                    }
                     return Err(format!("Неизвестная опция: {}\nИспользуйте --help для справки", arg));
                 }
             }
         }
         
-        // File execution
+        // File execution: first arg is the .dc filename
         let filename = arg.clone();
-        
-        // Check for --build_model, --debug, --no-gui, --base-dir flags first (to get base_dir for existence check)
-        let mut build_model = false;
-        let mut output_db: Option<String> = None;
-        let mut debug = false;
-        let mut no_gui = false;
-        let mut base_dir: Option<String> = None;
-        let mut script_args = Vec::new();
-        let mut i = 2;
-        while i < args.len() {
-            match args[i].as_str() {
-                "--build_model" | "--build-model" => {
-                    build_model = true;
-                    if i + 1 < args.len() && !args[i + 1].starts_with('-') {
-                        output_db = Some(args[i + 1].clone());
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                "--debug" => {
-                    debug = true;
-                    i += 1;
-                }
-                "--no-gui" => {
-                    no_gui = true;
-                    i += 1;
-                }
-                "--base-dir" | "--base_dir" => {
-                    if i + 1 < args.len() {
-                        base_dir = Some(args[i + 1].clone());
-                        i += 2;
-                    } else {
-                        return Err("Ошибка: --base-dir требует значение (путь к директории)".to_string());
-                    }
-                }
-                arg => {
-                    if !arg.starts_with('-') {
-                        script_args.push(arg.to_string());
-                    }
-                    i += 1;
-                }
-            }
-        }
+        let (build_model, output_db, debug, no_gui, base_dir, script_args) =
+            parse_file_execution_flags(&args[2..], None)?;
         
         // Check file existence: if base_dir set and path relative, resolve relative to base_dir
         let script_path_for_check: std::path::PathBuf = if let Some(ref b) = base_dir {

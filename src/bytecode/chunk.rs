@@ -215,6 +215,18 @@ impl Chunk {
                 output.push_str(&format!("JUMP_IF_FALSE_LABEL {}\n", label_id));
                 offset + 1
             }
+            OpCode::ForRange(var_slot, start_c, end_c, step_c, end_offset) => {
+                output.push_str(&format!("FOR_RANGE slot={} start_c={} end_c={} step_c={} end_off={}\n", var_slot, start_c, end_c, step_c, end_offset));
+                offset + 1
+            }
+            OpCode::ForRangeNext(back_offset) => {
+                output.push_str(&format!("FOR_RANGE_NEXT back_off={}\n", back_offset));
+                offset + 1
+            }
+            OpCode::PopForRange => {
+                output.push_str("POP_FOR_RANGE\n");
+                offset + 1
+            }
             OpCode::Call(arity) => {
                 output.push_str(&format!("CALL {}\n", arity));
                 offset + 1
@@ -302,6 +314,10 @@ impl Chunk {
                 let module_name = &self.constants[*module_index];
                 let items_array = &self.constants[*items_index];
                 output.push_str(&format!("IMPORT_FROM {:4} '{}' items={}\n", module_index, module_name.to_string(), items_array.to_string()));
+                offset + 1
+            }
+            OpCode::RegAdd(rd, r1, r2) => {
+                output.push_str(&format!("REG_ADD {} {} {}\n", rd, r1, r2));
                 offset + 1
             }
         }

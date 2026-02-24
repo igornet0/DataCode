@@ -35,15 +35,14 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                     
                     // Загружаем объект
                     if object_name == "this" {
-                        // this может быть локальной переменной (конструктор) или параметром (метод)
-                        if let Some(local_index) = ctx.scope.resolve_local("this") {
-                            // this найден как локальная переменная (конструктор)
-                            ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                        let slot = if let Some(s) = ctx.constructor_this_slot {
+                            s
+                        } else if let Some(local_index) = ctx.scope.resolve_local("this") {
+                            local_index
                         } else {
-                            // this не найден как локальная переменная, значит это первый параметр (метод)
-                            // В методах this всегда в слоте 0
-                            ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
-                        }
+                            0
+                        };
+                        ctx.chunk.write_with_line(OpCode::LoadLocal(slot), *line);
                     } else {
                         // Загружаем переменную-объект
                         if let Some(local_index) = ctx.scope.resolve_local(object_name) {
@@ -66,17 +65,15 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                     // SetArrayElement возвращает обновленный объект
                     // Сохраняем его обратно в переменную
                     if object_name == "this" {
-                        // this может быть локальной переменной или параметром
-                        if let Some(local_index) = ctx.scope.resolve_local("this") {
-                            // this найден как локальная переменная (конструктор)
-                            ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
-                            ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                        let slot = if let Some(s) = ctx.constructor_this_slot {
+                            s
+                        } else if let Some(local_index) = ctx.scope.resolve_local("this") {
+                            local_index
                         } else {
-                            // this не найден как локальная переменная, значит это первый параметр (метод)
-                            // В методах this всегда в слоте 0
-                            ctx.chunk.write_with_line(OpCode::StoreLocal(0), *line);
-                            ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
-                        }
+                            0
+                        };
+                        ctx.chunk.write_with_line(OpCode::StoreLocal(slot), *line);
+                        ctx.chunk.write_with_line(OpCode::LoadLocal(slot), *line);
                     } else {
                         // Сохраняем в переменную-объект
                         if let Some(local_index) = ctx.scope.resolve_local(object_name) {
@@ -165,7 +162,9 @@ fn compile_assign_op(
             
             // Загружаем текущее значение свойства
             if object_name == "this" {
-                if let Some(local_index) = ctx.scope.resolve_local("this") {
+                if let Some(slot) = ctx.constructor_this_slot {
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
+                } else if let Some(local_index) = ctx.scope.resolve_local("this") {
                     ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
                 } else {
                     ctx.chunk.write_with_line(OpCode::LoadLocal(0), line);
@@ -218,7 +217,9 @@ fn compile_assign_op(
             
             // Загружаем объект
             if object_name == "this" {
-                if let Some(local_index) = ctx.scope.resolve_local("this") {
+                if let Some(slot) = ctx.constructor_this_slot {
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
+                } else if let Some(local_index) = ctx.scope.resolve_local("this") {
                     ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
                 } else {
                     ctx.chunk.write_with_line(OpCode::LoadLocal(0), line);
@@ -236,7 +237,10 @@ fn compile_assign_op(
             
             // Сохраняем обновленный объект обратно
             if object_name == "this" {
-                if let Some(local_index) = ctx.scope.resolve_local("this") {
+                if let Some(slot) = ctx.constructor_this_slot {
+                    ctx.chunk.write_with_line(OpCode::StoreLocal(slot), line);
+                    ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
+                } else if let Some(local_index) = ctx.scope.resolve_local("this") {
                     ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), line);
                     ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
                 } else {

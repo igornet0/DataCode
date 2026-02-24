@@ -344,6 +344,7 @@ impl Compiler {
             current_class: None,
             current_superclass: None,
             in_constructor: false,
+            constructor_this_slot: None,
         }
     }
 
@@ -406,27 +407,22 @@ impl Compiler {
                             self.chunk.global_names.insert(global_index, module.clone());
                         }
                         
-                        // Register imported item names in globals for from-import
-                        for item in items {
-                            match item {
-                                ImportItem::Named(name) => {
-                                    if !self.scope.globals.contains_key(name) {
-                                        let global_index = self.scope.globals.len();
-                                        self.scope.globals.insert(name.clone(), global_index);
-                                        self.chunk.global_names.insert(global_index, name.clone());
-                                    }
-                                }
-                                ImportItem::Aliased { alias, .. } => {
-                                    if !self.scope.globals.contains_key(alias) {
-                                        let global_index = self.scope.globals.len();
-                                        self.scope.globals.insert(alias.clone(), global_index);
-                                        self.chunk.global_names.insert(global_index, alias.clone());
-                                    }
-                                }
-                                ImportItem::All => {
-                                    // All items will be imported at runtime, we can't register them here
-                                    // But we need to handle this case in VM
-                                }
+                        // Register imported item names in globals in deterministic (sorted) order,
+                        // so chunk.global_names and VM slots are stable across runs and threads.
+                        let mut item_names: Vec<String> = items
+                            .iter()
+                            .filter_map(|item| match item {
+                                ImportItem::Named(name) => Some(name.clone()),
+                                ImportItem::Aliased { alias, .. } => Some(alias.clone()),
+                                ImportItem::All => None,
+                            })
+                            .collect();
+                        item_names.sort();
+                        for name in item_names {
+                            if !self.scope.globals.contains_key(&name) {
+                                let global_index = self.scope.globals.len();
+                                self.scope.globals.insert(name.clone(), global_index);
+                                self.chunk.global_names.insert(global_index, name);
                             }
                         }
                     }
@@ -614,6 +610,7 @@ impl Compiler {
                 let loop_context = LoopContext {
                     continue_label: loop_start_label, // continue возвращается к началу цикла
                     break_label: loop_end_label,      // break переходит к концу цикла
+                    is_for_range: false,
                 };
                 self.loop_contexts.push(loop_context);
                 
@@ -720,6 +717,7 @@ impl Compiler {
                 let loop_context = LoopContext {
                     continue_label: continue_label, // continue переходит к инкременту
                     break_label: loop_end_label,    // break переходит к концу цикла
+                    is_for_range: false,
                 };
                 self.loop_contexts.push(loop_context);
                 
@@ -968,9 +966,12 @@ impl Compiler {
                         line: *line,
                     });
                 }
-                // Jump к метке конца цикла
-                let break_label = self.loop_contexts.last().unwrap().break_label;
-                self.labels.emit_jump(&mut self.chunk, self.current_line,false, break_label)?;
+                let loop_ctx = self.loop_contexts.last().unwrap();
+                if loop_ctx.is_for_range {
+                    self.chunk.write_with_line(OpCode::PopForRange, self.current_line);
+                }
+                let break_label = loop_ctx.break_label;
+                self.labels.emit_jump(&mut self.chunk, self.current_line, false, break_label)?;
             }
             Stmt::Continue { line } => {
                 self.current_line = *line;
@@ -1796,39 +1797,33 @@ impl Compiler {
                             0
                         } else if method == "train" {
                             // Разрешаем именованные аргументы для train метода
-                            // Используем resolve_function_args для правильного маппинга именованных аргументов
                             let resolved_args = match self.resolve_function_args("nn_train", args, None, *line) {
                                 Ok(resolved) => resolved,
                                 Err(e) => return Err(e),
                             };
-                            
-                            // Компилируем разрешенные аргументы в правильном порядке
-                            for arg in &resolved_args {
+                            // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
+                            for arg in resolved_args.iter().skip(1) {
                                 match arg {
                                     Arg::Positional(expr) => self.compile_expr(expr)?,
                                     Arg::Named { value, .. } => self.compile_expr(value)?,
                                 }
                             }
-                            
-                            // Используем количество разрешенных аргументов
-                            resolved_args.len()
+                            // Всего аргументов: 1 receiver + (len-1); Call(arity) ожидает arity = это число, т.е. actual_arg_count + 1 = len, значит actual_arg_count = len - 1
+                            resolved_args.len() - 1
                         } else if method == "train_sh" {
                             // Разрешаем именованные аргументы для train_sh метода
                             let resolved_args = match self.resolve_function_args("nn_train_sh", args, None, *line) {
                                 Ok(resolved) => resolved,
                                 Err(e) => return Err(e),
                             };
-                            
-                            // Компилируем разрешенные аргументы в правильном порядке
-                            for arg in &resolved_args {
+                            // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
+                            for arg in resolved_args.iter().skip(1) {
                                 match arg {
                                     Arg::Positional(expr) => self.compile_expr(expr)?,
                                     Arg::Named { value, .. } => self.compile_expr(value)?,
                                 }
                             }
-                            
-                            // Используем количество разрешенных аргументов
-                            resolved_args.len()
+                            resolved_args.len() - 1
                         } else {
                             // Для device и save компилируем аргументы
                             // device(device_string) или save(path_string)

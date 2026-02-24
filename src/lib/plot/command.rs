@@ -3,8 +3,7 @@
 use winit::window::{WindowId, Icon};
 use std::sync::mpsc;
 use crate::plot::Image;
-use std::sync::Arc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex, Condvar};
 
 /// Commands sent from runtime thread to main thread via EventLoopProxy
 /// All window operations go through commands - runtime NEVER owns Window
@@ -51,6 +50,15 @@ pub enum GuiCommand {
     Redraw {
         window_id: WindowId,
     },
+
+    /// Register waiter for window close (replaces global WINDOW_WAITERS Mutex; handled in event loop).
+    RegisterWaiter {
+        window_id: WindowId,
+        waiter: Arc<(Mutex<bool>, Condvar)>,
+    },
+
+    /// Sent by runtime thread when script has finished; wakes event loop so it can exit when there are no windows.
+    RuntimeFinished,
 }
 
 /// Chart data that can be sent to GUI thread

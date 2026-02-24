@@ -8,67 +8,49 @@ use winit::event::{Event, WindowEvent};
 use winit::window::WindowBuilder;
 use winit::event_loop::ControlFlow;
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, Condvar};
 use std::thread;
 
 use crate::vm::window_events;
 
-/// Global window storage in GUI thread
-/// Windows NEVER leave this thread - runtime communicates via commands
-static WINDOWS: LazyLock<Mutex<HashMap<winit::window::WindowId, WindowState>>> = 
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
 /// Run DataCode code with EventLoop (for plot support)
-/// Creates EventLoop in main thread, spawns runtime in separate thread
+/// Creates EventLoop in main thread, spawns runtime in separate thread.
+/// Window state lives in event-loop closure (no global Mutex).
 pub fn run_with_event_loop<F>(code_runner: F) -> Result<(), String>
 where
     F: FnOnce() -> Result<(), String> + Send + 'static,
 {
-    // Create EventLoop in main thread (required for macOS)
     let event_loop = EventLoopBuilder::<GuiCommand>::with_user_event()
         .build()
         .map_err(|e| format!("Failed to create event loop: {:?}", e))?;
     
     let proxy = event_loop.create_proxy();
-    
-    // Initialize PlotSystem
     system::init_plot_system(proxy.clone());
     
-    // Shared flag to track if runtime thread has finished
-    let runtime_finished = Arc::new(Mutex::new(false));
+    let runtime_finished = Arc::new(AtomicBool::new(false));
     let runtime_finished_clone = runtime_finished.clone();
     
-    // Spawn runtime thread
-    // DIAG: Log thread creation
-    // eprintln!("[DIAG] Thread: Spawning runtime thread");
-    // let thread_start_time = std::time::Instant::now();
-    
     let runtime_handle = thread::spawn(move || {
-        // let thread_id = std::thread::current().id();
-        // eprintln!("[DIAG] Thread: Runtime thread started - thread_id={:?}", thread_id);
-        
         let result = code_runner();
-        
-        // let thread_duration = thread_start_time.elapsed();
-        
-        // Mark runtime as finished when done
-        *runtime_finished_clone.lock().unwrap() = true;
+        runtime_finished_clone.store(true, Ordering::SeqCst);
+        // Wake the event loop so it can exit when there are no windows (otherwise it may block in Wait forever).
+        let _ = system::get_plot_system().proxy().send_event(GuiCommand::RuntimeFinished);
         result
     });
     
-    // Run event loop (blocking)
-    // All windows are stored in WINDOWS HashMap in GUI thread
-    let runtime_finished_event_loop = runtime_finished.clone();
+    // Window state and waiters are local to this closure; no global WINDOW_WAITERS Mutex
+    let mut windows: HashMap<winit::window::WindowId, WindowState> = HashMap::new();
+    let mut window_waiters: HashMap<winit::window::WindowId, Arc<(Mutex<bool>, Condvar)>> = HashMap::new();
+    let runtime_finished_el = runtime_finished.clone();
+
     event_loop.run(move |event, elwt| {
-        // Check if we should exit before processing events
-        let all_windows_closed = WINDOWS.lock().unwrap().is_empty();
-        let runtime_done = *runtime_finished_event_loop.lock().unwrap();
+        let all_windows_closed = windows.is_empty();
+        let runtime_done = runtime_finished_el.load(Ordering::SeqCst);
         if all_windows_closed && runtime_done {
             elwt.exit();
             return;
         }
-        
-        // Use Poll when runtime is done to check for exit more frequently
         if runtime_done {
             elwt.set_control_flow(ControlFlow::Poll);
         } else {
@@ -79,38 +61,22 @@ where
             Event::UserEvent(cmd) => {
                 match cmd {
                     GuiCommand::CreateWindow { width, height, title, icon, response } => {
-                        
                         let mut window_builder = WindowBuilder::new()
                             .with_title(&title)
                             .with_inner_size(winit::dpi::LogicalSize::new(width as f64, height as f64));
-                        
                         if let Some(icon) = icon {
                             window_builder = window_builder.with_window_icon(Some(icon));
                         }
-                        
                         match window_builder.build(elwt) {
                             Ok(window) => {
                                 let window_id = window.id();
-                                
                                 #[cfg(target_os = "macos")]
                                 {
-                                    // Load and set icon on macOS if needed
-                                    if let Some(_icon) = natives::load_window_icon() {
-                                        // Icon is already set via window_builder
-                                    }
+                                    if let Some(_icon) = natives::load_window_icon() {}
                                 }
-                                
-                                // Create PlotWindow wrapper
                                 let plot_window = PlotWindow::new(window, width, height, title.clone());
-                                
-                                // Create WindowState and store in global HashMap
                                 let window_state = WindowState::new(plot_window);
-                                WINDOWS.lock().unwrap().insert(window_id, window_state);
-                                
-                                // Note: Windows are stored in WINDOWS HashMap, not in thread-local
-                                // Thread-local storage is kept for backward compatibility but not actively used
-                                
-                                // Send response with window_id
+                                windows.insert(window_id, window_state);
                                 let _ = response.send(Ok(window_id));
                             }
                             Err(e) => {
@@ -119,87 +85,73 @@ where
                         }
                     }
                     GuiCommand::DrawImage { window_id, image } => {
-                        // Store image in WindowState and request redraw
-                        if let Ok(mut windows) = WINDOWS.lock() {
-                            if let Some(state) = windows.get_mut(&window_id) {
-                                let view_state = ImageViewState::new();
-                                state.content = RenderContent::Image(image, view_state);
-                                state.window.request_redraw();
-                            }
+                        if let Some(state) = windows.get_mut(&window_id) {
+                            let view_state = ImageViewState::new();
+                            state.content = RenderContent::Image(image, view_state);
+                            state.window.request_redraw();
                         }
                     }
                     GuiCommand::UpdateChart { window_id, chart_data } => {
-                        // Store chart data in WindowState and request redraw
-                        if let Ok(mut windows) = WINDOWS.lock() {
-                            if let Some(state) = windows.get_mut(&window_id) {
-                                state.content = RenderContent::Chart(chart_data);
-                                state.window.request_redraw();
-                            }
+                        if let Some(state) = windows.get_mut(&window_id) {
+                            state.content = RenderContent::Chart(chart_data);
+                            state.window.request_redraw();
                         }
                     }
                     GuiCommand::UpdateImageGrid { window_id, images, rows, cols, titles } => {
-                        // Store image grid in WindowState and request redraw
-                        if let Ok(mut windows) = WINDOWS.lock() {
-                            if let Some(state) = windows.get_mut(&window_id) {
-                                state.content = RenderContent::ImageGrid {
-                                    images,
-                                    rows,
-                                    cols,
-                                    titles,
-                                };
-                                state.window.request_redraw();
-                            }
+                        if let Some(state) = windows.get_mut(&window_id) {
+                            state.content = RenderContent::ImageGrid {
+                                images, rows, cols, titles,
+                            };
+                            state.window.request_redraw();
                         }
                     }
                     GuiCommand::UpdateFigure { window_id, figure_data } => {
-                        // Store figure data in WindowState and request redraw
-                        if let Ok(mut windows) = WINDOWS.lock() {
-                            if let Some(state) = windows.get_mut(&window_id) {
-                                state.content = RenderContent::Figure(figure_data);
-                                state.window.request_redraw();
-                            }
+                        if let Some(state) = windows.get_mut(&window_id) {
+                            state.content = RenderContent::Figure(figure_data);
+                            state.window.request_redraw();
                         }
                     }
                     GuiCommand::Redraw { window_id } => {
-                        // Request redraw
-                        if let Ok(mut windows) = WINDOWS.lock() {
-                            if let Some(state) = windows.get_mut(&window_id) {
-                                state.window.request_redraw();
-                            }
+                        if let Some(state) = windows.get_mut(&window_id) {
+                            state.window.request_redraw();
+                        }
+                    }
+                    GuiCommand::RegisterWaiter { window_id, waiter } => {
+                        window_waiters.insert(window_id, waiter);
+                    }
+                    GuiCommand::RuntimeFinished => {
+                        if windows.is_empty() {
+                            elwt.exit();
                         }
                     }
                 }
             }
             Event::WindowEvent { event: WindowEvent::Resized(_new_size), window_id, .. } => {
-                window_events::handle_window_resize(&WINDOWS, window_id);
+                window_events::handle_window_resize(&mut windows, window_id);
             }
             Event::WindowEvent { event: WindowEvent::CloseRequested, window_id, .. } => {
-                let should_exit = window_events::handle_window_close(&WINDOWS, window_id);
-                
-                // If all windows are closed and runtime has finished, exit event loop
+                let should_exit = window_events::handle_window_close(&mut windows, window_id, &mut window_waiters);
                 if should_exit {
-                    let runtime_done = *runtime_finished_event_loop.lock().unwrap();
+                    let runtime_done = runtime_finished_el.load(Ordering::SeqCst);
                     if runtime_done {
                         elwt.exit();
                     }
                 }
             }
             Event::WindowEvent { event: WindowEvent::CursorMoved { position, .. }, window_id, .. } => {
-                window_events::handle_cursor_moved(&WINDOWS, window_id, position);
+                window_events::handle_cursor_moved(&mut windows, window_id, position);
             }
             Event::WindowEvent { event: WindowEvent::MouseInput { state: button_state, button: winit::event::MouseButton::Left, .. }, window_id, .. } => {
-                // Handle mouse click - select point on line chart
                 if button_state == winit::event::ElementState::Pressed {
-                    window_events::handle_mouse_click(&WINDOWS, window_id);
+                    window_events::handle_mouse_click(&mut windows, window_id);
                 }
             }
             Event::WindowEvent { event: WindowEvent::RedrawRequested, window_id, .. } => {
-                window_events::handle_redraw(&WINDOWS, window_id);
+                window_events::handle_redraw(&mut windows, window_id);
             }
             Event::AboutToWait => {
-                // Check if we should exit: all windows closed and runtime finished
-                let all_windows_closed = WINDOWS.lock().unwrap().is_empty();
-                let runtime_done = *runtime_finished_event_loop.lock().unwrap();
+                let all_windows_closed = windows.is_empty();
+                let runtime_done = runtime_finished_el.load(Ordering::SeqCst);
                 if all_windows_closed && runtime_done {
                     elwt.exit();
                     return;

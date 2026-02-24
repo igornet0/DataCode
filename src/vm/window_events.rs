@@ -3,7 +3,8 @@
 use crate::plot::{WindowState, RenderContent};
 use crate::plot::command::{ChartType, ChartData};
 use crate::plot::renderer::Renderer;
-use std::sync::Mutex;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, Condvar};
 
 /// Calculate chart bounds for line charts
 /// Returns (x_min_plot, x_max_plot, y_min_plot, y_max_plot)
@@ -36,67 +37,45 @@ fn calculate_chart_bounds(chart_data: &ChartData) -> (f64, f64, f64, f64) {
     (x_min_plot, x_max_plot, y_min_plot, y_max_plot)
 }
 
-/// Handle window resize event
+/// Handle window resize event (windows is event-loop local, no Mutex).
 pub fn handle_window_resize(
-    windows: &Mutex<std::collections::HashMap<winit::window::WindowId, WindowState>>,
+    windows: &mut HashMap<winit::window::WindowId, WindowState>,
     window_id: winit::window::WindowId,
 ) {
-    if let Ok(mut windows) = windows.lock() {
-        if let Some(state) = windows.get_mut(&window_id) {
-            // Update window size with the new size from event
-            state.window.update_size();
-            
-            // Update scale factor and ensure buffer is resized
-            if let Some(ref mut renderer) = state.renderer {
-                renderer.update_scale_factor(&state.window);
-                
-                // Force buffer resize - this ensures softbuffer updates buffer size
-                // before the next redraw
-                let _ = renderer.ensure_buffer_resized();
-            }
-            
-            // Request redraw - this will trigger RedrawRequested event
-            // During redraw, buffer will already have the correct size
-            state.window.request_redraw();
+    if let Some(state) = windows.get_mut(&window_id) {
+        state.window.update_size();
+        if let Some(ref mut renderer) = state.renderer {
+            renderer.update_scale_factor(&state.window);
+            let _ = renderer.ensure_buffer_resized();
         }
+        state.window.request_redraw();
     }
 }
 
-/// Handle window close event
-/// Returns true if all windows are closed
+/// Handle window close event. Returns true if all windows are closed.
+/// Notifies waiter from event-loop-local window_waiters (no global Mutex).
 pub fn handle_window_close(
-    windows: &Mutex<std::collections::HashMap<winit::window::WindowId, WindowState>>,
+    windows: &mut HashMap<winit::window::WindowId, WindowState>,
     window_id: winit::window::WindowId,
+    window_waiters: &mut HashMap<winit::window::WindowId, Arc<(Mutex<bool>, Condvar)>>,
 ) -> bool {
-    let should_exit = {
-        let mut windows = windows.lock().unwrap();
-        if let Some(state) = windows.remove(&window_id) {
-            // Notify waiter if exists
-            if let Some(wait) = state.wait {
-                let (lock, cvar) = &*wait;
-                let mut done = lock.lock().unwrap();
-                *done = true;
-                cvar.notify_all();
-            }
-        }
-        // Check if all windows are closed
-        windows.is_empty()
-    };
-    
-    // Also notify via PlotSystem (for backward compatibility)
-    crate::plot::system::PlotSystem::notify_window_closed(window_id);
-    
-    should_exit
+    let _ = windows.remove(&window_id);
+    if let Some(waiter) = window_waiters.remove(&window_id) {
+        let (lock, cvar) = &*waiter;
+        let mut closed = lock.lock().unwrap();
+        *closed = true;
+        cvar.notify_all();
+    }
+    windows.is_empty()
 }
 
-/// Handle cursor moved event
+/// Handle cursor moved event (windows is event-loop local).
 pub fn handle_cursor_moved(
-    windows: &Mutex<std::collections::HashMap<winit::window::WindowId, WindowState>>,
+    windows: &mut HashMap<winit::window::WindowId, WindowState>,
     window_id: winit::window::WindowId,
     position: winit::dpi::PhysicalPosition<f64>,
 ) {
-    if let Ok(mut windows) = windows.lock() {
-        if let Some(state) = windows.get_mut(&window_id) {
+    if let Some(state) = windows.get_mut(&window_id) {
             // Update cursor position in screen coordinates
             let cursor_pos = (position.x as f32, position.y as f32);
             state.cursor_pos = Some(cursor_pos);
@@ -144,19 +123,16 @@ pub fn handle_cursor_moved(
                 state.hovered_point = None;
             }
             
-            // Request redraw to update coordinate display and hover effects
             state.window.request_redraw();
         }
-    }
 }
 
-/// Handle mouse click event
+/// Handle mouse click event (windows is event-loop local).
 pub fn handle_mouse_click(
-    windows: &Mutex<std::collections::HashMap<winit::window::WindowId, WindowState>>,
+    windows: &mut HashMap<winit::window::WindowId, WindowState>,
     window_id: winit::window::WindowId,
 ) {
-    if let Ok(mut windows) = windows.lock() {
-        if let Some(state) = windows.get_mut(&window_id) {
+    if let Some(state) = windows.get_mut(&window_id) {
             // Find nearest point if cursor is over a line chart
             if let RenderContent::Chart(chart_data) = &state.content {
                 if let ChartType::Line = chart_data.chart_type {
@@ -197,17 +173,15 @@ pub fn handle_mouse_click(
                     }
                 }
             }
-        }
     }
 }
 
-/// Handle redraw event
+/// Handle redraw event (windows is event-loop local).
 pub fn handle_redraw(
-    windows: &Mutex<std::collections::HashMap<winit::window::WindowId, WindowState>>,
+    windows: &mut HashMap<winit::window::WindowId, WindowState>,
     window_id: winit::window::WindowId,
 ) {
-    if let Ok(mut windows) = windows.lock() {
-        if let Some(state) = windows.get_mut(&window_id) {
+    if let Some(state) = windows.get_mut(&window_id) {
             // Create renderer if needed
             if state.renderer.is_none() {
                 match Renderer::new(&state.window) {
@@ -314,12 +288,9 @@ pub fn handle_redraw(
                             &titles,
                         );
                     }
-                    RenderContent::None => {
-                        // Empty window - nothing to render
-                    }
+                    RenderContent::None => {}
                 }
             }
         }
-    }
 }
 

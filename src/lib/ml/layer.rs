@@ -645,23 +645,24 @@ impl Sequential {
 
 // Простая функция random для MVP (не криптографически безопасная)
 mod rand {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    static mut SEED: u64 = 0;
+    static SEED: AtomicU64 = AtomicU64::new(0);
 
     pub fn random() -> f32 {
-        unsafe {
-            if SEED == 0 {
-                let nanos = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos();
-                SEED = nanos as u64;
-            }
-            SEED = SEED.wrapping_mul(1103515245).wrapping_add(12345);
-            // Нормализуем к [0, 1) правильно: берем младшие 16 бит и делим на 65536
-            let bits = (SEED >> 16) & 0xFFFF;
-            bits as f32 / 65536.0
+        let mut seed = SEED.load(Ordering::Relaxed);
+        if seed == 0 {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            seed = nanos as u64;
+            SEED.store(seed, Ordering::Relaxed);
         }
+        seed = seed.wrapping_mul(1103515245).wrapping_add(12345);
+        SEED.store(seed, Ordering::Relaxed);
+        let bits = (seed >> 16) & 0xFFFF;
+        bits as f32 / 65536.0
     }
 }

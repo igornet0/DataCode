@@ -1,10 +1,12 @@
-// Binary and unary operations for VM
+// Binary and unary operations for VM (stack as Vec<TaggedValue>; handle_exception needs value_store/heavy_store)
 
-use crate::common::{error::LangError, value::Value};
+use crate::common::{error::LangError, value::Value, value_store::{ValueStore}, TaggedValue};
 use crate::vm::frame::CallFrame;
 use crate::vm::exceptions::ExceptionHandler;
+use crate::vm::heavy_store::HeavyStore;
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::fmt::Write;
 
 /// Get the current line number from the frames
 fn get_line(frames: &mut Vec<CallFrame>) -> usize {
@@ -24,8 +26,10 @@ pub fn binary_add(
     a: &Value,
     b: &Value,
     frames: &mut Vec<CallFrame>,
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<TaggedValue>,
     exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
     // Convert null to 0 for arithmetic operations (useful for class fields with default values)
@@ -34,9 +38,24 @@ pub fn binary_add(
     
     match (a, b) {
         (Value::Number(n1), Value::Number(n2)) => Ok(Value::Number(n1 + n2)),
-        (Value::String(s1), Value::String(s2)) => Ok(Value::String(format!("{}{}", s1, s2))),
-        (Value::String(s), Value::Number(n)) => Ok(Value::String(format!("{}{}", s, n))),
-        (Value::Number(n), Value::String(s)) => Ok(Value::String(format!("{}{}", n, s))),
+        (Value::String(s1), Value::String(s2)) => {
+            let mut buf = String::with_capacity(s1.len() + s2.len());
+            buf.push_str(s1);
+            buf.push_str(s2);
+            Ok(Value::String(buf))
+        }
+        (Value::String(s), Value::Number(n)) => {
+            let mut buf = String::with_capacity(s.len() + 24);
+            buf.push_str(s);
+            let _ = write!(buf, "{}", n);
+            Ok(Value::String(buf))
+        }
+        (Value::Number(n), Value::String(s)) => {
+            let mut buf = String::with_capacity(24 + s.len());
+            let _ = write!(buf, "{}", n);
+            buf.push_str(s);
+            Ok(Value::String(buf))
+        }
         (Value::Array(arr1), Value::Array(arr2)) => {
             // Array concatenation
             let mut result = arr1.borrow().clone();
@@ -59,7 +78,7 @@ pub fn binary_add(
                 "Operands must be numbers or strings".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
             }
@@ -72,8 +91,10 @@ pub fn binary_sub(
     a: &Value,
     b: &Value,
     frames: &mut Vec<CallFrame>,
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<TaggedValue>,
     exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
     // Convert null to 0 for arithmetic operations
@@ -88,7 +109,7 @@ pub fn binary_sub(
                 "Operands must be numbers".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
             }
@@ -101,8 +122,10 @@ pub fn binary_mul(
     a: &Value,
     b: &Value,
     frames: &mut Vec<CallFrame>,
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<TaggedValue>,
     exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
     match (a, b) {
@@ -129,7 +152,7 @@ pub fn binary_mul(
                 "Operands must be numbers, or string and number for repetition".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
             }
@@ -142,8 +165,10 @@ pub fn binary_div(
     a: &Value,
     b: &Value,
     frames: &mut Vec<CallFrame>,
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<TaggedValue>,
     exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
     match (a, b) {
@@ -154,7 +179,7 @@ pub fn binary_div(
                     "Division by zero".to_string(),
                     line,
                 );
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                     Ok(()) => Ok(Value::Null),
                     Err(e) => Err(e),
                 }
@@ -170,7 +195,7 @@ pub fn binary_div(
                     "Division by zero".to_string(),
                     line,
                 );
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                     Ok(()) => Ok(Value::Null),
                     Err(e) => Err(e),
                 }
@@ -183,7 +208,7 @@ pub fn binary_div(
                             e,
                             line,
                         );
-                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                             Ok(()) => Ok(Value::Null),
                             Err(e) => Err(e),
                         }
@@ -203,7 +228,7 @@ pub fn binary_div(
                             "Division by zero".to_string(),
                             line,
                         );
-                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                             Ok(()) => Ok(Value::Null),
                             Err(e) => Err(e),
                         }
@@ -225,7 +250,7 @@ pub fn binary_div(
                         e,
                         line,
                     );
-                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                         Ok(()) => Ok(Value::Null),
                         Err(e) => Err(e),
                     }
@@ -242,7 +267,7 @@ pub fn binary_div(
                         e,
                         line,
                     );
-                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                         Ok(()) => Ok(Value::Null),
                         Err(e) => Err(e),
                     }
@@ -268,7 +293,7 @@ pub fn binary_div(
                 "Operands must be numbers, tensors, or paths".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
             }
@@ -281,8 +306,10 @@ pub fn binary_int_div(
     a: &Value,
     b: &Value,
     frames: &mut Vec<CallFrame>,
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<TaggedValue>,
     exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
     match (a, b) {
@@ -293,7 +320,7 @@ pub fn binary_int_div(
                     "Division by zero".to_string(),
                     line,
                 );
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                     Ok(()) => Ok(Value::Null),
                     Err(e) => Err(e),
                 }
@@ -308,7 +335,7 @@ pub fn binary_int_div(
                 "Operands must be numbers".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
             }
@@ -321,8 +348,10 @@ pub fn binary_mod(
     a: &Value,
     b: &Value,
     frames: &mut Vec<CallFrame>,
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<TaggedValue>,
     exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
     match (a, b) {
@@ -333,7 +362,7 @@ pub fn binary_mod(
                     "Modulo by zero".to_string(),
                     line,
                 );
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                     Ok(()) => Ok(Value::Null),
                     Err(e) => Err(e),
                 }
@@ -347,7 +376,7 @@ pub fn binary_mod(
                 "Operands must be numbers".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
             }
@@ -360,8 +389,10 @@ pub fn binary_pow(
     a: &Value,
     b: &Value,
     frames: &mut Vec<CallFrame>,
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<TaggedValue>,
     exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
     match (a, b) {
@@ -372,7 +403,7 @@ pub fn binary_pow(
                 "Operands must be numbers".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
             }
@@ -385,8 +416,10 @@ pub fn binary_greater(
     a: &Value,
     b: &Value,
     frames: &mut Vec<CallFrame>,
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<TaggedValue>,
     exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
     match (a, b) {
@@ -398,7 +431,7 @@ pub fn binary_greater(
                 "Operands must be numbers or strings".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
             }
@@ -411,8 +444,10 @@ pub fn binary_less(
     a: &Value,
     b: &Value,
     frames: &mut Vec<CallFrame>,
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<TaggedValue>,
     exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
     match (a, b) {
@@ -424,7 +459,7 @@ pub fn binary_less(
                 "Operands must be numbers or strings".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
             }
@@ -437,8 +472,10 @@ pub fn binary_greater_equal(
     a: &Value,
     b: &Value,
     frames: &mut Vec<CallFrame>,
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<TaggedValue>,
     exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
     match (a, b) {
@@ -450,7 +487,7 @@ pub fn binary_greater_equal(
                 "Operands must be numbers or strings".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
             }
@@ -463,8 +500,10 @@ pub fn binary_less_equal(
     a: &Value,
     b: &Value,
     frames: &mut Vec<CallFrame>,
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<TaggedValue>,
     exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
     match (a, b) {
@@ -476,7 +515,7 @@ pub fn binary_less_equal(
                 "Operands must be numbers or strings".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
             }
@@ -488,8 +527,10 @@ pub fn binary_less_equal(
 pub fn unary_negate(
     value: &Value,
     frames: &mut Vec<CallFrame>,
-    stack: &mut Vec<Value>,
+    stack: &mut Vec<TaggedValue>,
     exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
     match value {
@@ -500,7 +541,7 @@ pub fn unary_negate(
                 "Operand must be a number".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error) {
+            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
             }

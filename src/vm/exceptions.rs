@@ -1,7 +1,9 @@
-// Exception handling for VM
+// Exception handling for VM (Stage 1: stack as Vec<ValueId>, store error string as ValueId)
 
-use crate::common::{error::{LangError, StackTraceEntry, ErrorType}, value::Value};
+use crate::common::{error::{LangError, StackTraceEntry, ErrorType}, value::Value, value_store::ValueStore, TaggedValue};
 use crate::vm::frame::CallFrame;
+use crate::vm::heavy_store::HeavyStore;
+use crate::vm::store_convert::store_value;
 
 // Структура для обработчика исключений в VM
 pub struct ExceptionHandler {
@@ -54,12 +56,15 @@ impl ExceptionHandler {
         LangError::runtime_error_with_type_and_trace(message, line, error_type, Self::build_stack_trace(frames))
     }
 
-    /// Обрабатывает исключение - проверяет стек обработчиков и переходит к соответствующему catch блоку
+    /// Обрабатывает исключение - проверяет стек обработчиков и переходит к соответствующему catch блоку.
+    /// vm_stack is Vec<TaggedValue>; error string stored in slot as ValueId via store_value.
     pub fn handle_exception(
-        vm_stack: &mut Vec<Value>,
+        vm_stack: &mut Vec<crate::common::TaggedValue>,
         vm_frames: &mut Vec<CallFrame>,
         exception_handlers: &mut Vec<ExceptionHandler>,
         error: LangError,
+        value_store: &mut ValueStore,
+        heavy_store: &mut HeavyStore,
     ) -> Result<(), LangError> {
         // Получаем текущий IP для проверки, не находимся ли мы уже внутри catch блока
         let current_ip = if let Some(frame) = vm_frames.last() {
@@ -151,13 +156,13 @@ impl ExceptionHandler {
                     
                     // Сохраняем ошибку в переменную (если указана)
                     if let Some(Some(slot)) = error_var_slot {
-                        // Преобразуем ошибку в строку для сохранения в переменную
                         let error_string = format!("{}", error);
+                        let id = store_value(Value::String(error_string), value_store, heavy_store);
                         let frame = vm_frames.last_mut().unwrap();
                         if *slot >= frame.slots.len() {
-                            frame.slots.resize(*slot + 1, Value::Null);
+                            frame.slots.resize(*slot + 1, TaggedValue::null());
                         }
-                        frame.slots[*slot] = Value::String(error_string);
+                        frame.slots[*slot] = TaggedValue::from_heap(id);
                     }
                     
                     // Переходим к catch блоку в правильном фрейме

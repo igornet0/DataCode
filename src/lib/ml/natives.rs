@@ -195,12 +195,18 @@ pub fn native_tensor(args: &[Value]) -> Value {
 /// shape(tensor)
 pub fn native_shape(args: &[Value]) -> Value {
     if args.len() != 1 {
+        use crate::websocket::set_native_error;
+        set_native_error(format!("ml.shape expects 1 argument (tensor), got {}", args.len()));
         return Value::Null;
     }
 
     let tensor = match &args[0] {
         Value::Tensor(t) => t,
-        _ => return Value::Null,
+        _ => {
+            use crate::websocket::set_native_error;
+            set_native_error("ml.shape: argument must be a Tensor".to_string());
+            return Value::Null;
+        }
     };
 
     let shape = tensor.borrow().shape.clone();
@@ -716,45 +722,64 @@ pub fn native_lr_predict(args: &[Value]) -> Value {
 /// Train the model
 /// lr_train(model, x, y, epochs, lr) -> loss_history
 pub fn native_lr_train(args: &[Value]) -> Value {
+    use crate::websocket::set_native_error;
     if args.len() != 5 {
+        set_native_error(format!("ml.lr_train expects 5 arguments (model, x, y, epochs, lr), got {}", args.len()));
         return Value::Null;
     }
 
     let model = match &args[0] {
         Value::LinearRegression(m) => m,
-        _ => return Value::Null,
+        _ => {
+            set_native_error("ml.lr_train: first argument must be a LinearRegression model (from ml.linear_regression)".to_string());
+            return Value::Null;
+        }
     };
 
     let x = match &args[1] {
         Value::Tensor(t) => t.borrow().clone(),
-        _ => return Value::Null,
+        _ => {
+            set_native_error("ml.lr_train: second argument (x) must be a Tensor".to_string());
+            return Value::Null;
+        }
     };
 
     let y = match &args[2] {
         Value::Tensor(t) => t.borrow().clone(),
-        _ => return Value::Null,
+        _ => {
+            set_native_error("ml.lr_train: third argument (y) must be a Tensor".to_string());
+            return Value::Null;
+        }
     };
 
     let epochs = match &args[3] {
         Value::Number(n) => {
             let e = *n as i64;
             if e <= 0 {
+                set_native_error("ml.lr_train: epochs must be a positive number".to_string());
                 return Value::Null;
             }
             e as usize
         }
-        _ => return Value::Null,
+        _ => {
+            set_native_error("ml.lr_train: fourth argument (epochs) must be a number".to_string());
+            return Value::Null;
+        }
     };
 
     let lr = match &args[4] {
         Value::Number(n) => {
             let rate = *n as f64;
             if rate <= 0.0 {
+                set_native_error("ml.lr_train: learning rate must be positive".to_string());
                 return Value::Null;
             }
             rate as f32
         }
-        _ => return Value::Null,
+        _ => {
+            set_native_error("ml.lr_train: fifth argument (lr) must be a number".to_string());
+            return Value::Null;
+        }
     };
 
     match model.borrow_mut().train(&x, &y, epochs, lr) {
@@ -762,7 +787,10 @@ pub fn native_lr_train(args: &[Value]) -> Value {
             let loss_values: Vec<Value> = loss_history.iter().map(|&v| Value::Number(v as f64)).collect();
             Value::Array(Rc::new(RefCell::new(loss_values)))
         }
-        Err(_) => Value::Null,
+        Err(e) => {
+            set_native_error(format!("ml.lr_train failed: {}", e));
+            Value::Null
+        }
     }
 }
 
@@ -1325,12 +1353,18 @@ pub fn native_smooth_l1_loss(args: &[Value]) -> Value {
 /// dataset(table, feature_columns, target_columns) -> dataset
 pub fn native_dataset(args: &[Value]) -> Value {
     if args.len() != 3 {
+        use crate::websocket::set_native_error;
+        set_native_error(format!("ml.dataset expects 3 arguments (table, feature_cols, target_cols), got {}", args.len()));
         return Value::Null;
     }
 
-    let table = match &args[0] {
+    let mut table = match &args[0] {
         Value::Table(t) => t.borrow().clone(),
-        _ => return Value::Null,
+        _ => {
+            use crate::websocket::set_native_error;
+            set_native_error("ml.dataset: first argument must be a Table".to_string());
+            return Value::Null;
+        }
     };
 
     let feature_columns_array = match &args[1] {
@@ -1345,7 +1379,11 @@ pub fn native_dataset(args: &[Value]) -> Value {
             }
             columns
         }
-        _ => return Value::Null,
+        _ => {
+            use crate::websocket::set_native_error;
+            set_native_error("ml.dataset: second argument (feature_cols) must be an array of strings".to_string());
+            return Value::Null;
+        }
     };
 
     let target_columns_array = match &args[2] {
@@ -1355,17 +1393,29 @@ pub fn native_dataset(args: &[Value]) -> Value {
             for val in arr_ref.iter() {
                 match val {
                     Value::String(s) => columns.push(s.clone()),
-                    _ => return Value::Null,
+                    _ => {
+                        use crate::websocket::set_native_error;
+                        set_native_error("ml.dataset: target_cols must be an array of strings".to_string());
+                        return Value::Null;
+                    }
                 }
             }
             columns
         }
-        _ => return Value::Null,
+        _ => {
+            use crate::websocket::set_native_error;
+            set_native_error("ml.dataset: third argument (target_cols) must be an array of strings".to_string());
+            return Value::Null;
+        }
     };
 
-    match Dataset::from_table(&table, &feature_columns_array, &target_columns_array) {
+    match Dataset::from_table(&mut table, &feature_columns_array, &target_columns_array) {
         Ok(dataset) => Value::Dataset(Rc::new(RefCell::new(dataset))),
-        Err(_) => Value::Null,
+        Err(e) => {
+            use crate::websocket::set_native_error;
+            set_native_error(format!("ml.dataset failed: {}", e));
+            Value::Null
+        }
     }
 }
 
@@ -1373,12 +1423,18 @@ pub fn native_dataset(args: &[Value]) -> Value {
 /// dataset_features(dataset) -> features_tensor
 pub fn native_dataset_features(args: &[Value]) -> Value {
     if args.len() != 1 {
+        use crate::websocket::set_native_error;
+        set_native_error(format!("ml.dataset_features expects 1 argument (dataset), got {}", args.len()));
         return Value::Null;
     }
 
     let dataset = match &args[0] {
         Value::Dataset(d) => d,
-        _ => return Value::Null,
+        _ => {
+            use crate::websocket::set_native_error;
+            set_native_error("ml.dataset_features: argument must be a Dataset (from ml.dataset)".to_string());
+            return Value::Null;
+        }
     };
 
     let features = dataset.borrow().features().clone();

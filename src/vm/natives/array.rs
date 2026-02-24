@@ -5,6 +5,24 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashSet;
 
+/// Returns an empty array with pre-allocated capacity to avoid reallocations when using push() in a loop.
+pub fn native_array_with_capacity(args: &[Value]) -> Value {
+    if args.is_empty() {
+        return Value::Array(Rc::new(RefCell::new(Vec::new())));
+    }
+    let n = match &args[0] {
+        Value::Number(x) => {
+            let idx = *x as i64;
+            if idx < 0 || idx > 1_000_000_000 {
+                return Value::Null;
+            }
+            idx as usize
+        }
+        _ => return Value::Null,
+    };
+    Value::Array(Rc::new(RefCell::new(Vec::with_capacity(n))))
+}
+
 pub fn native_push(args: &[Value]) -> Value {
     if args.len() < 2 {
         return Value::Null;
@@ -55,27 +73,34 @@ pub fn native_unique(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Array(Rc::new(RefCell::new(Vec::new())));
     }
-    
-    let arr = match &args[0] {
-        Value::Array(a) => a,
-        _ => return Value::Null,
-    };
-    
-    // Создаем новый массив с уникальными элементами, сохраняя порядок первого вхождения
-    // Используем HashSet для O(1) проверки вместо O(n) Vec::contains
-    let arr_ref = arr.borrow();
     let mut seen = HashSet::new();
     let mut result = Vec::new();
-    
-    for item in arr_ref.iter() {
-        // Используем строковое представление для хэширования, так как Value не Hash
-        let item_str = item.to_string();
-        if !seen.contains(&item_str) {
-            seen.insert(item_str);
-            result.push(item.clone());
+    match &args[0] {
+        Value::Array(a) => {
+            for item in a.borrow().iter() {
+                let item_str = item.to_string();
+                if !seen.contains(&item_str) {
+                    seen.insert(item_str);
+                    result.push(item.clone());
+                }
+            }
         }
+        Value::ColumnReference { table, column_name } => {
+            crate::vm::vm::with_current_stores(|store, heap| {
+                let t = table.borrow();
+                for i in 0..t.len() {
+                    if let Some(item) = crate::vm::table_ops::get_cell_value(&*t, i, column_name, store, heap) {
+                        let item_str = item.to_string();
+                        if !seen.contains(&item_str) {
+                            seen.insert(item_str);
+                            result.push(item);
+                        }
+                    }
+                }
+            });
+        }
+        _ => return Value::Null,
     }
-    
     Value::Array(Rc::new(RefCell::new(result)))
 }
 
@@ -135,72 +160,72 @@ pub fn native_sum(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Number(0.0);
     }
-    
-    // Check if first argument is a tensor
     if let Value::Tensor(tensor) = &args[0] {
         let tensor_ref = tensor.borrow();
-        let sum = tensor_ref.sum();
-        return Value::Number(sum as f64);
+        return Value::Number(tensor_ref.sum() as f64);
     }
-    
-    // Handle array (original behavior)
-    let arr = match &args[0] {
-        Value::Array(a) => a,
-        _ => return Value::Number(0.0),
-    };
-    
-    let arr_ref = arr.borrow();
-    let mut sum = 0.0;
-    let mut has_numbers = false;
-    
-    for item in arr_ref.iter() {
-        if let Value::Number(n) = item {
-            sum += n;
-            has_numbers = true;
+    let (mut sum, mut has_numbers) = (0.0, false);
+    match &args[0] {
+        Value::Array(a) => {
+            for item in a.borrow().iter() {
+                if let Value::Number(n) = item {
+                    sum += n;
+                    has_numbers = true;
+                }
+            }
         }
+        Value::ColumnReference { table, column_name } => {
+            crate::vm::vm::with_current_stores(|store, heap| {
+                let t = table.borrow();
+                for i in 0..t.len() {
+                    if let Some(item) = crate::vm::table_ops::get_cell_value(&*t, i, column_name, store, heap) {
+                        if let Value::Number(n) = item {
+                            sum += n;
+                            has_numbers = true;
+                        }
+                    }
+                }
+            });
+        }
+        _ => {}
     }
-    
-    if has_numbers {
-        Value::Number(sum)
-    } else {
-        Value::Number(0.0)
-    }
+    if has_numbers { Value::Number(sum) } else { Value::Number(0.0) }
 }
 
 pub fn native_average(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Number(0.0);
     }
-    
-    // Check if first argument is a tensor
     if let Value::Tensor(tensor) = &args[0] {
         let tensor_ref = tensor.borrow();
-        let mean = tensor_ref.mean();
-        return Value::Number(mean as f64);
+        return Value::Number(tensor_ref.mean() as f64);
     }
-    
-    // Handle array (original behavior)
-    let arr = match &args[0] {
-        Value::Array(a) => a,
-        _ => return Value::Number(0.0),
-    };
-    
-    let arr_ref = arr.borrow();
-    let mut sum = 0.0;
-    let mut count = 0;
-    
-    for item in arr_ref.iter() {
-        if let Value::Number(n) = item {
-            sum += n;
-            count += 1;
+    let (mut sum, mut count) = (0.0, 0);
+    match &args[0] {
+        Value::Array(a) => {
+            for item in a.borrow().iter() {
+                if let Value::Number(n) = item {
+                    sum += n;
+                    count += 1;
+                }
+            }
         }
+        Value::ColumnReference { table, column_name } => {
+            crate::vm::vm::with_current_stores(|store, heap| {
+                let t = table.borrow();
+                for i in 0..t.len() {
+                    if let Some(item) = crate::vm::table_ops::get_cell_value(&*t, i, column_name, store, heap) {
+                        if let Value::Number(n) = item {
+                            sum += n;
+                            count += 1;
+                        }
+                    }
+                }
+            });
+        }
+        _ => {}
     }
-    
-    if count > 0 {
-        Value::Number(sum / count as f64)
-    } else {
-        Value::Number(0.0)
-    }
+    if count > 0 { Value::Number(sum / count as f64) } else { Value::Number(0.0) }
 }
 
 pub fn native_count(args: &[Value]) -> Value {
@@ -215,9 +240,17 @@ pub fn native_count(args: &[Value]) -> Value {
         return Value::Number(count as f64);
     }
     
-    // Handle array (original behavior)
+    // Handle array and column reference (lazy: no materialization)
     match &args[0] {
         Value::Array(arr) => Value::Number(arr.borrow().len() as f64),
+        Value::ColumnReference { table, column_name } => {
+            crate::vm::vm::with_current_stores(|_store, _heap| {
+                let t = table.borrow();
+                crate::vm::table_ops::column_len(&*t, column_name)
+                    .map(|len| Value::Number(len as f64))
+                    .unwrap_or(Value::Number(0.0))
+            })
+        }
         _ => Value::Number(0.0),
     }
 }

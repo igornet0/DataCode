@@ -1,5 +1,6 @@
 // Plot module for DataCode
 
+pub mod context;
 pub mod window;
 pub mod image;
 pub mod renderer;
@@ -19,6 +20,7 @@ pub use figure::Figure;
 pub use font_atlas::FontAtlas;
 pub use command::GuiCommand;
 pub use system::PlotSystem;
+pub use context::PlotContext;
 pub use window_state::{WindowState, RenderContent};
 pub use window_handle::PlotWindowHandle;
 

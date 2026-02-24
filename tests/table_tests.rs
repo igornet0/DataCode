@@ -1502,6 +1502,21 @@ mod tests {
     }
 
     #[test]
+    fn test_apply_join_left_table_has_two_rows() {
+        // Проверяем, что таблица до apply_join действительно имеет 2 строки
+        let source = r#"
+            let left = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+            len(left)
+        "#;
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Number(n)) => assert_eq!(n, 2.0, "Table should have 2 rows before apply_join"),
+            Ok(v) => panic!("Expected Number(2), got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
     fn test_apply_join_left() {
         // Left join семантика - строки с Null включаются с NULL значениями
         let source = r#"

@@ -438,34 +438,29 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             }
         }
         
-        // Загружаем функцию: локальные → для имён с маленькой буквы сначала globals (builtins) → function_names → globals / новый слот
+        // Загружаем функцию: локальные → function_names (user-defined) → globals (builtins) → globals / новый слот
         if let Some(local_index) = ctx.scope.resolve_local(name) {
             // Локальная переменная содержит функцию
             ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *ctx.current_line);
+        } else if let Some(function_index) = ctx.function_names.iter().position(|n| n == name) {
+            // Пользовательская функция найдена — приоритет над встроенными (average, max, min и т.д.)
+            let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
+            ctx.chunk.write_with_line(OpCode::Constant(constant_index), *ctx.current_line);
         } else if is_lowercase && ctx.scope.globals.get(name).is_some() {
-            // Для имён с маленькой буквы сначала резолвим через globals (builtins)
+            // Для имён с маленькой буквы без пользовательского переопределения — встроенные
             let &global_index = ctx.scope.globals.get(name).unwrap();
             ctx.chunk.global_names.insert(global_index, name.clone());
             ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *ctx.current_line);
-        } else if let Some(function_index) = ctx.function_names.iter().position(|n| n == name) {
-            // Пользовательская функция найдена
-            let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
-            ctx.chunk.write_with_line(OpCode::Constant(constant_index), *ctx.current_line);
         } else if let Some(&global_index) = ctx.scope.globals.get(name) {
             // Глобальная переменная содержит функцию (встроенная или импорт)
             ctx.chunk.global_names.insert(global_index, name.clone());
             ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *ctx.current_line);
         } else {
-            // Функция не найдена — регистрируем как глобальную для разрешения во время выполнения
-            let global_index = if let Some(&idx) = ctx.scope.globals.get(name) {
-                idx
-            } else {
-                let idx = ctx.scope.globals.len();
-                ctx.scope.globals.insert(name.clone(), idx);
-                ctx.chunk.global_names.insert(idx, name.clone());
-                idx
-            };
-            ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *ctx.current_line);
+            // Функция не найдена — ошибка на этапе компиляции
+            return Err(LangError::ParseError {
+                message: format!("Undefined function: {}", name),
+                line: *line,
+            });
         }
         
         // Вызываем функцию с количеством аргументов

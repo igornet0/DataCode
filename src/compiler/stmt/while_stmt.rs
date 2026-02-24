@@ -25,6 +25,7 @@ pub fn compile_while(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
         let loop_context = LoopContext {
             continue_label: loop_start_label, // continue возвращается к началу цикла
             break_label: loop_end_label,      // break переходит к концу цикла
+            is_for_range: false,
         };
         ctx.loop_contexts.push(loop_context);
         

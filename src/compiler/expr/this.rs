@@ -10,15 +10,14 @@ pub fn compile_this(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         *ctx.current_line = *line;
         
         // this может быть:
-        // 1. Первым параметром метода (слот 0)
-        // 2. Локальной переменной в конструкторе (созданной и сохраненной)
-        // Проверяем, есть ли this как локальная переменная
-        if let Some(local_index) = ctx.scope.resolve_local("this") {
-            // this найден как локальная переменная (конструктор)
+        // 1. В конструкторе: слот constructor_this_slot (arity), если задан
+        // 2. Локальной переменной (конструктор, fallback)
+        // 3. Первым параметром метода (слот 0)
+        if let Some(slot) = ctx.constructor_this_slot {
+            ctx.chunk.write_with_line(OpCode::LoadLocal(slot), *line);
+        } else if let Some(local_index) = ctx.scope.resolve_local("this") {
             ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
         } else {
-            // this не найден как локальная переменная, значит это первый параметр (метод)
-            // В методах this всегда в слоте 0
             ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
         }
         

@@ -3,11 +3,15 @@
 use crate::abi::NativeAbiFn;
 use crate::debug_println;
 use crate::bytecode::Chunk;
-use crate::common::{error::LangError, value::Value};
+use crate::common::{error::LangError, table::Table, value::Value, value_store::{ValueStore, ValueCell, ValueId, NULL_VALUE_ID}, TaggedValue};
+use crate::vm::store_convert::tagged_to_value_id;
 use crate::vm::frame::CallFrame;
 use crate::vm::natives;
+use crate::vm::store_convert::{load_value, store_value_arena};
+use crate::vm::heavy_store::HeavyStore;
 use crate::vm::types::{ExplicitRelation, ExplicitPrimaryKey, VMStatus};
 use crate::vm::exceptions::ExceptionHandler;
+use crate::vm::global_slot::{self, GlobalSlot};
 use crate::vm::globals;
 use crate::vm::calls;
 use crate::vm::executor;
@@ -15,8 +19,42 @@ use libloading::Library;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 pub type NativeFn = fn(&[Value]) -> Value;
+
+/// Restores VM's ML context from thread-local on drop (any exit path from run()).
+/// Uses raw pointer so run() can still call self.step() while guard is alive.
+struct MlContextGuard(*mut Option<crate::ml::MlContext>);
+impl Drop for MlContextGuard {
+    fn drop(&mut self) {
+        unsafe {
+            *self.0 = crate::ml::MlContext::take_current();
+        }
+    }
+}
+
+/// Restores VM's Plot context from thread-local on drop (any exit path from run()).
+struct PlotContextGuard(*mut Option<crate::plot::PlotContext>);
+impl Drop for PlotContextGuard {
+    fn drop(&mut self) {
+        unsafe {
+            *self.0 = crate::plot::PlotContext::take_current();
+        }
+    }
+}
+
+/// Restores VM base_path from RunContext on drop (any exit path from run()).
+struct RunContextGuard(*mut Option<PathBuf>);
+impl Drop for RunContextGuard {
+    fn drop(&mut self) {
+        if let Some(ctx) = crate::vm::run_context::RunContext::take_current() {
+            unsafe {
+                *self.0 = ctx.base_path;
+            }
+        }
+    }
+}
 
 // Thread-local storage для хранения контекста VM во время вызова нативных функций
 // Это позволяет нативным функциям вызывать пользовательские функции
@@ -25,30 +63,73 @@ thread_local! {
 }
 
 pub struct Vm {
-    stack: Vec<Value>,
+    /// Stack of TaggedValues (immediates + heap refs; no store lookup for numbers in hot path)
+    stack: Vec<TaggedValue>,
     frames: Vec<CallFrame>,
-    globals: Vec<Value>,
+    /// Globals: Inline(TaggedValue) for primitives, Heap(ValueId) for the rest.
+    globals: Vec<GlobalSlot>,
     functions: Vec<crate::bytecode::Function>,
     natives: Vec<NativeFn>,
-    exception_handlers: Vec<ExceptionHandler>, // Стек обработчиков исключений
-    error_type_table: Vec<String>, // Таблица типов ошибок для текущей функции
-    global_names: std::collections::HashMap<usize, String>, // Маппинг индексов глобальных переменных на их имена
-    explicit_global_names: std::collections::HashMap<usize, String>, // Маппинг индексов переменных, явно объявленных с ключевым словом 'global'
-    explicit_relations: Vec<ExplicitRelation>, // Явные связи, созданные через relate()
-    explicit_primary_keys: Vec<ExplicitPrimaryKey>, // Явные первичные ключи, созданные через primary_key()
-    loaded_modules: std::collections::HashSet<String>, // Множество загруженных модулей
-    abi_natives: Vec<NativeAbiFn>, // Нативы из загруженных ABI-модулей
-    loaded_native_libraries: Vec<Library>, // Библиотеки .so/.dylib, чтобы символы оставались валидными
-    /// Base path for resolving relative paths (e.g. in settings_env load_env). Set before run() so thread-local is reinforced.
+    exception_handlers: Vec<ExceptionHandler>,
+    error_type_table: Vec<String>,
+    global_names: std::collections::HashMap<usize, String>,
+    explicit_global_names: std::collections::HashMap<usize, String>,
+    explicit_relations: Vec<ExplicitRelation>,
+    explicit_primary_keys: Vec<ExplicitPrimaryKey>,
+    loaded_modules: std::collections::HashSet<String>,
+    abi_natives: Vec<NativeAbiFn>,
+    loaded_native_libraries: Vec<Library>,
     base_path: Option<PathBuf>,
+    ml_context: Option<crate::ml::MlContext>,
+    plot_context: Option<crate::plot::PlotContext>,
+    value_store: ValueStore,
+    /// Heavy values (Table, Tensor, etc.) indexed by ValueCell::Heavy(usize)
+    heavy_store: HeavyStore,
+    /// Reusable buffer for native call arguments (avoids allocating Vec on every CallNative).
+    native_args_buffer: Vec<Value>,
+    /// Reusable buffer for native arg ValueIds (avoids Vec::with_capacity on every CallNative).
+    reusable_native_arg_ids: Vec<ValueId>,
+    /// Reusable buffer for db engine method popped values (avoids Vec::new on every db native call).
+    reusable_all_popped: Vec<Value>,
+    /// Pending relations from relate() native (VM-owned; natives push here when VM_CALL_CONTEXT is set).
+    pub(crate) pending_relations: Vec<(Rc<RefCell<Table>>, String, Rc<RefCell<Table>>, String)>,
+    /// Pending primary keys from primary_key() native (VM-owned).
+    pub(crate) pending_primary_keys: Vec<(Rc<RefCell<Table>>, String)>,
+}
+
+/// Preallocated capacities for hot-path Vecs to reduce resize in loop-heavy runs.
+const DEFAULT_STACK_CAPACITY: usize = 4096;
+const DEFAULT_FRAMES_CAPACITY: usize = 64;
+const DEFAULT_GLOBALS_CAPACITY: usize = 256;
+const DEFAULT_NATIVE_BUF_CAPACITY: usize = 32;
+
+// Runtime state is set via thread_locals (VM_CALL_CONTEXT, relations, etc.) and RunContext (base_path, file_import) at run().
+
+/// Run a closure with the current VM's value_store and heavy_store. Call only from native code (VM_CALL_CONTEXT must be set).
+pub fn with_current_stores<R, F>(f: F) -> R
+where
+    F: FnOnce(&ValueStore, &HeavyStore) -> R,
+{
+    VM_CALL_CONTEXT.with(|ctx| {
+        let ptr = (*ctx.borrow()).expect("with_current_stores: VM context not set");
+        unsafe { (*ptr).with_stores(f) }
+    })
 }
 
 impl Vm {
+    /// Run a closure with references to value_store and heavy_store. Used by with_current_stores.
+    pub(crate) fn with_stores<R, F>(&self, f: F) -> R
+    where
+        F: FnOnce(&ValueStore, &HeavyStore) -> R,
+    {
+        f(&self.value_store, &self.heavy_store)
+    }
+
     pub fn new() -> Self {
         let mut vm = Self {
-            stack: Vec::new(),
-            frames: Vec::new(),
-            globals: Vec::new(),
+            stack: Vec::with_capacity(DEFAULT_STACK_CAPACITY),
+            frames: Vec::with_capacity(DEFAULT_FRAMES_CAPACITY),
+            globals: Vec::with_capacity(DEFAULT_GLOBALS_CAPACITY),
             functions: Vec::new(),
             natives: Vec::new(),
             exception_handlers: Vec::new(),
@@ -61,6 +142,15 @@ impl Vm {
             abi_natives: Vec::new(),
             loaded_native_libraries: Vec::new(),
             base_path: None,
+            ml_context: Some(crate::ml::MlContext::new()),
+            plot_context: Some(crate::plot::PlotContext::new()),
+            value_store: ValueStore::new(),
+            heavy_store: HeavyStore::new(),
+            native_args_buffer: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
+            reusable_native_arg_ids: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
+            reusable_all_popped: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
+            pending_relations: Vec::new(),
+            pending_primary_keys: Vec::new(),
         };
         vm.register_natives();
         vm
@@ -158,24 +248,29 @@ impl Vm {
         self.natives.push(natives::native_primary_key); // 69
         self.natives.push(natives::native_enum);       // 70
         self.natives.push(natives::native_table_class); // 71 - Table (built-in class for inheritance)
+        self.natives.push(natives::native_array_with_capacity); // 72
     }
 
     /// Добавляет в VM слоты для всех имён из chunk.global_names, которых ещё нет в VM.
-    /// Итерация по отсортированным индексам, чтобы порядок слотов был детерминированным.
+    /// Индексы назначаются в детерминированном порядке по idx из chunk (sort_by_key), чтобы
+    /// слот в VM совпадал с индексом в chunk и не требовался swap при патче (устраняет
+    /// флакующие тесты при "from settings_env import load_env").
     /// Нужно вызывать перед update_chunk_indices, чтобы главный chunk мог ссылаться на __main__.
     pub fn ensure_globals_from_chunk(&mut self, chunk: &crate::bytecode::Chunk) {
-        let mut entries: Vec<_> = chunk.global_names.iter().collect();
+        let mut entries: Vec<_> = chunk
+            .global_names
+            .iter()
+            .filter(|(_, name)| !self.global_names.values().any(|n| n == name.as_str()))
+            .map(|(idx, name)| (*idx, name.clone()))
+            .collect();
         entries.sort_by_key(|(idx, _)| *idx);
         for (_old_idx, name) in entries {
-            let exists = self.global_names.iter().any(|(_, n)| n == name);
-            if !exists {
-                let new_idx = self.globals.len();
-                self.globals.push(Value::Null);
-                self.global_names.insert(new_idx, name.clone());
-                debug_println!("[DEBUG ensure_globals_from_chunk] Добавлен слот для '{}' в globals[{}]", name, new_idx);
-                if name == "Config" || name == "DatabaseConfig" {
-                    debug_println!("[DEBUG ensure_globals_from_chunk] Config/DatabaseConfig: '{}' -> слот {}", name, new_idx);
-                }
+            let new_idx = self.globals.len();
+            self.globals.push(global_slot::default_global_slot());
+            self.global_names.insert(new_idx, name.clone());
+            debug_println!("[DEBUG ensure_globals_from_chunk] Добавлен слот для '{}' в globals[{}]", name, new_idx);
+            if name == "Config" || name == "DatabaseConfig" {
+                debug_println!("[DEBUG ensure_globals_from_chunk] Config/DatabaseConfig: '{}' -> слот {}", name, new_idx);
             }
         }
     }
@@ -189,7 +284,7 @@ impl Vm {
             let exists = self.global_names.iter().any(|(_, n)| n == &name);
             if !exists {
                 if idx >= self.globals.len() {
-                    self.globals.resize(idx + 1, Value::Null);
+                    self.globals.resize(idx + 1, global_slot::default_global_slot());
                 }
                 self.global_names.insert(idx, name.clone());
                 debug_println!("[DEBUG ensure_globals_from_chunk_preserve_indices] Добавлен слот для '{}' в globals[{}]", name, idx);
@@ -198,25 +293,35 @@ impl Vm {
                 }
             }
         }
+        debug_println!(
+            "[DEBUG ensure_globals_from_chunk_preserve_indices] после: global_names 75..80: {:?}",
+            (75..80).filter_map(|i| self.global_names.get(&i).map(|n| (i, n.as_str()))).collect::<Vec<_>>()
+        );
     }
 
     /// Обновляет индексы глобальных переменных в chunk на основе реальных индексов в VM
-    pub fn update_chunk_indices(&self, chunk: &mut crate::bytecode::Chunk) {
-        Self::update_chunk_indices_from_names(chunk, &self.global_names, Some(&self.globals));
+    pub fn update_chunk_indices(&mut self, chunk: &mut crate::bytecode::Chunk) {
+        Self::update_chunk_indices_from_names(
+            chunk,
+            &self.global_names,
+            Some(self.globals.as_mut_slice()),
+            Some(&mut self.value_store),
+            Some(&self.heavy_store),
+        );
     }
 
     /// Sentinel index for model_config class load in Settings subclass constructors (must match compiler).
     const MODEL_CONFIG_CLASS_LOAD_INDEX: usize = 0x0FFF_FFFF;
 
-    /// Обновляет индексы глобалов в chunk по переданной карте имён (для использования без &self, чтобы избежать конфликта заимствований).
-    /// Двухфазный алгоритм: сначала строим маппинг old_idx → real_idx, затем один проход по байткоду.
-    /// Это устраняет перезапись уже исправленных инструкций при недетерминированном порядке итерации по global_names.
-    /// Для model_config (sentinel 0x0FFF_FFFF) явно разрешаем по имени из chunk.global_names и берём минимальный индекс в main.
-    /// Если передан globals_for_verify, после патча sentinel проверяем, что в слоте лежит класс с ожидаемым __class_name; при несовпадении — debug-предупреждение.
+    /// Обновляет индексы глобалов в chunk по переданной карте имён.
+    /// globals_for_verify: Option<&mut [GlobalSlot]>; при проверке слот материализуется через resolve_to_value_id + load_value (с кэшем).
+    /// store/heap: когда None, проверка по слотам не выполняется (для вызовов без доступа к store/heap).
     pub fn update_chunk_indices_from_names(
         chunk: &mut crate::bytecode::Chunk,
         global_names: &std::collections::HashMap<usize, String>,
-        globals_for_verify: Option<&[Value]>,
+        globals_for_verify: Option<&mut [GlobalSlot]>,
+        store: Option<&mut ValueStore>,
+        heap: Option<&HeavyStore>,
     ) {
         // Phase 1: Build old_idx → real_idx mapping (no bytecode changes).
         // Resolve real_idx by name deterministically (min index if multiple) for stability.
@@ -251,17 +356,18 @@ impl Vm {
                 if let Some(&real_idx) = matching_indices.iter().min() {
                     old_to_real.insert(Self::MODEL_CONFIG_CLASS_LOAD_INDEX, real_idx);
                     debug_println!("[DEBUG update_chunk_indices] Маппинг model_config (sentinel) класс '{}': sentinel -> globals[{}]", name, real_idx);
-                    // Опциональная проверка: слот должен содержать класс с ожидаемым именем
-                    if let Some(globals) = globals_for_verify {
+                    if let (Some(globals), Some(store), Some(heap)) = (globals_for_verify, store, heap) {
                         if real_idx < globals.len() {
-                            let slot_type = match &globals[real_idx] {
+                            let id = globals[real_idx].resolve_to_value_id(store);
+                            let v = load_value(id, store, heap);
+                            let slot_type = match &v {
                                 Value::Object(_) => "Object",
                                 Value::Function(_) => "Function",
                                 Value::Null => "Null",
                                 _ => "Other",
                             };
                             debug_println!("[DEBUG update_chunk_indices] sentinel '{}' -> globals[{}], значение в слоте: {}", name, real_idx, slot_type);
-                            if let Value::Object(obj_rc) = &globals[real_idx] {
+                            if let Value::Object(obj_rc) = &v {
                                 let obj = obj_rc.borrow();
                                 if let Some(Value::String(actual_name)) = obj.get("__class_name") {
                                     debug_println!("[DEBUG update_chunk_indices] globals[{}].__class_name = '{}'", real_idx, actual_name);
@@ -368,7 +474,7 @@ impl Vm {
                     real_idx
                 } else {
                     let new_idx = self.globals.len();
-                    self.globals.push(Value::Null);
+                    self.globals.push(global_slot::default_global_slot());
                     self.global_names.insert(new_idx, name.clone());
                     debug_println!("[DEBUG set_functions] Переменная '{}' не найдена в VM, создаем новый индекс {}", name, new_idx);
                     if name == "Config" || name == "DatabaseConfig" {
@@ -529,26 +635,32 @@ impl Vm {
         
         for (real_global_idx, name) in &chunk_global_names {
             debug_println!("[DEBUG set_functions] Обрабатываем '{}' из chunk -> слот {}", name, real_global_idx);
-            // Не перезаписывать слоты встроенных нативов (0..BUILTIN_GLOBAL_NAMES.len()) пользовательской функцией с тем же именем
+            // Слот встроенного натива: пользовательская функция с тем же именем перекрывает встроенный
             if *real_global_idx < globals::BUILTIN_GLOBAL_NAMES.len() {
                 if let Some(canonical) = globals::builtin_global_name(*real_global_idx) {
                     if canonical == name.as_str() {
-                        debug_println!("[DEBUG set_functions] Пропуск перезаписи встроенного натива '{}' в слоте {}", name, real_global_idx);
+                        if let Some(fn_idx) = self.find_function_index_by_name(name) {
+                            self.globals[*real_global_idx] = GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(fn_idx)));
+                            debug_println!("[DEBUG set_functions] Перезапись встроенного натива '{}' в слоте {} пользовательской функцией", name, real_global_idx);
+                        } else {
+                            debug_println!("[DEBUG set_functions] Пропуск перезаписи встроенного натива '{}' в слоте {}", name, real_global_idx);
+                        }
                         continue;
                     }
                 }
             }
             if *real_global_idx < self.globals.len() {
                 debug_println!("[DEBUG set_functions] Проверяем globals[{}] для '{}'", real_global_idx, name);
-                if let Value::Function(old_fn_idx) = &self.globals[*real_global_idx] {
+                let id = self.globals[*real_global_idx].resolve_to_value_id(&mut self.value_store);
+                let old_fn_idx_opt = self.value_store.get(id)
+                    .and_then(|c| if let ValueCell::Function(i) = c { Some(*i) } else { None });
+                if let Some(old_fn_idx) = old_fn_idx_opt {
                     debug_println!("[DEBUG set_functions] Найдена функция '{}' в globals[{}] (из chunk) с индексом функции {}", name, real_global_idx, old_fn_idx);
-                    
-                    // Находим функцию по имени в списке функций VM
                     if let Some(new_fn_idx) = self.find_function_index_by_name(name) {
-                        if *old_fn_idx != new_fn_idx {
+                        if old_fn_idx != new_fn_idx {
                             debug_println!("[DEBUG set_functions] Обновляем индекс функции для '{}' в globals[{}]: {} -> {}", 
                                 name, real_global_idx, old_fn_idx, new_fn_idx);
-                            self.globals[*real_global_idx] = Value::Function(new_fn_idx);
+                            self.globals[*real_global_idx] = GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(new_fn_idx)));
                         } else {
                             debug_println!("[DEBUG set_functions] Индекс функции для '{}' уже правильный: {}", name, new_fn_idx);
                         }
@@ -556,12 +668,11 @@ impl Vm {
                         debug_println!("[DEBUG set_functions] WARNING: Функция '{}' не найдена в списке функций VM", name);
                     }
                 } else {
-                    // Слот Null или другой тип — если в VM есть функция с таким именем (например, конструктор из chunk), заполняем слот
                     if let Some(fn_idx) = self.find_function_index_by_name(name) {
-                        self.globals[*real_global_idx] = Value::Function(fn_idx);
+                        self.globals[*real_global_idx] = GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(fn_idx)));
                         debug_println!("[DEBUG set_functions] Установлена функция '{}' в globals[{}] = Value::Function({}) (слот был Null/другой)", name, real_global_idx, fn_idx);
                     } else {
-                        debug_println!("[DEBUG set_functions] globals[{}] для '{}' не является функцией: {:?}", real_global_idx, name, self.globals[*real_global_idx]);
+                        debug_println!("[DEBUG set_functions] globals[{}] для '{}' не является функцией", real_global_idx, name);
                     }
                 }
             } else {
@@ -590,22 +701,26 @@ impl Vm {
                     .map(|(idx, _)| *idx) {
                     // Нашли в chunk's global_names, используем mapped index
                     let real_global_idx = global_idx;
-                    // Не перезаписывать слоты встроенных нативов пользовательской функцией с тем же именем
+                    // Слот встроенного натива: пользовательская функция с тем же именем перекрывает встроенный
                     if real_global_idx < globals::BUILTIN_GLOBAL_NAMES.len() {
                         if let Some(canonical) = globals::builtin_global_name(real_global_idx) {
                             if canonical == function_name.as_str() {
-                                debug_println!("[DEBUG set_functions] Пропуск перезаписи встроенного натива '{}' в слоте {} (второй цикл)", function_name, real_global_idx);
+                                self.globals[real_global_idx] = GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(new_fn_idx)));
+                                debug_println!("[DEBUG set_functions] Перезапись встроенного натива '{}' в слоте {} пользовательской функцией (второй цикл)", function_name, real_global_idx);
                                 found_in_chunk = true;
                                 break;
                             }
                         }
                     }
                     if real_global_idx < self.globals.len() {
-                        if let Value::Function(old_fn_idx) = &self.globals[real_global_idx] {
-                            if *old_fn_idx != new_fn_idx {
+                        let rid = self.globals[real_global_idx].resolve_to_value_id(&mut self.value_store);
+                        let old_opt = self.value_store.get(rid)
+                            .and_then(|c| if let ValueCell::Function(i) = c { Some(*i) } else { None });
+                        if let Some(old_fn_idx) = old_opt {
+                            if old_fn_idx != new_fn_idx {
                                 debug_println!("[DEBUG set_functions] Найдена функция '{}' в globals[{}] через chunk global_names: {} -> {}", 
                                     function_name, real_global_idx, old_fn_idx, new_fn_idx);
-                                self.globals[real_global_idx] = Value::Function(new_fn_idx);
+                                self.globals[real_global_idx] = GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(new_fn_idx)));
                                 found_in_chunk = true;
                                 break;
                             }
@@ -614,18 +729,19 @@ impl Vm {
                 }
             }
             
-            // Если не нашли в chunk, ищем во всех globals по старому индексу компилятора
-            // ИЛИ по имени функции (если старая функция с индексом old_fn_idx имеет то же имя)
             if !found_in_chunk {
                 debug_println!("[DEBUG set_functions] Ищем функцию '{}' во всех globals (compiler_idx: {})", function_name, compiler_fn_idx);
                 for global_idx in 0..self.globals.len() {
-                    if let Value::Function(old_fn_idx) = &self.globals[global_idx] {
+                    let gid = self.globals[global_idx].resolve_to_value_id(&mut self.value_store);
+                    let old_fn_idx_opt = self.value_store.get(gid)
+                        .and_then(|c| if let ValueCell::Function(i) = c { Some(*i) } else { None });
+                    if let Some(old_fn_idx) = old_fn_idx_opt {
                         // Проверяем, не обработали ли мы уже эту функцию через global_names
                         let already_processed = self.global_names.get(&global_idx)
                             .map(|name| name == function_name)
                             .unwrap_or(false);
                         
-                        if !already_processed && *old_fn_idx == compiler_fn_idx {
+                        if !already_processed && old_fn_idx == compiler_fn_idx {
                             debug_println!("[DEBUG set_functions] Найден кандидат для '{}' в globals[{}] с old_fn_idx={}, compiler_idx={}", 
                                 function_name, global_idx, old_fn_idx, compiler_fn_idx);
                         }
@@ -635,13 +751,9 @@ impl Vm {
                             // 1. Старый индекс соответствует индексу функции в компиляторе
                             //    И функция с индексом old_fn_idx имеет другое имя (была перезаписана)
                             // 2. Старая функция с индексом old_fn_idx имеет то же имя, что и наша функция
-                            let should_update = if *old_fn_idx == compiler_fn_idx {
-                                // Проверяем, не была ли функция перезаписана
-                                if *old_fn_idx < self.functions.len() {
-                                    // Если функция с индексом old_fn_idx имеет другое имя, значит она была перезаписана
-                                    // Это означает, что наша функция (__main__) была сохранена с индексом 0,
-                                    // но теперь функция с индексом 0 имеет другое имя (Data::method_deposit)
-                                    let old_fn_name = &self.functions[*old_fn_idx].name;
+                            let should_update = if old_fn_idx == compiler_fn_idx {
+                                if old_fn_idx < self.functions.len() {
+                                    let old_fn_name = &self.functions[old_fn_idx].name;
                                     let was_overwritten = old_fn_name != function_name;
                                     debug_println!("[DEBUG set_functions] Проверка для '{}': old_fn_idx={}, old_fn_name='{}', compiler_idx={}, was_overwritten={}", 
                                         function_name, old_fn_idx, old_fn_name, compiler_fn_idx, was_overwritten);
@@ -649,9 +761,8 @@ impl Vm {
                                 } else {
                                     true
                                 }
-                            } else if *old_fn_idx < self.functions.len() {
-                                // Проверяем, совпадает ли имя старой функции с именем нашей функции
-                                self.functions[*old_fn_idx].name == *function_name && *old_fn_idx != new_fn_idx
+                            } else if old_fn_idx < self.functions.len() {
+                                self.functions[old_fn_idx].name == *function_name && old_fn_idx != new_fn_idx
                             } else {
                                 false
                             };
@@ -659,8 +770,8 @@ impl Vm {
                             if should_update {
                                 debug_println!("[DEBUG set_functions] Найдена функция '{}' в globals[{}] с индексом {} -> {} (compiler_idx: {}, old_fn_name: '{}')", 
                                     function_name, global_idx, old_fn_idx, new_fn_idx, compiler_fn_idx,
-                                    if *old_fn_idx < self.functions.len() { &self.functions[*old_fn_idx].name } else { "OUT_OF_BOUNDS" });
-                                self.globals[global_idx] = Value::Function(new_fn_idx);
+                                    if old_fn_idx < self.functions.len() { &self.functions[old_fn_idx].name } else { "OUT_OF_BOUNDS" });
+                                self.globals[global_idx] = GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(new_fn_idx)));
                                 break;
                             }
                         }
@@ -669,34 +780,30 @@ impl Vm {
             }
         }
         
-        // Затем обрабатываем функции из существующих глобальных переменных
         for (global_idx, name) in self.global_names.clone().iter() {
             if *global_idx < self.globals.len() {
-                if let Value::Function(old_fn_idx) = &self.globals[*global_idx] {
+                let gid = self.globals[*global_idx].resolve_to_value_id(&mut self.value_store);
+                let old_fn_idx_opt = self.value_store.get(gid)
+                    .and_then(|c| if let ValueCell::Function(i) = c { Some(*i) } else { None });
+                if let Some(old_fn_idx) = old_fn_idx_opt {
                     debug_println!("[DEBUG set_functions] Найдена функция '{}' в globals[{}] с индексом функции {}", name, global_idx, old_fn_idx);
-                    
-                    // Проверяем, что старый индекс функции соответствует имени функции
-                    // Это важно для безопасности - мы обновляем только если имя совпадает
-                    let old_fn_name_matches = if *old_fn_idx < self.functions.len() {
-                        let matches = self.functions[*old_fn_idx].name == *name;
+                    let old_fn_name_matches = if old_fn_idx < self.functions.len() {
+                        let matches = self.functions[old_fn_idx].name == *name;
                         debug_println!("[DEBUG set_functions] Старый индекс функции {}: имя='{}', совпадает с глобальной переменной '{}': {}", 
-                            old_fn_idx, self.functions[*old_fn_idx].name, name, matches);
+                            old_fn_idx, self.functions[old_fn_idx].name, name, matches);
                         matches
                     } else {
                         debug_println!("[DEBUG set_functions] Старый индекс функции {} выходит за границы (всего функций: {})", 
                             old_fn_idx, self.functions.len());
                         false
                     };
-                    
-                    // Находим функцию по имени в списке функций VM
                     if let Some(new_fn_idx) = self.find_function_index_by_name(name) {
                         debug_println!("[DEBUG set_functions] Найдена функция '{}' в VM с индексом {}", name, new_fn_idx);
-                        // Проверяем, что имя функции в новом индексе совпадает с именем глобальной переменной
                         if new_fn_idx < self.functions.len() && self.functions[new_fn_idx].name == *name {
-                            if *old_fn_idx != new_fn_idx {
+                            if old_fn_idx != new_fn_idx {
                                 debug_println!("[DEBUG set_functions] Обновляем индекс функции для '{}' в globals[{}]: {} -> {} (старое имя совпадает: {})", 
                                     name, global_idx, old_fn_idx, new_fn_idx, old_fn_name_matches);
-                                self.globals[*global_idx] = Value::Function(new_fn_idx);
+                                self.globals[*global_idx] = GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(new_fn_idx)));
                             } else {
                                 debug_println!("[DEBUG set_functions] Индекс функции для '{}' уже правильный: {}", name, new_fn_idx);
                             }
@@ -706,8 +813,6 @@ impl Vm {
                                 if new_fn_idx < self.functions.len() { &self.functions[new_fn_idx].name } else { "OUT OF BOUNDS" });
                         }
                     } else {
-                        // Функция не найдена - это может быть нормально для некоторых случаев
-                        // (например, если функция еще не была добавлена или была удалена)
                         debug_println!("[DEBUG set_functions] WARNING: Функция '{}' не найдена в списке функций VM (старый индекс: {}, старое имя совпадает: {})", 
                             name, old_fn_idx, old_fn_name_matches);
                     }
@@ -720,17 +825,17 @@ impl Vm {
         if let Some((&global_idx, _)) = self.global_names.iter().find(|(_, n)| *n == "__main__") {
             if let Some(fn_idx) = self.find_function_index_by_name("__main__") {
                 if global_idx < self.globals.len() {
-                    self.globals[global_idx] = Value::Function(fn_idx);
+                    self.globals[global_idx] = GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(fn_idx)));
                     debug_println!("[DEBUG set_functions] Установлен слот __main__ в globals[{}] = Value::Function({})", global_idx, fn_idx);
                 }
             }
         }
         
-        // Проверяем, что конструкторы из __lib__.dc все еще имеют правильные индексы функций
         for (idx, name) in &self.global_names {
             if name.contains("::new_") {
-                if let Some(value) = self.globals.get(*idx) {
-                    if let Value::Function(fn_idx) = value {
+                if let Some(slot) = self.globals.get_mut(*idx) {
+                    let id = slot.resolve_to_value_id(&mut self.value_store);
+                    if let Some(ValueCell::Function(fn_idx)) = self.value_store.get(id) {
                         if *fn_idx < self.functions.len() {
                             let func = &self.functions[*fn_idx];
                             debug_println!("[DEBUG set_functions] Проверка: конструктор '{}' в globals[{}] имеет индекс функции {}, имя функции: '{}', arity: {}", 
@@ -783,26 +888,49 @@ impl Vm {
     }
 
     pub fn register_native_globals(&mut self) {
-        globals::register_native_globals(&mut self.globals, &mut self.global_names);
+        globals::register_native_globals(&mut self.globals, &mut self.global_names, &mut self.value_store);
     }
 
     /// Register all built-in modules (ml, plot, settings_env) so native indices are consistent
     /// across all VMs (main and sub-VMs used for module loading).
     pub fn register_all_builtin_modules(&mut self) -> Result<(), LangError> {
         use crate::vm::modules;
-        modules::register_module("ml", &mut self.natives, &mut self.globals, &mut self.global_names)?;
-        modules::register_module("plot", &mut self.natives, &mut self.globals, &mut self.global_names)?;
-        modules::register_module("settings_env", &mut self.natives, &mut self.globals, &mut self.global_names)?;
-        modules::register_module("uuid", &mut self.natives, &mut self.globals, &mut self.global_names)?;
-        modules::register_module("database", &mut self.natives, &mut self.globals, &mut self.global_names)?;
+        modules::register_module("ml", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
+        modules::register_module("plot", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
+        modules::register_module("settings_env", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
+        modules::register_module("uuid", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
+        modules::register_module("database", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         Ok(())
     }
 
     // Exception handling methods moved to exceptions.rs
 
     pub fn run(&mut self, chunk: &Chunk) -> Result<Value, LangError> {
-        // Reinforce thread-local base path from VM copy so load_env and imports resolve relative paths deterministically
+        // Set RunContext (base_path, executing_lib, dpm_package_paths, smb_manager) so file_import and file_ops use one source
+        let run_ctx = crate::vm::run_context::RunContext {
+            base_path: self.base_path.clone(),
+            executing_lib: false,
+            dpm_package_paths: crate::vm::file_import::get_dpm_package_paths(),
+            smb_manager: crate::vm::file_ops::get_smb_manager(),
+        };
+        crate::vm::run_context::RunContext::set_current(run_ctx);
+        let _run_guard = RunContextGuard(&mut self.base_path as *mut Option<PathBuf>);
+        // Keep file_import thread_locals in sync for code that sets them outside run()
         crate::vm::file_import::set_base_path(self.base_path.clone());
+
+        // Set ML context thread-local so ML natives use VM-owned pool/cache without global Mutex.
+        // If this VM has no ML context, clear any stale one from a previous run (e.g. from ml_api_tests) so settings_env/other tests don't see it.
+        if let Some(ctx) = self.ml_context.take() {
+            crate::ml::MlContext::set_current(ctx);
+        } else {
+            let _ = crate::ml::MlContext::take_current();
+        }
+        let _ml_guard = MlContextGuard(&mut self.ml_context as *mut _);
+
+        // Set Plot context thread-local so plot natives use VM-owned state without global RefCells
+        let plot_ctx = self.plot_context.take().unwrap_or_else(crate::plot::PlotContext::new);
+        crate::plot::PlotContext::set_current(plot_ctx);
+        let _plot_guard = PlotContextGuard(&mut self.plot_context as *mut _);
 
         // Заполняем имена глобальных переменных из chunk
         globals::merge_global_names(
@@ -811,27 +939,42 @@ impl Vm {
             &chunk.global_names,
             &chunk.explicit_global_names,
         );
-        
-        // Создаем начальный frame
+
+        #[cfg(feature = "profile")]
+        crate::vm::profile::set();
+
+        // Создаем начальный frame (constants loaded into store here)
         let function = crate::bytecode::Function::new("<main>".to_string(), 0);
         let mut function = function;
         function.chunk = chunk.clone();
-        let frame = CallFrame::new(function, 0);
+        let frame = CallFrame::new(function, 0, &mut self.value_store, &mut self.heavy_store);
         self.frames.push(frame);
 
         loop {
             match self.step()? {
                 VMStatus::Continue => {}
-                VMStatus::Return(v) => return Ok(v),
+                VMStatus::Return(id) => {
+                    #[cfg(feature = "profile")]
+                    if let Some(stats) = crate::vm::profile::take() {
+                        crate::vm::profile::print_stats(&stats);
+                    }
+                    return Ok(load_value(id, &self.value_store, &self.heavy_store));
+                }
                 VMStatus::FrameEnded => break,
             }
         }
 
-        // После завершения выполнения возвращаем последнее значение на стеке
+        #[cfg(feature = "profile")]
+        if let Some(stats) = crate::vm::profile::take() {
+            crate::vm::profile::print_stats(&stats);
+        }
+
         if !self.stack.is_empty() {
-            Ok(self.stack.pop().unwrap())
+            let tv = self.stack.pop().unwrap();
+            let id = tagged_to_value_id(tv, &mut self.value_store);
+            Ok(load_value(id, &self.value_store, &self.heavy_store))
         } else {
-            Ok(Value::Null)
+            Ok(load_value(NULL_VALUE_ID, &self.value_store, &self.heavy_store))
         }
     }
 
@@ -852,7 +995,7 @@ impl Vm {
         // Execute the instruction (frames_ref is dropped, so we can borrow again)
         executor::execute_instruction(
             instruction,
-                                line,
+            line,
             &mut self.stack,
             &mut self.frames,
             &mut self.globals,
@@ -867,6 +1010,11 @@ impl Vm {
             &mut self.loaded_modules,
             &mut self.abi_natives,
             &mut self.loaded_native_libraries,
+            &mut self.value_store,
+            &mut self.heavy_store,
+            &mut self.native_args_buffer,
+            &mut self.reusable_native_arg_ids,
+            &mut self.reusable_all_popped,
             vm_ptr,
         )
     }
@@ -877,14 +1025,77 @@ impl Vm {
 
     // Module registration methods moved to modules.rs
 
-    /// Получить доступ к глобальным переменным (для экспорта)
-    pub fn get_globals(&self) -> &Vec<Value> {
-        &self.globals
+    /// Получить доступ к глобальным переменным (GlobalSlot; use resolve_to_value_id or store_convert::slot_to_value for Value)
+    pub fn get_globals(&self) -> &[GlobalSlot] {
+        &self.globals[..]
     }
 
     /// Получить мутабельный доступ к глобальным переменным
-    pub fn get_globals_mut(&mut self) -> &mut Vec<Value> {
+    pub fn get_globals_mut(&mut self) -> &mut Vec<GlobalSlot> {
         &mut self.globals
+    }
+
+    /// Resolve global slot at index to ValueId (Inline → materialize once and cache as Heap).
+    pub fn resolve_global_to_value_id(&mut self, index: usize) -> ValueId {
+        if index < self.globals.len() {
+            self.globals[index].resolve_to_value_id(&mut self.value_store)
+        } else {
+            NULL_VALUE_ID
+        }
+    }
+
+    /// ValueStore and HeavyStore for materializing Value from ValueId (e.g. at native boundaries)
+    pub fn value_store(&self) -> &ValueStore {
+        &self.value_store
+    }
+    pub fn heavy_store(&self) -> &HeavyStore {
+        &self.heavy_store
+    }
+    pub fn value_store_mut(&mut self) -> &mut ValueStore {
+        &mut self.value_store
+    }
+    pub fn heavy_store_mut(&mut self) -> &mut HeavyStore {
+        &mut self.heavy_store
+    }
+    /// Call a function with both stores mutably (avoids double mutable borrow).
+    pub fn with_stores_mut<F, R>(&mut self, f: F) -> R
+    where
+        F: FnOnce(&mut ValueStore, &mut HeavyStore) -> R,
+    {
+        f(&mut self.value_store, &mut self.heavy_store)
+    }
+
+    /// Take pending relations pushed by relate() native (VM-owned storage; replaces thread-local take_relations).
+    pub fn take_pending_relations(&mut self) -> Vec<(Rc<RefCell<Table>>, String, Rc<RefCell<Table>>, String)> {
+        std::mem::take(&mut self.pending_relations)
+    }
+
+    /// Take pending primary keys pushed by primary_key() native (VM-owned storage; replaces thread-local take_primary_keys).
+    pub fn take_pending_primary_keys(&mut self) -> Vec<(Rc<RefCell<Table>>, String)> {
+        std::mem::take(&mut self.pending_primary_keys)
+    }
+
+    /// Reset value_store and heavy_store and re-establish only function references in globals.
+    /// Use when reusing the same VM for stateless runs (e.g. HTTP request handlers). Non-function
+    /// globals (config, tables, etc.) are dropped; global state is not preserved between calls.
+    pub fn reset_stores_and_globals_for_stateless(&mut self) {
+        let mut function_globals: Vec<(usize, usize)> = Vec::new();
+        for (idx, slot) in self.globals.iter_mut().enumerate() {
+            let id = slot.resolve_to_value_id(&mut self.value_store);
+            if let Some(ValueCell::Function(fn_idx)) = self.value_store.get(id) {
+                function_globals.push((idx, *fn_idx));
+            }
+        }
+        self.value_store.clear();
+        self.heavy_store.clear();
+        for i in 0..self.globals.len() {
+            self.globals[i] = GlobalSlot::null();
+        }
+        for (global_idx, fn_idx) in function_globals {
+            if global_idx < self.globals.len() {
+                self.globals[global_idx] = GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(fn_idx)));
+            }
+        }
     }
 
     /// Количество встроенных нативов (natives.len()). Индексы >= этого — ABI-нативы.
@@ -932,8 +1143,8 @@ impl Vm {
     /// Объединяет глобальные переменные из другого VM в этот VM
     /// Используется для передачи глобальных переменных из __lib__.dc в основной файл
     pub fn merge_globals_from(&mut self, other: &Vm) {
-        const BUILTIN_COUNT: usize = 74;
-        // Чтобы NativeFunction(i) из модуля (i >= 73) был валиден в self, добавляем нативы модуля.
+        const BUILTIN_COUNT: usize = 75;
+        // Чтобы NativeFunction(i) из модуля (i >= BUILTIN_COUNT) был валиден в self, добавляем нативы модуля.
         let other_natives = other.get_natives();
         if other_natives.len() > BUILTIN_COUNT {
             self.natives.extend_from_slice(&other_natives[BUILTIN_COUNT..]);
@@ -965,18 +1176,20 @@ impl Vm {
             .collect();
         pairs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
 
-        // Группируем по имени и выбираем одно значение на имя: предпочитаем Object (класс), иначе последнее по индексу.
-        let mut by_name: std::collections::HashMap<String, (usize, &Value)> = std::collections::HashMap::new();
+        let mut by_name: std::collections::HashMap<String, (usize, Value)> = std::collections::HashMap::new();
         for (index, name) in &pairs {
             if name == "argv" {
                 continue;
             }
-            if let Some(value) = other_globals.get(*index) {
+            if let Some(slot) = other_globals.get(*index) {
+                let value = match slot {
+                    GlobalSlot::Inline(tv) => crate::vm::store_convert::slot_to_value(*tv, other.value_store(), other.heavy_store()),
+                    GlobalSlot::Heap(id) => load_value(*id, other.value_store(), other.heavy_store()),
+                };
                 let prefer = match by_name.get(name) {
                     Some((prev_index, existing)) => {
-                        // Предпочитаем Object (класс) перед Function; при равных типах — больший индекс.
                         let existing_is_obj = matches!(existing, Value::Object(_));
-                        let value_is_obj = matches!(value, Value::Object(_));
+                        let value_is_obj = matches!(&value, Value::Object(_));
                         if value_is_obj && !existing_is_obj {
                             true
                         } else if !value_is_obj && existing_is_obj {
@@ -996,13 +1209,12 @@ impl Vm {
         let mut names_sorted: Vec<_> = by_name.keys().cloned().collect();
         names_sorted.sort();
         for name in names_sorted {
-            let (index, value) = *by_name.get(&name).unwrap();
-                debug_println!("[DEBUG merge_globals_from] Объединяем '{}' (index: {})", name, index);
-                // Если это функция, нужно обновить индекс функции
-                let value_to_store = match value {
+            let (index, value) = by_name.get(&name).unwrap().clone();
+            debug_println!("[DEBUG merge_globals_from] Объединяем '{}' (index: {})", name, index);
+            let value_to_store = match value {
                     Value::Function(function_index) => {
                         // Обновляем индекс функции с учетом уже добавленных функций
-                        let new_function_index = start_function_index + *function_index;
+                        let new_function_index = start_function_index + function_index;
                         debug_println!("[DEBUG merge_globals_from] Обновляем индекс функции для '{}': {} -> {}", name, function_index, new_function_index);
                         Value::Function(new_function_index)
                     }
@@ -1046,25 +1258,24 @@ impl Vm {
                         }
                         Value::Object(Rc::new(RefCell::new(new_obj)))
                     }
-                    Value::NativeFunction(i) if *i >= BUILTIN_COUNT => {
-                        // Remap by identity: other VM may have different natives layout; store index j
-                        // such that self.natives[j] == other.natives[i] (same function pointer).
+                    Value::NativeFunction(i) if i >= BUILTIN_COUNT => {
                         let other_natives = other.get_natives();
-                        if *i >= other_natives.len() {
+                        let idx = i;
+                        if idx >= other_natives.len() {
                             value.clone()
                         } else {
-                            let fn_ptr = other_natives[*i] as *const ();
-                            let remapped = if *i < self.natives.len()
-                                && std::ptr::eq(self.natives[*i] as *const (), fn_ptr)
+                            let fn_ptr = other_natives[idx] as *const ();
+                            let remapped = if idx < self.natives.len()
+                                && std::ptr::eq(self.natives[idx] as *const (), fn_ptr)
                             {
-                                *i
+                                idx
                             } else {
                                 self.natives[BUILTIN_COUNT..]
                                     .iter()
                                     .position(|&f| std::ptr::eq(f as *const (), fn_ptr))
                                     .map(|pos| BUILTIN_COUNT + pos)
                                     .unwrap_or_else(|| {
-                                        self.natives.push(other_natives[*i]);
+                                        self.natives.push(other_natives[idx]);
                                         self.natives.len() - 1
                                     })
                             };
@@ -1092,11 +1303,9 @@ impl Vm {
                         debug_println!("[DEBUG merge_globals_from] Пропуск перезаписи '{}' (встроенный модуль)", name);
                         continue;
                     }
-                    // Не перезаписывать корректное значение ошибочным: если value_to_store — встроенный натив (0..71),
-                    // но имя переменной не совпадает с каноническим именем этого натива, пропускаем перезапись.
-                    if let Value::NativeFunction(i) = value_to_store {
-                        if i < BUILTIN_COUNT {
-                            if let Some(canonical) = globals::builtin_global_name(i) {
+                    if let Value::NativeFunction(i) = &value_to_store {
+                        if *i < BUILTIN_COUNT {
+                            if let Some(canonical) = globals::builtin_global_name(*i) {
                                 if canonical != name.as_str() {
                                     debug_println!("[DEBUG merge_globals_from] Пропуск перезаписи '{}' на встроенный {:?} (индекс {})", name, canonical, i);
                                     continue;
@@ -1114,19 +1323,17 @@ impl Vm {
                     if name == "Config" || name == "DatabaseConfig" {
                         debug_println!("[DEBUG merge_globals_from] Config/DatabaseConfig: '{}' -> слот {} ({})", name, existing_index, val_type);
                     }
+                    let id = store_value_arena(value_to_store.clone(), &mut self.value_store, &mut self.heavy_store);
                     if existing_index < self.globals.len() {
-                        self.globals[existing_index] = value_to_store;
+                        self.globals[existing_index] = GlobalSlot::Heap(id);
                     } else {
-                        // Индекс выходит за границы, расширяем массив
-                        self.globals.resize(existing_index + 1, Value::Null);
-                        self.globals[existing_index] = value_to_store;
+                        self.globals.resize(existing_index + 1, global_slot::default_global_slot());
+                        self.globals[existing_index] = GlobalSlot::Heap(id);
                     }
                 } else {
-                    // Не создавать глобальную с ошибочным встроенным: если value — встроенный натив (0..71),
-                    // но имя не совпадает с каноническим, пропускаем (дубликат из модуля вроде (0, "Settings")).
-                    if let Value::NativeFunction(i) = value_to_store {
-                        if i < BUILTIN_COUNT {
-                            if let Some(canonical) = globals::builtin_global_name(i) {
+                    if let Value::NativeFunction(i) = &value_to_store {
+                        if *i < BUILTIN_COUNT {
+                            if let Some(canonical) = globals::builtin_global_name(*i) {
                                 if canonical != name.as_str() {
                                     debug_println!("[DEBUG merge_globals_from] Пропуск создания глобальной '{}' с встроенным {:?} (индекс {})", name, canonical, i);
                                     continue;
@@ -1134,14 +1341,13 @@ impl Vm {
                             }
                         }
                     }
-                    // Создаем новую глобальную переменную
                     let new_index = self.globals.len();
                     let val_type = match &value_to_store {
                         Value::Object(_) => "Object",
                         Value::Function(_) => "Function",
                         _ => "Other",
                     };
-                    self.globals.push(value_to_store);
+                    self.globals.push(GlobalSlot::Heap(store_value_arena(value_to_store, &mut self.value_store, &mut self.heavy_store)));
                     self.global_names.insert(new_index, name.clone());
                     debug_println!("[DEBUG merge_globals_from] Создана новая глобальная переменная '{}' в globals[{}] ({})", name, new_index, val_type);
                     if name == "Config" || name == "DatabaseConfig" {
@@ -1183,6 +1389,8 @@ impl Vm {
             &mut self.stack,
             &mut self.frames,
             &mut self.error_type_table,
+            &mut self.value_store,
+            &mut self.heavy_store,
         )? {
             return Ok(cached_result);
         }
@@ -1198,8 +1406,8 @@ impl Vm {
 
             match self.step()? {
                 VMStatus::Continue => {}
-                VMStatus::Return(v) => {
-                    return Ok(v);
+                VMStatus::Return(id) => {
+                    return Ok(load_value(id, &self.value_store, &self.heavy_store));
                 }
                 VMStatus::FrameEnded => {
                     break;
@@ -1207,26 +1415,21 @@ impl Vm {
             }
         }
 
-        // Return value from stack if any
-        // Проверяем относительно текущего frame's stack_start (caller's frame)
-        // после того как функция вернулась и её frame был удалён
-        // Используем безопасное извлечение без вызова stack::pop, чтобы избежать
-        // ошибки stack underflow, которая может быть неправильно обработана
         if let Some(frame) = self.frames.last() {
             if self.stack.len() > frame.stack_start {
-                // Безопасно извлекаем значение напрямую, так как мы уже проверили
-                // что стек не пуст относительно stack_start
-                Ok(self.stack.pop().unwrap_or(Value::Null))
+                let tv = self.stack.pop().unwrap_or(TaggedValue::null());
+                let id = tagged_to_value_id(tv, &mut self.value_store);
+                Ok(load_value(id, &self.value_store, &self.heavy_store))
             } else {
-                Ok(Value::Null)
+                Ok(load_value(NULL_VALUE_ID, &self.value_store, &self.heavy_store))
             }
         } else {
-            // Нет frame - проверяем относительно initial_stack_size
             if self.stack.len() > initial_stack_size {
-                // Безопасно извлекаем значение напрямую
-                Ok(self.stack.pop().unwrap_or(Value::Null))
+                let tv = self.stack.pop().unwrap_or(TaggedValue::null());
+                let id = tagged_to_value_id(tv, &mut self.value_store);
+                Ok(load_value(id, &self.value_store, &self.heavy_store))
             } else {
-                Ok(Value::Null)
+                Ok(load_value(NULL_VALUE_ID, &self.value_store, &self.heavy_store))
             }
         }
     }

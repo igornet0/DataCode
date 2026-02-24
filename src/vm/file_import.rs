@@ -1,58 +1,59 @@
 // Модуль для загрузки локальных .dc файлов как модулей
+// When VM is running, RunContext holds base_path/executing_lib/dpm_package_paths; we prefer it over thread_locals.
 
 use crate::debug_println;
+use crate::vm::run_context::RunContext;
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
 use crate::common::{error::LangError, value::Value};
 use crate::vm::Vm;
 
-// Thread-local storage для хранения базового пути текущего файла
+// Legacy thread-local storage (used when RunContext is not set, e.g. before run() or in tests).
 thread_local! {
     static BASE_PATH: std::cell::RefCell<Option<PathBuf>> = std::cell::RefCell::new(None);
-    // Флаг, указывающий, что мы выполняем __lib__.dc и не должны загружать его автоматически
     static EXECUTING_LIB: std::cell::RefCell<bool> = std::cell::RefCell::new(false);
-    // Дополнительные пути поиска модулей (DPM packages: env_root/packages)
     static DPM_PACKAGE_PATHS: std::cell::RefCell<Vec<PathBuf>> = std::cell::RefCell::new(Vec::new());
 }
 
-/// Устанавливает базовый путь для текущего потока
+/// Устанавливает базовый путь для текущего потока (updates RunContext when set, else legacy thread_local).
 pub fn set_base_path(path: Option<PathBuf>) {
-    BASE_PATH.with(|p| {
-        *p.borrow_mut() = path;
-    });
+    RunContext::with_current_opt(|r| r.base_path = path.clone());
+    BASE_PATH.with(|p| *p.borrow_mut() = path);
 }
 
-/// Получает базовый путь для текущего потока
+/// Получает базовый путь (from RunContext when set, else legacy thread_local).
 pub fn get_base_path() -> Option<PathBuf> {
-    BASE_PATH.with(|p| {
-        p.borrow().clone()
-    })
+    RunContext::get_base_path().or_else(|| BASE_PATH.with(|p| p.borrow().clone()))
 }
 
 /// Устанавливает флаг выполнения __lib__.dc
 pub fn set_executing_lib(executing: bool) {
-    EXECUTING_LIB.with(|f| {
-        *f.borrow_mut() = executing;
-    });
+    RunContext::with_current_opt(|r| r.executing_lib = executing);
+    EXECUTING_LIB.with(|f| *f.borrow_mut() = executing);
 }
 
 /// Проверяет, выполняем ли мы __lib__.dc
 pub fn is_executing_lib() -> bool {
-    EXECUTING_LIB.with(|f| {
-        *f.borrow()
-    })
+    if RunContext::is_set() {
+        RunContext::get_executing_lib()
+    } else {
+        EXECUTING_LIB.with(|f| *f.borrow())
+    }
 }
 
 /// Устанавливает дополнительные пути поиска модулей (DPM packages).
 pub fn set_dpm_package_paths(paths: Vec<PathBuf>) {
-    DPM_PACKAGE_PATHS.with(|p| {
-        *p.borrow_mut() = paths;
-    });
+    RunContext::with_current_opt(|r| r.dpm_package_paths = paths.clone());
+    DPM_PACKAGE_PATHS.with(|p| *p.borrow_mut() = paths);
 }
 
-/// Получает дополнительные пути поиска модулей.
+/// Получает дополнительные пути поиска модулей (from RunContext when set, else legacy thread_local).
 pub fn get_dpm_package_paths() -> Vec<PathBuf> {
-    DPM_PACKAGE_PATHS.with(|p| p.borrow().clone())
+    if RunContext::is_set() {
+        RunContext::get_dpm_package_paths()
+    } else {
+        DPM_PACKAGE_PATHS.with(|p| p.borrow().clone())
+    }
 }
 
 /// Пытается найти модуль в заданном корне: <root>/<module_name>.dc или <root>/<module_name>/__lib__.dc.
@@ -119,13 +120,13 @@ pub fn load_local_module(
     set_base_path(Some(module_dir.clone()));
 
     // 4. Скомпилировать и выполнить модуль (передаём module_dir в VM для вложенных импортов)
-    let (_, vm) = compile_and_run_module(&source, Some(module_dir))?;
+    let (_, mut vm) = compile_and_run_module(&source, Some(module_dir))?;
 
     // Восстанавливаем предыдущий BASE_PATH
     set_base_path(old_base_path);
 
     // 5. Экспортировать глобальные переменные в объект модуля
-    let module_object = export_globals_from_vm(&vm);
+    let module_object = export_globals_from_vm(&mut vm);
 
     Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(module_object))))
 }
@@ -216,13 +217,13 @@ fn load_local_module_with_vm_inner(
     set_base_path(Some(module_dir.clone()));
 
     // 4. Скомпилировать и выполнить модуль (передаём module_dir в VM, чтобы run() не затирал thread-local в None)
-    let (_, vm) = compile_and_run_module(&source, Some(module_dir))?;
+    let (_, mut vm) = compile_and_run_module(&source, Some(module_dir))?;
 
     // Восстанавливаем предыдущий BASE_PATH
     set_base_path(old_base_path);
 
     // 5. Экспортировать глобальные переменные в объект модуля
-    let module_object = export_globals_from_vm(&vm);
+    let module_object = export_globals_from_vm(&mut vm);
 
     Ok((
         Value::Object(std::rc::Rc::new(std::cell::RefCell::new(module_object))),
@@ -265,7 +266,7 @@ fn compile_and_run_module(source: &str, module_base_path: Option<PathBuf>) -> Re
     let max_global_index = chunk.global_names.keys().max().copied().unwrap_or(0);
     let needed_size = (max_global_index + 1).max(74);
     if vm.get_globals().len() < needed_size {
-        vm.get_globals_mut().resize(needed_size, Value::Null);
+        vm.get_globals_mut().resize(needed_size, crate::vm::global_slot::default_global_slot());
     }
     vm.register_native_globals();
     vm.register_all_builtin_modules().map_err(|e| {
@@ -282,30 +283,29 @@ fn compile_and_run_module(source: &str, module_base_path: Option<PathBuf>) -> Re
     Ok((result, vm))
 }
 
-/// Извлекает все глобальные переменные из VM после выполнения модуля
-fn export_globals_from_vm(vm: &Vm) -> HashMap<String, Value> {
+/// Извлекает все глобальные переменные из VM после выполнения модуля (globals are GlobalSlot)
+fn export_globals_from_vm(vm: &mut Vm) -> HashMap<String, Value> {
+    use crate::vm::store_convert::load_value;
     let mut exports = HashMap::new();
-    
-    // Получаем глобальные переменные и их имена из VM
     let globals = vm.get_globals();
     let global_names = vm.get_global_names();
-    
-    debug_println!("[DEBUG export_globals_from_vm] Экспортируем {} глобальных переменных", global_names.len());
-    
-    // Создаем маппинг имен на значения
-    for (index, name) in global_names.iter() {
-        if let Some(value) = globals.get(*index) {
-            let value_type = match value {
+    let to_export: Vec<(usize, String)> = global_names
+        .iter()
+        .filter_map(|(index, name)| globals.get(*index).map(|_| (*index, name.clone())))
+        .collect();
+    debug_println!("[DEBUG export_globals_from_vm] Экспортируем {} глобальных переменных", to_export.len());
+    for (index, name) in to_export {
+        let value_id = vm.resolve_global_to_value_id(index);
+        let value = load_value(value_id, vm.value_store(), vm.heavy_store());
+            let value_type = match &value {
                 Value::Object(_) => "Object",
                 Value::Function(_) => "Function",
                 Value::Null => "Null",
                 _ => "Other",
             };
             debug_println!("[DEBUG export_globals_from_vm] Экспортируем: {} (index: {}, type: {})", name, index, value_type);
-            exports.insert(name.clone(), value.clone());
-        }
+            exports.insert(name, value);
     }
-    
     debug_println!("[DEBUG export_globals_from_vm] Всего экспортировано: {} переменных", exports.len());
     exports
 }

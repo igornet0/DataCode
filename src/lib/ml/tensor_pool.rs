@@ -4,7 +4,6 @@
 use crate::ml::tensor::Tensor;
 use crate::ml::device::Device;
 use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// A pool of tensors organized by shape and device
 /// This allows reusing tensor memory for tensors with the same shape and device
@@ -172,30 +171,40 @@ pub struct TensorPoolStats {
     pub max_pool_size: usize,
 }
 
-// Thread-safe global tensor pool
-// This can be used across threads for tensor reuse
-lazy_static::lazy_static! {
-    pub static ref GLOBAL_TENSOR_POOL: Mutex<TensorPool> = Mutex::new(TensorPool::new());
-}
+// Tensor pool is now owned by MlContext (thread-local, set by VM). No global Mutex.
 
-/// Get a tensor from the global pool
+use crate::ml::context::MlContext;
+
+/// Get a tensor from the current VM's pool (no global lock).
 pub fn get_tensor_from_pool(shape: Vec<usize>, device: Device) -> Result<Tensor, String> {
-    GLOBAL_TENSOR_POOL.lock().unwrap().get(shape, device)
+    if MlContext::is_set() {
+        MlContext::with_current(|ctx| ctx.get_tensor_from_pool(shape, device))
+    } else {
+        Err("ML context not set. VM must set MlContext before run().".to_string())
+    }
 }
 
-/// Return a tensor to the global pool
+/// Return a tensor to the current VM's pool.
 pub fn return_tensor_to_pool(tensor: Tensor) {
-    GLOBAL_TENSOR_POOL.lock().unwrap().return_tensor(tensor);
+    if MlContext::is_set() {
+        MlContext::with_current(|ctx| ctx.return_tensor_to_pool(tensor));
+    }
 }
 
-/// Clear the global tensor pool
+/// Clear the current VM's tensor pool.
 pub fn clear_global_pool() {
-    GLOBAL_TENSOR_POOL.lock().unwrap().clear();
+    if MlContext::is_set() {
+        MlContext::with_current(|ctx| ctx.clear_pool());
+    }
 }
 
-/// Get statistics about the global tensor pool
+/// Get statistics about the current VM's tensor pool.
 pub fn get_pool_stats() -> TensorPoolStats {
-    GLOBAL_TENSOR_POOL.lock().unwrap().stats()
+    if MlContext::is_set() {
+        MlContext::with_current(|ctx| ctx.pool_stats())
+    } else {
+        TensorPool::new().stats()
+    }
 }
 
 #[cfg(test)]

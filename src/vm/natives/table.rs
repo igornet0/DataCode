@@ -16,12 +16,11 @@ pub fn native_table(args: &[Value]) -> Value {
         return Value::Null;
     }
 
-    // Первый аргумент - данные (массив массивов)
+    // Первый аргумент - данные (массив массивов). Table::from_data stores rows only; columns built lazily.
     let data = match &args[0] {
         Value::Array(arr) => {
-            // Преобразуем массив массивов в Vec<Vec<Value>>
             let arr_ref = arr.borrow();
-            let mut rows = Vec::new();
+            let mut rows = Vec::with_capacity(arr_ref.len());
             for row_val in arr_ref.iter() {
                 match row_val {
                     Value::Array(row) => rows.push(row.borrow().clone()),
@@ -195,7 +194,7 @@ fn apply_header_filter(table: Table, header_arg: Option<&Value>) -> Table {
             let mut new_headers = Vec::new();
             
             for col_name in &selected_cols {
-                if let Some(idx) = table.headers.iter().position(|h| h == col_name) {
+                if let Some(idx) = table.headers().iter().position(|h| h == col_name) {
                     col_indices.push(idx);
                     new_headers.push(col_name.clone());
                 }
@@ -208,7 +207,8 @@ fn apply_header_filter(table: Table, header_arg: Option<&Value>) -> Table {
             
             // Создаем новые строки только с выбранными колонками
             let mut new_rows = Vec::new();
-            for row in &table.rows {
+            let rr = table.rows_ref().unwrap();
+            for row in rr.iter() {
                 let mut new_row = Vec::new();
                 for &idx in &col_indices {
                     if idx < row.len() {
@@ -227,7 +227,7 @@ fn apply_header_filter(table: Table, header_arg: Option<&Value>) -> Table {
             let rename_map = rename_map_rc.borrow();
             let mut new_headers = Vec::new();
             
-            for old_header in &table.headers {
+            for old_header in table.headers() {
                 if let Some(new_name_val) = rename_map.get(old_header) {
                     match new_name_val {
                         Value::String(new_name) => {
@@ -251,7 +251,7 @@ fn apply_header_filter(table: Table, header_arg: Option<&Value>) -> Table {
             
             // Создаем новую таблицу с переименованными заголовками
             // Данные остаются теми же, меняются только заголовки
-            Table::from_data(table.rows.clone(), Some(new_headers))
+            Table::from_data(table.rows_ref().unwrap().to_vec(), Some(new_headers))
         }
         _ => {
             // Некорректный тип - возвращаем таблицу без изменений
@@ -349,9 +349,13 @@ pub fn native_read_file(args: &[Value]) -> Value {
         let share_name = parts[0];
         let file_path_on_share = if parts.len() > 1 { parts[1] } else { "" };
         
-        // Получаем SmbManager из thread-local storage
+        // Получаем SmbManager из thread-local storage; hold lock only for read_file, then release before processing content.
         if let Some(smb_manager) = crate::vm::file_ops::get_smb_manager() {
-            match smb_manager.lock().unwrap().read_file(share_name, file_path_on_share) {
+            let read_result = {
+                let guard = smb_manager.lock().unwrap();
+                guard.read_file(share_name, file_path_on_share)
+            };
+            match read_result {
                 Ok(content) => {
                     // Определяем тип файла по расширению
                     let extension = std::path::Path::new(file_path_on_share)
@@ -520,6 +524,16 @@ pub fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     }
 }
 
+fn col_type_from_value(v: &Value) -> &'static str {
+    match v {
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Bool(_) => "bool",
+        Value::Array(_) => "array",
+        _ => "mixed",
+    }
+}
+
 pub fn native_table_info(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::String("Table: empty".to_string());
@@ -527,29 +541,39 @@ pub fn native_table_info(args: &[Value]) -> Value {
 
     match &args[0] {
         Value::Table(table) => {
-            let table_ref = table.borrow();
-            let row_count = table_ref.len();
-            let col_count = table_ref.column_count();
-            let headers = table_ref.headers.clone();
-            
+            let row_count = table.borrow().len();
+            let col_count = table.borrow().column_count();
+            let headers = table.borrow().headers().clone();
             let mut info = format!("Table: {} rows, {} columns\n", row_count, col_count);
             info.push_str("Columns:\n");
-            for header in &headers {
-                if let Some(column) = table_ref.get_column(header) {
-                    let col_type = if column.is_empty() {
-                        "empty".to_string()
-                    } else {
-                        // Определяем тип по первому не-null значению
-                        let first_val = column.iter().find(|v| !matches!(v, Value::Null));
-                        match first_val {
-                            Some(Value::Number(_)) => "number".to_string(),
-                            Some(Value::String(_)) => "string".to_string(),
-                            Some(Value::Bool(_)) => "bool".to_string(),
-                            Some(Value::Array(_)) => "array".to_string(),
-                            _ => "mixed".to_string(),
-                        }
-                    };
-                    info.push_str(&format!("  - {}: {} ({} values)\n", header, col_type, column.len()));
+
+            if table.borrow().is_view() {
+                crate::vm::vm::with_current_stores(|store, heap| {
+                    let t = table.borrow();
+                    for header in &headers {
+                        let len = crate::vm::table_ops::column_len(&*t, header).unwrap_or(0);
+                        let col_type = (0..len)
+                            .find_map(|i| crate::vm::table_ops::get_cell_value(&*t, i, header, store, heap))
+                            .map(|v| col_type_from_value(&v).to_string())
+                            .unwrap_or_else(|| if len == 0 { "empty".to_string() } else { "mixed".to_string() });
+                        info.push_str(&format!("  - {}: {} ({} values)\n", header, col_type, len));
+                    }
+                });
+            } else {
+                let mut table_ref = table.borrow_mut();
+                for header in &headers {
+                    if let Some(column) = table_ref.get_column(header) {
+                        let col_type = if column.is_empty() {
+                            "empty".to_string()
+                        } else {
+                            let first_val = column.iter().find(|v| !matches!(v, Value::Null));
+                            match first_val {
+                                Some(v) => col_type_from_value(v).to_string(),
+                                _ => "mixed".to_string(),
+                            }
+                        };
+                        info.push_str(&format!("  - {}: {} ({} values)\n", header, col_type, column.len()));
+                    }
                 }
             }
             Value::String(info)
@@ -577,16 +601,29 @@ pub fn native_table_head(args: &[Value]) -> Value {
             let table_ref = table.borrow();
             let row_count = table_ref.len();
             let take_n = if n > row_count { row_count } else { n };
-            
-            // Оптимизация: предварительное выделение памяти
-            let mut new_rows = Vec::with_capacity(take_n);
-            for i in 0..take_n {
-                if let Some(row) = table_ref.get_row(i) {
-                    new_rows.push(row.clone());
+            let headers = table_ref.headers().clone();
+
+            let new_rows: Vec<Vec<Value>> = if table_ref.is_view() {
+                crate::vm::vm::with_current_stores(|store, heap| {
+                    let mut rows = Vec::with_capacity(take_n);
+                    for i in 0..take_n {
+                        if let Some(row) = crate::vm::table_ops::get_row(&*table_ref, i, store, heap) {
+                            rows.push(row);
+                        }
+                    }
+                    rows
+                })
+            } else {
+                let mut new_rows = Vec::with_capacity(take_n);
+                for i in 0..take_n {
+                    if let Some(row) = table_ref.get_row(i) {
+                        new_rows.push(row.to_vec());
+                    }
                 }
-            }
-            
-            let new_table = Table::from_data(new_rows, Some(table_ref.headers.clone()));
+                new_rows
+            };
+
+            let new_table = Table::from_data(new_rows, Some(headers));
             Value::Table(Rc::new(RefCell::new(new_table)))
         }
         _ => Value::Null,
@@ -613,16 +650,29 @@ pub fn native_table_tail(args: &[Value]) -> Value {
             let row_count = table_ref.len();
             let take_n = if n > row_count { row_count } else { n };
             let start_idx = if row_count > take_n { row_count - take_n } else { 0 };
-            
-            // Оптимизация: предварительное выделение памяти
-            let mut new_rows = Vec::with_capacity(take_n);
-            for i in start_idx..row_count {
-                if let Some(row) = table_ref.get_row(i) {
-                    new_rows.push(row.clone());
+            let headers = table_ref.headers().clone();
+
+            let new_rows: Vec<Vec<Value>> = if table_ref.is_view() {
+                crate::vm::vm::with_current_stores(|store, heap| {
+                    let mut rows = Vec::with_capacity(take_n);
+                    for i in start_idx..row_count {
+                        if let Some(row) = crate::vm::table_ops::get_row(&*table_ref, i, store, heap) {
+                            rows.push(row);
+                        }
+                    }
+                    rows
+                })
+            } else {
+                let mut new_rows = Vec::with_capacity(take_n);
+                for i in start_idx..row_count {
+                    if let Some(row) = table_ref.get_row(i) {
+                        new_rows.push(row.to_vec());
+                    }
                 }
-            }
-            
-            let new_table = Table::from_data(new_rows, Some(table_ref.headers.clone()));
+                new_rows
+            };
+
+            let new_table = Table::from_data(new_rows, Some(headers));
             Value::Table(Rc::new(RefCell::new(new_table)))
         }
         _ => Value::Null,
@@ -652,31 +702,47 @@ pub fn native_table_select(args: &[Value]) -> Value {
     match &args[0] {
         Value::Table(table) => {
             let table_ref = table.borrow();
-            let mut new_rows = Vec::new();
-            
-            // Создаем индексы колонок для выборки
             let mut col_indices = Vec::new();
             for col_name in &columns_to_select {
-                if let Some(idx) = table_ref.headers.iter().position(|h| h == col_name) {
+                if let Some(idx) = table_ref.headers().iter().position(|h| h == col_name) {
                     col_indices.push(idx);
                 } else {
                     return Value::Null; // Колонка не найдена
                 }
             }
-            
-            // Создаем новые строки только с выбранными колонками
-            for row in &table_ref.rows {
-                let mut new_row = Vec::new();
-                for &idx in &col_indices {
-                    if idx < row.len() {
-                        new_row.push(row[idx].clone());
-                    } else {
-                        new_row.push(Value::Null);
+
+            let new_rows: Vec<Vec<Value>> = if table_ref.is_view() {
+                crate::vm::vm::with_current_stores(|store, heap| {
+                    let n_rows = table_ref.len();
+                    let mut rows = Vec::with_capacity(n_rows);
+                    for i in 0..n_rows {
+                        if let Some(row) = crate::vm::table_ops::get_row(&*table_ref, i, store, heap) {
+                            let mut new_row = Vec::new();
+                            for &idx in &col_indices {
+                                new_row.push(row.get(idx).cloned().unwrap_or(Value::Null));
+                            }
+                            rows.push(new_row);
+                        }
                     }
+                    rows
+                })
+            } else {
+                let mut new_rows = Vec::new();
+                let rr = table_ref.rows_ref().unwrap();
+                for row in rr.iter() {
+                    let mut new_row = Vec::new();
+                    for &idx in &col_indices {
+                        if idx < row.len() {
+                            new_row.push(row[idx].clone());
+                        } else {
+                            new_row.push(Value::Null);
+                        }
+                    }
+                    new_rows.push(new_row);
                 }
-                new_rows.push(new_row);
-            }
-            
+                new_rows
+            };
+
             let new_table = Table::from_data(new_rows, Some(columns_to_select));
             Value::Table(Rc::new(RefCell::new(new_table)))
         }
@@ -706,40 +772,43 @@ pub fn native_table_sort(args: &[Value]) -> Value {
 
     match &args[0] {
         Value::Table(table) => {
-            let table_ref = table.borrow();
-            
-            // Получаем колонку для сортировки
-            let sort_column = match table_ref.get_column(&column_name) {
-                Some(col) => col.clone(),
-                None => return Value::Null,
+            let n_rows = table.borrow().len();
+            let headers = table.borrow().headers().clone();
+            let is_view = table.borrow().is_view();
+
+            let sort_column: Vec<Value> = if is_view {
+                crate::vm::vm::with_current_stores(|store, heap| {
+                    let mut t = table.borrow_mut();
+                    crate::vm::table_ops::get_column(&mut *t, &column_name, store, heap)
+                }).unwrap_or_default()
+            } else {
+                table.borrow_mut().get_column(&column_name).map(|c| c.clone()).unwrap_or_default()
             };
-            
-            // Создаем вектор индексов для сортировки
-            let mut indices: Vec<usize> = (0..table_ref.rows.len()).collect();
-            
-            // Сортируем индексы по значениям в колонке
-            indices.sort_by(|&a, &b| {
-                let val_a = &sort_column[a];
-                let val_b = &sort_column[b];
-                
-                let cmp = compare_values(val_a, val_b);
-                
-                if ascending {
-                    cmp
-                } else {
-                    cmp.reverse()
-                }
-            });
-            
-            // Создаем новые строки в отсортированном порядке
-            let mut new_rows = Vec::new();
-            for &idx in &indices {
-                if let Some(row) = table_ref.get_row(idx) {
-                    new_rows.push(row.clone());
-                }
+            if sort_column.len() != n_rows {
+                return Value::Null;
             }
-            
-            let new_table = Table::from_data(new_rows, Some(table_ref.headers.clone()));
+
+            let mut indices: Vec<usize> = (0..n_rows).collect();
+            indices.sort_by(|&a, &b| {
+                let cmp = compare_values(&sort_column[a], &sort_column[b]);
+                if ascending { cmp } else { cmp.reverse() }
+            });
+
+            let new_rows: Vec<Vec<Value>> = if is_view {
+                crate::vm::vm::with_current_stores(|store, heap| {
+                    let t = table.borrow();
+                    indices.iter()
+                        .filter_map(|&idx| crate::vm::table_ops::get_row(&*t, idx, store, heap))
+                        .collect()
+                })
+            } else {
+                let table_ref = table.borrow();
+                indices.iter()
+                    .filter_map(|&idx| table_ref.get_row(idx).map(|r| r.to_vec()))
+                    .collect()
+            };
+
+            let new_table = Table::from_data(new_rows, Some(headers));
             Value::Table(Rc::new(RefCell::new(new_table)))
         }
         _ => Value::Null,
@@ -765,47 +834,54 @@ pub fn native_table_where(args: &[Value]) -> Value {
 
     match &args[0] {
         Value::Table(table) => {
-            let table_ref = table.borrow();
-            
-            // Получаем колонку для фильтрации
-            let filter_column = match table_ref.get_column(&column_name) {
-                Some(col) => col.clone(),
-                None => return Value::Null,
+            let headers = table.borrow().headers().clone();
+            let is_view = table.borrow().is_view();
+
+            let filter_column: Vec<Value> = if is_view {
+                crate::vm::vm::with_current_stores(|store, heap| {
+                    let mut t = table.borrow_mut();
+                    crate::vm::table_ops::get_column(&mut *t, &column_name, store, heap)
+                }).unwrap_or_default()
+            } else {
+                table.borrow_mut().get_column(&column_name).map(|c| c.clone()).unwrap_or_default()
             };
-            
-            // Определяем, какие строки проходят фильтр
-            let mut matching_indices = Vec::new();
-            for (i, val) in filter_column.iter().enumerate() {
-                let matches = match operator {
-                    ">" => compare_values(val, &filter_value) == std::cmp::Ordering::Greater,
-                    "<" => compare_values(val, &filter_value) == std::cmp::Ordering::Less,
-                    ">=" => {
-                        let cmp = compare_values(val, &filter_value);
-                        cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
+
+            let matching_indices: Vec<usize> = filter_column.iter().enumerate()
+                .filter(|(_, val)| {
+                    match operator {
+                        ">" => compare_values(val, &filter_value) == std::cmp::Ordering::Greater,
+                        "<" => compare_values(val, &filter_value) == std::cmp::Ordering::Less,
+                        ">=" => {
+                            let cmp = compare_values(val, &filter_value);
+                            cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
+                        }
+                        "<=" => {
+                            let cmp = compare_values(val, &filter_value);
+                            cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
+                        }
+                        "==" | "=" => compare_values(val, &filter_value) == std::cmp::Ordering::Equal,
+                        "!=" | "<>" => compare_values(val, &filter_value) != std::cmp::Ordering::Equal,
+                        _ => false,
                     }
-                    "<=" => {
-                        let cmp = compare_values(val, &filter_value);
-                        cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
-                    }
-                    "==" | "=" => compare_values(val, &filter_value) == std::cmp::Ordering::Equal,
-                    "!=" | "<>" => compare_values(val, &filter_value) != std::cmp::Ordering::Equal,
-                    _ => false,
-                };
-                
-                if matches {
-                    matching_indices.push(i);
-                }
-            }
-            
-            // Создаем новые строки только с подходящими индексами
-            let mut new_rows = Vec::new();
-            for &idx in &matching_indices {
-                if let Some(row) = table_ref.get_row(idx) {
-                    new_rows.push(row.clone());
-                }
-            }
-            
-            let new_table = Table::from_data(new_rows, Some(table_ref.headers.clone()));
+                })
+                .map(|(i, _)| i)
+                .collect();
+
+            let new_rows: Vec<Vec<Value>> = if is_view {
+                crate::vm::vm::with_current_stores(|store, heap| {
+                    let t = table.borrow();
+                    matching_indices.iter()
+                        .filter_map(|&idx| crate::vm::table_ops::get_row(&*t, idx, store, heap))
+                        .collect()
+                })
+            } else {
+                let table_ref = table.borrow();
+                matching_indices.iter()
+                    .filter_map(|&idx| table_ref.get_row(idx).map(|r| r.to_vec()))
+                    .collect()
+            };
+
+            let new_table = Table::from_data(new_rows, Some(headers));
             Value::Table(Rc::new(RefCell::new(new_table)))
         }
         _ => Value::Null,
@@ -819,28 +895,50 @@ pub fn native_show_table(args: &[Value]) -> Value {
 
     match &args[0] {
         Value::Table(table) => {
-            let table_ref = table.borrow();
-            
-            if table_ref.rows.is_empty() {
+            let len = table.borrow().len();
+            if len == 0 {
                 println!("Empty table");
                 return Value::Null;
             }
-            
-            // Вычисляем ширину колонок
-            let mut col_widths = Vec::new();
-            for header in &table_ref.headers {
-                let mut max_width = header.len();
-                if let Some(column) = table_ref.get_column(header) {
-                    for val in column {
-                        let val_str = val.to_string();
-                        if val_str.len() > max_width {
-                            max_width = val_str.len();
+            let headers: Vec<String> = table.borrow().headers().clone();
+            let is_view = table.borrow().is_view();
+
+            let max_show = len.min(20);
+            let (col_widths, rows_to_show): (Vec<usize>, usize) = if is_view {
+                crate::vm::vm::with_current_stores(|store, heap| {
+                    let t = table.borrow();
+                    let mut col_widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+                    for row_idx in 0..max_show {
+                        for (col_i, header) in headers.iter().enumerate() {
+                            if let Some(v) = crate::vm::table_ops::get_cell_value(&*t, row_idx, header, store, heap) {
+                                let w = v.to_string().len();
+                                if col_widths[col_i] < w {
+                                    col_widths[col_i] = w;
+                                }
+                            }
+                        }
+                    }
+                    (col_widths.into_iter().map(|w| w.max(3)).collect(), max_show)
+                })
+            } else {
+                let table_ref = table.borrow();
+                let mut col_widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+                let rr = table_ref.rows_ref().unwrap();
+                for row_idx in 0..rr.len() {
+                    if let Some(row) = rr.row(row_idx) {
+                        for (col_i, val) in row.iter().enumerate() {
+                            if col_i < col_widths.len() {
+                                let w = val.to_string().len();
+                                if col_widths[col_i] < w {
+                                    col_widths[col_i] = w;
+                                }
+                            }
                         }
                     }
                 }
-                col_widths.push(max_width.max(3)); // Минимум 3 символа
-            }
-            
+                (col_widths.into_iter().map(|w| w.max(3)).collect(), rr.len().min(20))
+            };
+
             // Печатаем верхнюю границу
             print!("┌");
             for (i, &width) in col_widths.iter().enumerate() {
@@ -850,18 +948,14 @@ pub fn native_show_table(args: &[Value]) -> Value {
                 print!("{}", "─".repeat(width + 2));
             }
             println!("┐");
-            
-            // Печатаем заголовки
             print!("│");
-            for (i, header) in table_ref.headers.iter().enumerate() {
+            for (i, header) in headers.iter().enumerate() {
                 if i > 0 {
                     print!("│");
                 }
                 print!(" {:<width$} ", header, width = col_widths[i]);
             }
             println!("│");
-            
-            // Печатаем разделитель
             print!("├");
             for (i, &width) in col_widths.iter().enumerate() {
                 if i > 0 {
@@ -870,25 +964,27 @@ pub fn native_show_table(args: &[Value]) -> Value {
                 print!("{}", "─".repeat(width + 2));
             }
             println!("┤");
-            
-            // Печатаем строки (максимум 20 для больших таблиц)
-            let max_rows = 20;
-            let rows_to_show = table_ref.rows.len().min(max_rows);
+
             for row_idx in 0..rows_to_show {
-                if let Some(row) = table_ref.get_row(row_idx) {
-                    print!("│");
-                    for (i, val) in row.iter().enumerate() {
-                        if i > 0 {
-                            print!("│");
-                        }
-                        let val_str = val.to_string();
-                        print!(" {:<width$} ", val_str, width = col_widths[i]);
+                let row_vals: Vec<Value> = if is_view {
+                    crate::vm::vm::with_current_stores(|store, heap| {
+                        let t = table.borrow();
+                        crate::vm::table_ops::get_row(&*t, row_idx, store, heap).unwrap_or_default()
+                    })
+                } else {
+                    table.borrow().get_row(row_idx).map(|r| r.to_vec()).unwrap_or_default()
+                };
+                print!("│");
+                for (i, val) in row_vals.iter().enumerate() {
+                    if i > 0 {
+                        print!("│");
                     }
-                    println!("│");
+                    let w = col_widths.get(i).copied().unwrap_or(3);
+                    print!(" {:<width$} ", val.to_string(), width = w);
                 }
+                println!("│");
             }
-            
-            // Печатаем нижнюю границу
+
             print!("└");
             for (i, &width) in col_widths.iter().enumerate() {
                 if i > 0 {
@@ -897,11 +993,11 @@ pub fn native_show_table(args: &[Value]) -> Value {
                 print!("{}", "─".repeat(width + 2));
             }
             println!("┘");
-            
-            if table_ref.rows.len() > max_rows {
-                println!("... ({} more rows)", table_ref.rows.len() - max_rows);
+
+            if len > max_show {
+                println!("... ({} more rows)", len - max_show);
             }
-            
+
             Value::Null
         }
         _ => Value::Null,
@@ -950,7 +1046,16 @@ pub fn native_merge_tables(args: &[Value]) -> Value {
     // Если только одна таблица, возвращаем её копию
     if tables.len() == 1 {
         let table_ref = tables[0].borrow();
-        let new_table = Table::from_data(table_ref.rows.clone(), Some(table_ref.headers.clone()));
+        let rows: Vec<Vec<Value>> = if let Some(rr) = table_ref.rows_ref() {
+            rr.to_vec()
+        } else {
+            crate::vm::vm::with_current_stores(|store, heap| {
+                (0..table_ref.len())
+                    .filter_map(|i| crate::vm::table_ops::get_row(&*table_ref, i, store, heap))
+                    .collect()
+            })
+        };
+        let new_table = Table::from_data(rows, Some(table_ref.headers().clone()));
         return Value::Table(Rc::new(RefCell::new(new_table)));
     }
 
@@ -960,7 +1065,7 @@ pub fn native_merge_tables(args: &[Value]) -> Value {
     
     // Сначала добавляем колонки первой таблицы для сохранения порядка
     let first_table = tables[0].borrow();
-    for header in &first_table.headers {
+    for header in first_table.headers() {
         if all_columns_set.insert(header.clone()) {
             column_order.push(header.clone());
         }
@@ -969,7 +1074,7 @@ pub fn native_merge_tables(args: &[Value]) -> Value {
     // Затем добавляем колонки из остальных таблиц
     for table_rc in &tables[1..] {
         let table_ref = table_rc.borrow();
-        for header in &table_ref.headers {
+        for header in table_ref.headers() {
             if all_columns_set.insert(header.clone()) {
                 column_order.push(header.clone());
             }
@@ -983,7 +1088,7 @@ pub fn native_merge_tables(args: &[Value]) -> Value {
             let mut in_all = true;
             for table_rc in &tables {
                 let table_ref = table_rc.borrow();
-                if !table_ref.headers.contains(col) {
+                if !table_ref.headers().contains(col) {
                     in_all = false;
                     break;
                 }
@@ -999,30 +1104,35 @@ pub fn native_merge_tables(args: &[Value]) -> Value {
 
     // Создаем объединенные строки
     let mut merged_rows = Vec::new();
-    
+
     for table_rc in &tables {
         let table_ref = table_rc.borrow();
-        
-        // Для каждой строки в таблице
-        for row in &table_ref.rows {
+
+        let rows: Vec<Vec<Value>> = if let Some(rr) = table_ref.rows_ref() {
+            rr.iter().map(|r| r.to_vec()).collect()
+        } else {
+            crate::vm::vm::with_current_stores(|store, heap| {
+                (0..table_ref.len())
+                    .filter_map(|i| crate::vm::table_ops::get_row(&*table_ref, i, store, heap))
+                    .collect()
+            })
+        };
+
+        for row in rows {
             let mut new_row = Vec::new();
-            
-            // Для каждой колонки в результате
+
             for col_name in &result_columns {
-                // Находим индекс колонки в исходной таблице
-                if let Some(col_idx) = table_ref.headers.iter().position(|h| h == col_name) {
-                    // Берем значение из соответствующей позиции в строке
+                if let Some(col_idx) = table_ref.headers().iter().position(|h| h == col_name) {
                     if col_idx < row.len() {
                         new_row.push(row[col_idx].clone());
                     } else {
                         new_row.push(Value::Null);
                     }
                 } else {
-                    // Колонки нет в этой таблице - добавляем null
                     new_row.push(Value::Null);
                 }
             }
-            
+
             merged_rows.push(new_row);
         }
     }

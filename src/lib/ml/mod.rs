@@ -16,6 +16,7 @@ pub mod device;
 pub mod scheduler;
 pub mod tensor_pool;
 pub mod gpu_cache;
+pub mod context;
 #[cfg(feature = "gpu")]
 pub mod ops_gpu;
 
@@ -37,3 +38,4 @@ pub use layer::{Layer, Linear, ReLU, Sigmoid, Tanh, Softmax, Flatten, Sequential
 pub use device::Device;
 pub use tensor_pool::{TensorPool, get_tensor_from_pool, return_tensor_to_pool, clear_global_pool, get_pool_stats};
 pub use gpu_cache::{GpuTensorCache, init_global_gpu_cache, get_gpu_tensor_from_cache, update_gpu_tensor_in_cache, clear_global_gpu_cache, get_gpu_cache_stats};
+pub use context::MlContext;

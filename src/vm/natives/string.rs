@@ -120,9 +120,7 @@ pub fn native_isupper(args: &[Value]) -> Value {
         Value::String(s) => Value::Bool(s.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)),
         _ => Value::Bool(false),
     }
-}
-
-pub fn native_islower(args: &[Value]) -> Value {
+}pub fn native_islower(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Bool(false);
     }

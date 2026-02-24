@@ -31,8 +31,7 @@ make app-bundle
 1. Соберет приложение в release режиме
 2. Создаст структуру app bundle
 3. Скопирует исполняемый файл
-4. Конвертирует PNG иконку в ICNS формат
-5. Установит иконку в app bundle
+4. Скопирует готовую иконку ICNS в app bundle
 
 ### Запуск приложения
 
@@ -48,13 +47,13 @@ cp -r packaging/macos/DataCode.app /Applications/
 
 ### Иконка
 
-Иконка берется из `src/lib/plot/icon/datacode-plot.png` и автоматически конвертируется в формат ICNS с различными размерами для macOS.
+В проекте должна быть готовая иконка `packaging/macos/datacode-plot.icns`. Скрипт копирует её в app bundle (iconset при сборке не создаётся). Если нужно сгенерировать ICNS из PNG один раз — используйте `sips` и `iconutil` вручную или скопируйте уже собранный файл из `DataCode.app/Contents/Resources/datacode-plot.icns`.
 
 ## Требования
 
-- macOS (для использования `sips` и `iconutil`)
+- macOS
 - Rust и Cargo (для сборки приложения)
-- Исходная иконка должна существовать: `src/lib/plot/icon/datacode-plot.png`
+- Готовая иконка в проекте: `packaging/macos/datacode-plot.icns`
 
 ## Примечания
 

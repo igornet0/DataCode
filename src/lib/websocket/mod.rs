@@ -526,13 +526,13 @@ fn execute_code(
 
     // Формируем ответ
     let response = match result {
-        Ok((_, vm)) => {
+        Ok((_, mut vm)) => {
             let mut sqlite_db = None;
             
             // Если включен build_model, проверяем наличие таблиц и экспортируем их
             if build_model {
                 // Проверяем наличие таблиц
-                match sqlite_export::get_global_tables(&vm) {
+                match sqlite_export::get_global_tables(&mut vm) {
                     Ok(tables) if !tables.is_empty() => {
                         // Создаем временный файл для SQLite БД
                         let timestamp = SystemTime::now()
@@ -542,7 +542,7 @@ fn execute_code(
                         let temp_db_path = env::temp_dir().join(format!("datacode_export_{}.db", timestamp));
                         
                         // Экспортируем таблицы в SQLite
-                        match sqlite_export::export_to_sqlite(&vm, temp_db_path.to_str().unwrap()) {
+                        match sqlite_export::export_to_sqlite(&mut vm, temp_db_path.to_str().unwrap()) {
                             Ok(_) => {
                                 // Читаем SQLite БД как байты
                                 match fs::read(&temp_db_path) {

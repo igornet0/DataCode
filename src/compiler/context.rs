@@ -19,6 +19,8 @@ pub struct ExceptionHandler {
 pub struct LoopContext {
     pub continue_label: usize,   // Метка для continue (начало следующей итерации или инкремент)
     pub break_label: usize,      // Метка для break (конец цикла)
+    /// true для for i in range(...); при break нужно снять состояние с for_range_stack
+    pub is_for_range: bool,
 }
 
 /// Контекст компиляции для передачи между модулями
@@ -53,6 +55,8 @@ pub struct CompilationContext<'a> {
     pub current_superclass: Option<String>,
     /// Whether we are currently compiling a constructor body.
     pub in_constructor: bool,
+    /// When in constructor body, the slot index for "this" (arity). Used so body always uses correct slot regardless of scope.
+    pub constructor_this_slot: Option<usize>,
 }
 
 impl<'a> CompilationContext<'a> {

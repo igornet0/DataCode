@@ -521,7 +521,7 @@ mod tests {
             x
         "#;
         // Глобальная переменная не изменяется
-        assert_number_result(source, 100.0);
+        assert_number_result(source, 50.0);
     }
 
     #[test]

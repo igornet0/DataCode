@@ -578,3 +578,9 @@ pub fn native_table_class(args: &[Value]) -> Value {
     }
     Value::Object(Rc::new(RefCell::new(obj)))
 }
+
+/// Constructor for raise ValueError("message"). Called as ValueError("..."); returns a Value whose to_string() is used for the exception message.
+pub fn native_value_error_new(args: &[Value]) -> Value {
+    let msg = args.get(0).map(|v| v.to_string()).unwrap_or_default();
+    Value::String(msg)
+}

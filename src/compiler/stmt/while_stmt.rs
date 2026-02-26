@@ -50,6 +50,7 @@ pub fn compile_while(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
         Err(LangError::ParseError {
             message: "Expected While statement".to_string(),
             line: stmt.line(),
+            file: None,
         })
     }
 }

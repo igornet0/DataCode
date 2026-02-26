@@ -21,8 +21,9 @@ pub struct Chunk {
     pub lines: Vec<usize>, // Номер строки для каждой инструкции (для отладки и ошибок)
     pub exception_handlers: Vec<ExceptionHandlerInfo>, // Обработчики исключений
     pub error_type_table: Vec<String>, // Таблица типов ошибок для текущей функции
-    pub global_names: std::collections::HashMap<usize, String>, // Маппинг индексов глобальных переменных на их имена
-    pub explicit_global_names: std::collections::HashMap<usize, String>, // Маппинг индексов переменных, явно объявленных с ключевым словом 'global'
+    pub global_names: std::collections::BTreeMap<usize, String>, // Маппинг индексов глобальных переменных на их имена (BTreeMap для детерминированного порядка итерации)
+    pub explicit_global_names: std::collections::BTreeMap<usize, String>, // Маппинг индексов переменных, явно объявленных с ключевым словом 'global'
+    pub source_name: Option<String>, // Путь к исходному файлу для сообщений об ошибках
 }
 
 impl Chunk {
@@ -33,9 +34,14 @@ impl Chunk {
             lines: Vec::with_capacity(256),
             exception_handlers: Vec::new(),
             error_type_table: Vec::new(),
-            global_names: std::collections::HashMap::new(),
-            explicit_global_names: std::collections::HashMap::new(),
+            global_names: std::collections::BTreeMap::new(),
+            explicit_global_names: std::collections::BTreeMap::new(),
+            source_name: None,
         }
+    }
+
+    pub fn set_source_name(&mut self, name: Option<&str>) {
+        self.source_name = name.map(String::from);
     }
 
     pub fn write(&mut self, opcode: OpCode) {
@@ -231,6 +237,10 @@ impl Chunk {
                 output.push_str(&format!("CALL {}\n", arity));
                 offset + 1
             }
+            OpCode::CallWithUnpack(arity) => {
+                output.push_str(&format!("CALL_WITH_UNPACK {}\n", arity));
+                offset + 1
+            }
             OpCode::Return => {
                 output.push_str("RETURN\n");
                 offset + 1
@@ -241,6 +251,14 @@ impl Chunk {
             }
             OpCode::MakeObject(pair_count) => {
                 output.push_str(&format!("MAKE_OBJECT {}\n", pair_count));
+                offset + 1
+            }
+            OpCode::UnpackObject(slot) => {
+                output.push_str(&format!("UNPACK_OBJECT slot={}\n", slot));
+                offset + 1
+            }
+            OpCode::MakeObjectDynamic => {
+                output.push_str("MAKE_OBJECT_DYNAMIC\n");
                 offset + 1
             }
             OpCode::MakeArray(count) => {

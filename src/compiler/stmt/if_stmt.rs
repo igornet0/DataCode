@@ -50,6 +50,7 @@ pub fn compile_if(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool) ->
         Err(LangError::ParseError {
             message: "Expected If statement".to_string(),
             line: stmt.line(),
+            file: None,
         })
     }
 }

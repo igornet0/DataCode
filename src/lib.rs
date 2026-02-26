@@ -75,8 +75,8 @@ pub fn run_with_existing_vm(source: &str, existing_vm: Option<&mut Vm>) -> Resul
     }
     vm.register_all_builtin_modules()?;
     // set_functions patches main chunk and all function chunks via name_to_new_idx.
-    vm.set_functions(functions, Some(&mut chunk));
-    let result = vm.run(&chunk)?;
+    vm.set_functions(functions, Some(&mut chunk), None);
+    let result = vm.run(&chunk, None)?;
 
     Ok(result)
 }
@@ -97,7 +97,7 @@ pub fn run_with_vm_and_path(source: &str, base_path: Option<&std::path::Path>, e
     if let Some(vm) = existing_vm {
         run_with_vm_into_vm(source, vm)
     } else {
-        run_with_vm_internal_with_args(source, None, None, explicit_base)
+        run_with_vm_internal_with_args(source, None, None, explicit_base, None)
     }
 }
 
@@ -132,7 +132,7 @@ fn run_with_vm_into_vm(source: &str, vm: &mut Vm) -> Result<(Value, Vm), LangErr
     // (это нужно для правильной работы вызовов функций)
     
     // 6. Выполнение на существующем VM
-    let result = vm.run(&chunk)?;
+    let result = vm.run(&chunk, None)?;
 
     Ok((result, Vm::new())) // Возвращаем пустой VM, так как результат уже в существующем
 }
@@ -144,7 +144,7 @@ pub fn run_with_vm(source: &str) -> Result<(Value, Vm), LangError> {
 
 /// Выполняет код с аргументами командной строки и возвращает VM
 pub fn run_with_vm_with_args(source: &str, args: Option<Vec<String>>) -> Result<(Value, Vm), LangError> {
-    run_with_vm_with_args_and_lib(source, args, None, None)
+    run_with_vm_with_args_and_lib(source, args, None, None, None)
 }
 
 /// Выполняет код с заданным базовым путём (для разрешения локальных модулей и load_env).
@@ -155,17 +155,20 @@ pub fn run_with_base_path(source: &str, base_path: &std::path::Path) -> Result<V
 
 /// Выполняет код с аргументами командной строки, путём к __lib__.dc и опциональным базовым путём скрипта.
 /// base_path: при запуске файла из CLI передавать директорию скрипта, чтобы VM разрешал импорты и load_env относительно неё.
+/// source_name: путь к исходному файлу для сообщений об ошибках (например, путь к .dc скрипту).
 pub fn run_with_vm_with_args_and_lib(
     source: &str,
     args: Option<Vec<String>>,
     lib_path: Option<&std::path::Path>,
     base_path: Option<&std::path::Path>,
+    source_name: Option<&std::path::Path>,
 ) -> Result<(Value, Vm), LangError> {
     run_with_vm_internal_with_args(
         source,
         args,
         lib_path,
         base_path.map(std::path::PathBuf::from),
+        source_name.map(std::path::PathBuf::from),
     )
 }
 
@@ -201,10 +204,50 @@ fn import_module_names_from_ast(ast: &[parser::ast::Stmt]) -> Vec<String> {
     names
 }
 
+/// Извлекает литеральное значение по умолчанию из Expr (только Literal).
+fn expr_default_to_value(expr: &parser::ast::Expr) -> Option<Value> {
+    if let parser::ast::Expr::Literal { value, .. } = expr {
+        Some(value.clone())
+    } else {
+        None
+    }
+}
+
+/// Параметры `fn __main__(...)` для CLI: имена и опциональные значения по умолчанию (только литералы).
+/// По ним распознаются опции `--имя=значение` и строится argv в порядке параметров.
+pub fn get_main_entry_params(source: &str) -> Option<Vec<(String, Option<Value>)>> {
+    use lexer::Lexer;
+    use parser::Parser;
+    use parser::ast::Stmt;
+    let mut lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().ok()?;
+    let mut parser = Parser::new(tokens);
+    let ast = parser.parse().ok()?;
+    for stmt in &ast {
+        if let Stmt::Function { name, params, .. } = stmt {
+            if name == "__main__" {
+                return Some(
+                    params
+                        .iter()
+                        .map(|p| {
+                            let default = p
+                                .default_value
+                                .as_ref()
+                                .and_then(expr_default_to_value);
+                            (p.name.clone(), default)
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
+    None
+}
+
 /// Внутренняя функция выполнения кода (используется через run_with_vm_internal_with_args)
 #[allow(dead_code)]
 fn run_with_vm_internal(source: &str) -> Result<(Value, Vm), LangError> {
-    run_with_vm_internal_with_args(source, None, None, None)
+    run_with_vm_internal_with_args(source, None, None, None, None)
 }
 
 /// Внутренняя функция выполнения кода с аргументами
@@ -214,11 +257,13 @@ fn run_with_vm_internal(source: &str) -> Result<(Value, Vm), LangError> {
 /// * `args` - аргументы командной строки
 /// * `lib_path` - путь к __lib__.dc. Если Some, то мы выполняем __lib__.dc и не должны искать его автоматически.
 ///               Если None, то пытаемся автоматически найти __lib__.dc в базовом пути.
+/// * `source_name` - путь к исходному файлу для сообщений об ошибках.
 fn run_with_vm_internal_with_args(
     source: &str,
     args: Option<Vec<String>>,
     lib_path: Option<&std::path::Path>,
     explicit_base_path: Option<std::path::PathBuf>,
+    source_name: Option<std::path::PathBuf>,
 ) -> Result<(Value, Vm), LangError> {
     use lexer::Lexer;
     use parser::Parser;
@@ -230,11 +275,12 @@ fn run_with_vm_internal_with_args(
     use std::cell::RefCell;
 
     let base_for_lib = explicit_base_path.clone().or_else(file_import::get_base_path);
+    let source_name_str = source_name.as_deref().map(|p| p.to_string_lossy().into_owned());
 
     // Парсинг до выбора lib, чтобы при отсутствии __lib__.dc в директории искать папки по импортам (from X import ...)
-    let mut lexer = Lexer::new(source);
+    let mut lexer = Lexer::new_with_source_name(source, source_name_str.as_deref());
     let tokens = lexer.tokenize()?;
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new_with_source_name(tokens, source_name_str.as_deref());
     let ast = parser.parse()?;
 
     // Определяем путь к __lib__.dc
@@ -252,23 +298,22 @@ fn run_with_vm_internal_with_args(
     } else {
         // lib_path не указан - пытаемся автоматически найти __lib__.dc
         if let Some(base_path) = base_for_lib {
-            // Ищем ближайший __lib__.dc, поднимаясь вверх по дереву каталогов
-            debug_println!(
-                "[DEBUG run_with_vm_internal_with_args] Ищем ближайший __lib__.dc, начиная с базового пути: {:?}",
-                base_path
-            );
-            let potential_lib_path = file_import::find_nearest_lib(&base_path).or_else(|| {
-                // Если в директории (и выше) нет __lib__.dc — ищем папки по импортам (from X import ...)
-                let module_names = import_module_names_from_ast(&ast);
-                if !module_names.is_empty() {
-                    debug_println!(
-                        "[DEBUG run_with_vm_internal_with_args] Ищем __lib__.dc в папках по импортам: {:?}",
-                        module_names
-                    );
-                    file_import::find_lib_in_package_dirs(&base_path, &module_names)
-                } else {
-                    None
-                }
+            // Сначала ищем __lib__.dc в папках по импортам (from X import ...), затем поднимаемся вверх по дереву
+            let module_names = import_module_names_from_ast(&ast);
+            let potential_lib_path = if !module_names.is_empty() {
+                debug_println!(
+                    "[DEBUG run_with_vm_internal_with_args] Ищем __lib__.dc в папках по импортам: {:?}",
+                    module_names
+                );
+                file_import::find_lib_in_package_dirs(&base_path, &module_names)
+            } else {
+                None
+            }.or_else(|| {
+                debug_println!(
+                    "[DEBUG run_with_vm_internal_with_args] Ищем ближайший __lib__.dc, поднимаясь от базового пути: {:?}",
+                    base_path
+                );
+                file_import::find_nearest_lib(&base_path)
             });
             if let Some(potential_lib_path) = potential_lib_path {
                 debug_println!(
@@ -306,11 +351,11 @@ fn run_with_vm_internal_with_args(
     };
 
     // 3. Семантический анализ
-    let mut resolver = Resolver::new();
+    let mut resolver = Resolver::new_with_source_name(source_name_str.as_deref());
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new();
+    let mut compiler = Compiler::new_with_source_name(source_name_str.as_deref());
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
     // Отладка: главный chunk должен содержать "Config" в global_names (from config import Config)
@@ -348,6 +393,7 @@ fn run_with_vm_internal_with_args(
                 None,
                 None,
                 None,
+                None, // lib chunks have no argv
             );
         }
         debug_println!("[DEBUG run_with_vm_internal_with_args] После объединения __lib__.dc, глобальных переменных: {}", vm.get_global_names().len());
@@ -371,40 +417,88 @@ fn run_with_vm_internal_with_args(
         debug_println!("[DEBUG run_with_vm_internal_with_args] __lib__.dc не загружен (lib_path не указан)");
     }
     
-    // Устанавливаем аргументы командной строки как глобальную переменную argv
-    // Делаем это ДО set_functions, чтобы индексы обновлялись правильно
-    // Всегда устанавливаем argv, даже если аргументы не переданы (пустой массив)
-    // Это нужно, потому что компилятор может генерировать код, который обращается к argv
+    // Добавляем слоты для глобальных переменных из главного chunk (кроме "argv" — его слот создаём ниже).
+    vm.ensure_globals_from_chunk(&chunk);
+    // Единственный слот "argv": сохраняем индекс и пушим в конец; перед run пишем по этому индексу.
     let script_args = args.unwrap_or_default();
     let argv: Vec<Value> = script_args.iter().map(|s| Value::String(s.clone())).collect();
     let argv_array = Value::Array(Rc::new(RefCell::new(argv)));
-    let argv_index = vm.get_globals().len();
     let argv_id = vm.with_stores_mut(|store, heap| crate::vm::store_convert::store_value(argv_array, store, heap));
+    let argv_slot_index = vm.get_globals().len();
     vm.get_globals_mut().push(crate::vm::global_slot::GlobalSlot::Heap(argv_id));
-    vm.get_global_names_mut().insert(argv_index, "argv".to_string());
-    
-    // Добавляем слоты для глобальных переменных из главного chunk (в т.ч. __main__), которых ещё нет в VM
-    vm.ensure_globals_from_chunk(&chunk);
+    vm.get_global_names_mut().insert(argv_slot_index, "argv".to_string());
+    vm.set_argv_slot_index(Some(argv_slot_index)); // set before update_chunk_indices so argv is forced to this slot; executor will see it when re-patching after ImportFrom
     // Проверка: есть ли "Config" в global_names перед set_functions (для отладки sentinel/недетерминизма)
     let config_indices: Vec<usize> = vm.get_global_names().iter()
         .filter(|(_, n)| n.as_str() == "Config")
         .map(|(idx, _)| *idx)
         .collect();
     if let Some(&idx) = config_indices.iter().min() {
-        debug_println!("[DEBUG run_with_vm_internal_with_args] После второго ensure: 'Config' в global_names под индексом {} (всего слотов с именем Config: {})", idx, config_indices.len());
+        debug_println!("[DEBUG run_with_vm_internal_with_args] После ensure и установки argv: 'Config' в global_names под индексом {} (всего слотов с именем Config: {})", idx, config_indices.len());
     } else {
         debug_println!("[DEBUG run_with_vm_internal_with_args] После второго ensure: 'Config' НЕ найден в global_names");
     }
+    // Сохраняем маппинг (индекс -> имя) главного chunk ДО патча, чтобы set_functions мог корректно
+    // пропатчить байткод вложенных функций (main/__main__): компилятор присвоил load_settings=78,
+    // после update_chunk_indices главный chunk уже имеет 78=get_settings; без этого снимка мы бы
+    // ошибочно не меняли 78->79 для вызова load_settings(env).
+    let main_old_idx_to_name: std::collections::HashMap<usize, String> = chunk
+        .global_names
+        .iter()
+        .map(|(i, n)| (*i, n.clone()))
+        .collect();
+    let argv_old_indices: Vec<usize> = main_old_idx_to_name.iter()
+        .filter(|(_, n)| n.as_str() == "argv")
+        .map(|(i, _)| *i)
+        .collect();
+    // Явно не патчим argv в главном chunk до update_chunk_indices: и argv, и __main__ могут иметь один и тот же
+    // компиляторский индекс (76), и замена всех LoadGlobal(76)->82 подменяет загрузку __main__ на argv.
+    // update_chunk_indices сам мапит по имени (76=argv->82, 75=__main__->76), поэтому дополнительный патч не делаем.
     // Обновляем индексы в главном chunk на основе реальных индексов в VM
-    // Это нужно сделать ДО set_functions, чтобы все индексы были согласованы
-    // Главный chunk может содержать ссылки на глобальные переменные (например, argv),
-    // которые были установлены в VM после merge из __lib__.dc
     let mut chunk = chunk;
     vm.update_chunk_indices(&mut chunk);
-    
-    // Затем устанавливаем функции основного скрипта (передаём main chunk, чтобы all_pairs включал его global_names
-    // и "Config" резолвился в слот 71 из ensure, а не создавался новый слот 74).
-    vm.set_functions(functions, Some(&mut chunk));
+    // Патчим argv во всех function chunks: argv идёт в argv_slot_index, а то что было по argv_slot_index (e.g. load_settings) — в old_idx. Байткод через временный слот, затем синхронизируем global_names.
+    // Важно: заменяем LoadGlobal(old_idx) на argv_slot_index только в тех чанках, где old_idx действительно означает "argv"
+    // (иначе в функции __main__ загрузка "main" по индексу 76 могла бы быть ошибочно заменена на argv и вызов main(env) падал бы с "Can only call functions, got: Array").
+    const SWAP_TEMP_SLOT: usize = 0xFFFF; // temporary to swap 79 and 85 in bytecode
+    let mut functions = functions;
+    for f in &mut functions {
+        for (old_idx, name) in &main_old_idx_to_name {
+            if name == "argv" {
+                let this_chunk_uses_argv_at_old = f.chunk.global_names.get(old_idx).map(|n| n.as_str()) == Some("argv");
+                if !this_chunk_uses_argv_at_old {
+                    continue;
+                }
+                // Bytecode swap: 85 -> temp, 79 -> 85, temp -> 79.
+                for opcode in &mut f.chunk.code {
+                    if let crate::bytecode::OpCode::LoadGlobal(idx) = opcode {
+                        if *idx == argv_slot_index {
+                            *opcode = crate::bytecode::OpCode::LoadGlobal(SWAP_TEMP_SLOT);
+                        } else if *idx == *old_idx {
+                            *opcode = crate::bytecode::OpCode::LoadGlobal(argv_slot_index);
+                        }
+                    }
+                }
+                for opcode in &mut f.chunk.code {
+                    if let crate::bytecode::OpCode::LoadGlobal(idx) = opcode {
+                        if *idx == SWAP_TEMP_SLOT {
+                            *opcode = crate::bytecode::OpCode::LoadGlobal(*old_idx);
+                        }
+                    }
+                }
+                // global_names: 85->"argv", and whatever was at 85 moves to old_idx.
+                f.chunk.global_names.remove(old_idx);
+                if let Some(prev_name) = f.chunk.global_names.remove(&argv_slot_index) {
+                    f.chunk.global_names.insert(*old_idx, prev_name);
+                }
+                f.chunk.global_names.insert(argv_slot_index, "argv".to_string());
+                f.chunk.global_names.remove(&SWAP_TEMP_SLOT);
+                break;
+            }
+        }
+    }
+    // Затем устанавливаем функции основного скрипта (передаём main chunk и снимок имён до патча).
+    vm.set_functions(functions, Some(&mut chunk), Some(main_old_idx_to_name));
     
     let debug_sf: Vec<(usize, String)> = vm.get_global_names().iter()
         .filter(|(_, n)| n.contains("Data"))
@@ -431,7 +525,17 @@ fn run_with_vm_internal_with_args(
 
     // Use explicit base path when provided (e.g. from run_with_vm_and_path), else thread-local
     vm.set_base_path(explicit_base_path.or_else(file_import::get_base_path));
-    let result = vm.run(&chunk)?;
+    // Не повторно патчим argv в главном chunk: после update_chunk_indices и set_functions индексы уже верны,
+    // а замена всех LoadGlobal(old_idx) на argv_slot_index подменяет загрузку __main__ (если тот оказался по тому же индексу).
+    // Guarantee main chunk has argv_slot_index -> "argv" so executor's update_chunk_indices_from_names (when argv_slot=Some) forces argv to this slot and does not remap 85 -> 79.
+    chunk.global_names.insert(argv_slot_index, "argv".to_string());
+    // Записываем argv в слот по сохранённому индексу (resize если merge добавил слоты и индекс ещё в границах).
+    if argv_slot_index >= vm.get_globals().len() {
+        vm.get_globals_mut()
+            .resize(argv_slot_index + 1, crate::vm::global_slot::default_global_slot());
+    }
+    vm.get_globals_mut()[argv_slot_index] = crate::vm::global_slot::GlobalSlot::Heap(argv_id);
+    let result = vm.run(&chunk, Some((argv_slot_index, &argv_old_indices, Some(argv_id))))?;
 
     Ok((result, vm))
 }
@@ -463,7 +567,7 @@ pub fn run_lib_file(lib_path: &std::path::Path) -> Result<Vm, LangError> {
     
     // Выполняем __lib__.dc без argv (пустой массив)
     // Флаг is_executing_lib предотвратит автоматический поиск __lib__.dc
-    let (_, vm) = run_with_vm_internal_with_args(&source, Some(Vec::new()), None, None)?;
+    let (_, vm) = run_with_vm_internal_with_args(&source, Some(Vec::new()), None, None, None)?;
     
     // Снимаем флаг выполнения __lib__.dc
     file_import::set_executing_lib(false);
@@ -534,9 +638,9 @@ pub fn run_debug(source: &str) -> Result<Value, LangError> {
 
     // 5. Выполнение на VM
     let mut vm = Vm::new();
-    vm.set_functions(functions, None);
+    vm.set_functions(functions, None, None);
     vm.register_native_globals();
-    let result = vm.run(&chunk)?;
+    let result = vm.run(&chunk, None)?;
 
     Ok(result)
 }

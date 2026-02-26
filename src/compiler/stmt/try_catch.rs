@@ -193,6 +193,7 @@ pub fn compile_try_catch(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<()
         Err(LangError::ParseError {
             message: "Expected Try statement".to_string(),
             line: stmt.line(),
+            file: None,
         })
     }
 }

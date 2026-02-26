@@ -60,28 +60,29 @@ pub fn compile_import(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), L
                     ctx.chunk.global_names.insert(global_index, module.clone());
                 }
                 
-                // Register imported item names in globals for from-import
+                // Register imported item names in globals for from-import, in deterministic order (sort by bound name) so the same set of names always gets the same global indices.
+                let mut to_register: Vec<(String, String)> = Vec::new();
                 for item in items {
                     match item {
                         ImportItem::Named(name) => {
-                            ctx.imported_symbols.insert(name.clone(), module.clone());
-                            if !ctx.scope.globals.contains_key(name) {
-                                let global_index = ctx.scope.globals.len();
-                                ctx.scope.globals.insert(name.clone(), global_index);
-                                ctx.chunk.global_names.insert(global_index, name.clone());
-                            }
+                            to_register.push((name.clone(), module.clone()));
                         }
                         ImportItem::Aliased { alias, .. } => {
-                            ctx.imported_symbols.insert(alias.clone(), module.clone());
-                            if !ctx.scope.globals.contains_key(alias) {
-                                let global_index = ctx.scope.globals.len();
-                                ctx.scope.globals.insert(alias.clone(), global_index);
-                                ctx.chunk.global_names.insert(global_index, alias.clone());
-                            }
+                            to_register.push((alias.clone(), module.clone()));
                         }
                         ImportItem::All => {
                             // All items will be imported at runtime, we can't register them here
                         }
+                    }
+                }
+                to_register.sort_by(|a, b| a.0.cmp(&b.0));
+                to_register.dedup_by(|a, b| a.0 == b.0);
+                for (bound_name, mod_name) in to_register {
+                    ctx.imported_symbols.insert(bound_name.clone(), mod_name);
+                    if !ctx.scope.globals.contains_key(&bound_name) {
+                        let global_index = ctx.scope.globals.len();
+                        ctx.scope.globals.insert(bound_name.clone(), global_index);
+                        ctx.chunk.global_names.insert(global_index, bound_name);
                     }
                 }
             }
@@ -91,6 +92,7 @@ pub fn compile_import(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), L
         Err(LangError::ParseError {
             message: "Expected Import statement".to_string(),
             line: stmt.line(),
+            file: None,
         })
     }
 }

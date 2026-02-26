@@ -232,6 +232,7 @@ pub fn compile_for(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), Lang
         Err(LangError::ParseError {
             message: "Expected For statement".to_string(),
             line: stmt.line(),
+            file: None,
         })
     }
 }

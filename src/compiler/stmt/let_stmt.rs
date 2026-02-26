@@ -84,6 +84,7 @@ pub fn compile_let(ctx: &mut CompilationContext, stmt: &Stmt, _pop_value: bool) 
         Err(LangError::ParseError {
             message: "Expected Let statement".to_string(),
             line: stmt.line(),
+            file: None,
         })
     }
 }

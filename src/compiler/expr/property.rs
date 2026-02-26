@@ -26,6 +26,7 @@ pub fn compile_property(ctx: &mut CompilationContext, expr: &Expr) -> Result<(),
         Err(LangError::ParseError {
             message: "Expected Property expression".to_string(),
             line: expr.line(),
+            file: None,
         })
     }
 }

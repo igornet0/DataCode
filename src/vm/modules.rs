@@ -22,7 +22,7 @@ pub fn builtin_modules_list() -> String {
 }
 
 /// Deterministic global slot by name (min index when multiple; stable across HashMap iteration).
-fn global_index_by_name(global_names: &std::collections::HashMap<usize, String>, name: &str) -> Option<usize> {
+fn global_index_by_name(global_names: &std::collections::BTreeMap<usize, String>, name: &str) -> Option<usize> {
     global_names
         .iter()
         .filter(|(_, n)| n.as_str() == name)
@@ -35,7 +35,7 @@ pub fn register_module(
     module_name: &str,
     natives: &mut Vec<fn(&[Value]) -> Value>,
     globals: &mut Vec<GlobalSlot>,
-    global_names: &mut std::collections::HashMap<usize, String>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
     heap: &mut HeavyStore,
 ) -> Result<(), LangError> {
@@ -55,7 +55,7 @@ pub fn register_module(
 fn register_ml_module(
     natives: &mut Vec<fn(&[Value]) -> Value>,
     globals: &mut Vec<GlobalSlot>,
-    global_names: &mut std::collections::HashMap<usize, String>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
     heap: &mut HeavyStore,
 ) -> Result<(), LangError> {
@@ -287,7 +287,7 @@ fn register_ml_module(
 fn register_plot_module(
     natives: &mut Vec<fn(&[Value]) -> Value>,
     globals: &mut Vec<GlobalSlot>,
-    global_names: &mut std::collections::HashMap<usize, String>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
     heap: &mut HeavyStore,
 ) -> Result<(), LangError> {
@@ -377,7 +377,7 @@ fn register_plot_module(
 fn register_settings_env_module(
     natives: &mut Vec<fn(&[Value]) -> Value>,
     globals: &mut Vec<GlobalSlot>,
-    global_names: &mut std::collections::HashMap<usize, String>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
     heap: &mut HeavyStore,
 ) -> Result<(), LangError> {
@@ -395,13 +395,14 @@ fn register_settings_env_module(
     let config_fn = Value::NativeFunction(settings_env_native_start + 3);
     let mut settings_object = HashMap::new();
     settings_object.insert("__call__".to_string(), settings_call);
-    settings_object.insert("config".to_string(), config_fn);
+    settings_object.insert("config".to_string(), config_fn.clone());
     let settings_value = Value::Object(Rc::new(RefCell::new(settings_object)));
     settings_env_object.insert("load_env".to_string(), load_env_fn);
     settings_env_object.insert("Settings".to_string(), settings_value.clone());
     settings_env_object.insert("settings".to_string(), settings_value);
     settings_env_object.insert("Field".to_string(), Value::NativeFunction(settings_env_native_start + 2));
-    
+    settings_env_object.insert("Config".to_string(), config_fn);
+
     let settings_env_index = if let Some(idx) = global_index_by_name(global_names, "settings_env") {
         if idx >= globals.len() {
             globals.resize(idx + 1, default_global_slot());
@@ -422,7 +423,7 @@ fn register_settings_env_module(
 fn register_uuid_module(
     natives: &mut Vec<fn(&[Value]) -> Value>,
     globals: &mut Vec<GlobalSlot>,
-    global_names: &mut std::collections::HashMap<usize, String>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
     heap: &mut HeavyStore,
 ) -> Result<(), LangError> {
@@ -482,7 +483,7 @@ fn register_uuid_module(
 fn register_database_module(
     natives: &mut Vec<fn(&[Value]) -> Value>,
     globals: &mut Vec<GlobalSlot>,
-    global_names: &mut std::collections::HashMap<usize, String>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
     heap: &mut HeavyStore,
 ) -> Result<(), LangError> {

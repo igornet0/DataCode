@@ -8,6 +8,18 @@ use crate::common::value::Value;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
 use crate::compiler::args;
+use crate::compiler::stmt::class::{MODEL_CONFIG_CLASS_LOAD_INDEX, CONSTRUCTING_CLASS_GLOBAL_NAME};
+
+/// True if class name is "Settings" or has Settings as an ancestor (used for 1-arg call expansion).
+fn is_in_settings_chain(name: &str, class_superclass: &std::collections::HashMap<String, String>) -> bool {
+    if name == "Settings" {
+        return true;
+    }
+    class_superclass
+        .get(name)
+        .map(|parent| is_in_settings_chain(parent, class_superclass))
+        .unwrap_or(false)
+}
 
 pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), LangError> {
     if let Expr::Call { name, args: call_args, line } = expr {
@@ -28,6 +40,26 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             let constructor_name = format!("{}::new_{}", name, call_args.len());
             debug_println!("[DEBUG compile_call] Проверяем вызов '{}' с {} аргументами", name, call_args.len());
             debug_println!("[DEBUG compile_call] Ищем конструктор '{}'", constructor_name);
+
+            // Settings() with no args: expand to Settings(__constructing_class__["model_config"]) so env file comes from model_config.
+            if name == "Settings" && call_args.is_empty() && !ctx.function_names.iter().any(|n| n == "Settings::new_0") {
+                let settings_slot = if let Some(&idx) = ctx.scope.globals.get("Settings") {
+                    idx
+                } else {
+                    let idx = ctx.scope.globals.len();
+                    ctx.scope.globals.insert("Settings".to_string(), idx);
+                    idx
+                };
+                ctx.chunk.global_names.insert(MODEL_CONFIG_CLASS_LOAD_INDEX, CONSTRUCTING_CLASS_GLOBAL_NAME.to_string());
+                ctx.chunk.write_with_line(OpCode::LoadGlobal(MODEL_CONFIG_CLASS_LOAD_INDEX), *line);
+                let model_config_key = ctx.chunk.add_constant(Value::String("model_config".to_string()));
+                ctx.chunk.write_with_line(OpCode::Constant(model_config_key), *line);
+                ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                ctx.chunk.global_names.insert(settings_slot, "Settings".to_string());
+                ctx.chunk.write_with_line(OpCode::LoadGlobal(settings_slot), *line);
+                ctx.chunk.write_with_line(OpCode::Call(1), *line);
+                return Ok(());
+            }
         
             // Сначала проверяем в function_names (для конструкторов, определенных в текущем файле)
         if let Some(function_index) = ctx.function_names.iter().position(|n| n == &constructor_name) {
@@ -35,6 +67,30 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             debug_println!("[DEBUG compile_call] Найден конструктор '{}' с индексом функции {} в function_names", constructor_name, function_index);
             let arg_count = call_args.len();
             debug_println!("[DEBUG compile_call] Сохранено количество аргументов: {} для конструктора '{}' (function_names)", arg_count, constructor_name);
+            
+            // Settings subclass with 1 arg: expand to (path, required_keys, model_config) and Call(3).
+            if arg_count == 1 && is_in_settings_chain(name, ctx.class_superclass) {
+                let required_keys_value = ctx.class_required_keys_value.get(name).cloned();
+                if let Some(required_keys_value) = required_keys_value {
+                    match &call_args[0] {
+                        Arg::Positional(e) => expr::compile_expr(ctx, e)?,
+                        Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                        Arg::UnpackObject(e) => expr::compile_expr(ctx, e)?,
+                    }
+                    let req_const = ctx.chunk.add_constant(required_keys_value);
+                    ctx.chunk.write_with_line(OpCode::Constant(req_const), *line);
+                    let class_global_index = *ctx.scope.globals.get(name).expect("Settings class in globals");
+                    ctx.chunk.global_names.insert(class_global_index, name.clone());
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                    let model_config_key = ctx.chunk.add_constant(Value::String("model_config".to_string()));
+                    ctx.chunk.write_with_line(OpCode::Constant(model_config_key), *line);
+                    ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                    let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
+                    ctx.chunk.write_with_line(OpCode::Constant(constant_index), *line);
+                    ctx.chunk.write_with_line(OpCode::Call(3), *line);
+                    return Ok(());
+                }
+            }
             
             for (i, arg) in call_args.iter().enumerate() {
                 match arg {
@@ -45,6 +101,10 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                     Arg::Named { value, .. } => {
                         debug_println!("[DEBUG compile_call] Компилируем именованный аргумент {} из {} (function_names)", i + 1, arg_count);
                         expr::compile_expr(ctx, value)?;
+                    }
+                    Arg::UnpackObject(expr) => {
+                        debug_println!("[DEBUG compile_call] Компилируем ** аргумент {} из {} (function_names)", i + 1, arg_count);
+                        expr::compile_expr(ctx, expr)?;
                     }
                 }
             }
@@ -83,6 +143,30 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             let arg_count = call_args.len();
             debug_println!("[DEBUG compile_call] Сохранено количество аргументов: {} для конструктора '{}' (globals)", arg_count, constructor_name);
             
+            // Settings subclass with 1 arg: expand to (path, required_keys, model_config) and Call(3).
+            if arg_count == 1 && is_in_settings_chain(name, ctx.class_superclass) {
+                let required_keys_value = ctx.class_required_keys_value.get(name).cloned();
+                if let Some(required_keys_value) = required_keys_value {
+                    match &call_args[0] {
+                        Arg::Positional(e) => expr::compile_expr(ctx, e)?,
+                        Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                        Arg::UnpackObject(e) => expr::compile_expr(ctx, e)?,
+                    }
+                    let req_const = ctx.chunk.add_constant(required_keys_value);
+                    ctx.chunk.write_with_line(OpCode::Constant(req_const), *line);
+                    let class_global_index = *ctx.scope.globals.get(name).expect("Settings class in globals");
+                    ctx.chunk.global_names.insert(class_global_index, name.clone());
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                    let model_config_key = ctx.chunk.add_constant(Value::String("model_config".to_string()));
+                    ctx.chunk.write_with_line(OpCode::Constant(model_config_key), *line);
+                    ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                    ctx.chunk.global_names.insert(global_index, constructor_name.clone());
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                    ctx.chunk.write_with_line(OpCode::Call(3), *line);
+                    return Ok(());
+                }
+            }
+            
             for (i, arg) in call_args.iter().enumerate() {
                 match arg {
                     Arg::Positional(expr) => {
@@ -93,6 +177,10 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                         debug_println!("[DEBUG compile_call] Компилируем именованный аргумент {} из {} (globals)", i + 1, arg_count);
                         expr::compile_expr(ctx, value)?;
                     }
+                    Arg::UnpackObject(expr) => {
+                        debug_println!("[DEBUG compile_call] Компилируем ** аргумент {} из {} (globals)", i + 1, arg_count);
+                        expr::compile_expr(ctx, expr)?;
+                    }
                 }
             }
             
@@ -102,7 +190,8 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                 ctx.chunk.write_with_line(OpCode::Call(arg_count), *line);
                 return Ok(());
             }
-            
+            // Нужно для update_chunk_indices при merge модуля (патч LoadGlobal по имени).
+            ctx.chunk.global_names.insert(global_index, constructor_name.clone());
             let load_global_ip = ctx.chunk.code.len();
             ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
             let call_ip = ctx.chunk.code.len();
@@ -139,6 +228,10 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                         debug_println!("[DEBUG compile_call] Компилируем именованный аргумент {} из {} (класс в globals)", i + 1, arg_count);
                         expr::compile_expr(ctx, value)?;
                     }
+                    Arg::UnpackObject(expr) => {
+                        debug_println!("[DEBUG compile_call] Компилируем ** аргумент {} из {} (класс в globals)", i + 1, arg_count);
+                        expr::compile_expr(ctx, expr)?;
+                    }
                 }
             }
             
@@ -154,10 +247,9 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             } else {
                 let idx = ctx.scope.globals.len();
                 ctx.scope.globals.insert(constructor_name.clone(), idx);
-                ctx.chunk.global_names.insert(idx, constructor_name.clone());
                 idx
             };
-            
+            ctx.chunk.global_names.insert(constructor_global_index, constructor_name.clone());
             let load_global_ip = ctx.chunk.code.len();
             ctx.chunk.write_with_line(OpCode::LoadGlobal(constructor_global_index), *line);
             let call_ip = ctx.chunk.code.len();
@@ -186,6 +278,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                 return Err(LangError::ParseError {
                     message: format!("Class '{}' cannot accept {} argument(s)", superclass_name, call_args.len()),
                     line: *line,
+                    file: None,
                 });
             }
         }
@@ -217,14 +310,8 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                 idx
             };
             
-            // ВАЖНО: Убеждаемся, что в chunk.global_names для constructor_global_index записано имя конструктора, а не класса
-            if let Some(existing_name) = ctx.chunk.global_names.get(&constructor_global_index) {
-                if existing_name != &constructor_name {
-                    debug_println!("[DEBUG compile_call] ВНИМАНИЕ: В chunk.global_names для индекса {} записано имя '{}', но ожидается '{}'. Исправляем.", 
-                        constructor_global_index, existing_name, constructor_name);
-                    ctx.chunk.global_names.insert(constructor_global_index, constructor_name.clone());
-                }
-            }
+            // Всегда записываем имя конструктора в chunk для update_chunk_indices при merge (безусловно).
+            ctx.chunk.global_names.insert(constructor_global_index, constructor_name.clone());
             
             // Сохраняем количество аргументов до компиляции (на случай, если call_args будет перемещено)
             let arg_count = call_args.len();
@@ -242,6 +329,10 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                     Arg::Named { value, .. } => {
                         debug_println!("[DEBUG compile_call] Компилируем именованный аргумент {} из {}", i + 1, arg_count);
                         expr::compile_expr(ctx, value)?;
+                    }
+                    Arg::UnpackObject(expr) => {
+                        debug_println!("[DEBUG compile_call] Компилируем ** аргумент {} из {}", i + 1, arg_count);
+                        expr::compile_expr(ctx, expr)?;
                     }
                 }
             }
@@ -309,25 +400,21 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                 let class_global_index = ctx.scope.globals.len();
                 ctx.scope.globals.insert(name.clone(), class_global_index);
             }
-            // Регистрируем конструктор в scope и chunk.global_names
+            // Регистрируем конструктор в scope и chunk.global_names (обязательно для update_chunk_indices при merge).
             let constructor_global_index = if let Some(&idx) = ctx.scope.globals.get(&constructor_name) {
                 idx
             } else {
                 let idx = ctx.scope.globals.len();
                 ctx.scope.globals.insert(constructor_name.clone(), idx);
-                ctx.chunk.global_names.insert(idx, constructor_name.clone());
                 idx
             };
-            if let Some(existing_name) = ctx.chunk.global_names.get(&constructor_global_index) {
-                if existing_name != &constructor_name {
-                    ctx.chunk.global_names.insert(constructor_global_index, constructor_name.clone());
-                }
-            }
+            ctx.chunk.global_names.insert(constructor_global_index, constructor_name.clone());
             let arg_count = call_args.len();
             for arg in call_args.iter() {
                 match arg {
                     Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                     Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                    Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
                 }
             }
             ctx.chunk.write_with_line(OpCode::LoadGlobal(constructor_global_index), *line);
@@ -340,18 +427,19 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
 
         // If constructor not found by arity but we have named args: resolve via class_constructor (extends_table field-based constructor)
         if !is_lowercase {
-            let has_named = call_args.iter().any(|a| matches!(a, Arg::Named { .. }));
+            let has_named = call_args.iter().any(|a| matches!(a, Arg::Named { .. } | Arg::UnpackObject(_)));
             if has_named {
                 let ctor_info = ctx.class_constructor.get(name).map(|(c, i)| (c.clone(), *i));
                 if let Some((ctor_name, function_index)) = ctor_info {
                     let function = &ctx.functions[function_index];
                     let function_info = (function_index, function);
-                    let resolved_args = args::resolve_function_args(name, call_args, Some(function_info), *line)?;
+                    let resolved_args = args::resolve_function_args(name, call_args, Some(function_info), *line, ctx.source_name)?;
                     let arity = resolved_args.len();
                     for arg in &resolved_args {
                         match arg {
                             Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                             Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
                         }
                     }
                     if let Some(&global_index) = ctx.scope.globals.get(&ctor_name) {
@@ -386,7 +474,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         };
         
         // Разрешаем аргументы: именованные -> позиционные, применяем значения по умолчанию
-        let resolved_args = args::resolve_function_args(name, call_args, function_info, *line)?;
+        let resolved_args = args::resolve_function_args(name, call_args, function_info, *line, ctx.source_name)?;
         
         // Специальная обработка для isinstance: преобразуем идентификаторы типов в строки
         let processed_args = if name == "isinstance" && resolved_args.len() >= 2 {
@@ -399,6 +487,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                         line: match &resolved_args[1] {
                             Arg::Positional(e) => e.line(),
                             Arg::Named { value, .. } => value.line(),
+                            Arg::UnpackObject(e) => e.line(),
                         },
                     });
                 }
@@ -425,6 +514,10 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             None
         };
         
+        // Вызов с единственным **obj: эмитим CallWithUnpack(1), ключи объекта проверяются в VM.
+        let is_single_unpack = processed_args.len() == 1
+            && matches!(&processed_args[0], Arg::UnpackObject(_));
+        
         // Компилируем аргументы на стек
         for arg in &processed_args {
             match arg {
@@ -432,8 +525,10 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                     expr::compile_expr(ctx, expr)?;
                 }
                 Arg::Named { value, .. } => {
-                    // Именованные аргументы уже разрешены в позиционные
                     expr::compile_expr(ctx, value)?;
+                }
+                Arg::UnpackObject(expr) => {
+                    expr::compile_expr(ctx, expr)?;
                 }
             }
         }
@@ -442,10 +537,18 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         if let Some(local_index) = ctx.scope.resolve_local(name) {
             // Локальная переменная содержит функцию
             ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *ctx.current_line);
-        } else if let Some(function_index) = ctx.function_names.iter().position(|n| n == name) {
-            // Пользовательская функция найдена — приоритет над встроенными (average, max, min и т.д.)
-            let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
-            ctx.chunk.write_with_line(OpCode::Constant(constant_index), *ctx.current_line);
+        } else if ctx.function_names.iter().any(|n| n == name) {
+            // Пользовательская функция найдена. Если у неё есть глобальный слот (main, __main__ и т.д.),
+            // используем LoadGlobal, чтобы брать значение из слота, установленного set_functions, и не
+            // полагаться на константный пул (избегаем путаницы с argv или другими глобалами).
+            if let Some(&global_index) = ctx.scope.globals.get(name) {
+                ctx.chunk.global_names.insert(global_index, name.clone());
+                ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *ctx.current_line);
+            } else {
+                let function_index = ctx.function_names.iter().position(|n| n == name).unwrap();
+                let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
+                ctx.chunk.write_with_line(OpCode::Constant(constant_index), *ctx.current_line);
+            }
         } else if is_lowercase && ctx.scope.globals.get(name).is_some() {
             // Для имён с маленькой буквы без пользовательского переопределения — встроенные
             let &global_index = ctx.scope.globals.get(name).unwrap();
@@ -460,11 +563,16 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             return Err(LangError::ParseError {
                 message: format!("Undefined function: {}", name),
                 line: *line,
+                file: None,
             });
         }
         
-        // Вызываем функцию с количеством аргументов
-        ctx.chunk.write_with_line(OpCode::Call(processed_args.len()), *line);
+        // Вызываем функцию: при единственном **obj — CallWithUnpack(1), иначе Call(n)
+        if is_single_unpack {
+            ctx.chunk.write_with_line(OpCode::CallWithUnpack(1), *line);
+        } else {
+            ctx.chunk.write_with_line(OpCode::Call(processed_args.len()), *line);
+        }
         
         // Если нужно присвоить результат обратно в переменную
         if let Some(var_name) = var_name_to_assign {
@@ -497,6 +605,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         Err(LangError::ParseError {
             message: "Expected Call expression".to_string(),
             line: expr.line(),
+            file: None,
         })
     }
 }

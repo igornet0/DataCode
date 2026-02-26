@@ -31,7 +31,7 @@ pub fn builtin_global_index(name: &str) -> Option<usize> {
 /// Регистрирует нативные функции в глобальных переменных (GlobalSlot::Heap(ValueId))
 pub fn register_native_globals(
     globals: &mut Vec<GlobalSlot>,
-    global_names: &mut std::collections::HashMap<usize, String>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
 ) {
     let max_global_index = global_names.keys().max().copied().unwrap_or(74);
@@ -49,10 +49,10 @@ pub fn register_native_globals(
 /// Заполняет имена глобальных переменных из chunk.
 /// Does not overwrite: (1) builtin slots 0..74 with a different name; (2) any existing name; (3) never insert at idx >= 75 (VM already has 75+ from ensure_globals_from_chunk).
 pub fn merge_global_names(
-    global_names: &mut std::collections::HashMap<usize, String>,
-    explicit_global_names: &mut std::collections::HashMap<usize, String>,
-    chunk_global_names: &std::collections::HashMap<usize, String>,
-    chunk_explicit_global_names: &std::collections::HashMap<usize, String>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    explicit_global_names: &mut std::collections::BTreeMap<usize, String>,
+    chunk_global_names: &std::collections::BTreeMap<usize, String>,
+    chunk_explicit_global_names: &std::collections::BTreeMap<usize, String>,
 ) {
     const BUILTIN_END: usize = 75;
     for (idx, name) in chunk_global_names {

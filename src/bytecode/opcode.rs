@@ -59,8 +59,9 @@ pub enum OpCode {
     JumpIfFalse32(i32), // Условный переход с 32-битным смещением [-2^31, +2^31-1]
 
     // Функции
-    Call(usize), // Вызов функции с количеством аргументов
-    Return,      // Возврат из функции
+    Call(usize),         // Вызов функции с количеством аргументов
+    CallWithUnpack(usize), // Вызов: один аргумент — объект для распаковки в kwargs; ключи должны совпадать с именами параметров
+    Return,              // Возврат из функции
 
     // Массивы
     MakeArray(usize), // Создать массив из N элементов со стека (compile-time размер)
@@ -76,6 +77,10 @@ pub enum OpCode {
     
     // Объекты
     MakeObject(usize), // Создать объект из N пар (ключ, значение) со стека (compile-time количество пар)
+    /// Распаковать объект со стека: положить пары (ключ, значение) на стек и увеличить счётчик в слоте на число пар.
+    UnpackObject(usize), // индекс слота для счётчика пар
+    /// Создать объект: со стека снять count, затем 2*count значений (value, key на пару), собрать объект.
+    MakeObjectDynamic,
 
     // Обработка исключений
     BeginTry(usize),        // Начало try блока, аргумент - индекс обработчика в таблице обработчиков
@@ -137,6 +142,7 @@ impl OpCode {
             OpCode::JumpIfFalse16(_) => "JumpIfFalse16",
             OpCode::JumpIfFalse32(_) => "JumpIfFalse32",
             OpCode::Call(_) => "Call",
+            OpCode::CallWithUnpack(_) => "CallWithUnpack",
             OpCode::Return => "Return",
             OpCode::MakeArray(_) => "MakeArray",
             OpCode::MakeArrayDynamic => "MakeArrayDynamic",
@@ -147,6 +153,8 @@ impl OpCode {
             OpCode::Clone => "Clone",
             OpCode::MakeTuple(_) => "MakeTuple",
             OpCode::MakeObject(_) => "MakeObject",
+            OpCode::UnpackObject(_) => "UnpackObject",
+            OpCode::MakeObjectDynamic => "MakeObjectDynamic",
             OpCode::BeginTry(_) => "BeginTry",
             OpCode::EndTry => "EndTry",
             OpCode::Catch(_) => "Catch",

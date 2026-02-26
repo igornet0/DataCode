@@ -7,14 +7,20 @@ pub struct Lexer {
     source: Vec<char>,
     current: usize,
     line: usize,
+    source_name: Option<String>,
 }
 
 impl Lexer {
     pub fn new(source: &str) -> Self {
+        Self::new_with_source_name(source, None)
+    }
+
+    pub fn new_with_source_name(source: &str, source_name: Option<&str>) -> Self {
         Self {
             source: source.chars().collect(),
             current: 0,
             line: 1,
+            source_name: source_name.map(String::from),
         }
     }
 
@@ -240,6 +246,7 @@ impl Lexer {
                 return Err(LangError::LexError {
                     message: format!("Unexpected character: {}", c),
                     line: self.line,
+                    file: self.source_name.clone(),
                 });
             }
         };
@@ -259,6 +266,7 @@ impl Lexer {
                     return Err(LangError::LexError {
                         message: "Unterminated string".to_string(),
                         line: start_line,
+                        file: self.source_name.clone(),
                     });
                 }
                 let escaped = self.advance();
@@ -288,6 +296,7 @@ impl Lexer {
             return Err(LangError::LexError {
                 message: "Unterminated string".to_string(),
                 line: start_line,
+                file: self.source_name.clone(),
             });
         }
 
@@ -307,6 +316,7 @@ impl Lexer {
                 return Err(LangError::LexError {
                     message: "Unterminated multiline comment (missing closing \"\"\")".to_string(),
                     line: start_line,
+                    file: self.source_name.clone(),
                 });
             }
             

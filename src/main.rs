@@ -52,9 +52,6 @@ fn execute_file(config: cli::FileExecutionConfig) {
     // Определяем путь к файлу
     let file_path = Path::new(&config.filename);
 
-    // Подготавливаем аргументы командной строки для передачи в скрипт
-    let script_args = config.script_args.clone();
-
     // Базовый путь скрипта (директория файла) — передаём в VM для разрешения импортов и load_env.
     // Если задан --base-dir и путь относительный, разрешаем относительно base_dir (стабильно при cargo run из подкаталога).
     // Иначе: CWD + относительный путь, затем канонизация.
@@ -138,6 +135,26 @@ fn execute_file(config: cli::FileExecutionConfig) {
     // Читаем файл по разрешённому пути (каноническому), чтобы при --base-dir использовался правильный файл
     match fs::read_to_string(script_path_for_read) {
         Ok(source) => {
+            // argv для скрипта: по каждому параметру fn __main__(a, b, ...) — --a=value или позиция, при отсутствии — default из сигнатуры
+            let script_args: Vec<String> = if let Some(params) = data_code::get_main_entry_params(&source) {
+                let mut argv = Vec::with_capacity(params.len());
+                for (i, (name, default)) in params.iter().enumerate() {
+                    let v = cli::extract_param_args(&config.raw_args, name)
+                        .into_iter()
+                        .next()
+                        .or_else(|| config.script_args.get(i).cloned())
+                        .or_else(|| default.as_ref().map(|val| val.to_string()));
+                    if let Some(s) = v {
+                        argv.push(s);
+                    }
+                }
+                argv
+            } else {
+                config.script_args.clone()
+            };
+            if config.debug {
+                eprintln!("[DataCode] script_args (argv для скрипта): {:?}", script_args);
+            }
             // If debug mode, print bytecode first
             if config.debug {
                 match compile(&source) {
@@ -155,7 +172,7 @@ fn execute_file(config: cli::FileExecutionConfig) {
             
             if config.build_model {
                 // Execute with SQLite export
-                match data_code::run_with_vm_with_args_and_lib(&source, Some(script_args), lib_path.as_deref(), script_base_path.as_deref()) {
+                match data_code::run_with_vm_with_args_and_lib(&source, Some(script_args), lib_path.as_deref(), script_base_path.as_deref(), Some(script_canonical.as_path())) {
                     Ok((_, mut vm)) => {
                         // Determine output database filename
                         let db_filename = if let Some(db) = config.output_db {
@@ -191,7 +208,7 @@ fn execute_file(config: cli::FileExecutionConfig) {
                 // Normal execution without export
                 if config.no_gui {
                     // Run in main thread: script output (print) is visible; no plot windows
-                    match data_code::run_with_vm_with_args_and_lib(&source, Some(script_args), lib_path.as_deref(), script_base_path.as_deref()) {
+                    match data_code::run_with_vm_with_args_and_lib(&source, Some(script_args), lib_path.as_deref(), script_base_path.as_deref(), Some(script_canonical.as_path())) {
                         Ok(_) => {}
                         Err(e) => {
                             eprintln!("Ошибка выполнения: {}", e);
@@ -204,6 +221,7 @@ fn execute_file(config: cli::FileExecutionConfig) {
                     let script_args_clone = script_args.clone();
                     let lib_path_clone = lib_path.clone();
                     let script_base_path_clone = script_base_path.clone();
+                    let script_canonical_clone = script_canonical.clone();
                     let dpm_paths_clone = dpm_package_paths.clone();
 
                     match gui::run_with_event_loop(move || {
@@ -216,7 +234,7 @@ fn execute_file(config: cli::FileExecutionConfig) {
 
                         // Используем run_with_vm_with_args_and_lib для передачи пути к __lib__.dc и base_path
                         // __lib__.dc будет выполнен внутри GUI потока перед основным скриптом
-                        data_code::run_with_vm_with_args_and_lib(&source_clone, Some(script_args_clone), lib_path_clone.as_deref(), script_base_path_clone.as_deref())
+                        data_code::run_with_vm_with_args_and_lib(&source_clone, Some(script_args_clone), lib_path_clone.as_deref(), script_base_path_clone.as_deref(), Some(script_canonical_clone.as_path()))
                             .map(|_| ()) // Ignore return value
                             .map_err(|e| e.to_string())
                     }) {

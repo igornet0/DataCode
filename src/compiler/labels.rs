@@ -68,6 +68,7 @@ impl LabelManager {
             OpCode::LoadLocal(_) | OpCode::StoreLocal(_) => 2, // 1 байт opcode + 1 байт индекс
             OpCode::LoadGlobal(_) | OpCode::StoreGlobal(_) => 2, // 1 байт opcode + 1 байт индекс
             OpCode::Call(_) => 2, // 1 байт opcode + 1 байт количество аргументов
+            OpCode::CallWithUnpack(_) => 2, // 1 байт opcode + 1 байт количество аргументов (1 для kwargs)
             OpCode::MakeArray(_) => 2, // 1 байт opcode + 1 байт размер
             OpCode::MakeTuple(_) => 2, // 1 байт opcode + 1 байт размер
             OpCode::MakeArrayDynamic => 1, // 1 байт opcode (размер на стеке) 1 байт opcode + 1 байт количество элементов
@@ -189,6 +190,7 @@ impl LabelManager {
                 return Err(LangError::ParseError {
                     message: "Layout stabilization failed: too many iterations".to_string(),
                     line: current_line,
+                    file: None,
                 });
             }
         }
@@ -236,6 +238,7 @@ impl LabelManager {
                 .ok_or_else(|| LangError::ParseError {
                     message: format!("Label {} not found", label_id),
                     line: current_line,
+                    file: None,
                 })?;
             
             let dst_instruction_index = if dst_instruction_index >= chunk.code.len() {
@@ -243,6 +246,7 @@ impl LabelManager {
                     return Err(LangError::ParseError {
                         message: format!("Label {} points to empty code", label_id),
                         line: current_line,
+                    file: None,
                     });
                 }
                 chunk.code.len() - 1
@@ -255,6 +259,7 @@ impl LabelManager {
                     message: format!("Label {} instruction index {} >= addresses len {} (code len: {})", 
                         label_id, dst_instruction_index, addresses.len(), chunk.code.len()),
                     line: current_line,
+                    file: None,
                 });
             }
             
@@ -323,12 +328,14 @@ impl LabelManager {
             let dst_instruction_index = *self.labels.get(label_id).ok_or_else(|| LangError::ParseError {
                 message: format!("Label {} not found", label_id),
                 line: current_line,
+                file: None,
             })?;
             let dst_instruction_index = if dst_instruction_index >= chunk.code.len() {
                 if chunk.code.is_empty() {
                     return Err(LangError::ParseError {
                         message: format!("Label {} points to empty code", label_id),
                         line: current_line,
+                    file: None,
                     });
                 }
                 chunk.code.len() - 1
@@ -340,6 +347,7 @@ impl LabelManager {
                     message: format!("Label {} instruction index {} >= addresses len {}",
                         label_id, dst_instruction_index, addresses.len()),
                     line: current_line,
+                    file: None,
                 });
             }
             let offset = (dst_instruction_index as i64 - (*jump_index as i64 + 1)) as i32;

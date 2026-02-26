@@ -7,6 +7,7 @@ use crate::semantic::scope::Scope;
 pub struct Resolver {
     scopes: Vec<Scope>,
     current_function: FunctionType,
+    source_name: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -17,9 +18,14 @@ enum FunctionType {
 
 impl Resolver {
     pub fn new() -> Self {
+        Self::new_with_source_name(None)
+    }
+
+    pub fn new_with_source_name(source_name: Option<&str>) -> Self {
         Self {
             scopes: Vec::new(),
             current_function: FunctionType::None,
+            source_name: source_name.map(String::from),
         }
     }
 
@@ -74,6 +80,7 @@ impl Resolver {
                     return Err(LangError::SemanticError {
                         message: "Cannot return from top-level code".to_string(),
                         line: *line,
+                        file: self.source_name.clone(),
                     });
                 }
                 if let Some(expr) = value {
@@ -192,6 +199,7 @@ impl Resolver {
                             return Err(LangError::SemanticError {
                                 message: format!("Cannot read local variable '{}' in its own initializer", name),
                                 line: *line,
+                                file: self.source_name.clone(),
                             });
                         }
                     }
@@ -220,6 +228,9 @@ impl Resolver {
                         Arg::Named { value, .. } => {
                             self.resolve_expr(value)?;
                         }
+                        Arg::UnpackObject(expr) => {
+                            self.resolve_expr(expr)?;
+                        }
                     }
                 }
             }
@@ -232,8 +243,15 @@ impl Resolver {
                 }
             }
             Expr::ObjectLiteral { pairs, .. } => {
-                for (_, value) in pairs {
-                    self.resolve_expr(value)?;
+                for p in pairs {
+                    match p {
+                        crate::parser::ast::ObjectPair::KeyValue(_, value) => {
+                            self.resolve_expr(value)?;
+                        }
+                        crate::parser::ast::ObjectPair::Spread(expr) => {
+                            self.resolve_expr(expr)?;
+                        }
+                    }
                 }
             }
             Expr::TupleLiteral { elements, .. } => {
@@ -268,6 +286,9 @@ impl Resolver {
                         Arg::Named { value, .. } => {
                             self.resolve_expr(value)?;
                         }
+                        Arg::UnpackObject(expr) => {
+                            self.resolve_expr(expr)?;
+                        }
                     }
                 }
             }
@@ -287,6 +308,9 @@ impl Resolver {
                         Arg::Named { value, .. } => {
                             self.resolve_expr(value)?;
                         }
+                        Arg::UnpackObject(expr) => {
+                            self.resolve_expr(expr)?;
+                        }
                     }
                 }
             }
@@ -298,6 +322,9 @@ impl Resolver {
                         }
                         Arg::Named { value, .. } => {
                             self.resolve_expr(value)?;
+                        }
+                        Arg::UnpackObject(expr) => {
+                            self.resolve_expr(expr)?;
                         }
                     }
                 }

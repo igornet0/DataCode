@@ -134,46 +134,77 @@ impl ErrorType {
 pub struct StackTraceEntry {
     pub function_name: String,
     pub line: usize,
+    pub file: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub enum LangError {
-    LexError { message: String, line: usize },
-    ParseError { message: String, line: usize },
-    SemanticError { message: String, line: usize },
+    LexError { message: String, line: usize, file: Option<String> },
+    ParseError { message: String, line: usize, file: Option<String> },
+    SemanticError { message: String, line: usize, file: Option<String> },
     RuntimeError { 
         message: String, 
         line: usize,
+        file: Option<String>,
         stack_trace: Vec<StackTraceEntry>,
         error_type: Option<ErrorType>,
+        source: Option<Box<LangError>>,
     },
 }
 
 impl LangError {
     pub fn runtime_error(message: String, line: usize) -> Self {
+        LangError::runtime_error_with_file(message, line, None)
+    }
+
+    pub fn runtime_error_with_file(message: String, line: usize, file: Option<&str>) -> Self {
         LangError::RuntimeError {
             message,
             line,
+            file: file.map(String::from),
             stack_trace: Vec::new(),
             error_type: None,
+            source: None,
         }
     }
 
     pub fn runtime_error_with_trace(message: String, line: usize, stack_trace: Vec<StackTraceEntry>) -> Self {
+        LangError::runtime_error_with_trace_and_file(message, line, None, stack_trace)
+    }
+
+    pub fn runtime_error_with_trace_and_file(
+        message: String,
+        line: usize,
+        file: Option<&str>,
+        stack_trace: Vec<StackTraceEntry>,
+    ) -> Self {
         LangError::RuntimeError {
             message,
             line,
+            file: file.map(String::from),
             stack_trace,
             error_type: None,
+            source: None,
         }
     }
 
     pub fn runtime_error_with_type(message: String, line: usize, error_type: ErrorType) -> Self {
+        LangError::runtime_error_with_type_and_file(message, line, error_type, None)
+    }
+
+    pub fn runtime_error_with_type_and_file(
+        message: String,
+        line: usize,
+        error_type: ErrorType,
+        file: Option<&str>,
+    ) -> Self {
         LangError::RuntimeError {
             message,
             line,
+            file: file.map(String::from),
             stack_trace: Vec::new(),
             error_type: Some(error_type),
+            source: None,
         }
     }
 
@@ -183,11 +214,23 @@ impl LangError {
         error_type: ErrorType,
         stack_trace: Vec<StackTraceEntry>,
     ) -> Self {
+        LangError::runtime_error_with_type_trace_and_file(message, line, error_type, None, stack_trace)
+    }
+
+    pub fn runtime_error_with_type_trace_and_file(
+        message: String,
+        line: usize,
+        error_type: ErrorType,
+        file: Option<&str>,
+        stack_trace: Vec<StackTraceEntry>,
+    ) -> Self {
         LangError::RuntimeError {
             message,
             line,
+            file: file.map(String::from),
             stack_trace,
             error_type: Some(error_type),
+            source: None,
         }
     }
 
@@ -210,31 +253,142 @@ impl LangError {
             _ => false,
         }
     }
+
+    /// Локация корневой причины (рекурсивно по цепочке source).
+    pub fn root_location(err: &LangError) -> (Option<String>, usize) {
+        match err {
+            LangError::RuntimeError { source: Some(inner), .. } => Self::root_location(inner),
+            LangError::LexError { file, line, .. }
+            | LangError::ParseError { file, line, .. }
+            | LangError::SemanticError { file, line, .. }
+            | LangError::RuntimeError { file, line, .. } => (file.clone(), *line),
+        }
+    }
+
+    /// Ошибка-обёртка с цепочкой причин; file/line берутся из корневой причины (source).
+    pub fn runtime_error_with_source(message: impl Into<String>, source: LangError) -> Self {
+        let (file, line) = Self::root_location(&source);
+        LangError::RuntimeError {
+            message: message.into(),
+            line,
+            file,
+            stack_trace: Vec::new(),
+            error_type: None,
+            source: Some(Box::new(source)),
+        }
+    }
+
+    /// То же, но с заданным stack_trace (для ExceptionHandler).
+    pub fn runtime_error_with_source_and_trace(
+        message: impl Into<String>,
+        source: LangError,
+        stack_trace: Vec<StackTraceEntry>,
+    ) -> Self {
+        let (file, line) = Self::root_location(&source);
+        LangError::RuntimeError {
+            message: message.into(),
+            line,
+            file,
+            stack_trace,
+            error_type: None,
+            source: Some(Box::new(source)),
+        }
+    }
 }
 
-impl std::fmt::Display for LangError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        match self {
-            LangError::LexError { message, line } => {
-                write!(f, "[Lexer Error] Line {}: {}", line, message)
-            }
-            LangError::ParseError { message, line } => {
-                write!(f, "[Parse Error] Line {}: {}", line, message)
-            }
-            LangError::SemanticError { message, line } => {
-                write!(f, "[Semantic Error] Line {}: {}", line, message)
-            }
-            LangError::RuntimeError { message, line, stack_trace: _, error_type } => {
-                if let Some(et) = error_type {
-                    write!(f, "[{}] Line {}: {}", et.name(), line, message)?;
-                } else {
-                    write!(f, "[Runtime Error] Line {}: {}", line, message)?;
-                }
-                Ok(())
+/// Error codes in Rust style (E01xx = lex, E02xx = parse, E03xx = semantic, E04xx = runtime).
+fn error_code_and_label(err: &LangError) -> (&'static str, &'static str) {
+    match err {
+        LangError::LexError { .. } => ("E0100", "Lexer Error"),
+        LangError::ParseError { .. } => ("E0200", "Parse Error"),
+        LangError::SemanticError { .. } => ("E0300", "Semantic Error"),
+        LangError::RuntimeError { error_type, .. } => {
+            if let Some(et) = error_type {
+                ("E0400", et.name())
+            } else {
+                ("E0400", "Runtime Error")
             }
         }
     }
 }
 
-impl std::error::Error for LangError {}
+fn fmt_location(f: &mut std::fmt::Formatter, file: &Option<String>, line: usize) -> std::fmt::Result {
+    // Rust-style: "   --> path:line" or "   --> line N"
+    write!(f, "   --> ")?;
+    if let Some(path) = file {
+        write!(f, "{}:{}", path, line)
+    } else {
+        write!(f, "line {}", line)
+    }
+}
+
+fn fmt_cause_chain(f: &mut std::fmt::Formatter, err: &LangError) -> std::fmt::Result {
+    let (code, _) = error_code_and_label(err);
+    let (message, line, file) = match err {
+        LangError::LexError { message, line, file } => (message.as_str(), *line, file),
+        LangError::ParseError { message, line, file } => (message.as_str(), *line, file),
+        LangError::SemanticError { message, line, file } => (message.as_str(), *line, file),
+        LangError::RuntimeError { message, line, file, .. } => (message.as_str(), *line, file),
+    };
+    write!(f, "  error[{}]: {} (at ", code, message)?;
+    if let Some(path) = file {
+        write!(f, "{}:{})", path, line)?;
+    } else {
+        write!(f, "line {})", line)?;
+    }
+    writeln!(f)?;
+    if let LangError::RuntimeError { source: Some(inner), .. } = err {
+        fmt_cause_chain(f, inner)?;
+    }
+    Ok(())
+}
+
+impl std::fmt::Display for LangError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        let (code, _label) = error_code_and_label(self);
+        let (message, line, file) = match self {
+            LangError::LexError { message, line, file } => (message, *line, file),
+            LangError::ParseError { message, line, file } => (message, *line, file),
+            LangError::SemanticError { message, line, file } => (message, *line, file),
+            LangError::RuntimeError { message, line, file, .. } => (message, *line, file),
+        };
+        // First line: error[CODE]: message
+        writeln!(f, "error[{}]: {}", code, message)?;
+        // Second line:    --> file:line
+        fmt_location(f, file, line)?;
+        writeln!(f)?;
+        // Empty bar like Rust when there's no source snippet
+        writeln!(f, "    |")?;
+        if let LangError::RuntimeError { stack_trace, .. } = self {
+            if !stack_trace.is_empty() {
+                writeln!(f)?;
+                writeln!(f, "stack trace:")?;
+                for entry in stack_trace {
+                    write!(f, "   --> ")?;
+                    if let Some(path) = &entry.file {
+                        write!(f, "{}:{}", path, entry.line)?;
+                    } else {
+                        write!(f, "line {}", entry.line)?;
+                    }
+                    writeln!(f, " in {}", entry.function_name)?;
+                }
+            }
+        }
+        if let LangError::RuntimeError { source: Some(inner), .. } = self {
+            writeln!(f)?;
+            writeln!(f, "Caused by:")?;
+            fmt_cause_chain(f, inner)?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for LangError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            LangError::RuntimeError { source: Some(inner), .. } => Some(inner.as_ref()),
+            _ => None,
+        }
+    }
+}
 

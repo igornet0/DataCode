@@ -42,6 +42,7 @@ impl ExceptionHandler {
             trace.push(StackTraceEntry {
                 function_name: frame.function.name.clone(),
                 line,
+                file: frame.function.chunk.source_name.clone(),
             });
         }
         trace.reverse(); // Начинаем с самой глубокой функции
@@ -49,11 +50,18 @@ impl ExceptionHandler {
     }
 
     pub fn runtime_error(frames: &[CallFrame], message: String, line: usize) -> LangError {
-        LangError::runtime_error_with_trace(message, line, Self::build_stack_trace(frames))
+        let file = frames.last().and_then(|f| f.function.chunk.source_name.as_deref());
+        LangError::runtime_error_with_trace_and_file(message, line, file, Self::build_stack_trace(frames))
     }
 
     pub fn runtime_error_with_type(frames: &[CallFrame], message: String, line: usize, error_type: ErrorType) -> LangError {
-        LangError::runtime_error_with_type_and_trace(message, line, error_type, Self::build_stack_trace(frames))
+        let file = frames.last().and_then(|f| f.function.chunk.source_name.as_deref());
+        LangError::runtime_error_with_type_trace_and_file(message, line, error_type, file, Self::build_stack_trace(frames))
+    }
+
+    /// Ошибка-обёртка с цепочкой причин; file/line берутся из корневой причины, stack_trace — из frames.
+    pub fn runtime_error_with_source(frames: &[CallFrame], message: String, source: LangError) -> LangError {
+        LangError::runtime_error_with_source_and_trace(message, source, Self::build_stack_trace(frames))
     }
 
     /// Обрабатывает исключение - проверяет стек обработчиков и переходит к соответствующему catch блоку.

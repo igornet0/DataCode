@@ -66,6 +66,7 @@ pub fn compile_binary(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                     return Err(LangError::ParseError {
                         message: format!("Unknown binary operator: {:?}", op),
                         line: *line,
+                        file: None,
                     });
                 }
             }
@@ -75,6 +76,7 @@ pub fn compile_binary(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
         Err(LangError::ParseError {
             message: "Expected Binary expression".to_string(),
             line: expr.line(),
+            file: None,
         })
     }
 }

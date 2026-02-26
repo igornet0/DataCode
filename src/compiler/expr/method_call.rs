@@ -60,6 +60,7 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
                 match arg {
                     Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                     Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                    Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
                 }
             }
             debug_println!("[DEBUG compile_method_call] После компиляции аргументов, IP: {}", ctx.chunk.code.len());
@@ -79,6 +80,7 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
                 match arg {
                     Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                     Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                    Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
                 }
             }
             debug_println!("[DEBUG compile_method_call] После повторной компиляции аргументов, IP: {}", ctx.chunk.code.len());
@@ -110,6 +112,7 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
         Err(LangError::ParseError {
             message: "Expected MethodCall expression".to_string(),
             line: expr.line(),
+            file: None,
         })
     }
 }
@@ -124,6 +127,7 @@ fn compile_clone_method(
         return Err(LangError::ParseError {
             message: "clone() method takes no arguments".to_string(),
             line,
+            file: None,
         });
     }
     // Используем специальный opcode для клонирования
@@ -142,6 +146,7 @@ fn compile_suffixes_method(
         return Err(LangError::ParseError {
             message: format!("suffixes() method expects 2 arguments (left_suffix, right_suffix), got {}", args.len()),
             line,
+            file: None,
         });
     }
     
@@ -154,6 +159,7 @@ fn compile_suffixes_method(
         match arg {
             Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
             Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
     
@@ -170,6 +176,7 @@ fn compile_suffixes_method(
         match arg {
             Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
             Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
     
@@ -182,6 +189,7 @@ fn compile_suffixes_method(
         Err(LangError::ParseError {
             message: "Function 'table_suffixes' not found".to_string(),
             line,
+            file: None,
         })
     }
 }
@@ -202,6 +210,7 @@ fn compile_join_method(
         match arg {
             Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
             Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
     
@@ -237,6 +246,7 @@ fn compile_join_method(
             match arg {
                 Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                 Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
             }
         }
         
@@ -253,6 +263,7 @@ fn compile_join_method(
         Err(LangError::ParseError {
             message: format!("Function '{}' not found", function_name),
             line,
+            file: None,
         })
     }
 }
@@ -327,6 +338,7 @@ fn compile_nn_method(
             return Err(LangError::ParseError {
                 message: format!("Unknown NeuralNetwork method: {}", method),
                 line,
+                file: None,
             });
         }
     };
@@ -337,29 +349,32 @@ fn compile_nn_method(
             return Err(LangError::ParseError {
                 message: "get_device() takes no arguments".to_string(),
                 line,
+                file: None,
             });
         }
         0
     } else if method == "train" {
         // Разрешаем именованные аргументы для train метода
-        let resolved_args = args::resolve_function_args("nn_train", args, None, line)?;
+        let resolved_args = args::resolve_function_args("nn_train", args, None, line, ctx.source_name)?;
         // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
         for arg in resolved_args.iter().skip(1) {
             match arg {
                 Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                 Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
             }
         }
         // Всего аргументов на стеке: 1 receiver + (resolved_args.len() - 1). Call(arity) принимает arity = это число; мы передаём actual_arg_count+1 в Call, значит actual_arg_count = resolved_args.len() - 1.
         resolved_args.len() - 1
     } else if method == "train_sh" {
         // Разрешаем именованные аргументы для train_sh метода
-        let resolved_args = args::resolve_function_args("nn_train_sh", args, None, line)?;
+        let resolved_args = args::resolve_function_args("nn_train_sh", args, None, line, ctx.source_name)?;
         // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
         for arg in resolved_args.iter().skip(1) {
             match arg {
                 Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                 Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
             }
         }
         resolved_args.len() - 1
@@ -369,12 +384,14 @@ fn compile_nn_method(
             return Err(LangError::ParseError {
                 message: format!("{}() takes exactly 1 argument", method),
                 line,
+                file: None,
             });
         }
         for arg in args {
             match arg {
                 Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                 Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
             }
         }
         args.len()
@@ -392,6 +409,7 @@ fn compile_nn_method(
         Err(LangError::ParseError {
             message: "ml module not found".to_string(),
             line,
+            file: None,
         })
     }
 }
@@ -408,6 +426,7 @@ fn compile_axis_method(
         match arg {
             Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
             Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
     
@@ -424,6 +443,7 @@ fn compile_axis_method(
         match arg {
             Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
             Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
     
@@ -453,6 +473,7 @@ fn compile_db_receiver_method(
         match arg {
             Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
             Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
     ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
@@ -478,6 +499,7 @@ fn compile_array_method(
         match arg {
             Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
             Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
     ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
@@ -504,12 +526,14 @@ fn compile_string_method(
             return Err(LangError::ParseError {
                 message: "string.join() takes exactly 1 argument (array)".to_string(),
                 line,
+                file: None,
             });
         }
         for arg in args {
             match arg {
                 Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                 Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
             }
         }
         ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
@@ -518,12 +542,14 @@ fn compile_string_method(
             return Err(LangError::ParseError {
                 message: format!("string.{}() takes no arguments", method),
                 line,
+                file: None,
             });
         }
         if matches!(method, "split" | "contains") && n != 1 {
             return Err(LangError::ParseError {
                 message: format!("string.{}() takes exactly 1 argument", method),
                 line,
+                file: None,
             });
         }
         ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
@@ -531,6 +557,7 @@ fn compile_string_method(
             match arg {
                 Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                 Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
             }
         }
     }
@@ -555,6 +582,7 @@ fn compile_layer_method(
         return Err(LangError::ParseError {
             message: format!("layer.{}() takes no arguments", method),
             line,
+            file: None,
         });
     }
     
@@ -581,7 +609,7 @@ fn compile_module_method(
 ) -> Result<(), LangError> {
     // Для функций модулей: получаем метод, не добавляем объект
     // Пытаемся разрешить именованные аргументы
-    let resolved_args = match args::resolve_function_args(method, args, None, line) {
+    let resolved_args = match args::resolve_function_args(method, args, None, line, ctx.source_name) {
         Ok(resolved) => resolved,
         Err(e) => {
             // Проверяем, является ли это ошибкой "not supported"
@@ -595,6 +623,7 @@ fn compile_module_method(
                 args.iter().map(|a| match a {
                     Arg::Positional(e) => Arg::Positional(e.clone()),
                     Arg::Named { value, .. } => Arg::Positional(value.clone()),
+                    Arg::UnpackObject(e) => Arg::Positional(e.clone()),
                 }).collect()
             } else {
                 return Err(e);
@@ -622,6 +651,7 @@ fn compile_module_method(
         args.iter().map(|a| match a {
             Arg::Positional(e) => Arg::Positional(e.clone()),
             Arg::Named { value, .. } => Arg::Positional(value.clone()),
+            Arg::UnpackObject(e) => Arg::Positional(e.clone()),
         }).collect::<Vec<_>>()
     } else {
         debug_println!("[DEBUG compile_module_method] используем resolved_args");
@@ -631,12 +661,8 @@ fn compile_module_method(
     for arg in &args_to_compile {
         match arg {
             Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-            Arg::Named { .. } => {
-                return Err(LangError::ParseError {
-                    message: format!("Unexpected named argument in resolved args for method '{}'", method),
-                    line,
-                });
-            }
+            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
     debug_println!("[DEBUG compile_module_method] После компиляции аргументов, IP: {}, стек: [arg_1, ..., arg_n]", ctx.chunk.code.len());

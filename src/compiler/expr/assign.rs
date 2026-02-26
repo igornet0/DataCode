@@ -53,6 +53,7 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                             return Err(LangError::ParseError {
                                 message: format!("Variable '{}' not found", object_name),
                                 line: *line,
+                                file: None,
                             });
                         }
                     }
@@ -91,6 +92,7 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                     return Err(LangError::ParseError {
                         message: format!("Invalid property path: {}", name),
                         line: *line,
+                        file: None,
                     });
                 }
             }
@@ -102,16 +104,16 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                 // Локальная переменная найдена - обновляем
                 ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
                 ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
-            } else if ctx.current_function.is_some() {
-                // Мы находимся внутри функции - создаем локальную переменную, которая скрывает глобальную
-                let index = ctx.scope.declare_local(name);
-                ctx.chunk.write_with_line(OpCode::StoreLocal(index), *line);
-                ctx.chunk.write_with_line(OpCode::LoadLocal(index), *line);
             } else if let Some(&global_index) = ctx.scope.globals.get(name) {
-                // Мы в главной функции, глобальная переменная найдена - обновляем
+                // Глобальная переменная найдена (в т.ч. объявленная через global X = ...) — обновляем глобал даже внутри функции
                 ctx.chunk.global_names.insert(global_index, name.clone());
                 ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
                 ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+            } else if ctx.current_function.is_some() {
+                // Внутри функции, переменной нет в globals — создаём локальную переменную
+                let index = ctx.scope.declare_local(name);
+                ctx.chunk.write_with_line(OpCode::StoreLocal(index), *line);
+                ctx.chunk.write_with_line(OpCode::LoadLocal(index), *line);
             } else {
                 // Переменная не найдена ни локально, ни глобально
                 if ctx.current_function.is_some() {
@@ -141,6 +143,7 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
         _ => Err(LangError::ParseError {
             message: "Expected Assign, AssignOp, or UnpackAssign expression".to_string(),
             line: expr.line(),
+            file: None,
         }),
     }
 }
@@ -178,6 +181,7 @@ fn compile_assign_op(
                     return Err(LangError::ParseError {
                         message: format!("Variable '{}' not found", object_name),
                         line,
+                        file: None,
                     });
                 }
             }
@@ -205,6 +209,7 @@ fn compile_assign_op(
                     return Err(LangError::ParseError {
                         message: format!("Unknown assignment operator: {:?}", op),
                         line,
+                        file: None,
                     });
                 }
             }
@@ -263,6 +268,7 @@ fn compile_assign_op(
             return Err(LangError::ParseError {
                 message: format!("Invalid property path: {}", name),
                 line,
+                file: None,
             });
         }
     }
@@ -287,6 +293,7 @@ fn compile_assign_op(
             return Err(LangError::ParseError {
                 message: format!("Unknown assignment operator: {:?}", op),
                 line,
+                file: None,
             });
         }
     }

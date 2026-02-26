@@ -55,6 +55,9 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
                     Arg::Named { value, .. } => {
                         vars.extend(find_used_variables_in_expr(value));
                     }
+                    Arg::UnpackObject(expr) => {
+                        vars.extend(find_used_variables_in_expr(expr));
+                    }
                 }
             }
         }
@@ -64,8 +67,15 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
             }
         }
         Expr::ObjectLiteral { pairs, .. } => {
-            for (_, value) in pairs {
-                vars.extend(find_used_variables_in_expr(value));
+            for p in pairs {
+                match p {
+                    crate::parser::ast::ObjectPair::KeyValue(_, value) => {
+                        vars.extend(find_used_variables_in_expr(value));
+                    }
+                    crate::parser::ast::ObjectPair::Spread(expr) => {
+                        vars.extend(find_used_variables_in_expr(expr));
+                    }
+                }
             }
         }
         Expr::TupleLiteral { elements, .. } => {
@@ -94,6 +104,9 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
                     }
                     Arg::Named { value, .. } => {
                         vars.extend(find_used_variables_in_expr(value));
+                    }
+                    Arg::UnpackObject(expr) => {
+                        vars.extend(find_used_variables_in_expr(expr));
                     }
                 }
             }

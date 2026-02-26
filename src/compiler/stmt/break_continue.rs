@@ -12,6 +12,7 @@ pub fn compile_break(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
             return Err(LangError::ParseError {
                 message: "break statement outside of loop".to_string(),
                 line: *line,
+                file: None,
             });
         }
         let loop_ctx = ctx.loop_contexts.last().unwrap();
@@ -27,6 +28,7 @@ pub fn compile_break(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
         Err(LangError::ParseError {
             message: "Expected Break statement".to_string(),
             line: stmt.line(),
+            file: None,
         })
     }
 }
@@ -38,6 +40,7 @@ pub fn compile_continue(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
             return Err(LangError::ParseError {
                 message: "continue statement outside of loop".to_string(),
                 line: *line,
+                file: None,
             });
         }
         // Jump к метке continue
@@ -48,6 +51,7 @@ pub fn compile_continue(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
         Err(LangError::ParseError {
             message: "Expected Continue statement".to_string(),
             line: stmt.line(),
+            file: None,
         })
     }
 }

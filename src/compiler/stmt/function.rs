@@ -19,6 +19,7 @@ pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
             .ok_or_else(|| LangError::ParseError {
                 message: format!("Function '{}' not found in forward declarations", name),
                 line: *line,
+                file: None,
             })?;
         
         // Получаем функцию и обновляем количество параметров и флаг кэширования
@@ -52,6 +53,7 @@ pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
                                 param.name
                             ),
                             line: default_expr.line(),
+                            file: None,
                         });
                     }
                     Err(e) => {
@@ -141,6 +143,7 @@ pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
                 return Err(LangError::ParseError {
                     message: format!("Captured variable '{}' not found in parent scopes", var_name),
                     line: *line,
+                    file: None,
                 });
             }
             
@@ -216,6 +219,7 @@ pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
         Err(LangError::ParseError {
             message: "Expected Function statement".to_string(),
             line: stmt.line(),
+            file: None,
         })
     }
 }

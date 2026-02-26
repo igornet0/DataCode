@@ -479,6 +479,7 @@ pub fn start_http_server(config: HttpServerConfig) -> Result<(), String> {
             None,
             lib_path_opt,
             Some(base_path.as_path()),
+            Some(app_path.as_ref()),
         )
         .map_err(|e| format!("Failed to run app: {}", e))?;
 

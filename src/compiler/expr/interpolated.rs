@@ -15,6 +15,7 @@ pub fn compile_interpolated_string(
         return Err(LangError::ParseError {
             message: "Expected InterpolatedString expression".to_string(),
             line: expr.line(),
+            file: None,
         });
     };
     *ctx.current_line = *line;

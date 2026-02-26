@@ -25,6 +25,7 @@ pub fn compile_unary(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
                 return Err(LangError::ParseError {
                     message: format!("Unknown unary operator: {:?}", op),
                     line: *line,
+                    file: None,
                 });
             }
         }
@@ -33,6 +34,7 @@ pub fn compile_unary(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
         Err(LangError::ParseError {
             message: "Expected Unary expression".to_string(),
             line: expr.line(),
+            file: None,
         })
     }
 }

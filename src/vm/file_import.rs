@@ -3,8 +3,10 @@
 
 use crate::debug_println;
 use crate::vm::run_context::RunContext;
+use crate::vm::module_cache::{self, CachedModule};
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
+use std::sync::Arc;
 use crate::common::{error::LangError, value::Value};
 use crate::vm::Vm;
 
@@ -56,16 +58,17 @@ pub fn get_dpm_package_paths() -> Vec<PathBuf> {
     }
 }
 
-/// Пытается найти модуль в заданном корне: <root>/<module_name>.dc или <root>/<module_name>/__lib__.dc.
+/// Пытается найти модуль в заданном корне: предпочитается пакет <root>/<module_name>/__lib__.dc,
+/// иначе файл <root>/<module_name>.dc. Так "core.config" даёт core/config/__lib__.dc, а не core/config.dc.
 fn try_find_module_in(module_name: &str, root: &Path) -> Option<(PathBuf, PathBuf)> {
-    let file_path = root.join(format!("{}.dc", module_name));
-    if file_path.exists() {
-        return Some((root.to_path_buf(), file_path));
-    }
     let dir_path = root.join(module_name);
     let lib_path = dir_path.join("__lib__.dc");
     if dir_path.is_dir() && lib_path.exists() {
         return Some((dir_path, lib_path));
+    }
+    let file_path = root.join(format!("{}.dc", module_name));
+    if file_path.exists() {
+        return Some((root.to_path_buf(), file_path));
     }
     None
 }
@@ -132,11 +135,11 @@ pub fn load_local_module(
 }
 
 /// Загружает подмодуль по составному имени (например `config.xyz`).
-/// Разрешает каждый сегмент относительно предыдущего (папка пакета).
 fn load_local_module_dotted_with_vm(
     module_name: &str,
     base_path: &Path,
-) -> Result<(Value, Vm), LangError> {
+    vm: &mut Vm,
+) -> Result<LoadModuleResult, LangError> {
     let parts: Vec<&str> = module_name.split('.').collect();
     if parts.is_empty() {
         return Err(LangError::runtime_error("Empty module name".to_string(), 0));
@@ -160,35 +163,38 @@ fn load_local_module_dotted_with_vm(
         current_base = module_dir;
         search_paths = vec![current_base.clone()];
     }
-    load_local_module_with_vm_inner(parts[parts.len() - 1], &current_base)
+    load_local_module_with_vm_inner(parts[parts.len() - 1], &current_base, vm)
 }
 
-/// Загружает локальный .dc файл или пакет как модуль и возвращает VM с функциями
+/// Result of loading a .dc module: (module namespace object, VM if first run else None).
+/// When `Option<Vm>` is `None`, the module was already executed once this run; caller must not merge, only use the namespace.
+pub type LoadModuleResult = (Value, Option<Vm>);
+
+/// Загружает локальный .dc файл или пакет как модуль.
+/// Uses vm's module_cache (compile) and executed_modules (run once per path).
 ///
 /// Поддерживает составные имена: `config.xyz` загружает модуль `xyz` из пакета `config`.
 ///
-/// # Аргументы
-/// * `module_name` - имя модуля (без расширения .dc), может содержать точки для подмодулей
-/// * `base_path` - базовый путь, относительно которого ищется файл
-///
 /// # Возвращает
-/// Кортеж (объект модуля, VM с функциями)
+/// `(module_object, Some(module_vm))` on first load (caller merges); `(module_object, None)` when module was already executed this run.
 pub fn load_local_module_with_vm(
     module_name: &str,
     base_path: &Path,
-) -> Result<(Value, Vm), LangError> {
+    vm: &mut Vm,
+) -> Result<LoadModuleResult, LangError> {
     if module_name.contains('.') {
-        return load_local_module_dotted_with_vm(module_name, base_path);
+        return load_local_module_dotted_with_vm(module_name, base_path, vm);
     }
-    load_local_module_with_vm_inner(module_name, base_path)
+    load_local_module_with_vm_inner(module_name, base_path, vm)
 }
 
 /// Внутренняя загрузка одного сегмента модуля (имя без точек).
+/// Uses module_cache (compile) and executed_modules (run once per canonical path).
 fn load_local_module_with_vm_inner(
     module_name: &str,
     base_path: &Path,
-) -> Result<(Value, Vm), LangError> {
-    // 1. Ищем модуль: сначала base_path, затем DPM package paths
+    vm: &mut Vm,
+) -> Result<LoadModuleResult, LangError> {
     let mut search_paths = vec![base_path.to_path_buf()];
     search_paths.extend(get_dpm_package_paths());
     let (module_dir, file_path) = search_paths
@@ -204,7 +210,19 @@ fn load_local_module_with_vm_inner(
             )
         })?;
 
-    // 2. Загрузить содержимое файла модуля
+    let cache_key = module_cache::canonical_module_cache_key(&file_path);
+
+    // Already executed this run: return saved namespace, no run().
+    {
+        let executed = vm.get_executed_modules_mut();
+        if let Some(cached_ns) = executed.get(&cache_key) {
+            let module_object = cached_ns.clone();
+            drop(executed);
+            return Ok((module_object, None));
+        }
+        drop(executed);
+    }
+
     let source = std::fs::read_to_string(&file_path).map_err(|e| {
         LangError::runtime_error(
             format!("Failed to read module file '{}': {}", file_path.display(), e),
@@ -212,57 +230,94 @@ fn load_local_module_with_vm_inner(
         )
     })?;
 
-    // 3. Временно устанавливаем BASE_PATH на директорию модуля
+    let source_mtime = std::fs::metadata(&file_path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64);
+
     let old_base_path = get_base_path();
     set_base_path(Some(module_dir.clone()));
 
-    // 4. Скомпилировать и выполнить модуль (передаём module_dir в VM, чтобы run() не затирал thread-local в None)
-    let (_, mut vm) = compile_and_run_module(&source, Some(module_dir))?;
+    let dcb_path = crate::vm::dcb::dcb_cache_path(&cache_key);
 
-    // Восстанавливаем предыдущий BASE_PATH
+    let mut module_vm = {
+        let mut cache = vm.get_module_cache_mut();
+        if let Some(cached) = cache.get(&cache_key) {
+            let cached = cached.clone();
+            drop(cache);
+            run_compiled_module(&cached.chunk, &cached.functions, Some(module_dir.clone()))?
+        } else if let Some(cached) = crate::vm::dcb::load_dcb_if_fresh(&dcb_path, &source, source_mtime) {
+            cache.insert(cache_key.clone(), cached.clone());
+            drop(cache);
+            run_compiled_module(&cached.chunk, &cached.functions, Some(module_dir.clone()))?
+        } else {
+            let (chunk, functions, import_names) = compile_module(&source, Some(&file_path))?;
+            let mut dep_paths = Vec::new();
+            let mut search_paths = vec![module_dir.clone()];
+            search_paths.extend(get_dpm_package_paths());
+            for name in &import_names {
+                if let Some((_, dep_file_path)) = search_paths.iter().find_map(|root| try_find_module_in(name, root)) {
+                    dep_paths.push(module_cache::canonical_module_cache_key(&dep_file_path));
+                }
+            }
+            drop(cache);
+            vm.get_module_deps_mut().insert(cache_key.clone(), dep_paths);
+            let mut cache = vm.get_module_cache_mut();
+            let functions_arc = Arc::new(functions.clone());
+            let compiled = CachedModule {
+                chunk: chunk.clone(),
+                functions: functions_arc.clone(),
+            };
+            if crate::vm::dcb::save_dcb(&dcb_path, &compiled, &source, source_mtime).is_ok() {
+                // .dcb written; on next run we may load from disk
+            }
+            cache.insert(cache_key.clone(), compiled);
+            drop(cache);
+            run_compiled_module(&chunk, &functions, Some(module_dir.clone()))?
+        }
+    };
     set_base_path(old_base_path);
+    let exports = export_globals_from_vm(&mut module_vm);
+    let module_object = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(exports)));
 
-    // 5. Экспортировать глобальные переменные в объект модуля
-    let module_object = export_globals_from_vm(&mut vm);
+    vm.get_executed_modules_mut().insert(cache_key, module_object.clone());
 
-    Ok((
-        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(module_object))),
-        vm,
-    ))
+    Ok((module_object, Some(module_vm)))
 }
 
-/// Компилирует и выполняет код модуля.
-/// module_base_path: директория модуля (например config/), чтобы VM разрешал вложенные импорты и не затирал thread-local в None в run().
-fn compile_and_run_module(source: &str, module_base_path: Option<PathBuf>) -> Result<(Value, Vm), LangError> {
+/// Compiles source to bytecode (chunk + functions). Does not run.
+/// Also returns import module names from AST for dependency graph.
+/// source_name: path to source file for error messages (e.g. when loading a .dc module).
+fn compile_module(source: &str, source_name: Option<&Path>) -> Result<(crate::bytecode::Chunk, Vec<crate::bytecode::Function>, Vec<String>), LangError> {
     use crate::lexer::Lexer;
     use crate::parser::Parser;
+    use crate::parser::ast::import_module_names_from_stmts;
     use crate::semantic::resolver::Resolver;
     use crate::compiler::Compiler;
-    use crate::vm::Vm;
 
-    // 1. Лексический анализ
-    let mut lexer = Lexer::new(source);
+    let source_name_str = source_name.map(|p| p.to_string_lossy().into_owned());
+    let mut lexer = Lexer::new_with_source_name(source, source_name_str.as_deref());
     let tokens = lexer.tokenize()?;
-
-    // 2. Парсинг
-    let mut parser = Parser::new(tokens);
+    let mut parser = Parser::new_with_source_name(tokens, source_name_str.as_deref());
     let ast = parser.parse()?;
-
-    // 3. Семантический анализ
-    let mut resolver = Resolver::new();
+    let import_names = import_module_names_from_stmts(&ast);
+    let mut resolver = Resolver::new_with_source_name(source_name_str.as_deref());
     resolver.resolve(&ast)?;
-
-    // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new();
+    let mut compiler = Compiler::new_with_source_name(source_name_str.as_deref());
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
+    Ok((chunk, functions, import_names))
+}
 
-    // 5. Выполнение на VM
+/// Runs compiled module (chunk + functions) in a new VM and returns that VM. Caller exports globals.
+fn run_compiled_module(
+    chunk: &crate::bytecode::Chunk,
+    functions: &[crate::bytecode::Function],
+    module_base_path: Option<PathBuf>,
+) -> Result<Vm, LangError> {
     let mut vm = Vm::new();
-    // Базовый путь модуля — чтобы при run() thread-local не затирался в None и вложенные импорты (from config import Config) работали
     vm.set_base_path(module_base_path.or_else(get_base_path));
-    // Сначала регистрируем нативные глобалы и встроенные модули, чтобы set_functions
-    // не сопоставлял имена модуля (например "Settings") с индексами 0..74 (print и т.д.)
     let max_global_index = chunk.global_names.keys().max().copied().unwrap_or(0);
     let needed_size = (max_global_index + 1).max(74);
     if vm.get_globals().len() < needed_size {
@@ -272,15 +327,25 @@ fn compile_and_run_module(source: &str, module_base_path: Option<PathBuf>) -> Re
     vm.register_all_builtin_modules().map_err(|e| {
         LangError::runtime_error(format!("Failed to register built-in modules: {}", e), 0)
     })?;
-    // Добавляем слоты по индексам из chunk (Config, DatabaseConfig и т.д.), чтобы sentinel резолвился и main chunk хранил по тем же индексам.
-    vm.ensure_globals_from_chunk_preserve_indices(&chunk);
-    for f in &functions {
+    vm.ensure_globals_from_chunk_preserve_indices(chunk);
+    for f in functions {
         vm.ensure_globals_from_chunk(&f.chunk);
     }
-    vm.set_functions(functions, None);
-    let result = vm.run(&chunk)?;
+    vm.ensure_exception_constructors();
+    vm.set_functions(functions.to_vec(), None, None);
+    vm.run(chunk, None)?;
+    Ok(vm)
+}
 
-    Ok((result, vm))
+/// Compiles and runs module (used when no cache is available, e.g. load_local_module without vm).
+fn compile_and_run_module(source: &str, module_base_path: Option<PathBuf>) -> Result<(Value, Vm), LangError> {
+    let (chunk, functions, _import_names) = compile_module(source, None)?;
+    let mut vm = run_compiled_module(&chunk, &functions, module_base_path)?;
+    let module_object = export_globals_from_vm(&mut vm);
+    Ok((
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(module_object))),
+        vm,
+    ))
 }
 
 /// Извлекает все глобальные переменные из VM после выполнения модуля (globals are GlobalSlot)
@@ -289,22 +354,68 @@ fn export_globals_from_vm(vm: &mut Vm) -> HashMap<String, Value> {
     let mut exports = HashMap::new();
     let globals = vm.get_globals();
     let global_names = vm.get_global_names();
-    let to_export: Vec<(usize, String)> = global_names
+    let mut to_export: Vec<(usize, String)> = global_names
         .iter()
         .filter_map(|(index, name)| globals.get(*index).map(|_| (*index, name.clone())))
         .collect();
+    to_export.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
     debug_println!("[DEBUG export_globals_from_vm] Экспортируем {} глобальных переменных", to_export.len());
+    for (idx, name) in global_names.iter().filter(|(_, n)| n.as_str() == "get_settings" || n.as_str() == "load_settings") {
+        debug_println!("[DEBUG export_globals_from_vm] module VM global_names: slot {} -> '{}'", idx, name);
+    }
+    for (idx, name) in &to_export {
+        if name == "get_settings" || name == "load_settings" {
+            debug_println!("[DEBUG export_globals_from_vm] to_export порядок: index={} name='{}'", idx, name);
+        }
+    }
+    // Group by name so we can prefer non-null when the same name appears at multiple indices.
+    let mut by_name: std::collections::HashMap<String, Vec<(usize, Value)>> = std::collections::HashMap::new();
     for (index, name) in to_export {
         let value_id = vm.resolve_global_to_value_id(index);
         let value = load_value(value_id, vm.value_store(), vm.heavy_store());
-            let value_type = match &value {
-                Value::Object(_) => "Object",
-                Value::Function(_) => "Function",
-                Value::Null => "Null",
-                _ => "Other",
-            };
-            debug_println!("[DEBUG export_globals_from_vm] Экспортируем: {} (index: {}, type: {})", name, index, value_type);
-            exports.insert(name, value);
+        let value_type = match &value {
+            Value::Object(_) => "Object",
+            Value::Function(_) => "Function",
+            Value::Null => "Null",
+            _ => "Other",
+        };
+        debug_println!("[DEBUG export_globals_from_vm] Экспортируем: {} (index: {}, type: {})", name, index, value_type);
+        by_name.entry(name).or_default().push((index, value));
+    }
+    let mut by_name_vec: Vec<_> = by_name.into_iter().collect();
+    by_name_vec.sort_by(|a, b| a.0.cmp(&b.0));
+
+    for (name, mut entries) in by_name_vec {
+        // Prefer non-null when same name at multiple indices (e.g. constructor at 92, Null at 84).
+        // When both non-null and both Function, prefer larger function index (later definition).
+        // Sort entries so choice is deterministic (no HashMap iteration order dependency).
+        entries.sort_by(|a, b| {
+            let a_ok = !matches!(a.1, Value::Null);
+            let b_ok = !matches!(b.1, Value::Null);
+            match (a_ok, b_ok) {
+                (true, false) => std::cmp::Ordering::Greater,
+                (false, true) => std::cmp::Ordering::Less,
+                (true, true) => match (&a.1, &b.1) {
+                    (Value::Function(ia), Value::Function(ib)) => ia.cmp(ib),
+                    _ => a.0.cmp(&b.0),
+                },
+                _ => a.0.cmp(&b.0),
+            }
+        });
+        let best_entry = entries.last().cloned();
+        if let Some((idx_used, v)) = best_entry {
+            exports.insert(name.clone(), v.clone());
+            if name == "get_settings" || name == "load_settings" {
+                let fn_idx_info = match &v {
+                    crate::common::value::Value::Function(fi) => format!("Function({})", fi),
+                    _ => format!("{:?}", std::mem::discriminant(&v)),
+                };
+                debug_println!(
+                    "[DEBUG export_globals_from_vm] export '{}' -> slot_index={} value={} (chosen from {} entries)",
+                    name, idx_used, fn_idx_info, entries.len()
+                );
+            }
+        }
     }
     debug_println!("[DEBUG export_globals_from_vm] Всего экспортировано: {} переменных", exports.len());
     exports
@@ -315,19 +426,27 @@ pub fn get_base_path_from_file(file_path: &Path) -> Option<PathBuf> {
     file_path.parent().map(|p| p.to_path_buf())
 }
 
+/// Максимальная глубина подъёма при поиске __lib__.dc (защита от долгого обхода на медленных ФС).
+const FIND_NEAREST_LIB_MAX_DEPTH: u32 = 25;
+
 /// Ищет ближайший `__lib__.dc`, начиная с указанной директории и поднимаясь
-/// вверх по дереву каталогов до корня файловой системы.
+/// вверх по дереву каталогов. Ограничено [`FIND_NEAREST_LIB_MAX_DEPTH`] уровнями.
 ///
 /// Используется для автоматического поиска библиотечного файла для скрипта.
 pub fn find_nearest_lib(start_dir: &Path) -> Option<PathBuf> {
     let mut current = Some(start_dir.to_path_buf());
+    let mut depth = 0u32;
 
     while let Some(dir) = current {
+        if depth > FIND_NEAREST_LIB_MAX_DEPTH {
+            return None;
+        }
         let candidate = dir.join("__lib__.dc");
         if candidate.exists() {
             return Some(candidate);
         }
         current = dir.parent().map(|p| p.to_path_buf());
+        depth += 1;
     }
 
     None

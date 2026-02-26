@@ -13,11 +13,13 @@ pub fn compile_super(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
         Err(LangError::ParseError {
             message: "super cannot be used as a value. Use super(...) to call parent constructor or super.method() to call parent method".to_string(),
             line: *line,
+            file: None,
         })
     } else {
         Err(LangError::ParseError {
             message: "Expected Super expression".to_string(),
             line: expr.line(),
+            file: None,
         })
     }
 }
@@ -34,6 +36,7 @@ pub fn compile_super_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(
             return Err(LangError::ParseError {
                 message: "super() can only be called from within a constructor".to_string(),
                 line: *line,
+                file: None,
             });
         }
         
@@ -42,11 +45,13 @@ pub fn compile_super_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(
         Err(LangError::ParseError {
             message: "super() must be the first statement in constructor".to_string(),
             line: *line,
+            file: None,
         })
     } else {
         Err(LangError::ParseError {
             message: "Expected SuperCall expression".to_string(),
             line: expr.line(),
+            file: None,
         })
     }
 }
@@ -63,6 +68,7 @@ pub fn compile_super_method_call(ctx: &mut CompilationContext, expr: &Expr) -> R
                 return Err(LangError::ParseError {
                     message: "super can only be used in a class that extends another class".to_string(),
                     line: *line,
+                    file: None,
                 });
             }
         };
@@ -75,6 +81,7 @@ pub fn compile_super_method_call(ctx: &mut CompilationContext, expr: &Expr) -> R
                 return Err(LangError::ParseError {
                     message: format!("Method '{}' not found in parent class '{}'", method, superclass_name),
                     line: *line,
+                    file: None,
                 });
             }
         };
@@ -94,6 +101,7 @@ pub fn compile_super_method_call(ctx: &mut CompilationContext, expr: &Expr) -> R
             match arg {
                 Arg::Positional(arg_expr) => expr::compile_expr(ctx, arg_expr)?,
                 Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
             }
         }
         
@@ -107,6 +115,7 @@ pub fn compile_super_method_call(ctx: &mut CompilationContext, expr: &Expr) -> R
         Err(LangError::ParseError {
             message: "Expected SuperMethodCall expression".to_string(),
             line: expr.line(),
+            file: None,
         })
     }
 }

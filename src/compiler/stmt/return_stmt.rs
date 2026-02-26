@@ -22,6 +22,7 @@ pub fn compile_return(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), L
         Err(LangError::ParseError {
             message: "Expected Return statement".to_string(),
             line: stmt.line(),
+            file: None,
         })
     }
 }

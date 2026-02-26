@@ -2,6 +2,16 @@
 
 use crate::common::value::Value;
 use crate::lexer::TokenKind;
+use serde::{Deserialize, Serialize};
+
+/// Компонент аннотации типа: имя типа (str, int, …) или строковый литерал ("dev", "prod").
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum TypePart {
+    /// Имя типа: str, int, null, bool, array, …
+    TypeName(String),
+    /// Конкретное строковое значение (литеральный тип): "dev", "prod"
+    LiteralStr(String),
+}
 
 #[derive(Debug, Clone)]
 pub struct CatchBlock {
@@ -15,15 +25,23 @@ pub struct CatchBlock {
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
-    pub type_annotation: Option<Vec<String>>, // Типы параметра: ["int"], ["str", "int"] для union типов
+    pub type_annotation: Option<Vec<TypePart>>, // Типы параметра: union (TypeName + LiteralStr)
     pub default_value: Option<Expr>, // None для обязательных параметров
 }
 
-/// Аргумент при вызове функции - позиционный или именованный
+/// Аргумент при вызове функции - позиционный, именованный или распаковка объекта
 #[derive(Debug, Clone)]
 pub enum Arg {
     Positional(Expr),           // Позиционный аргумент
     Named { name: String, value: Expr }, // Именованный аргумент
+    UnpackObject(Expr),         // **expr — распаковка объекта в kwargs
+}
+
+/// Элемент объектного литерала: пара ключ-значение или spread **expr
+#[derive(Debug, Clone)]
+pub enum ObjectPair {
+    KeyValue(String, Expr),
+    Spread(Expr),
 }
 
 /// Паттерн распаковки для циклов for
@@ -58,7 +76,7 @@ pub enum ImportStmt {
 #[derive(Debug, Clone)]
 pub struct ClassField {
     pub name: String,
-    pub type_annotation: Option<Vec<String>>, // Типы поля: ["int"], ["str", "int"] для union типов
+    pub type_annotation: Option<Vec<TypePart>>, // Типы поля: union (TypeName + LiteralStr)
     pub default_value: Option<Expr>, // None для полей без значения по умолчанию
 }
 
@@ -84,7 +102,7 @@ pub struct Constructor {
 pub struct Method {
     pub name: String,
     pub params: Vec<Param>,
-    pub return_type: Option<Vec<String>>, // Тип возвращаемого значения
+    pub return_type: Option<Vec<TypePart>>, // Тип возвращаемого значения
     pub body: Vec<Stmt>,
     pub line: usize,
 }
@@ -136,7 +154,7 @@ pub enum Expr {
         line: usize,
     },
     ObjectLiteral {
-        pairs: Vec<(String, Expr)>,
+        pairs: Vec<ObjectPair>,
         line: usize,
     },
     TupleLiteral {
@@ -262,7 +280,7 @@ pub enum Stmt {
     Function {
         name: String,
         params: Vec<Param>,
-        return_type: Option<Vec<String>>, // Тип возвращаемого значения (может быть union типом)
+        return_type: Option<Vec<TypePart>>, // Тип возвращаемого значения (union)
         body: Vec<Stmt>,
         is_cached: bool,
         /// Web route: (method, path) e.g. ("GET", "/") from @route("GET", "/")
@@ -328,5 +346,19 @@ impl Stmt {
             Stmt::Class { line, .. } => *line,
         }
     }
+}
+
+/// Collects module names from top-level import statements (for dependency graph).
+pub fn import_module_names_from_stmts(stmts: &[Stmt]) -> Vec<String> {
+    let mut names = Vec::new();
+    for stmt in stmts {
+        if let Stmt::Import { import_stmt, .. } = stmt {
+            match import_stmt {
+                ImportStmt::Modules(modules) => names.extend(modules.clone()),
+                ImportStmt::From { module, .. } => names.push(module.clone()),
+            }
+        }
+    }
+    names
 }
 

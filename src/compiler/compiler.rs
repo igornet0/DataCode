@@ -42,10 +42,22 @@ pub struct Compiler {
     class_constructor: std::collections::HashMap<String, (String, usize)>,
     /// Class names marked with @Abstract (so calls load class object for VM __abstract check).
     abstract_classes: std::collections::HashSet<String>,
+    /// Class name -> env_prefix from model_config (Settings subclasses). Used to pass nested_specs to load_env.
+    class_settings_env_prefix: std::collections::HashMap<String, String>,
+    /// Class name -> nested_specs Value (array) for Settings subclasses. Subclasses use parent's value when calling super.
+    class_nested_specs_value: std::collections::HashMap<String, Value>,
+    /// Class name -> default required_keys array for Settings subclasses. Used at call site for Config(path) to pass 3 args.
+    class_required_keys_value: std::collections::HashMap<String, Value>,
+    /// Source file path for error messages.
+    source_name: Option<String>,
 }
 
 impl Compiler {
     pub fn new() -> Self {
+        Self::new_with_source_name(None)
+    }
+
+    pub fn new_with_source_name(source_name: Option<&str>) -> Self {
         let mut compiler = Self {
             chunk: Chunk::new(),
             functions: Vec::new(),
@@ -64,6 +76,10 @@ impl Compiler {
             class_extends_table: std::collections::HashMap::new(),
             class_constructor: std::collections::HashMap::new(),
             abstract_classes: std::collections::HashSet::new(),
+            class_settings_env_prefix: std::collections::HashMap::new(),
+            class_nested_specs_value: std::collections::HashMap::new(),
+            class_required_keys_value: std::collections::HashMap::new(),
+            source_name: source_name.map(String::from),
         };
         compiler.register_natives();
         compiler
@@ -75,12 +91,36 @@ impl Compiler {
     }
 
     pub fn compile(&mut self, statements: &[Stmt]) -> Result<Chunk, LangError> {
+        self.chunk.set_source_name(self.source_name.as_deref());
         // Начинаем область видимости для главной функции
         self.begin_scope();
         
+        // Assign global indices to top-level functions in sorted order so module export is deterministic
+        // (same name always gets same index regardless of source order, e.g. get_settings vs load_settings).
+        let mut top_level_fn_names: Vec<String> = statements
+            .iter()
+            .filter_map(|s| if let Stmt::Function { name, .. } = s { Some(name.clone()) } else { None })
+            .collect();
+        top_level_fn_names.sort();
+        for name in &top_level_fn_names {
+            if !self.scope.globals.contains_key(name) {
+                let idx = self.scope.globals.len();
+                self.scope.globals.insert(name.clone(), idx);
+            }
+        }
+        
         // Первый проход: объявляем все функции (forward declaration), включая вложенные
         self.collect_all_functions(statements)?;
-        
+
+        // Ранний проход: объявляем глобальные переменные из top-level Let (только имена в scope/chunk),
+        // чтобы при компиляции тел функций (например get_settings) глобалы вроде "settings" уже были в scope.globals
+        // и не подменялись на UNDEFINED_GLOBAL_SENTINEL, иначе после merge байткод остаётся LoadGlobal(MAX).
+        for stmt in statements {
+            if let Stmt::Let { name, is_global: true, .. } = stmt {
+                self.declare_global_name(&name);
+            }
+        }
+
         // Второй проход: компилируем все statements (порядок детерминирован — AST/parse order, Vec).
         for (i, stmt) in statements.iter().enumerate() {
             let is_last = i == statements.len() - 1;
@@ -95,8 +135,6 @@ impl Compiler {
             
             // Загружаем функцию __main__
             if let Some(&global_index) = self.scope.globals.get("__main__") {
-                // Чтобы update_chunk_indices и VM могли сопоставить слот с __main__, записываем имя в главный chunk
-                self.chunk.global_names.insert(global_index, "__main__".to_string());
                 // Если __main__ принимает аргументы, передаем их из argv
                 if main_arity > 0 {
                     // Регистрируем argv в scope для доступа (если его там еще нет)
@@ -111,6 +149,16 @@ impl Compiler {
                         debug_println!("[DEBUG compiler] Зарегистрирован argv в scope с индексом {} и в chunk.global_names", idx);
                         idx
                     };
+                    // Индекс для загрузки __main__ должен быть строго меньше argv, иначе после update_chunk_indices
+                    // все LoadGlobal(76) станут argv и вызов подменится на "Can only call functions, got: Array".
+                    let load_main_idx = std::cmp::min(global_index, argv_global_index.saturating_sub(1));
+                    self.chunk.global_names.insert(load_main_idx, "__main__".to_string());
+                } else {
+                    self.chunk.global_names.insert(global_index, "__main__".to_string());
+                }
+                if main_arity > 0 {
+                    let argv_global_index = self.scope.globals.get("argv").copied().unwrap_or_else(|| self.scope.globals.len());
+                    let load_main_idx = std::cmp::min(global_index, argv_global_index.saturating_sub(1));
                     
                     // Загружаем аргументы из argv для каждого параметра функции
                     // Порядок важен: сначала загружаем все аргументы, потом функцию
@@ -122,8 +170,8 @@ impl Compiler {
                         // Загружаем индекс i
                         let index_const = self.chunk.add_constant(Value::Number(i as f64));
                         self.chunk.write_with_line(OpCode::Constant(index_const), self.current_line);
-                        // Сравниваем: i < len(argv) -> если false, переходим к значению по умолчанию
-                        self.chunk.write_with_line(OpCode::Less, self.current_line);
+                        // Сравниваем: i < len(argv) <=> len(argv) > i. В VM Less даёт (a < b) при pop b, pop a; стек [length, i] даёт (length < i). Нужно (i < length), поэтому эмитим Greater -> (length > i).
+                        self.chunk.write_with_line(OpCode::Greater, self.current_line);
                         
                         // Создаем метки для условного перехода
                         let default_value_label = self.labels.create_label();
@@ -153,18 +201,17 @@ impl Compiler {
                             function_default.clone()
                         } else if let Some(param_type) = main_function.param_types.get(i) {
                             // Используем значение по умолчанию в зависимости от типа
-                            if let Some(type_names) = param_type {
-                                if type_names.iter().any(|t| t == "int" || t == "float" || t == "num" || t == "number") {
-                                    // Числовой тип - используем 0
+                            if let Some(type_parts) = param_type {
+                                let has_num = type_parts.iter().any(|t| matches!(t, crate::parser::ast::TypePart::TypeName(s) if s == "int" || s == "float" || s == "num" || s == "number"));
+                                let has_str = type_parts.iter().any(|t| matches!(t, crate::parser::ast::TypePart::TypeName(s) if s == "str" || s == "string"));
+                                let has_bool = type_parts.iter().any(|t| matches!(t, crate::parser::ast::TypePart::TypeName(s) if s == "bool" || s == "boolean"));
+                                if has_num {
                                     Value::Number(0.0)
-                                } else if type_names.iter().any(|t| t == "str" || t == "string") {
-                                    // Строковый тип - используем пустую строку
+                                } else if has_str {
                                     Value::String(String::new())
-                                } else if type_names.iter().any(|t| t == "bool" || t == "boolean") {
-                                    // Булев тип - используем false
+                                } else if has_bool {
                                     Value::Bool(false)
                                 } else {
-                                    // Другие типы - используем null
                                     Value::Null
                                 }
                             } else {
@@ -186,14 +233,11 @@ impl Compiler {
                         // Преобразуем значение в нужный тип, если необходимо
                         // (для значения по умолчанию это обычно не нужно, но для argv[i] нужно)
                         if let Some(param_type) = main_function.param_types.get(i) {
-                            if let Some(type_names) = param_type {
-                                if type_names.iter().any(|t| t == "int" || t == "float" || t == "num" || t == "number") {
-                                    // Вызываем функцию int() для преобразования строки в число
-                                    // Находим индекс нативной функции int
+                            if let Some(type_parts) = param_type {
+                                let has_num = type_parts.iter().any(|t| matches!(t, crate::parser::ast::TypePart::TypeName(s) if s == "int" || s == "float" || s == "num" || s == "number"));
+                                if has_num {
                                     if let Some(&int_global_index) = self.scope.globals.get("int") {
-                                        // Загружаем функцию int
                                         self.chunk.write_with_line(OpCode::LoadGlobal(int_global_index), self.current_line);
-                                        // Вызываем int() с одним аргументом (строка на стеке)
                                         self.chunk.write_with_line(OpCode::Call(1), self.current_line);
                                     }
                                 }
@@ -202,9 +246,9 @@ impl Compiler {
                         // Значение argv[i] или значение по умолчанию (возможно преобразованное) теперь на стеке
                     }
                     
-                    // Теперь загружаем функцию на стек
+                    // Теперь загружаем функцию на стек (load_main_idx гарантированно < argv, чтобы патч не подменил на argv)
                     // На стеке: [argv[0], argv[1], ..., argv[n-1]]
-                    self.chunk.write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
+                    self.chunk.write_with_line(OpCode::LoadGlobal(load_main_idx), self.current_line);
                     // Теперь на стеке: [argv[0], argv[1], ..., argv[n-1], function]
                     // Вызываем функцию с аргументами из argv
                     self.chunk.write_with_line(OpCode::Call(main_arity), self.current_line);
@@ -242,7 +286,7 @@ impl Compiler {
                     // Объявляем функцию с правильной сигнатурой сразу
                     let arity = params.len();
                     let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
-                    let param_types: Vec<Option<Vec<String>>> = params.iter().map(|p| p.type_annotation.clone()).collect();
+                    let param_types: Vec<Option<Vec<crate::parser::ast::TypePart>>> = params.iter().map(|p| p.type_annotation.clone()).collect();
                     
                     let mut function = if *is_cached {
                         Function::with_cache(name.clone(), arity)
@@ -263,9 +307,16 @@ impl Compiler {
                     
                     self.functions.push(function);
                     self.function_names.push(name.clone());
-                    // Регистрируем функцию в глобальной таблице
-                    let global_index = self.scope.globals.len();
-                    self.scope.globals.insert(name.clone(), global_index);
+                    // Use existing global index if already assigned (e.g. top-level sorted), else assign new
+                    let global_index = if let Some(&idx) = self.scope.globals.get(name) {
+                        idx
+                    } else {
+                        let idx = self.scope.globals.len();
+                        self.scope.globals.insert(name.clone(), idx);
+                        idx
+                    };
+                    // Ensure chunk.global_names has this index (collect_all_functions runs before compile_stmt)
+                    self.chunk.global_names.insert(global_index, name.clone());
                     
                     // Рекурсивно собираем функции из тела этой функции
                     self.collect_all_functions(body)?;
@@ -308,6 +359,17 @@ impl Compiler {
         Ok(())
     }
 
+    /// Объявляет имя глобальной переменной в scope и chunk (без генерации байткода).
+    /// Используется ранним проходом, чтобы глобалы вроде `settings` были видны при компиляции тел функций.
+    fn declare_global_name(&mut self, name: &str) {
+        if self.scope.globals.contains_key(name) {
+            return;
+        }
+        let idx = self.scope.globals.len();
+        self.scope.globals.insert(name.to_string(), idx);
+        self.chunk.global_names.insert(idx, name.to_string());
+    }
+
     pub fn get_functions(self) -> Vec<Function> {
         self.functions
     }
@@ -341,10 +403,14 @@ impl Compiler {
             class_extends_table: &mut self.class_extends_table,
             class_constructor: &mut self.class_constructor,
             abstract_classes: &mut self.abstract_classes,
+            class_settings_env_prefix: &mut self.class_settings_env_prefix,
+            class_nested_specs_value: &mut self.class_nested_specs_value,
+            class_required_keys_value: &mut self.class_required_keys_value,
             current_class: None,
             current_superclass: None,
             in_constructor: false,
             constructor_this_slot: None,
+            source_name: self.source_name.as_deref(),
         }
     }
 
@@ -758,6 +824,7 @@ impl Compiler {
                     .ok_or_else(|| LangError::ParseError {
                         message: format!("Function '{}' not found in forward declarations", name),
                         line: *line,
+                        file: None,
                     })?;
                 
                 // Получаем функцию и обновляем количество параметров и флаг кэширования
@@ -768,9 +835,9 @@ impl Compiler {
                     function.route_method = Some(method.clone());
                     function.route_path = Some(path.clone());
                 }
-                function.param_types = params.iter().map(|p| p.type_annotation.clone()).collect();
+                function.param_types = params.iter().map(|p| p.type_annotation.clone()).collect::<Vec<_>>();
                 function.return_type = return_type.clone();
-                
+
                 // Сохраняем имена параметров и вычисляем значения по умолчанию
                 let mut param_names = Vec::new();
                 let mut default_values = Vec::new();
@@ -793,6 +860,7 @@ impl Compiler {
                                         param.name
                                     ),
                                     line: default_expr.line(),
+                                    file: None,
                                 });
                             }
                             Err(e) => {
@@ -826,6 +894,7 @@ impl Compiler {
                 
                 // Компилируем тело функции в chunk функции
                 let saved_chunk = std::mem::replace(&mut self.chunk, function.chunk.clone());
+                self.chunk.set_source_name(self.source_name.as_deref());
                 let saved_exception_handlers = self.exception_handlers.clone();
                 let saved_error_type_table = self.error_type_table.clone();
                 let saved_function = self.current_function;
@@ -882,6 +951,7 @@ impl Compiler {
                         return Err(LangError::ParseError {
                             message: format!("Captured variable '{}' not found in parent scopes", var_name),
                             line: *line,
+                            file: None,
                         });
                     }
                     
@@ -964,6 +1034,7 @@ impl Compiler {
                     return Err(LangError::ParseError {
                         message: "break statement outside of loop".to_string(),
                         line: *line,
+                        file: None,
                     });
                 }
                 let loop_ctx = self.loop_contexts.last().unwrap();
@@ -979,6 +1050,7 @@ impl Compiler {
                     return Err(LangError::ParseError {
                         message: "continue statement outside of loop".to_string(),
                         line: *line,
+                        file: None,
                     });
                 }
                 // Jump к метке continue
@@ -1013,7 +1085,7 @@ impl Compiler {
         function_info: Option<(usize, &Function)>,
         line: usize,
     ) -> Result<Vec<Arg>, LangError> {
-        args::resolve_function_args(function_name, args, function_info, line)
+        args::resolve_function_args(function_name, args, function_info, line, self.source_name.as_deref())
     }
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), LangError> {
@@ -1184,6 +1256,7 @@ impl Compiler {
                             return Err(LangError::ParseError {
                                 message: format!("Unknown assignment operator: {:?}", op),
                                 line: *line,
+                                file: None,
                             });
                         }
                     }
@@ -1229,6 +1302,7 @@ impl Compiler {
                             return Err(LangError::ParseError {
                                 message: format!("Unknown assignment operator: {:?}", op),
                                 line: *line,
+                                file: None,
                             });
                         }
                     }
@@ -1271,6 +1345,7 @@ impl Compiler {
                             return Err(LangError::ParseError {
                                 message: format!("Unknown assignment operator: {:?}", op),
                                 line: *line,
+                                file: None,
                             });
                         }
                     }
@@ -1318,6 +1393,7 @@ impl Compiler {
                             return Err(LangError::ParseError {
                                 message: format!("Unknown assignment operator: {:?}", op),
                                 line: *line,
+                                file: None,
                             });
                         }
                     }
@@ -1362,6 +1438,7 @@ impl Compiler {
                         return Err(LangError::ParseError {
                             message: format!("Unknown unary operator: {:?}", op),
                             line: *line,
+                            file: None,
                         });
                     }
                 }
@@ -1399,6 +1476,7 @@ impl Compiler {
                             return Err(LangError::ParseError {
                                 message: format!("Unknown binary operator: {:?}", op),
                                 line: *line,
+                                file: None,
                             });
                         }
                     }
@@ -1428,6 +1506,7 @@ impl Compiler {
                                 line: match &resolved_args[1] {
                                     Arg::Positional(e) => e.line(),
                                     Arg::Named { value, .. } => value.line(),
+                                    Arg::UnpackObject(e) => e.line(),
                                 },
                             });
                         }
@@ -1454,6 +1533,9 @@ impl Compiler {
                     None
                 };
                 
+                let is_single_unpack = processed_args.len() == 1
+                    && matches!(&processed_args[0], Arg::UnpackObject(_));
+                
                 // Компилируем аргументы на стек
                 for arg in &processed_args {
                     match arg {
@@ -1461,8 +1543,10 @@ impl Compiler {
                             self.compile_expr(expr)?;
                         }
                         Arg::Named { value, .. } => {
-                            // Именованные аргументы уже разрешены в позиционные
                             self.compile_expr(value)?;
+                        }
+                        Arg::UnpackObject(expr) => {
+                            self.compile_expr(expr)?;
                         }
                     }
                 }
@@ -1494,8 +1578,12 @@ impl Compiler {
                     self.chunk.write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
                 }
                 
-                // Вызываем функцию с количеством аргументов
-                self.chunk.write_with_line(OpCode::Call(processed_args.len()), *line);
+                // Вызываем функцию: при единственном **obj — CallWithUnpack(1)
+                if is_single_unpack {
+                    self.chunk.write_with_line(OpCode::CallWithUnpack(1), *line);
+                } else {
+                    self.chunk.write_with_line(OpCode::Call(processed_args.len()), *line);
+                }
                 
                 // Если нужно присвоить результат обратно в переменную
                 if let Some(var_name) = var_name_to_assign {
@@ -1545,18 +1633,43 @@ impl Compiler {
                 self.chunk.write_with_line(OpCode::MakeTuple(arity), *line);
             }
             Expr::ObjectLiteral { pairs, line } => {
-                // Компилируем пары (ключ, значение) в обратном порядке
-                // На стеке будут: [key1, value1, key2, value2, ...]
-                for (key, value) in pairs.iter().rev() {
-                    // Сначала добавляем ключ как строку
-                    let key_index = self.chunk.add_constant(Value::String(key.clone()));
-                    self.chunk.write_with_line(OpCode::Constant(key_index), *line);
-                    // Затем компилируем значение
-                    self.compile_expr(value)?;
+                use crate::parser::ast::ObjectPair;
+                let has_spread = pairs.iter().any(|p| matches!(p, ObjectPair::Spread(_)));
+                if !has_spread {
+                    for p in pairs.iter().rev() {
+                        if let ObjectPair::KeyValue(key, value) = p {
+                            let key_index = self.chunk.add_constant(Value::String(key.clone()));
+                            self.chunk.write_with_line(OpCode::Constant(key_index), *line);
+                            self.compile_expr(value)?;
+                        }
+                    }
+                    self.chunk.write_with_line(OpCode::MakeObject(pairs.len()), *line);
+                } else {
+                    let count_slot = self.declare_local("__object_pair_count");
+                    let zero_index = self.chunk.add_constant(Value::Number(0.0));
+                    self.chunk.write_with_line(OpCode::Constant(zero_index), *line);
+                    self.chunk.write_with_line(OpCode::StoreLocal(count_slot), *line);
+                    for p in pairs {
+                        match p {
+                            ObjectPair::KeyValue(key, value) => {
+                                let key_index = self.chunk.add_constant(Value::String(key.clone()));
+                                self.chunk.write_with_line(OpCode::Constant(key_index), *line);
+                                self.compile_expr(value)?;
+                                self.chunk.write_with_line(OpCode::LoadLocal(count_slot), *line);
+                                let one_index = self.chunk.add_constant(Value::Number(1.0));
+                                self.chunk.write_with_line(OpCode::Constant(one_index), *line);
+                                self.chunk.write_with_line(OpCode::Add, *line);
+                                self.chunk.write_with_line(OpCode::StoreLocal(count_slot), *line);
+                            }
+                            ObjectPair::Spread(expr) => {
+                                self.compile_expr(expr)?;
+                                self.chunk.write_with_line(OpCode::UnpackObject(count_slot), *line);
+                            }
+                        }
+                    }
+                    self.chunk.write_with_line(OpCode::LoadLocal(count_slot), *line);
+                    self.chunk.write_with_line(OpCode::MakeObjectDynamic, *line);
                 }
-                // Создаем объект из пар на стеке
-                let pair_count = pairs.len();
-                self.chunk.write_with_line(OpCode::MakeObject(pair_count), *line);
             }
             Expr::ArrayIndex { array, index, line } => {
                 // Компилируем выражение массива (оно должно быть на стеке первым)
@@ -1610,6 +1723,7 @@ impl Compiler {
                         return Err(LangError::ParseError {
                             message: "clone() method takes no arguments".to_string(),
                             line: *line,
+                            file: None,
                         });
                     }
                     // Используем специальный opcode для клонирования
@@ -1623,6 +1737,7 @@ impl Compiler {
                         return Err(LangError::ParseError {
                             message: format!("suffixes() method expects 2 arguments (left_suffix, right_suffix), got {}", args.len()),
                             line: *line,
+                            file: None,
                         });
                     }
                     
@@ -1635,6 +1750,7 @@ impl Compiler {
                         match arg {
                             Arg::Positional(expr) => self.compile_expr(expr)?,
                             Arg::Named { value, .. } => self.compile_expr(value)?,
+                            Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                         }
                     }
                     
@@ -1666,6 +1782,7 @@ impl Compiler {
                             match arg {
                                 Arg::Positional(expr) => self.compile_expr(expr)?,
                                 Arg::Named { value, .. } => self.compile_expr(value)?,
+                                Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                             }
                         }
                         
@@ -1677,6 +1794,7 @@ impl Compiler {
                         return Err(LangError::ParseError {
                             message: "Function 'table_suffixes' not found".to_string(),
                             line: *line,
+                            file: None,
                         });
                     }
                 } else if matches!(method.as_str(), "inner_join" | "left_join" | "right_join" | "full_join" | 
@@ -1693,6 +1811,7 @@ impl Compiler {
                         match arg {
                             Arg::Positional(expr) => self.compile_expr(expr)?,
                             Arg::Named { value, .. } => self.compile_expr(value)?,
+                            Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                         }
                     }
                     
@@ -1733,6 +1852,7 @@ impl Compiler {
                             match arg {
                                 Arg::Positional(expr) => self.compile_expr(expr)?,
                                 Arg::Named { value, .. } => self.compile_expr(value)?,
+                                Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                             }
                         }
                         
@@ -1748,6 +1868,7 @@ impl Compiler {
                         return Err(LangError::ParseError {
                             message: format!("Function '{}' not found", function_name),
                             line: *line,
+                            file: None,
                         });
                     }
                 } else {
@@ -1787,6 +1908,7 @@ impl Compiler {
                             return Err(LangError::ParseError {
                                 message: format!("Unknown NeuralNetwork method: {}", method),
                                 line: *line,
+                                file: None,
                             });
                         };
                         
@@ -1796,6 +1918,7 @@ impl Compiler {
                                 return Err(LangError::ParseError {
                                     message: "get_device() takes no arguments".to_string(),
                                     line: *line,
+                                    file: None,
                                 });
                             }
                             0
@@ -1810,6 +1933,7 @@ impl Compiler {
                                 match arg {
                                     Arg::Positional(expr) => self.compile_expr(expr)?,
                                     Arg::Named { value, .. } => self.compile_expr(value)?,
+                                    Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                                 }
                             }
                             // Всего аргументов: 1 receiver + (len-1); Call(arity) ожидает arity = это число, т.е. actual_arg_count + 1 = len, значит actual_arg_count = len - 1
@@ -1825,6 +1949,7 @@ impl Compiler {
                                 match arg {
                                     Arg::Positional(expr) => self.compile_expr(expr)?,
                                     Arg::Named { value, .. } => self.compile_expr(value)?,
+                                    Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                                 }
                             }
                             resolved_args.len() - 1
@@ -1835,12 +1960,14 @@ impl Compiler {
                                 return Err(LangError::ParseError {
                                     message: format!("{}() takes exactly 1 argument", method),
                                     line: *line,
+                                    file: None,
                                 });
                             }
                             for arg in args {
                                 match arg {
                                     Arg::Positional(expr) => self.compile_expr(expr)?,
                                     Arg::Named { value, .. } => self.compile_expr(value)?,
+                                    Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                                 }
                             }
                             args.len()
@@ -1861,6 +1988,7 @@ impl Compiler {
                             return Err(LangError::ParseError {
                                 message: "ml module not found".to_string(),
                                 line: *line,
+                                file: None,
                             });
                         }
                     } else if is_axis_method {
@@ -1869,6 +1997,7 @@ impl Compiler {
                             match arg {
                                 Arg::Positional(expr) => self.compile_expr(expr)?,
                                 Arg::Named { value, .. } => self.compile_expr(value)?,
+                                Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                             }
                         }
                         // Теперь на стеке: [arg_n, ..., arg_1]
@@ -1887,6 +2016,7 @@ impl Compiler {
                             match arg {
                                 Arg::Positional(expr) => self.compile_expr(expr)?,
                                 Arg::Named { value, .. } => self.compile_expr(value)?,
+                                Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                             }
                         }
                         // Теперь на стеке: [object, arg_1, ..., arg_n]
@@ -1910,6 +2040,7 @@ impl Compiler {
                             return Err(LangError::ParseError {
                                 message: format!("layer.{}() takes no arguments", method),
                                 line: *line,
+                                file: None,
                             });
                         }
                         
@@ -1947,6 +2078,7 @@ impl Compiler {
                                         args.iter().map(|a| match a {
                                             Arg::Positional(e) => Arg::Positional(e.clone()),
                                             Arg::Named { value, .. } => Arg::Positional(value.clone()),
+                                            Arg::UnpackObject(e) => Arg::Positional(e.clone()),
                                         }).collect()
                                     } else {
                                         return Err(e);
@@ -1958,12 +2090,8 @@ impl Compiler {
                             for arg in &resolved_args {
                                 match arg {
                                     Arg::Positional(expr) => self.compile_expr(expr)?,
-                                    Arg::Named { .. } => {
-                                        return Err(LangError::ParseError {
-                                            message: format!("Unexpected named argument in resolved args for method '{}'", method),
-                                            line: *line,
-                                        });
-                                    }
+                                    Arg::Named { value, .. } => self.compile_expr(value)?,
+                                    Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                                 }
                             }
                             // Теперь на стеке: [arg_n, ..., arg_1]

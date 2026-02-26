@@ -15,6 +15,7 @@ pub fn compile_literal(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), 
         Err(LangError::ParseError {
             message: "Expected Literal expression".to_string(),
             line: expr.line(),
+            file: None,
         })
     }
 }

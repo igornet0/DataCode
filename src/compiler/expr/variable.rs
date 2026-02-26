@@ -24,7 +24,9 @@ pub fn compile_variable(ctx: &mut CompilationContext, expr: &Expr) -> Result<(),
         } else {
             // Неизвестная переменная — откладываем до runtime (VM выбросит, try/catch перехватит)
             // Используем sentinel, чтобы LoadGlobal всегда вызывал ошибку (index >= globals.len())
+            // Имя в chunk.global_names нужно для update_chunk_indices_from_names при merge модулей.
             ctx.scope.globals.insert(name.clone(), UNDEFINED_GLOBAL_SENTINEL);
+            ctx.chunk.global_names.insert(UNDEFINED_GLOBAL_SENTINEL, name.clone());
             ctx.chunk.write_with_line(OpCode::LoadGlobal(UNDEFINED_GLOBAL_SENTINEL), *line);
         }
         Ok(())
@@ -32,6 +34,7 @@ pub fn compile_variable(ctx: &mut CompilationContext, expr: &Expr) -> Result<(),
         Err(LangError::ParseError {
             message: "Expected Variable expression".to_string(),
             line: expr.line(),
+            file: None,
         })
     }
 }

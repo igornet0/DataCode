@@ -231,6 +231,16 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "x_val".to_string(),
             "y_val".to_string(),
         ]),
+
+        // settings_env.Config(...) / Settings.config(...) — config dict for load_env
+        "Config" | "config" => Some(vec![
+            "env_prefix".to_string(),
+            "extra".to_string(),
+            "env_file".to_string(),
+            "env_file_encoding".to_string(),
+            "case_sensitive".to_string(),
+            "env_nested_delimiter".to_string(),
+        ]),
         
         // settings_env.Field(...) — full Pydantic-style field descriptor
         "Field" => Some(vec![

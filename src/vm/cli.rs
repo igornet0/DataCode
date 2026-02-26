@@ -34,7 +34,9 @@ pub struct FileExecutionConfig {
     pub debug: bool,
     /// When true, run in main thread without GUI event loop (script output visible; no plot windows)
     pub no_gui: bool,
-    pub script_args: Vec<String>, // Аргументы для передачи в скрипт (после имени файла)
+    pub script_args: Vec<String>, // Аргументы для передачи в скрипт (позиционные + из --имя=значение по первому параметру __main__)
+    /// Полная командная строка для извлечения опций вида --X=value по имени первого параметра __main__.
+    pub raw_args: Vec<String>,
 }
 
 /// Parsed CLI arguments
@@ -55,6 +57,7 @@ pub fn print_help() {
     println!("Usage:");
     println!("  datacode                   # Start interactive REPL (default)");
     println!("  datacode main.dc           # Execute DataCode file");
+    println!("  datacode main.dc --<param>=value  # fn __main__(param, ...) → --param=value adds to argv");
     println!("  datacode main.dc --build_model  # Execute and export tables to SQLite");
     println!("  datacode main.dc --build_model output.db  # Export to specific file");
     println!("  datacode main.dc --no-gui       # Run in main thread (script output visible, no plot windows)");
@@ -65,8 +68,8 @@ pub fn print_help() {
     println!();
     println!("File Execution:");
     println!("  • Create files with .dc extension");
-    println!("  • Write DataCode programs in files");
-    println!("  • Execute with: datacode filename.dc");
+    println!("  • Execute: datacode filename.dc  [arg1 arg2 ...]  [--<name>=value] [--debug]");
+    println!("  • argv = values from --<first __main__ param>=value (e.g. fn __main__(env, ...) → --env=prod) + positional");
     println!();
     println!("Path resolution (--base-dir):");
     println!("  • Relative script path (e.g. src/main.dc) is resolved from current working directory (CWD).");
@@ -131,6 +134,33 @@ pub fn print_help() {
 /// Print version
 pub fn print_version() {
     println!("DataCode v{}", VERSION);
+}
+
+/// Собирает значения опций вида --param_name и --param_name=value из полного argv.
+/// Используется для передачи в скрипт по имени первого параметра fn __main__(param_name, ...).
+pub fn extract_param_args(args: &[String], param_name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let prefix_eq = format!("--{}=", param_name);
+    let flag = format!("--{}", param_name);
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == &flag {
+            if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                out.push(args[i + 1].clone());
+                i += 2;
+            } else {
+                i += 1;
+            }
+        } else if arg.starts_with(&prefix_eq) {
+            let value = arg.strip_prefix(&prefix_eq).unwrap_or("").to_string();
+            out.push(value);
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    out
 }
 
 /// Parse --build_model, --debug, --no-gui, --base-dir and script args from a slice.
@@ -347,6 +377,7 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
                             debug,
                             no_gui,
                             script_args,
+                            raw_args: args.clone(),
                         }));
                     }
                     return Err(format!("Неизвестная опция: {}\nИспользуйте --help для справки", arg));
@@ -381,6 +412,7 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
             debug,
             no_gui,
             script_args,
+            raw_args: args.clone(),
         }))
     } else {
         // REPL mode (interactive)

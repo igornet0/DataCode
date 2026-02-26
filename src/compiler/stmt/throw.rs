@@ -18,6 +18,7 @@ pub fn compile_throw(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
         Err(LangError::ParseError {
             message: "Expected Throw statement".to_string(),
             line: stmt.line(),
+            file: None,
         })
     }
 }

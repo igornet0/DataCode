@@ -12,11 +12,13 @@ pub fn resolve_function_args(
     args: &[Arg],
     function_info: Option<(usize, &crate::bytecode::Function)>,
     line: usize,
+    file: Option<&str>,
 ) -> Result<Vec<Arg>, LangError> {
+    let file_owned = file.map(String::from);
     // Если это встроенная функция, проверяем, поддерживает ли она именованные аргументы
     if function_info.is_none() {
         // Проверяем, есть ли именованные аргументы
-        let has_named = args.iter().any(|a| matches!(a, Arg::Named { .. }));
+        let has_named = args.iter().any(|a| matches!(a, Arg::Named { .. } | Arg::UnpackObject(_)));
         
         if has_named {
             // Проверяем, поддерживает ли эта нативная функция именованные аргументы
@@ -46,6 +48,22 @@ pub fn resolve_function_args(
                                         function_name, param_names.len() - start_position, positional_count + 1
                                     ),
                                     line,
+                                    file: file_owned.clone(),
+                                });
+                            }
+                            resolved[target_position] = Some(Arg::Positional(expr.clone()));
+                            positional_count += 1;
+                        }
+                        Arg::UnpackObject(expr) => {
+                            let target_position = start_position + positional_count;
+                            if target_position >= param_names.len() {
+                                return Err(LangError::ParseError {
+                                    message: format!(
+                                        "Function '{}' takes at most {} arguments but {} arguments were provided",
+                                        function_name, param_names.len() - start_position, positional_count + 1
+                                    ),
+                                    line,
+                                    file: file_owned.clone(),
                                 });
                             }
                             resolved[target_position] = Some(Arg::Positional(expr.clone()));
@@ -61,6 +79,7 @@ pub fn resolve_function_args(
                                             function_name, name
                                         ),
                                         line,
+                                        file: file_owned.clone(),
                                     });
                                 }
                                 resolved[param_index] = Some(Arg::Named {
@@ -74,6 +93,7 @@ pub fn resolve_function_args(
                                         function_name, name
                                     ),
                                     line,
+                                    file: file_owned.clone(),
                                 });
                             }
                         }
@@ -89,6 +109,7 @@ pub fn resolve_function_args(
                         Some(arg) => match arg {
                             Arg::Positional(expr) => final_args.push(Arg::Positional(expr)),
                             Arg::Named { value, .. } => final_args.push(Arg::Positional(value)),
+                            Arg::UnpackObject(_) => unreachable!(),
                         },
                         None => {
                             final_args.push(Arg::Positional(Expr::Literal {
@@ -108,6 +129,7 @@ pub fn resolve_function_args(
                         function_name
                     ),
                     line,
+                    file: file_owned.clone(),
                 });
             }
         } else {
@@ -115,6 +137,7 @@ pub fn resolve_function_args(
             return Ok(args.iter().map(|a| match a {
                 Arg::Positional(e) => Arg::Positional(e.clone()),
                 Arg::Named { .. } => unreachable!(),
+                Arg::UnpackObject(e) => Arg::Positional(e.clone()),
             }).collect());
         }
     }
@@ -122,6 +145,13 @@ pub fn resolve_function_args(
     let (_, function) = function_info.unwrap();
     let param_names = &function.param_names;
     let default_values = &function.default_values;
+    
+    // Единственный аргумент **obj — распаковка в kwargs; ключи объекта проверяются в runtime.
+    if args.len() == 1 {
+        if let Arg::UnpackObject(expr) = &args[0] {
+            return Ok(vec![Arg::UnpackObject(expr.clone())]);
+        }
+    }
     
     // Создаем массив для разрешенных аргументов
     let mut resolved = vec![None; param_names.len()];
@@ -138,6 +168,21 @@ pub fn resolve_function_args(
                             function_name, param_names.len(), positional_count + 1
                         ),
                         line,
+                        file: file_owned.clone(),
+                    });
+                }
+                resolved[positional_count] = Some(Arg::Positional(expr.clone()));
+                positional_count += 1;
+            }
+            Arg::UnpackObject(expr) => {
+                if positional_count >= param_names.len() {
+                    return Err(LangError::ParseError {
+                        message: format!(
+                            "Function '{}' takes {} arguments but {} arguments were provided",
+                            function_name, param_names.len(), positional_count + 1
+                        ),
+                        line,
+                        file: file_owned.clone(),
                     });
                 }
                 resolved[positional_count] = Some(Arg::Positional(expr.clone()));
@@ -153,6 +198,7 @@ pub fn resolve_function_args(
                                 function_name, name
                             ),
                             line,
+                            file: file_owned.clone(),
                         });
                     }
                     resolved[param_index] = Some(Arg::Named {
@@ -166,6 +212,7 @@ pub fn resolve_function_args(
                             function_name, name
                         ),
                         line,
+                        file: file_owned.clone(),
                     });
                 }
             }
@@ -176,7 +223,6 @@ pub fn resolve_function_args(
     let mut final_args = Vec::new();
     for (i, param_name) in param_names.iter().enumerate() {
         if let Some(arg) = resolved[i].take() {
-            // Аргумент был предоставлен
             match arg {
                 Arg::Positional(expr) => {
                     final_args.push(Arg::Positional(expr));
@@ -184,6 +230,7 @@ pub fn resolve_function_args(
                 Arg::Named { value, .. } => {
                     final_args.push(Arg::Positional(value));
                 }
+                Arg::UnpackObject(_) => unreachable!(),
             }
         } else {
             // Аргумент не был предоставлен - используем значение по умолчанию
@@ -202,6 +249,7 @@ pub fn resolve_function_args(
                         function_name, param_name
                     ),
                     line,
+                    file: file_owned.clone(),
                 });
             }
         }

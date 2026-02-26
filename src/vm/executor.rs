@@ -22,7 +22,7 @@ use std::cell::RefCell;
 use std::fmt::Write;
 
 /// Deterministic global slot by name (min index when multiple; stable across HashMap iteration).
-fn global_index_by_name(global_names: &std::collections::HashMap<usize, String>, name: &str) -> Option<usize> {
+fn global_index_by_name(global_names: &std::collections::BTreeMap<usize, String>, name: &str) -> Option<usize> {
     global_names
         .iter()
         .filter(|(_, n)| n.as_str() == name)
@@ -30,11 +30,22 @@ fn global_index_by_name(global_names: &std::collections::HashMap<usize, String>,
         .min()
 }
 
+/// All global slot indices for a name (for updating every binding of the same name on import).
+fn global_indices_by_name(global_names: &std::collections::BTreeMap<usize, String>, name: &str) -> Vec<usize> {
+    let mut indices: Vec<usize> = global_names
+        .iter()
+        .filter(|(_, n)| n.as_str() == name)
+        .map(|(idx, _)| *idx)
+        .collect();
+    indices.sort_unstable();
+    indices
+}
+
 /// Returns [class_name, superclass, ...] for VM protected access checks (uses load_value for Object).
 /// Stops at cycle or missing __superclass to avoid infinite loop.
 fn get_superclass_chain(
     globals: &mut [GlobalSlot],
-    global_names: &std::collections::HashMap<usize, String>,
+    global_names: &std::collections::BTreeMap<usize, String>,
     class_name: &str,
     store: &mut ValueStore,
     heap: &HeavyStore,
@@ -110,9 +121,9 @@ pub fn execute_instruction(
     stack: &mut Vec<TaggedValue>,
     frames: &mut Vec<CallFrame>,
     globals: &mut Vec<GlobalSlot>,
-    global_names: &mut std::collections::HashMap<usize, String>,
-    explicit_global_names: &std::collections::HashMap<usize, String>,
-    functions: &[crate::bytecode::Function],
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    explicit_global_names: &std::collections::BTreeMap<usize, String>,
+    functions: &mut Vec<crate::bytecode::Function>,
     natives: &mut Vec<fn(&[Value]) -> Value>,
     exception_handlers: &mut Vec<ExceptionHandler>,
     error_type_table: &mut Vec<String>,
@@ -197,15 +208,23 @@ pub fn execute_instruction(
                     }
                     let base_path = unsafe { (*vm_ptr).get_base_path() }.or_else(crate::vm::file_import::get_base_path);
                     let load_dc_err = if let Some(ref base_path) = base_path {
-                        match crate::vm::file_import::load_local_module_with_vm(&module_name, base_path) {
-                            Ok((module_object, module_vm)) => {
-                                let start_function_index = unsafe {
-                                    let vm_ref = &mut *vm_ptr;
-                                    vm_ref.add_functions(module_vm.get_functions().clone())
-                                };
-                                if let Value::Object(module_obj_rc) = &module_object {
-                                    let mut module_obj = module_obj_rc.borrow_mut();
-                                    module_obj.insert("__start_function_index".to_string(), Value::Number(start_function_index as f64));
+                        match crate::vm::file_import::load_local_module_with_vm(&module_name, base_path, unsafe { &mut *vm_ptr }) {
+                            Ok((module_object, opt_vm)) => {
+                                if let Some(module_vm) = opt_vm {
+                                    let start_function_index = unsafe {
+                                        let vm_ref = &mut *vm_ptr;
+                                        vm_ref.add_functions(module_vm.get_functions().clone())
+                                    };
+                                    if let Value::Object(module_obj_rc) = &module_object {
+                                        let mut module_obj = module_obj_rc.borrow_mut();
+                                        module_obj.insert("__start_function_index".to_string(), Value::Number(start_function_index as f64));
+                                        // Patch exported function indices so mymod.one() calls the right function in the main VM
+                                        for (_, v) in module_obj.iter_mut() {
+                                            if let Value::Function(i) = v {
+                                                *v = Value::Function(start_function_index + *i);
+                                            }
+                                        }
+                                    }
                                 }
                                 let id = store_value(module_object, value_store, heavy_store);
                                 if let Some(idx) = global_index_by_name(global_names, &module_name) {
@@ -247,9 +266,9 @@ pub fn execute_instruction(
                             format!("Module '{}' not found (built-in, .dc file, or native module)", module_name),
                             line,
                         ),
-                        |e| LangError::runtime_error(
-                            format!("Failed to load module '{}': {}", module_name, e),
-                            line,
+                        |e| LangError::runtime_error_with_source(
+                            format!("Failed to load module '{}'", module_name),
+                            e,
                         ),
                     ));
                 }
@@ -294,61 +313,270 @@ pub fn execute_instruction(
                             use crate::vm::file_import;
                             let base_path = unsafe { (*vm_ptr).get_base_path() }.or_else(file_import::get_base_path);
                             if let Some(ref base_path) = base_path {
-                                match file_import::load_local_module_with_vm(&module_name, base_path) {
-                                    Ok((module_object, module_vm)) => {
+                                match file_import::load_local_module_with_vm(&module_name, base_path, unsafe { &mut *vm_ptr }) {
+                                    Ok((module_object, opt_vm)) => {
                                         debug_println!("[DEBUG ImportFrom] Загружен модуль '{}'", module_name);
-                                        debug_println!("[DEBUG ImportFrom] Функций в модуле: {}", module_vm.get_functions().len());
-                                        
-                                        // Сливаем функции и глобалы модуля в main VM (merge_globals_from добавляет функции и обновляет индексы в глобалах)
-                                        let start_function_index = unsafe {
-                                            let vm_ref = &mut *vm_ptr;
-                                            let start_idx = vm_ref.functions_count();
-                                            debug_println!("[DEBUG ImportFrom] Начальный индекс функций в основном VM: {}", start_idx);
-                                            vm_ref.merge_globals_from(&module_vm);
-                                            let added_count = vm_ref.functions_count() - start_idx;
-                                            debug_println!("[DEBUG ImportFrom] Добавлено функций: {}, начальный индекс: {}", added_count, start_idx);
-                                            // Обновляем LoadGlobal/StoreGlobal в байткоде добавленных функций на индексы main VM
-                                            let global_names = vm_ref.get_global_names().clone();
-                                            let end = vm_ref.functions_count();
-                                            for i in start_idx..end {
+                                        if let Some(ref module_vm) = opt_vm {
+                                            // Use only passed-in globals/global_names/functions/natives/store/heap to avoid double mutable borrow of VM.
+                                            let start_idx = functions.len();
+                                            debug_println!("[DEBUG ImportFrom] Функций в модуле: {}, start_idx: {}", module_vm.get_functions().len(), start_idx);
+                                            crate::vm::vm::Vm::merge_globals_from_into(
+                                                module_vm,
+                                                globals,
+                                                global_names,
+                                                functions,
+                                                natives,
+                                                value_store,
+                                                heavy_store,
+                                            );
+                                            if let Value::Object(module_obj_rc) = &module_object {
+                                                let mut module_obj = module_obj_rc.borrow_mut();
+                                                module_obj.insert("__start_function_index".to_string(), Value::Number(start_idx as f64));
+                                            }
+                                            crate::vm::vm::Vm::merge_module_exports_into_globals_into(
+                                                &module_object,
+                                                globals,
+                                                global_names,
+                                                value_store,
+                                                heavy_store,
+                                            );
+                                            // If "settings" or class names (e.g. DevSettings) are still missing, add from module_object with remapped Function/Object.
+                                            if let Value::Object(module_obj_rc) = &module_object {
+                                                let module_obj = module_obj_rc.borrow();
+                                                let start_fn = module_obj.get("__start_function_index")
+                                                    .and_then(|v| if let Value::Number(s) = v { Some(*s as usize) } else { None })
+                                                    .unwrap_or(0);
+                                                let mut missing: Vec<(String, Value)> = module_obj.iter()
+                                                    .filter(|(name, _)| *name != "__start_function_index" && *name != "argv")
+                                                    .filter(|(name, _)| !global_names.values().any(|n| n == *name))
+                                                    .map(|(k, v)| {
+                                                        let val = match v {
+                                                            Value::Function(fn_idx) => Value::Function(start_fn + fn_idx),
+                                                            Value::Object(obj_rc) => {
+                                                                let obj = obj_rc.borrow();
+                                                                let mut new_obj = std::collections::HashMap::new();
+                                                                for (key, inner) in obj.iter() {
+                                                                    let updated = match inner {
+                                                                        Value::Function(i) => Value::Function(start_fn + i),
+                                                                        _ => inner.clone(),
+                                                                    };
+                                                                    new_obj.insert(key.clone(), updated);
+                                                                }
+                                                                Value::Object(Rc::new(RefCell::new(new_obj)))
+                                                            }
+                                                            _ => v.clone(),
+                                                        };
+                                                        (k.clone(), val)
+                                                    })
+                                                    .collect();
+                                                missing.sort_by(|a, b| a.0.cmp(&b.0));
+                                                drop(module_obj);
+                                                for (name, value_to_store) in missing {
+                                                    let id = crate::vm::store_convert::store_value_arena(value_to_store, value_store, heavy_store);
+                                                    let new_idx = globals.len();
+                                                    globals.push(GlobalSlot::Heap(id));
+                                                    global_names.insert(new_idx, name);
+                                                }
+                                            }
+                                            // Fill null slot for class names from module_object (remap inner Function indices); use min index so it matches update_chunk_indices.
+                                            if let Value::Object(module_obj_rc) = &module_object {
+                                                let module_obj = module_obj_rc.borrow();
+                                                let start_fn = module_obj.get("__start_function_index")
+                                                    .and_then(|v| if let Value::Number(s) = v { Some(*s as usize) } else { None })
+                                                    .unwrap_or(0);
+                                                for name in module_obj.keys() {
+                                                    if name == "__start_function_index" || name == "argv" { continue; }
+                                                    let value = match module_obj.get(name) { Some(v) => v.clone(), None => continue };
+                                                    if !matches!(&value, Value::Object(_)) { continue; }
+                                                    let idx = global_names.iter()
+                                                        .filter(|(_, n)| n.as_str() == name.as_str())
+                                                        .map(|(i, _)| *i)
+                                                        .min();
+                                                    if let Some(idx) = idx {
+                                                        if idx >= globals.len() { continue; }
+                                                        let id = globals[idx].resolve_to_value_id(value_store);
+                                                        let current = crate::vm::store_convert::load_value(id, value_store, heavy_store);
+                                                        if !matches!(current, Value::Null) { continue; }
+                                                        let value_to_store = match &value {
+                                                            Value::Object(obj_rc) => {
+                                                                let obj = obj_rc.borrow();
+                                                                let mut new_obj = std::collections::HashMap::new();
+                                                                for (k, inner) in obj.iter() {
+                                                                    let updated = match inner {
+                                                                        Value::Function(i) => Value::Function(start_fn + i),
+                                                                        _ => inner.clone(),
+                                                                    };
+                                                                    new_obj.insert(k.clone(), updated);
+                                                                }
+                                                                Value::Object(Rc::new(RefCell::new(new_obj)))
+                                                            }
+                                                            _ => continue,
+                                                        };
+                                                        let slot_id = crate::vm::store_convert::store_value_arena(value_to_store, value_store, heavy_store);
+                                                        globals[idx] = GlobalSlot::Heap(slot_id);
+                                                    }
+                                                }
+                                            }
+                                            // Fill null constructor slots (e.g. DevSettings::new_0) from class object's "new_N" key when export had duplicate Null
+                                            if let Value::Object(module_obj_rc) = &module_object {
+                                                let module_obj = module_obj_rc.borrow();
+                                                let start_fn = module_obj.get("__start_function_index")
+                                                    .and_then(|v| if let Value::Number(s) = v { Some(*s as usize) } else { None })
+                                                    .unwrap_or(0);
+                                                for (class_name, class_val) in module_obj.iter() {
+                                                    if !matches!(class_val, Value::Object(_)) { continue; }
+                                                    let class_obj = if let Value::Object(rc) = class_val { rc.borrow() } else { continue; };
+                                                    for (key, inner) in class_obj.iter() {
+                                                        if !key.starts_with("new_") { continue; }
+                                                        let constructor_name = format!("{}::{}", class_name, key);
+                                                        let idx = global_names.iter()
+                                                            .filter(|(_, n)| n.as_str() == constructor_name.as_str())
+                                                            .map(|(i, _)| *i)
+                                                            .min();
+                                                        if let Some(idx) = idx {
+                                                            if idx >= globals.len() { continue; }
+                                                            let id = globals[idx].resolve_to_value_id(value_store);
+                                                            let current = crate::vm::store_convert::load_value(id, value_store, heavy_store);
+                                                            if !matches!(current, Value::Null) { continue; }
+                                                            if let Value::Function(fn_idx) = inner {
+                                                                let remapped = Value::Function(start_fn + fn_idx);
+                                                                let slot_id = crate::vm::store_convert::store_value_arena(remapped, value_store, heavy_store);
+                                                                globals[idx] = GlobalSlot::Heap(slot_id);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            // Ensure __constructing_class__ slot exists after merge so executor and patched chunks use it.
+                                            const CONSTRUCTING_CLASS_NAME_IMPORT: &str = "__constructing_class__";
+                                            if !global_names.values().any(|n| n == CONSTRUCTING_CLASS_NAME_IMPORT) {
+                                                let idx = globals.len();
+                                                globals.push(default_global_slot());
+                                                global_names.insert(idx, CONSTRUCTING_CLASS_NAME_IMPORT.to_string());
+                                            }
+                                            // Plan: ensure transitive globals (e.g. Settings) are in caller's global_names before patching,
+                                            // so update_chunk_indices_from_names can patch LoadGlobal in nested chunks (e.g. DatabaseConfig::new_1).
+                                            if let Value::Object(module_obj_rc) = &module_object {
+                                                let module_obj = module_obj_rc.borrow();
+                                                let start_fn = module_obj.get("__start_function_index")
+                                                    .and_then(|v| if let Value::Number(s) = v { Some(*s as usize) } else { None })
+                                                    .unwrap_or(0);
+                                                let mut needed_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+                                                for f in functions.iter() {
+                                                    for (_idx, name) in &f.chunk.global_names {
+                                                        if name == "__start_function_index" || name == "argv" { continue; }
+                                                        if name.contains("::") {
+                                                            continue;
+                                                        }
+                                                        if !global_names.values().any(|n| n == name) {
+                                                            needed_names.insert(name.clone());
+                                                        }
+                                                    }
+                                                }
+                                                for name in needed_names.clone() {
+                                                    let value_opt: Option<crate::common::value::Value> = module_obj.get(&name).cloned().or_else(|| {
+                                                        if matches!(name.as_str(), "Settings" | "Config" | "Field") {
+                                                            global_index_by_name(global_names, "settings_env").and_then(|se_idx| {
+                                                                (se_idx < globals.len()).then(|| {
+                                                                    let id = globals[se_idx].resolve_to_value_id(value_store);
+                                                                    let se_val = crate::vm::store_convert::load_value(id, value_store, heavy_store);
+                                                                    if let Value::Object(se_rc) = &se_val {
+                                                                        se_rc.borrow().get(&name).cloned()
+                                                                    } else {
+                                                                        None
+                                                                    }
+                                                                }).flatten()
+                                                            })
+                                                        } else {
+                                                            None
+                                                        }
+                                                    });
+                                                    let Some(value) = value_opt else { continue };
+                                                    let value_to_store = match &value {
+                                                        Value::Function(fn_idx) => Value::Function(start_fn + *fn_idx),
+                                                        Value::Object(obj_rc) => {
+                                                            let obj = obj_rc.borrow();
+                                                            let mut new_obj = std::collections::HashMap::new();
+                                                            for (key, inner) in obj.iter() {
+                                                                let updated = match inner {
+                                                                    Value::Function(i) => Value::Function(start_fn + *i),
+                                                                    _ => inner.clone(),
+                                                                };
+                                                                new_obj.insert(key.clone(), updated);
+                                                            }
+                                                            Value::Object(Rc::new(RefCell::new(new_obj)))
+                                                        }
+                                                        _ => value,
+                                                    };
+                                                    let id = crate::vm::store_convert::store_value_arena(value_to_store, value_store, heavy_store);
+                                                    let new_idx = globals.len();
+                                                    globals.push(GlobalSlot::Heap(id));
+                                                    global_names.insert(new_idx, name);
+                                                }
+                                            }
+                                            let mut global_names_snapshot = global_names.clone();
+                                            // Ensure sentinel is in snapshot so update_chunk_indices can patch LoadGlobal(MODEL_CONFIG_CLASS_LOAD_INDEX).
+                                            if !global_names_snapshot.values().any(|n| n.as_str() == CONSTRUCTING_CLASS_NAME_IMPORT) {
+                                                if let Some(&idx) = global_names.iter().find(|(_, n)| n.as_str() == CONSTRUCTING_CLASS_NAME_IMPORT).map(|(i, _)| i) {
+                                                    global_names_snapshot.insert(idx, CONSTRUCTING_CLASS_NAME_IMPORT.to_string());
+                                                }
+                                            }
+                                            let argv_slot = unsafe { (*vm_ptr).get_argv_slot_index() };
+                                            // Patch all function chunks so nested modules (e.g. dev_config) use caller's globals (e.g. main), not the intermediate module's (e.g. core.config).
+                                            for i in 0..functions.len() {
                                                 crate::vm::vm::Vm::update_chunk_indices_from_names(
-                                                    &mut vm_ref.get_functions_mut()[i].chunk,
-                                                    &global_names,
-                                                    None,
+                                                    &mut functions[i].chunk,
+                                                    &global_names_snapshot,
+                                                    Some(globals.as_mut_slice()),
                                                     Some(value_store),
                                                     Some(heavy_store),
+                                                    argv_slot,
                                                 );
                                             }
-                                            start_idx
-                                        };
-
-                                        // Обновляем индексы глобалов в главном chunk, чтобы они соответствовали
-                                        // текущему global_names после merge (иначе последующий LOAD_GLOBAL загрузит неверный слот)
-                                        if let Some(main_frame) = frames.first_mut() {
-                                            crate::vm::vm::Vm::update_chunk_indices_from_names(
-                                                &mut main_frame.function.chunk,
+                                            if let Some(main_frame) = frames.first_mut() {
+                                                crate::vm::vm::Vm::update_chunk_indices_from_names(
+                                                    &mut main_frame.function.chunk,
+                                                    &global_names_snapshot,
+                                                    Some(globals.as_mut_slice()),
+                                                    Some(value_store),
+                                                    Some(heavy_store),
+                                                    argv_slot,
+                                                );
+                                            }
+                                            crate::vm::vm::Vm::ensure_entry_point_slots(
+                                                globals.as_mut_slice(),
                                                 global_names,
-                                                Some(globals.as_mut_slice()),
-                                                Some(value_store),
-                                                Some(heavy_store),
+                                                functions,
+                                                value_store,
                                             );
+                                        } else {
+                                            // Module already executed this run: only merge its exports into globals.
+                                            unsafe { (*vm_ptr).merge_module_exports_into_globals(&module_object); }
                                         }
 
-                                        // Сохраняем start_function_index в объекте модуля как метаданные
-                                        if let Value::Object(module_obj_rc) = &module_object {
-                                            let mut module_obj = module_obj_rc.borrow_mut();
-                                            module_obj.insert("__start_function_index".to_string(), Value::Number(start_function_index as f64));
-                                            debug_println!("[DEBUG ImportFrom] Сохранен start_function_index={} в объекте модуля", start_function_index);
-                                            debug_println!("[DEBUG ImportFrom] Ключи в объекте модуля: {:?}", module_obj.keys().collect::<Vec<_>>());
-                                        }
-                                        
                                         let module_id = store_value(module_object, value_store, heavy_store);
-                                        if let Some(idx) = global_index_by_name(global_names, &module_name) {
-                                            if idx < globals.len() {
-                                                globals[idx] = GlobalSlot::Heap(module_id);
+                                        // Plan 2.3: do not overwrite a slot that already holds an export (class/constructor)
+                                        let existing_idx = global_index_by_name(global_names, &module_name);
+                                        let overwrite_ok = existing_idx.map(|idx| {
+                                            idx >= globals.len()
+                                                || matches!(
+                                                    crate::vm::store_convert::load_value(globals[idx].resolve_to_value_id(value_store), value_store, heavy_store),
+                                                    Value::Null
+                                                )
+                                        }).unwrap_or(true);
+                                        if let Some(idx) = existing_idx {
+                                            if overwrite_ok {
+                                                if idx < globals.len() {
+                                                    globals[idx] = GlobalSlot::Heap(module_id);
+                                                } else {
+                                                    globals.resize(idx + 1, default_global_slot());
+                                                    globals[idx] = GlobalSlot::Heap(module_id);
+                                                }
                                             } else {
-                                                globals.resize(idx + 1, default_global_slot());
-                                                globals[idx] = GlobalSlot::Heap(module_id);
+                                                let new_idx = globals.len();
+                                                globals.push(GlobalSlot::Heap(module_id));
+                                                global_names.remove(&idx);
+                                                global_names.insert(new_idx, module_name.clone());
                                             }
                                         } else {
                                             let idx = globals.len();
@@ -383,10 +611,10 @@ pub fn execute_instruction(
                                                 loaded_modules.insert(module_name.clone());
                                             }
                                             Err(_) => {
-                                                let error = ExceptionHandler::runtime_error(
+                                                let error = ExceptionHandler::runtime_error_with_source(
                                                     &frames,
-                                                    format!("Failed to load module '{}': {}", module_name, load_err),
-                                                    line,
+                                                    format!("Failed to load module '{}'", module_name),
+                                                    load_err,
                                                 );
                                                 match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                                                     Ok(()) => return Ok(VMStatus::Continue),
@@ -476,17 +704,34 @@ pub fn execute_instruction(
                     // Clone the HashMap to avoid borrowing issues - we can now mutate globals
                     let module_object = module_object_rc.borrow().clone();
                     
-                    // Import items
+                    // Collect named imports (no *, no alias) to process in deterministic (sorted) order,
+                    // so slot assignment does not depend on source order or HashMap iteration.
+                    let mut named_imports: Vec<(String, Value)> = Vec::new();
+                    for item_value in &items_array {
+                        if let Value::String(ref item_str) = item_value {
+                            if item_str != "*" && !item_str.contains(':') {
+                                if let Some(value) = module_object.get(item_str) {
+                                    named_imports.push((item_str.clone(), value.clone()));
+                                }
+                            }
+                        }
+                    }
+                    named_imports.sort_by(|a, b| a.0.cmp(&b.0));
+                    
+                    // Import items: first "*" and aliased in array order, then named in sorted order
                     for item_value in items_array {
                         match item_value {
                             Value::String(item_str) => {
                                 if item_str == "*" {
-                                    // Import all items
+                                    // Import all items (iterate in sorted order for determinism)
                                     let mut indices_to_set: Vec<(usize, String, ValueId)> = Vec::new();
                                     let mut max_index_needed = globals.len();
                                     let mut new_indices = Vec::new();
-                                    for (key, value) in &module_object {
-                                        let global_index = global_index_by_name(global_names, key);
+                                    let mut star_keys: Vec<_> = module_object.keys().cloned().collect();
+                                    star_keys.sort();
+                                    for key in star_keys {
+                                        let value = module_object.get(&key).unwrap();
+                                        let global_index = global_index_by_name(global_names, &key);
                                         let global_index = match global_index {
                                             Some(idx) => idx,
                                             None => {
@@ -505,11 +750,12 @@ pub fn execute_instruction(
                                     for (idx, name) in new_indices {
                                         global_names.insert(idx, name);
                                     }
+                                    indices_to_set.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
                                     for (global_index, _key, id) in indices_to_set {
                                         globals[global_index] = GlobalSlot::Heap(id);
                                     }
                                 } else if item_str.contains(':') {
-                                    // Aliased import: "name:alias"
+                                    // Aliased import: "name:alias" (process in array order)
                                     let parts: Vec<&str> = item_str.split(':').collect();
                                     if parts.len() == 2 {
                                         let name = parts[0];
@@ -543,34 +789,101 @@ pub fn execute_instruction(
                                         }
                                     }
                                 } else {
-                                    // Named import: just the name
-                                    debug_println!("[DEBUG ImportFrom] Импортируем '{}' из модуля '{}'", item_str, module_name);
-                                    debug_println!("[DEBUG ImportFrom] Доступные ключи в модуле: {:?}", module_object.keys().collect::<Vec<_>>());
-                                    
-                                    if let Some(value) = module_object.get(&item_str) {
-                                        debug_println!("[DEBUG ImportFrom] Найден '{}' в модуле, тип: {:?}", item_str, match value {
+                                    // Named import: processed below in sorted order (skip here)
+                                    continue;
+                                }
+                            }
+                            _ => {
+                                let error = ExceptionHandler::runtime_error(
+                            &frames,
+                                    "ImportFrom item must be a string".to_string(),
+                                    line,
+                                );
+                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                    Ok(()) => continue,
+                                    Err(e) => return Err(e),
+                                }
+                            }
+                        }
+                    }
+                    // Process named imports in deterministic (sorted) order
+                    for (idx, n) in global_names.iter().filter(|(_, n)| n.as_str() == "get_settings" || n.as_str() == "load_settings") {
+                        debug_println!("[DEBUG ImportFrom] caller global_names перед per-item: slot {} -> '{}'", idx, n);
+                    }
+                    for (item_str, value) in named_imports {
+                        debug_println!("[DEBUG ImportFrom] Импортируем '{}' из модуля '{}'", item_str, module_name);
+                        debug_println!("[DEBUG ImportFrom] Доступные ключи в модуле: {:?}", module_object.keys().collect::<Vec<_>>());
+                        
+                        debug_println!("[DEBUG ImportFrom] Найден '{}' в модуле, тип: {:?}", item_str, match &value {
                                             Value::Object(_) => "Object",
                                             Value::Function(_) => "Function",
                                             Value::Null => "Null",
                                             _ => "Other",
                                         });
-                                        
-                                        let id = store_value(value.clone(), value_store, heavy_store);
-                                        let global_index = if let Some(idx) = global_index_by_name(global_names, &item_str) {
-                                            debug_println!("[DEBUG ImportFrom] '{}' уже существует в globals с индексом {}", item_str, idx);
-                                            idx
-                                        } else {
-                                            let idx = globals.len();
-                                            globals.push(GlobalSlot::Heap(id));
-                                            global_names.insert(idx, item_str.clone());
-                                            debug_println!("[DEBUG ImportFrom] Создан новый глобальный индекс {} для '{}'", idx, item_str);
-                                            idx
+                                        // Remap function index when module was merged: module_object has __start_function_index.
+                                        // Otherwise the copied function would point at the wrong VM function (e.g. __main__).
+                                        let value_to_store = match value {
+                                            Value::Function(fn_idx) => {
+                                                if let Some(Value::Number(start)) = module_object.get("__start_function_index") {
+                                                    Value::Function((*start as usize) + fn_idx)
+                                                } else {
+                                                    value.clone()
+                                                }
+                                            }
+                                            _ => value.clone(),
                                         };
-                                        if global_index >= globals.len() {
-                                            globals.resize(global_index + 1, default_global_slot());
+                                        let is_function = matches!(value_to_store, Value::Function(_));
+                                        let indices = global_indices_by_name(global_names, &item_str);
+                                        let indices_to_update: Vec<usize> = if indices.is_empty() {
+                                            vec![globals.len()]
+                                        } else {
+                                            indices
+                                        };
+                                        let has_merge = module_object.get("__start_function_index").is_some();
+                                        if item_str == "get_settings" || item_str == "load_settings" {
+                                            let fn_idx_str = match &value_to_store {
+                                                Value::Function(fi) => format!("Function({})", fi),
+                                                _ => "non-Function".to_string(),
+                                            };
+                                            debug_println!(
+                                                "[DEBUG ImportFrom] per-item: '{}' -> indices {:?} value={}",
+                                                item_str, indices_to_update, fn_idx_str
+                                            );
                                         }
-                                        globals[global_index] = GlobalSlot::Heap(id);
-                                        debug_println!("[DEBUG ImportFrom] '{}' установлен в globals[{}]", item_str, global_index);
+                                        let id = store_value(value_to_store, value_store, heavy_store);
+                                        for &global_index in &indices_to_update {
+                                            // When we just merged (__start_function_index present), per-item is source of truth for
+                                            // Functions only: always write remapped function so explicitly imported names get the correct one.
+                                            // Do not overwrite existing Object (e.g. class from merge) so we keep the class and its model_config
+                                            // (required for Settings subclasses: load_env uses model_config.env_file from the class).
+                                            // When module came from cache (no __start_function_index), skip overwriting existing Function.
+                                            let skip_overwrite = if has_merge {
+                                                if is_function {
+                                                    false
+                                                } else if global_index < globals.len() {
+                                                    let cur_id = globals[global_index].resolve_to_value_id(value_store);
+                                                    matches!(load_value(cur_id, value_store, heavy_store), Value::Object(_))
+                                                } else {
+                                                    false
+                                                }
+                                            } else if global_index < globals.len() {
+                                                let cur_id = globals[global_index].resolve_to_value_id(value_store);
+                                                matches!(load_value(cur_id, value_store, heavy_store), Value::Function(_))
+                                            } else {
+                                                false
+                                            };
+                                            if skip_overwrite {
+                                                debug_println!("[DEBUG ImportFrom] Пропуск перезаписи '{}' в globals[{}] (в слоте уже функция из merge)", item_str, global_index);
+                                            } else {
+                                                if global_index >= globals.len() {
+                                                    globals.resize(global_index + 1, default_global_slot());
+                                                    global_names.insert(global_index, item_str.clone());
+                                                    debug_println!("[DEBUG ImportFrom] Создан новый глобальный индекс {} для '{}'", global_index, item_str);
+                                                }
+                                                globals[global_index] = GlobalSlot::Heap(id);
+                                                debug_println!("[DEBUG ImportFrom] '{}' установлен в globals[{}]", item_str, global_index);
+                                            }
+                                        }
                                         
                                         // Если импортируется класс (объект с метаданными класса), также импортируем все конструкторы
                                         // Конструкторы имеют формат ClassName::new_<arity>
@@ -662,33 +975,6 @@ pub fn execute_instruction(
                                                 debug_println!("[DEBUG ImportFrom] '{}' не является классом (нет ключа __class_name)", item_str);
                                             }
                                         }
-                                    } else {
-                                        debug_println!("[DEBUG ImportFrom] ERROR: '{}' не найден в модуле '{}'", item_str, module_name);
-                                        let error = ExceptionHandler::runtime_error_with_type(
-                                &frames,
-                                            format!("Module '{}' has no attribute '{}'", module_name, item_str),
-                                            line,
-                                            crate::common::error::ErrorType::KeyError,
-                                        );
-                                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
-                                            Ok(()) => continue,
-                                            Err(e) => return Err(e),
-                                        }
-                                    }
-                                }
-                            }
-                            _ => {
-                                let error = ExceptionHandler::runtime_error(
-                            &frames,
-                                    "ImportFrom item must be a string".to_string(),
-                                    line,
-                                );
-                                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
-                                    Ok(()) => continue,
-                                    Err(e) => return Err(e),
-                                }
-                            }
-                        }
                     }
                     
                     debug_println!(
@@ -697,6 +983,8 @@ pub fn execute_instruction(
                     );
                     // After importing items (builtin or file), update main chunk's LoadGlobal/StoreGlobal
                     // to the current global_names so subsequent instructions see the correct slots.
+                    let argv_slot = unsafe { (*vm_ptr).get_argv_slot_index() };
+                    
                     if let Some(main_frame) = frames.first_mut() {
                         crate::vm::vm::Vm::update_chunk_indices_from_names(
                             &mut main_frame.function.chunk,
@@ -704,6 +992,20 @@ pub fn execute_instruction(
                             Some(globals.as_mut_slice()),
                             Some(value_store),
                             Some(heavy_store),
+                            argv_slot,
+                        );
+                    }
+                    // Re-patch all function chunks with final global_names after per-item imports.
+                    // Otherwise constructors from the module (e.g. ProdSettings::new_0) keep LoadGlobal(sentinel)
+                    // mapped to pre-import indices and may load the wrong class (e.g. DevSettings instead of ProdSettings).
+                    for f in functions.iter_mut() {
+                        crate::vm::vm::Vm::update_chunk_indices_from_names(
+                            &mut f.chunk,
+                            global_names,
+                            Some(globals.as_mut_slice()),
+                            Some(value_store),
+                            Some(heavy_store),
+                            argv_slot,
                         );
                     }
                     return Ok(VMStatus::Continue);
@@ -763,8 +1065,25 @@ pub fn execute_instruction(
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::LoadGlobal(index) => {
+                    let mut effective_index = index;
                     if index >= globals.len() {
-                        let error_message = if let Some(var_name) = global_names.get(&index) {
+                        // Resolve by name from current chunk (e.g. merged module function with unpatched sentinel)
+                        if let Some(var_name) = frame.function.chunk.global_names.get(&index) {
+                            let real_idx_opt = global_names.iter()
+                                .filter(|(_, n)| n.as_str() == var_name.as_str())
+                                .map(|(i, _)| *i)
+                                .min();
+                            if let Some(ri) = real_idx_opt {
+                                effective_index = ri;
+                                if effective_index >= globals.len() {
+                                    globals.resize(effective_index + 1, default_global_slot());
+                                }
+                            }
+                        }
+                    }
+                    if effective_index >= globals.len() {
+                        let error_message = if let Some(var_name) = global_names.get(&effective_index)
+                            .or_else(|| frame.function.chunk.global_names.get(&index)) {
                             if modules::is_known_module(var_name) && !loaded_modules.contains(var_name) {
                                 format!("Module {} not imported", var_name)
                             } else {
@@ -779,15 +1098,44 @@ pub fn execute_instruction(
                             Err(e) => return Err(e),
                         }
                     } else {
-                        match &globals[index] {
-                            GlobalSlot::Inline(tv) => {
-                                stack::push(stack, *tv);
-                            }
-                            GlobalSlot::Heap(id) => {
-                        if let Some(var_name) = global_names.get(&index) {
-                            if var_name.contains("Data") || var_name.contains("range") || var_name.contains("print") || var_name.contains("::new_") {
-                                let value = load_value(*id, value_store, heavy_store);
-                                let value_type_str = match &value {
+                        let (inline_tv, heap_id_opt) = match &globals[effective_index] {
+                            GlobalSlot::Inline(tv) => (Some(*tv), None),
+                            GlobalSlot::Heap(id) => (None, Some(*id)),
+                        };
+                        if let Some(tv) = inline_tv {
+                            stack::push(stack, tv);
+                        } else {
+                            let id = heap_id_opt.unwrap();
+                            let value = load_value(id, value_store, heavy_store);
+                            // Fallback: loaded Array but chunk expected a constructor (wrong index after merge). Resolve by name.
+                            let id_to_push = if matches!(&value, Value::Array(_)) {
+                                let ctor_name = frame.function.chunk.global_names.get(&index)
+                                    .or_else(|| global_names.get(&effective_index));
+                                if ctor_name.map(|n| n.contains("::new_")).unwrap_or(false) {
+                                    let name = ctor_name.unwrap().clone();
+                                    let candidate_indices: Vec<usize> = global_names.iter()
+                                        .filter(|(_, n)| n.as_str() == name)
+                                        .map(|(i, _)| *i)
+                                        .collect();
+                                    let found = candidate_indices.into_iter()
+                                        .find(|&i| {
+                                            i < globals.len() && matches!(
+                                                load_value(globals[i].resolve_to_value_id(value_store), value_store, heavy_store),
+                                                Value::Function(_)
+                                            )
+                                        })
+                                        .map(|i| globals[i].resolve_to_value_id(value_store));
+                                    found.unwrap_or(id)
+                                } else {
+                                    id
+                                }
+                            } else {
+                                id
+                            };
+                                if let Some(var_name) = global_names.get(&effective_index) {
+                                    if var_name.contains("Data") || var_name.contains("range") || var_name.contains("print") || var_name.contains("::new_") {
+                                        let value = load_value(id_to_push, value_store, heavy_store);
+                                        let value_type_str = match &value {
                                     Value::Null => "Null".to_string(),
                                     Value::Function(fn_idx) => {
                                         if *fn_idx < functions.len() {
@@ -812,18 +1160,41 @@ pub fn execute_instruction(
                                     }
                                 }
                             }
-                            if *id == NULL_VALUE_ID && (var_name.contains("Data") || var_name.contains("range") || var_name.contains("print")) {
+                            if id_to_push == NULL_VALUE_ID && (var_name.contains("Data") || var_name.contains("range") || var_name.contains("print")) {
                                 debug_println!("[DEBUG LoadGlobal] WARNING: '{}' в globals[{}] равен Null", var_name, index);
                             }
                         }
-                        stack::push_id(stack, *id);
-                            }
+                        stack::push_id(stack, id_to_push);
                         }
                     }
                     return Ok(VMStatus::Continue);
                 }
                 OpCode::StoreGlobal(index) => {
                     let tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    // Debug: see if StoreGlobal is ever executed for constructor new_0 (diagnose Null in export).
+                    let name_at_idx = global_names.get(&index).map(|s| s.as_str());
+                    if name_at_idx.map(|n| n.contains("::new_0")).unwrap_or(false) {
+                        let value_type = if tv.is_heap() {
+                            let vid = tagged_to_value_id_arena(tv, value_store);
+                            match value_store.get(vid) {
+                                Some(crate::common::value_store::ValueCell::Function(_)) => "Function",
+                                Some(crate::common::value_store::ValueCell::Object(_)) => "Object",
+                                Some(crate::common::value_store::ValueCell::Null) => "Null",
+                                Some(crate::common::value_store::ValueCell::Array(_)) => "Array",
+                                Some(_) => "Other",
+                                None => "Unknown",
+                            }
+                        } else {
+                            "Inline"
+                        };
+                        if crate::common::debug::verbose_constructor_debug() {
+                            eprintln!("[StoreGlobal] idx={} name={:?} value_type={}", index, name_at_idx, value_type);
+                        }
+                    }
+                    // Do not allow script to overwrite the argv slot (host-only, read-only).
+                    if unsafe { (*vm_ptr).get_argv_slot_index() } == Some(index) {
+                        return Ok(VMStatus::Continue);
+                    }
                     // Inline path: primitives (number, bool, null, int) — no alloc, no get.
                     if !tv.is_heap() {
                         if index >= globals.len() {
@@ -1474,10 +1845,122 @@ pub fn execute_instruction(
                     let frame = frames.last_mut().unwrap();
                     let _ = frame.for_range_stack.pop();
                 }
+                OpCode::CallWithUnpack(unpack_arity) => {
+                    // Один аргумент — объект для распаковки в kwargs; ключи должны совпадать с именами параметров функции.
+                    let callee_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    if unpack_arity != 1 {
+                        let error = ExceptionHandler::runtime_error(
+                            &frames,
+                            format!("CallWithUnpack expects 1 argument (kwargs object), got {}", unpack_arity),
+                            line,
+                        );
+                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                            Ok(()) => return Ok(VMStatus::Continue),
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    let kwargs_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let kwargs_id = tagged_to_value_id(kwargs_tv, value_store);
+                    let kwargs_val = load_value(kwargs_id, value_store, heavy_store);
+                    let obj_map = match &kwargs_val {
+                        Value::Object(rc) => rc.borrow().clone(),
+                        _ => {
+                            let error = ExceptionHandler::runtime_error(
+                                &frames,
+                                "** unpacking in call requires an object (dict), not a value of another type".to_string(),
+                                line,
+                            );
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                Ok(()) => return Ok(VMStatus::Continue),
+                                Err(e) => return Err(e),
+                            }
+                        }
+                    };
+                    let callee_id = tagged_to_value_id(callee_tv, value_store);
+                    let callee_val = load_value(callee_id, value_store, heavy_store);
+                    let (_function_index, function) = match &callee_val {
+                        Value::Function(i) if *i < functions.len() => (*i, functions[*i].clone()),
+                        _ => {
+                            let error = ExceptionHandler::runtime_error(
+                                &frames,
+                                "** unpacking is only supported for user-defined functions".to_string(),
+                                line,
+                            );
+                            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                                Ok(()) => return Ok(VMStatus::Continue),
+                                Err(e) => return Err(e),
+                            }
+                        }
+                    };
+                    let param_names = &function.param_names;
+                    let obj_keys: std::collections::HashSet<&String> = obj_map.keys().collect();
+                    let param_set: std::collections::HashSet<&String> = param_names.iter().collect();
+                    if obj_keys != param_set {
+                        let expected: Vec<&str> = param_names.iter().map(|s| s.as_str()).collect();
+                        let got: Vec<&str> = obj_map.keys().map(|s| s.as_str()).collect();
+                        let error = ExceptionHandler::runtime_error(
+                            &frames,
+                            format!(
+                                "Object keys must match function parameters. Expected keys: [{}], got keys: [{}]",
+                                expected.join(", "),
+                                got.join(", ")
+                            ),
+                            line,
+                        );
+                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                            Ok(()) => return Ok(VMStatus::Continue),
+                            Err(e) => return Err(e),
+                        }
+                    }
+                    let mut arg_tvs = Vec::with_capacity(param_names.len());
+                    for p in param_names {
+                        let v = obj_map.get(p).cloned().unwrap_or(Value::Null);
+                        let id = store_value(v, value_store, heavy_store);
+                        arg_tvs.push(TaggedValue::from_heap(id));
+                    }
+                    let stack_start = stack.len();
+                    let mut new_frame = if function.is_cached {
+                        CallFrame::new_with_cache(function.clone(), stack_start, arg_tvs.clone(), value_store, heavy_store)
+                    } else {
+                        CallFrame::new(function.clone(), stack_start, value_store, heavy_store)
+                    };
+                    if !function.chunk.error_type_table.is_empty() {
+                        *error_type_table = function.chunk.error_type_table.clone();
+                    }
+                    if !frames.is_empty() && !function.captured_vars.is_empty() {
+                        for captured_var in &function.captured_vars {
+                            if captured_var.local_slot_index >= new_frame.slots.len() {
+                                new_frame.slots.resize(captured_var.local_slot_index + 1, TaggedValue::null());
+                            }
+                            let ancestor_index = frames.len().saturating_sub(1 + captured_var.ancestor_depth);
+                            if ancestor_index < frames.len() {
+                                let ancestor_frame = &frames[ancestor_index];
+                                if captured_var.parent_slot_index < ancestor_frame.slots.len() {
+                                    new_frame.slots[captured_var.local_slot_index] = ancestor_frame.slots[captured_var.parent_slot_index];
+                                } else {
+                                    new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
+                                }
+                            } else {
+                                new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
+                            }
+                        }
+                    }
+                    let param_start_index = function.captured_vars.len();
+                    for (i, &arg_tv) in arg_tvs.iter().enumerate() {
+                        let slot_index = param_start_index + i;
+                        if slot_index >= new_frame.slots.len() {
+                            new_frame.slots.resize(slot_index + 1, TaggedValue::null());
+                        }
+                        new_frame.slots[slot_index] = arg_tv;
+                    }
+                    frames.push(new_frame);
+                    return Ok(VMStatus::Continue);
+                }
                 OpCode::Call(arity) => {
                     let callee_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
                     let current_ip = frames.last().unwrap().ip - 1;
                     let mut function_index_opt: Option<usize> = None;
+                    let mut constructing_class_opt: Option<Value> = None;
                     {
                         let frame = frames.last_mut().unwrap();
                         if frame.call_cache_ip == Some(current_ip) && frame.call_cache_is_user_function && callee_tv.is_heap() {
@@ -1489,7 +1972,7 @@ pub fn execute_instruction(
                             }
                         }
                     }
-                    let actual_callee: Value = if function_index_opt.is_none() {
+                    let mut actual_callee: Value = if function_index_opt.is_none() {
                         let frame = frames.last().unwrap();
                         debug_println!("[DEBUG executor OpCode::Call] Получен OpCode::Call({}) на строке {}, IP: {}", arity, line, current_ip);
                         if let Some(OpCode::Call(recorded_arity)) = frame.function.chunk.code.get(current_ip) {
@@ -1548,9 +2031,11 @@ pub fn execute_instruction(
                                     });
                                 if let Some(Value::Function(constructor_fn_idx)) = constructor_value.as_ref() {
                                     debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to constructor '{}'", class_name, constructor_name);
+                                    constructing_class_opt = Some(function_value.clone());
                                     Value::Function(*constructor_fn_idx)
                                 } else if let Some(Value::Function(constructor_fn_idx)) = method_new {
                                     debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to constructor from class key '{}'", class_name, format!("new_{}", arity));
+                                    constructing_class_opt = Some(function_value.clone());
                                     Value::Function(constructor_fn_idx)
                                 } else {
                                     function_value
@@ -1578,7 +2063,80 @@ pub fn execute_instruction(
                     } else {
                         Value::Null
                     };
-                    if let Some(function_index) = function_index_opt {
+                    // Runtime fallback: callee is Array but previous instruction was LoadGlobal(idx) for a constructor.
+                    // 1) If chunk has name for idx, resolve by name. 2) Else (name=? from stale/cached chunk) resolve by arity.
+                    if matches!(&actual_callee, Value::Array(_)) {
+                        if let Some(frame) = frames.last() {
+                            let prev_ip = frame.ip.saturating_sub(2);
+                            let chunk = &frame.function.chunk;
+                            let resolved = if let Some(crate::bytecode::OpCode::LoadGlobal(_idx)) = chunk.code.get(prev_ip) {
+                                // Try by name first (chunk has global_names[idx] = "DevSettings::new_0" etc.)
+                                let by_name = chunk.global_names.get(_idx)
+                                    .filter(|n| n.contains("::new_"))
+                                    .and_then(|name| {
+                                        global_names
+                                            .iter()
+                                            .filter(|(_, n)| n.as_str() == name.as_str())
+                                            .find_map(|(i, _)| {
+                                                if *i < globals.len() {
+                                                    let id = globals[*i].resolve_to_value_id(value_store);
+                                                    let v = load_value(id, value_store, heavy_store);
+                                                    if matches!(&v, Value::Function(_)) { Some(v) } else { None }
+                                                } else { None }
+                                            })
+                                    });
+                                if by_name.is_some() {
+                                    by_name
+                                } else {
+                                    // No name in chunk (name=?): find constructor by arity (e.g. Call(0) -> *::new_0)
+                                    let suffix = format!("::new_{}", arity);
+                                    let candidates: Vec<Value> = chunk.global_names
+                                        .iter()
+                                        .filter(|(_, n)| n.ends_with(&suffix))
+                                        .filter_map(|(_, n)| {
+                                            global_names.iter()
+                                                .find(|(_, nn)| nn.as_str() == n.as_str())
+                                                .and_then(|(i, _)| {
+                                                    if *i < globals.len() {
+                                                        let id = globals[*i].resolve_to_value_id(value_store);
+                                                        let v = load_value(id, value_store, heavy_store);
+                                                        if matches!(&v, Value::Function(_)) { Some(v) } else { None }
+                                                    } else { None }
+                                                })
+                                        })
+                                        .collect();
+                                    if candidates.len() == 1 {
+                                        candidates.into_iter().next()
+                                    } else {
+                                        None
+                                    }
+                                }
+                            } else {
+                                None
+                            };
+                            if let Some(Value::Function(fn_idx)) = resolved {
+                                if fn_idx < functions.len() {
+                                    actual_callee = Value::Function(fn_idx);
+                                    function_index_opt = Some(fn_idx);
+                                    let fr = frames.last_mut().unwrap();
+                                    fr.call_cache_ip = Some(current_ip);
+                                    fr.call_cache_is_user_function = true;
+                                }
+                            }
+                        }
+                    }
+                    // Resolve actual function index from callee when callee is a heap Function (cache can be stale when same IP in different frame, e.g. Config::new_1 calling DatabaseConfig::new_1).
+                    let function_index_resolved = if callee_tv.is_heap() {
+                        let id = callee_tv.get_heap_id();
+                        if let Some(ValueCell::Function(i)) = value_store.get(id) {
+                            if *i < functions.len() { Some(*i) } else { function_index_opt }
+                        } else {
+                            function_index_opt
+                        }
+                    } else {
+                        function_index_opt
+                    };
+                    if let Some(function_index) = function_index_resolved {
                         let frame = frames.last_mut().unwrap();
                         frame.call_cache_ip = Some(current_ip);
                         frame.call_cache_is_user_function = true;
@@ -1593,8 +2151,117 @@ pub fn execute_instruction(
                                 Err(e) => return Err(e),
                             }
                             }
-                            
                             let function = functions[function_index].clone();
+                            
+                            // Set __constructing_class__ to the class object before running a constructor, so Settings subclasses load model_config from the leaf class (e.g. DevSettings).
+                            // When entering a super() chain (caller is subclass, callee is superclass), do not overwrite so the leaf class stays in the slot.
+                            // When calling a nested constructor (e.g. Config::new_1 -> DatabaseConfig::new_1), overwrite with the nested class.
+                            if function.name.contains("::new_") {
+                                const CONSTRUCTING_CLASS_NAME: &str = "__constructing_class__";
+                                let indices = global_indices_by_name(global_names, CONSTRUCTING_CLASS_NAME);
+                                if indices.is_empty() && crate::common::debug::verbose_constructor_debug() {
+                                    eprintln!(
+                                        "[executor] constructor '{}': slot __constructing_class__ not found in global_names (len={})",
+                                        function.name,
+                                        global_names.len()
+                                    );
+                                }
+                                let skip_set_super_chain: bool = frames.last().and_then(|f| {
+                                    let caller_name = f.function.name.as_str();
+                                    let callee_name = function.name.split("::").next().unwrap_or("");
+                                    if !caller_name.contains("::new_") || callee_name.is_empty() {
+                                        return Some(false);
+                                    }
+                                    let caller_class = caller_name.split("::").next().unwrap_or("");
+                                    if caller_class == callee_name {
+                                        return Some(false);
+                                    }
+                                    // Caller is a constructor and callee is a different class — check if callee is caller's superclass (super() chain).
+                                    let caller_class_idx = global_index_by_name(global_names, caller_class);
+                                    let superclass_name: Option<String> = caller_class_idx.and_then(|idx| {
+                                        if idx >= globals.len() {
+                                            return None;
+                                        }
+                                        let id = globals[idx].resolve_to_value_id(value_store);
+                                        let v = load_value(id, value_store, heavy_store);
+                                        if let Value::Object(rc) = &v {
+                                            let o = rc.borrow();
+                                            if let Some(Value::String(s)) = o.get("__superclass") {
+                                                return Some(s.clone());
+                                            }
+                                        }
+                                        None
+                                    });
+                                    Some(superclass_name.as_deref() == Some(callee_name))
+                                }).unwrap_or(false);
+                                if !indices.is_empty() && !skip_set_super_chain {
+                                    let class_to_set: Option<Value> = if let Some(ref class_val) = constructing_class_opt {
+                                        Some(class_val.clone())
+                                    } else if let Some(class_name) = function.name.split("::").next() {
+                                        // Find class Object: try all slots with this name first (min may hold constructor), then scan all globals.
+                                        let indices_by_name: Vec<usize> = global_names
+                                            .iter()
+                                            .filter(|(_, n)| n.as_str() == class_name)
+                                            .map(|(idx, _)| *idx)
+                                            .collect();
+                                        let by_name = indices_by_name
+                                            .into_iter()
+                                            .find_map(|i| {
+                                                if i >= globals.len() {
+                                                    return None;
+                                                }
+                                                let id = globals[i].resolve_to_value_id(value_store);
+                                                let v = load_value(id, value_store, heavy_store);
+                                                if let Value::Object(rc) = &v {
+                                                    let o = rc.borrow();
+                                                    if matches!(o.get("__class_name"), Some(Value::String(s)) if s.as_str() == class_name) {
+                                                        return Some(v.clone());
+                                                    }
+                                                }
+                                                None
+                                            });
+                                        by_name.or_else(|| {
+                                            // Fallback: scan all globals for Object with __class_name == class_name.
+                                            (0..globals.len()).find_map(|i| {
+                                                let id = globals[i].resolve_to_value_id(value_store);
+                                                let v = load_value(id, value_store, heavy_store);
+                                                if let Value::Object(rc) = &v {
+                                                    let o = rc.borrow();
+                                                    if matches!(o.get("__class_name"), Some(Value::String(s)) if s.as_str() == class_name) {
+                                                        return Some(v.clone());
+                                                    }
+                                                }
+                                                None
+                                            })
+                                        })
+                                    } else {
+                                        None
+                                    };
+                                    if class_to_set.is_none() {
+                                        let class_name = function.name.split("::").next().unwrap_or("");
+                                        if crate::common::debug::verbose_constructor_debug() {
+                                            eprintln!(
+                                                "[executor] constructor '{}': class '{}' not found (by name or scan of {} globals)",
+                                                function.name,
+                                                class_name,
+                                                globals.len()
+                                            );
+                                        }
+                                    }
+                                    if let Some(class_val) = class_to_set {
+                                        if crate::common::debug::verbose_constructor_debug() {
+                                            eprintln!("[executor] constructor '{}': __constructing_class__ set", function.name);
+                                        }
+                                        let class_id = store_value(class_val, value_store, heavy_store);
+                                        for idx in indices {
+                                            if idx >= globals.len() {
+                                                globals.resize(idx + 1, default_global_slot());
+                                            }
+                                            globals[idx] = GlobalSlot::Heap(class_id);
+                                        }
+                                    }
+                                }
+                            }
                             
                             debug_println!("[DEBUG executor Call] Вызываем функцию с индексом {}, имя: '{}', arity: {}, получено аргументов: {} (всего функций в VM: {})", 
                                 function_index, function.name, function.arity, arity, functions.len());
@@ -1724,9 +2391,13 @@ pub fn execute_instruction(
                                 args.insert(1, class_val);
                                 arg_tvs.insert(1, class_tv);
                             }
-                            
+
                             // Проверяем количество аргументов (после возможной инъекции @class)
                             if args.len() != function.arity {
+                                debug_println!(
+                                    "[DEBUG Call] arity mismatch: function '{}' (index {}) expects {} args, got {} (caller thought this slot was a different function?)",
+                                    function.name, function_index, function.arity, args.len()
+                                );
                                 let error = ExceptionHandler::runtime_error(
                                     &frames,
                                     format!(
@@ -1752,7 +2423,7 @@ pub fn execute_instruction(
                                             format!(
                                                 "Argument '{}' expected type '{}', got '{}'",
                                                 param_name, 
-                                                crate::vm::calls::format_type_names(type_names),
+                                                crate::vm::calls::format_type_parts(type_names),
                                                 crate::vm::calls::get_type_name_value(arg)
                                             ),
                                             line,
@@ -2569,6 +3240,35 @@ pub fn execute_instruction(
                             return Ok(VMStatus::Continue);
                         }
                         _ => {
+                            // Debug: callee type, line, function name (plan 1.1)
+                            let callee_type = match &actual_callee {
+                                Value::Null => "Null",
+                                Value::Array(_) => "Array",
+                                Value::Object(obj_rc) => {
+                                    let obj = obj_rc.borrow();
+                                    if obj.get("__class_name").is_some() {
+                                        "Object(class)"
+                                    } else {
+                                        "Object"
+                                    }
+                                }
+                                Value::Function(_) => "Function",
+                                Value::NativeFunction(_) => "NativeFunction",
+                                _ => "Other",
+                            };
+                            let frame_name = frames.last().map(|f| f.function.name.as_str()).unwrap_or("?");
+                            if crate::common::debug::verbose_constructor_debug() {
+                                eprintln!("[Call error] callee type={}, line={}, function={}", callee_type, line, frame_name);
+                                if matches!(&actual_callee, Value::Array(_)) {
+                                    if let Some(frame) = frames.last() {
+                                        let prev_ip = frame.ip.saturating_sub(2);
+                                        if let Some(crate::bytecode::OpCode::LoadGlobal(idx)) = frame.function.chunk.code.get(prev_ip) {
+                                            let name = frame.function.chunk.global_names.get(idx).map(|s| s.as_str()).unwrap_or("?");
+                                            eprintln!("[Call error] previous instruction at IP {}: LoadGlobal({}) name={}", prev_ip, idx, name);
+                                        }
+                                    }
+                                }
+                            }
                             // Try to provide more helpful error message
                             let error_msg = match &actual_callee {
                                 Value::Null => "Cannot call null - function may not be imported or defined".to_string(),
@@ -2689,6 +3389,112 @@ pub fn execute_instruction(
                     stack::push_id(stack, result_id);
                 }
                 OpCode::MakeObject(pair_count) => {
+                    use std::collections::HashMap;
+                    let mut map: HashMap<String, ValueId> = HashMap::with_capacity(pair_count);
+                    for _ in 0..pair_count {
+                        let value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                        let key_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                        let key = match value_store.get(key_id) {
+                            Some(ValueCell::String(sid)) => value_store.get_string(*sid).map(|s| s.to_string()),
+                            _ => None,
+                        };
+                        let key = match key {
+                            Some(k) => k,
+                            None => {
+                                let key_value = load_value(key_id, value_store, heavy_store);
+                                match key_value {
+                                    Value::String(s) => s,
+                                    _ => {
+                                        return Err(ExceptionHandler::runtime_error(
+                                            &frames,
+                                            "Object key must be a string".to_string(),
+                                            line,
+                                        ));
+                                    }
+                                }
+                            }
+                        };
+                        map.insert(key, value_id);
+                    }
+                    let result_id = value_store.allocate(ValueCell::Object(map));
+                    stack::push_id(stack, result_id);
+                }
+                OpCode::UnpackObject(count_slot) => {
+                    let obj_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let pairs: Vec<(String, ValueId)> = match value_store.get(obj_id) {
+                        Some(ValueCell::Object(m)) => m.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+                        _ => {
+                            let val = load_value(obj_id, value_store, heavy_store);
+                            if let Value::Object(rc) = &val {
+                                rc.borrow().iter().map(|(k, v)| (k.clone(), store_value(v.clone(), value_store, heavy_store))).collect()
+                            } else {
+                                return Err(ExceptionHandler::runtime_error(
+                                    &frames,
+                                    "** unpacking requires an object".to_string(),
+                                    line,
+                                ));
+                            }
+                        }
+                    };
+                    let n = pairs.len();
+                    for (k, v_id) in pairs {
+                        let sid = value_store.intern_string(k);
+                        let key_id = value_store.allocate(ValueCell::String(sid));
+                        stack::push_id(stack, key_id);
+                        stack::push_id(stack, v_id);
+                    }
+                    let frame = frames.last_mut().unwrap();
+                    if count_slot >= frame.slots.len() {
+                        frame.ensure_slot(count_slot);
+                    }
+                    let current = frame.slots[count_slot];
+                    let cur_f64 = if current.is_number() {
+                        current.get_f64()
+                    } else if current.is_int() {
+                        current.get_i32() as f64
+                    } else {
+                        0.0
+                    };
+                    frame.slots[count_slot] = TaggedValue::from_f64(cur_f64 + n as f64);
+                }
+                OpCode::MakeObjectDynamic => {
+                    let count_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    let pair_count = match value_store.get(count_id) {
+                        Some(ValueCell::Number(n)) => {
+                            let idx = *n as i64;
+                            if idx < 0 {
+                                return Err(ExceptionHandler::runtime_error(
+                                    &frames,
+                                    "Object pair count must be non-negative".to_string(),
+                                    line,
+                                ));
+                            }
+                            idx as usize
+                        }
+                        _ => {
+                            let v = load_value(count_id, value_store, heavy_store);
+                            match v {
+                                Value::Number(n) => {
+                                    let idx = n as i64;
+                                    if idx < 0 {
+                                        return Err(ExceptionHandler::runtime_error(
+                                            &frames,
+                                            "Object pair count must be non-negative".to_string(),
+                                            line,
+                                        ));
+                                    }
+                                    idx as usize
+                                }
+                                _ => {
+                                    return Err(ExceptionHandler::runtime_error(
+                                        &frames,
+                                        "MakeObjectDynamic requires a number (pair count) on stack".to_string(),
+                                        line,
+                                    ));
+                                }
+                            }
+                        }
+                    };
                     use std::collections::HashMap;
                     let mut map: HashMap<String, ValueId> = HashMap::with_capacity(pair_count);
                     for _ in 0..pair_count {

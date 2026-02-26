@@ -26,6 +26,7 @@ pub fn compile_this(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         Err(LangError::ParseError {
             message: "Expected This expression".to_string(),
             line: expr.line(),
+            file: None,
         })
     }
 }

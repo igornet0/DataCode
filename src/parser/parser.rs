@@ -1,7 +1,7 @@
 // Recursive Descent Parser
 
 use crate::lexer::{Token, TokenKind};
-use crate::parser::ast::{Expr, InterpolatedSegment, Stmt, Param, Arg, UnpackPattern, ImportItem, ImportStmt, ClassVariable};
+use crate::parser::ast::{Expr, InterpolatedSegment, Stmt, Param, Arg, UnpackPattern, ImportItem, ImportStmt, ClassVariable, ObjectPair, TypePart};
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use std::rc::Rc;
@@ -10,11 +10,20 @@ use std::cell::RefCell;
 pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
+    source_name: Option<String>,
 }
 
 impl Parser {
     pub fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, current: 0 }
+        Self::new_with_source_name(tokens, None)
+    }
+
+    pub fn new_with_source_name(tokens: Vec<Token>, source_name: Option<&str>) -> Self {
+        Self {
+            tokens,
+            current: 0,
+            source_name: source_name.map(String::from),
+        }
     }
 
     pub fn parse(&mut self) -> Result<Vec<Stmt>, LangError> {
@@ -129,6 +138,7 @@ impl Parser {
                 return Err(LangError::ParseError {
                     message: "Expect identifier or '*' in import list".to_string(),
                     line: self.peek().line,
+                    file: self.source_name.clone(),
                 });
             }
             
@@ -155,6 +165,7 @@ impl Parser {
                     return Err(LangError::ParseError {
                         message: "Expect variable name in unpack declaration".to_string(),
                         line: self.peek().line,
+                        file: self.source_name.clone(),
                     });
                 }
                 if !self.match_token(TokenKind::Comma) {
@@ -198,12 +209,14 @@ impl Parser {
                 let method = Self::expr_to_string(&method_expr).ok_or_else(|| LangError::ParseError {
                     message: "@route first argument must be a string literal (e.g. \"GET\")".to_string(),
                     line: self.previous().line,
+                    file: self.source_name.clone(),
                 })?;
                 self.consume(TokenKind::Comma, "Expect ',' in @route(...)")?;
                 let path_expr = self.expression()?;
                 let path = Self::expr_to_string(&path_expr).ok_or_else(|| LangError::ParseError {
                     message: "@route second argument must be a string literal (e.g. \"/\")".to_string(),
                     line: self.previous().line,
+                    file: self.source_name.clone(),
                 })?;
                 self.consume(TokenKind::RParen, "Expect ')' after @route(...)")?;
                 route = Some((method, path));
@@ -216,6 +229,7 @@ impl Parser {
                 return Err(LangError::ParseError {
                     message: format!("Expect 'cache' or 'route(...)' after '@', got '{}'", got),
                     line: self.peek().line,
+                    file: self.source_name.clone(),
                 });
             }
             if !self.match_token(TokenKind::At) {
@@ -239,12 +253,14 @@ impl Parser {
                 let method = Self::expr_to_string(&method_expr).ok_or_else(|| LangError::ParseError {
                     message: "@route first argument must be a string literal (e.g. \"GET\")".to_string(),
                     line: self.previous().line,
+                    file: self.source_name.clone(),
                 })?;
                 self.consume(TokenKind::Comma, "Expect ',' in @route(...)")?;
                 let path_expr = self.expression()?;
                 let path = Self::expr_to_string(&path_expr).ok_or_else(|| LangError::ParseError {
                     message: "@route second argument must be a string literal (e.g. \"/\")".to_string(),
                     line: self.previous().line,
+                    file: self.source_name.clone(),
                 })?;
                 self.consume(TokenKind::RParen, "Expect ')' after @route(...)")?;
                 route = Some((method, path));
@@ -257,6 +273,7 @@ impl Parser {
                 return Err(LangError::ParseError {
                     message: format!("Expect 'cache' or 'route(...)' after '@', got '{}'", dec_name),
                     line: self.peek().line,
+                    file: self.source_name.clone(),
                 });
             }
         }
@@ -279,6 +296,7 @@ impl Parser {
                     return Err(LangError::ParseError {
                         message: "Cannot have more than 255 parameters".to_string(),
                         line: self.previous().line,
+                        file: self.source_name.clone(),
                     });
                 }
                 
@@ -302,6 +320,7 @@ impl Parser {
                         return Err(LangError::ParseError {
                             message: "Non-default argument follows default argument".to_string(),
                             line: param_line,
+                            file: self.source_name.clone(),
                         });
                     }
                     None
@@ -493,6 +512,7 @@ impl Parser {
                 return Err(LangError::ParseError {
                     message: "Expect 'private:', 'protected:', 'public:', field (name : type), class variable (name = expr), constructor, or method in class body".to_string(),
                     line: self.peek().line,
+                    file: self.source_name.clone(),
                 });
             }
         }
@@ -555,6 +575,7 @@ impl Parser {
             return Err(LangError::ParseError {
                 message: "Expect 'new' for constructor".to_string(),
                 line: new_line,
+                file: self.source_name.clone(),
             });
         }
         
@@ -564,6 +585,7 @@ impl Parser {
             return Err(LangError::ParseError {
                 message: format!("Constructor class name '{}' must match class name '{}'", constructor_class_name, class_name),
                 line: self.previous().line,
+                file: self.source_name.clone(),
             });
         }
         
@@ -577,6 +599,7 @@ impl Parser {
                     return Err(LangError::ParseError {
                         message: "Cannot have more than 255 parameters".to_string(),
                         line: self.previous().line,
+                        file: self.source_name.clone(),
                     });
                 }
                 
@@ -599,6 +622,7 @@ impl Parser {
                         return Err(LangError::ParseError {
                             message: "Non-default argument follows default argument".to_string(),
                             line: param_line,
+                            file: self.source_name.clone(),
                         });
                     }
                     None
@@ -624,6 +648,7 @@ impl Parser {
                 return Err(LangError::ParseError {
                     message: "Expect 'this' after ':' in delegating constructor".to_string(),
                     line: self.peek().line,
+                    file: self.source_name.clone(),
                 });
             }
             self.consume(TokenKind::LParen, "Expect '(' after 'this'")?;
@@ -669,6 +694,7 @@ impl Parser {
                     return Err(LangError::ParseError {
                         message: "Cannot have more than 255 parameters".to_string(),
                         line: self.previous().line,
+                        file: self.source_name.clone(),
                     });
                 }
                 
@@ -678,12 +704,14 @@ impl Parser {
                         return Err(LangError::ParseError {
                             message: "After '@' only 'class' is allowed as parameter name".to_string(),
                             line: self.previous().line,
+                            file: self.source_name.clone(),
                         });
                     }
                     if !params.is_empty() {
                         return Err(LangError::ParseError {
                             message: "@class can only be the first parameter of a method".to_string(),
                             line: self.previous().line,
+                            file: self.source_name.clone(),
                         });
                     }
                     "@class".to_string()
@@ -708,6 +736,7 @@ impl Parser {
                         return Err(LangError::ParseError {
                             message: "Non-default argument follows default argument".to_string(),
                             line: param_line,
+                            file: self.source_name.clone(),
                         });
                     }
                     None
@@ -873,6 +902,7 @@ impl Parser {
                         return Err(LangError::ParseError {
                             message: "Only one variadic variable (*) allowed in unpack pattern".to_string(),
                             line: self.previous().line,
+                            file: self.source_name.clone(),
                         });
                     }
                     has_variadic = true;
@@ -899,6 +929,7 @@ impl Parser {
                     return Err(LangError::ParseError {
                         message: "Variadic unpacking (*) not supported in nested patterns".to_string(),
                         line: self.previous().line,
+                        file: self.source_name.clone(),
                     });
                 }
                 let nested = self.parse_unpack_pattern_list()?;
@@ -911,6 +942,7 @@ impl Parser {
                     return Err(LangError::ParseError {
                         message: "Variadic unpacking (*) not supported in nested patterns".to_string(),
                         line: self.previous().line,
+                        file: self.source_name.clone(),
                     });
                 }
                 let nested = self.parse_unpack_pattern_list()?;
@@ -922,11 +954,13 @@ impl Parser {
                     return Err(LangError::ParseError {
                         message: "Expect variable name after '*' in unpack pattern".to_string(),
                         line: self.peek().line,
+                        file: self.source_name.clone(),
                     });
                 }
                 return Err(LangError::ParseError {
                     message: "Expect variable name, '_', '*', or nested pattern in unpack pattern".to_string(),
                     line: self.peek().line,
+                    file: self.source_name.clone(),
                 });
             }
             
@@ -940,6 +974,7 @@ impl Parser {
                 return Err(LangError::ParseError {
                     message: "Variadic variable (*) must be the last element in unpack pattern".to_string(),
                     line: self.previous().line,
+                    file: self.source_name.clone(),
                 });
             }
         }
@@ -948,6 +983,7 @@ impl Parser {
             return Err(LangError::ParseError {
                 message: "Unpack pattern cannot be empty".to_string(),
                 line: self.peek().line,
+                file: self.source_name.clone(),
             });
         }
         
@@ -1081,6 +1117,7 @@ impl Parser {
             return Err(LangError::ParseError {
                 message: "try statement must have at least one catch block or finally block".to_string(),
                 line: try_line,
+                file: self.source_name.clone(),
             });
         }
         
@@ -1121,6 +1158,7 @@ impl Parser {
             return Err(LangError::ParseError {
                 message: format!("Expected end of expression in interpolation, found {:?}", self.peek().kind),
                 line: self.peek().line,
+                file: self.source_name.clone(),
             });
         }
         Ok(expr)
@@ -1182,6 +1220,7 @@ impl Parser {
                     let end_byte = end_byte.ok_or_else(|| LangError::ParseError {
                         message: format!("Unclosed interpolation at line {}", line),
                         line,
+                        file: None,
                     })?;
                     let expr_source = raw[pos + 2..end_byte].trim();
                     let expr = Self::parse_expression_from_source(expr_source, line)?;
@@ -1300,6 +1339,7 @@ impl Parser {
                             _ => return Err(LangError::ParseError {
                                 message: "Invalid assignment target".to_string(),
                                 line: op_line,
+                                file: self.source_name.clone(),
                             }),
                         };
                         format!("{}.{}.{}", base, prop_name, name)
@@ -1307,6 +1347,7 @@ impl Parser {
                     _ => return Err(LangError::ParseError {
                         message: "Invalid assignment target".to_string(),
                         line: op_line,
+                        file: self.source_name.clone(),
                     }),
                 };
                 return Ok(Expr::AssignOp {
@@ -1319,6 +1360,7 @@ impl Parser {
             return Err(LangError::ParseError {
                 message: "Invalid assignment target".to_string(),
                 line: op_line,
+                file: self.source_name.clone(),
             });
         }
         
@@ -1471,6 +1513,7 @@ impl Parser {
                             _ => return Err(LangError::ParseError {
                                 message: "Invalid assignment target".to_string(),
                                 line: equal_line,
+                                file: self.source_name.clone(),
                             }),
                         };
                         format!("{}.{}.{}", base, prop_name, name)
@@ -1478,6 +1521,7 @@ impl Parser {
                     _ => return Err(LangError::ParseError {
                         message: "Invalid assignment target".to_string(),
                         line: equal_line,
+                        file: self.source_name.clone(),
                     }),
                 };
                 return Ok(Expr::Assign {
@@ -1489,6 +1533,7 @@ impl Parser {
             return Err(LangError::ParseError {
                 message: "Invalid assignment target".to_string(),
                 line: equal_line,
+                file: self.source_name.clone(),
             });
         }
         
@@ -1686,13 +1731,22 @@ impl Parser {
                     return Err(LangError::ParseError {
                         message: "Cannot have more than 255 arguments".to_string(),
                         line: self.peek().line,
+                        file: self.source_name.clone(),
                     });
                 }
                 
                 
-                // Проверяем, является ли это именованным аргументом (identifier = expression)
-                // Сохраняем текущую позицию для проверки
-                let arg = if self.check(TokenKind::Identifier) {
+                // Распаковка объекта **expr (kwargs); ** может быть одним токеном или двумя * через пробел/новую строку
+                let arg = if self.check(TokenKind::StarStar) {
+                    self.advance();
+                    has_named = true;
+                    Arg::UnpackObject(self.expression()?)
+                } else if self.check(TokenKind::Star) && self.current + 1 < self.tokens.len() && self.tokens[self.current + 1].kind == TokenKind::Star {
+                    self.advance();
+                    self.advance();
+                    has_named = true;
+                    Arg::UnpackObject(self.expression()?)
+                } else if self.check(TokenKind::Identifier) {
                     // Проверяем, является ли следующий токен '='
                     // Сохраняем текущую позицию
                     let saved_current = self.current;
@@ -1721,18 +1775,19 @@ impl Parser {
                             return Err(LangError::ParseError {
                                 message: "Positional argument follows named argument".to_string(),
                                 line: self.peek().line,
+                                file: self.source_name.clone(),
                             });
                         }
                         let expr = self.expression()?;
                         Arg::Positional(expr)
                     }
                 } else {
-                    // Позиционный аргумент (не идентификатор)
-                    // Проверяем, что после именованного аргумента не идет позиционный
+                    // Позиционный аргумент (не идентификатор, не **)
                     if has_named {
                         return Err(LangError::ParseError {
                             message: "Positional argument follows named argument".to_string(),
                             line: self.peek().line,
+                            file: self.source_name.clone(),
                         });
                     }
                     Arg::Positional(self.expression()?)
@@ -1779,6 +1834,7 @@ impl Parser {
                 Err(LangError::ParseError {
                     message: "Can only call functions, variables, methods, and super".to_string(),
                     line: paren.line,
+                    file: self.source_name.clone(),
                 })
             }
         }
@@ -1878,6 +1934,7 @@ impl Parser {
                 .map_err(|_| LangError::ParseError {
                     message: "Invalid number".to_string(),
                     line,
+                    file: self.source_name.clone(),
                 })?;
             return Ok(Expr::Literal { value: Value::Number(value), line });
         }
@@ -1911,6 +1968,7 @@ impl Parser {
                 return Err(LangError::ParseError {
                     message: "After '@' only 'class' is allowed (e.g. @class.name)".to_string(),
                     line: self.previous().line,
+                    file: self.source_name.clone(),
                 });
             }
             return Ok(Expr::Variable { name: "@class".to_string(), line });
@@ -1961,6 +2019,7 @@ impl Parser {
                 return Err(LangError::ParseError {
                     message: "Expect ',' or ')' after expression in parentheses".to_string(),
                     line: self.peek().line,
+                    file: self.source_name.clone(),
                 });
             }
         }
@@ -1975,6 +2034,7 @@ impl Parser {
         Err(LangError::ParseError {
             message: format!("Expect expression, found {:?} '{}' at line {}", token.kind, token.lexeme, token.line),
             line: token.line,
+            file: self.source_name.clone(),
         })
     }
 
@@ -2069,22 +2129,33 @@ impl Parser {
 
     fn object_literal(&mut self) -> Result<Expr, LangError> {
         let line = self.previous().line;
-        let mut pairs = Vec::new();
+        let mut pairs: Vec<ObjectPair> = Vec::new();
 
         if !self.check(TokenKind::RBrace) {
             loop {
-                // Ключ должен быть строкой
-                let key_token = self.consume(TokenKind::String, "Expect string key in object literal")?;
-                let key = key_token.lexeme[1..key_token.lexeme.len() - 1].to_string(); // Убираем кавычки
-                
-                // Потребляем двоеточие
-                self.consume(TokenKind::Colon, "Expect ':' after key in object literal")?;
-                
-                // Парсим значение
-                let value = self.expression()?;
-                
-                pairs.push((key, value));
-                
+                if self.check(TokenKind::StarStar) {
+                    self.advance();
+                    let value = self.expression()?;
+                    pairs.push(ObjectPair::Spread(value));
+                } else if self.check(TokenKind::Star) && self.current + 1 < self.tokens.len() && self.tokens[self.current + 1].kind == TokenKind::Star {
+                    self.advance();
+                    self.advance();
+                    let value = self.expression()?;
+                    pairs.push(ObjectPair::Spread(value));
+                } else if self.check(TokenKind::Identifier) && self.current + 1 < self.tokens.len()
+                    && (self.check_next(TokenKind::Colon) || self.check_next(TokenKind::Equal))
+                {
+                    let key = self.advance().lexeme.clone();
+                    self.advance(); // consume ':' or '='
+                    let value = self.expression()?;
+                    pairs.push(ObjectPair::KeyValue(key, value));
+                } else {
+                    let key_token = self.consume(TokenKind::String, "Expect string key in object literal")?;
+                    let key = key_token.lexeme[1..key_token.lexeme.len() - 1].to_string();
+                    self.consume(TokenKind::Colon, "Expect ':' after key in object literal")?;
+                    let value = self.expression()?;
+                    pairs.push(ObjectPair::KeyValue(key, value));
+                }
                 if !self.match_token(TokenKind::Comma) {
                     break;
                 }
@@ -2093,41 +2164,69 @@ impl Parser {
 
         self.consume(TokenKind::RBrace, "Expect '}' after object pairs")?;
 
-        // Если все значения - литералы, создаем Value::Object напрямую
-        // Иначе создаем ObjectLiteral для компиляции во время выполнения
+        let has_spread = pairs.iter().any(|p| matches!(p, ObjectPair::Spread(_)));
+        if has_spread {
+            return Ok(Expr::ObjectLiteral { pairs, line });
+        }
         let mut all_literals = true;
         let mut object_map = std::collections::HashMap::new();
-        
-        for (key, expr) in &pairs {
-            match expr {
-                Expr::Literal { value, .. } => {
-                    object_map.insert(key.clone(), value.clone());
+        for p in &pairs {
+            match p {
+                ObjectPair::KeyValue(key, expr) => {
+                    match expr {
+                        Expr::Literal { value, .. } => {
+                            object_map.insert(key.clone(), value.clone());
+                        }
+                        _ => {
+                            all_literals = false;
+                            break;
+                        }
+                    }
                 }
-                _ => {
-                    all_literals = false;
-                    break;
-                }
+                ObjectPair::Spread(_) => {}
             }
         }
-
         if all_literals {
             Ok(Expr::Literal {
                 value: Value::Object(Rc::new(RefCell::new(object_map))),
                 line,
             })
         } else {
-            Ok(Expr::ObjectLiteral {
-                pairs,
-                line,
-            })
+            Ok(Expr::ObjectLiteral { pairs, line })
         }
     }
 
-    /// Парсит один тип - может быть идентификатором, null, или с подстрочным аргументом (Column[date], str[50])
-    fn parse_single_type(&mut self) -> Result<String, LangError> {
+    /// Форматирует компоненты типа в строку для подстрочного аргумента (str | dev -> "str | dev").
+    fn format_type_parts_for_subscript(parts: &[TypePart]) -> String {
+        parts
+            .iter()
+            .map(|p| match p {
+                TypePart::TypeName(s) => s.clone(),
+                TypePart::LiteralStr(s) => s.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
+    }
+
+    /// Парсит один тип - идентификатор, null, строковый литерал, или с подстрочным аргументом (Column[date], str[50])
+    fn parse_single_type(&mut self) -> Result<TypePart, LangError> {
         if self.check(TokenKind::Null) {
             self.advance();
-            Ok("null".to_string())
+            Ok(TypePart::TypeName("null".to_string()))
+        } else if self.check(TokenKind::String) {
+            let tok = self.advance();
+            let lexeme = &tok.lexeme;
+            let inner = if lexeme.len() >= 2 {
+                let q = lexeme.chars().next().unwrap();
+                if lexeme.chars().last() == Some(q) {
+                    lexeme[1..lexeme.len() - 1].to_string()
+                } else {
+                    lexeme.clone()
+                }
+            } else {
+                lexeme.clone()
+            };
+            Ok(TypePart::LiteralStr(inner))
         } else if self.check(TokenKind::Identifier) {
             let base = self.consume(TokenKind::Identifier, "Expect type name")?.lexeme.clone();
             if self.match_token(TokenKind::LBracket) {
@@ -2135,34 +2234,44 @@ impl Parser {
                     self.consume(TokenKind::Number, "Expect number in type subscript")?.lexeme.clone()
                 } else {
                     let inner_types = self.parse_type_name()?;
-                    inner_types.join(" | ")
+                    Self::format_type_parts_for_subscript(&inner_types)
                 };
                 self.consume(TokenKind::RBracket, "Expect ']' after type parameter")?;
-                Ok(format!("{}[{}]", base, inner))
+                Ok(TypePart::TypeName(format!("{}[{}]", base, inner)))
             } else {
-                Ok(base)
+                Ok(TypePart::TypeName(base))
             }
         } else {
             Err(LangError::ParseError {
-                message: "Expect type name (identifier or 'null')".to_string(),
+                message: "Expect type name (identifier, 'null', or string literal)".to_string(),
                 line: self.peek().line,
+                file: self.source_name.clone(),
             })
         }
     }
 
     /// Парсит union типы - может быть один тип или несколько через |
-    /// Например: "int", "str | int", "null | str | int"
-    fn parse_type_name(&mut self) -> Result<Vec<String>, LangError> {
+    /// Опционально: скобки ( ... ) для группировки; массив [ "a", "b" ] — union литералов через запятую.
+    fn parse_type_name(&mut self) -> Result<Vec<TypePart>, LangError> {
+        // Массив литералов: ["dev", "prod"] — union перечисленных значений
+        if self.match_token(TokenKind::LBracket) {
+            let mut types = Vec::new();
+            types.push(self.parse_single_type()?);
+            while self.match_token(TokenKind::Comma) {
+                types.push(self.parse_single_type()?);
+            }
+            self.consume(TokenKind::RBracket, "Expect ']' after array type")?;
+            return Ok(types);
+        }
+        let had_paren = self.match_token(TokenKind::LParen);
         let mut types = Vec::new();
-        
-        // Парсим первый тип
         types.push(self.parse_single_type()?);
-        
-        // Парсим дополнительные типы через |
         while self.match_token(TokenKind::Pipe) {
             types.push(self.parse_single_type()?);
         }
-        
+        if had_paren {
+            self.consume(TokenKind::RParen, "Expect ')' after type")?;
+        }
         Ok(types)
     }
 
@@ -2173,6 +2282,7 @@ impl Parser {
             Err(LangError::ParseError {
                 message: message.to_string(),
                 line: self.peek().line,
+                file: self.source_name.clone(),
             })
         }
     }

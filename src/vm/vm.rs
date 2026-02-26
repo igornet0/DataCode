@@ -15,6 +15,7 @@ use crate::vm::global_slot::{self, GlobalSlot};
 use crate::vm::globals;
 use crate::vm::calls;
 use crate::vm::executor;
+use crate::vm::module_cache::CachedModule;
 use libloading::Library;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -72,8 +73,8 @@ pub struct Vm {
     natives: Vec<NativeFn>,
     exception_handlers: Vec<ExceptionHandler>,
     error_type_table: Vec<String>,
-    global_names: std::collections::HashMap<usize, String>,
-    explicit_global_names: std::collections::HashMap<usize, String>,
+    global_names: std::collections::BTreeMap<usize, String>,
+    explicit_global_names: std::collections::BTreeMap<usize, String>,
     explicit_relations: Vec<ExplicitRelation>,
     explicit_primary_keys: Vec<ExplicitPrimaryKey>,
     loaded_modules: std::collections::HashSet<String>,
@@ -95,6 +96,15 @@ pub struct Vm {
     pub(crate) pending_relations: Vec<(Rc<RefCell<Table>>, String, Rc<RefCell<Table>>, String)>,
     /// Pending primary keys from primary_key() native (VM-owned).
     pub(crate) pending_primary_keys: Vec<(Rc<RefCell<Table>>, String)>,
+    /// Runtime module cache: canonical path -> compiled (chunk + functions).
+    module_cache: RefCell<HashMap<PathBuf, CachedModule>>,
+    /// Modules already executed once this run: canonical path -> saved namespace (module object). Re-import returns this without running again.
+    executed_modules: RefCell<HashMap<PathBuf, Value>>,
+    /// Dependency graph: canonical path -> list of canonical paths of imported modules (for topological order / invalidation).
+    module_deps: RefCell<HashMap<PathBuf, Vec<PathBuf>>>,
+    /// When set (e.g. from run_with_vm_internal_with_args), update_chunk_indices_from_names will always map "argv" to this slot,
+    /// so ImportFrom re-patch does not remap LoadGlobal(argv) to load_settings (slot 79) after merge.
+    argv_slot_index: Option<usize>,
 }
 
 /// Preallocated capacities for hot-path Vecs to reduce resize in loop-heavy runs.
@@ -134,8 +144,8 @@ impl Vm {
             natives: Vec::new(),
             exception_handlers: Vec::new(),
             error_type_table: Vec::new(),
-            global_names: std::collections::HashMap::new(),
-            explicit_global_names: std::collections::HashMap::new(),
+            global_names: std::collections::BTreeMap::new(),
+            explicit_global_names: std::collections::BTreeMap::new(),
             explicit_relations: Vec::new(),
             explicit_primary_keys: Vec::new(),
             loaded_modules: std::collections::HashSet::new(),
@@ -151,6 +161,10 @@ impl Vm {
             reusable_all_popped: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
             pending_relations: Vec::new(),
             pending_primary_keys: Vec::new(),
+            module_cache: RefCell::new(HashMap::new()),
+            executed_modules: RefCell::new(HashMap::new()),
+            module_deps: RefCell::new(HashMap::new()),
+            argv_slot_index: None,
         };
         vm.register_natives();
         vm
@@ -165,6 +179,34 @@ impl Vm {
     pub fn get_base_path(&self) -> Option<PathBuf> {
         self.base_path.clone()
     }
+
+    /// Set the slot index used for argv so update_chunk_indices_from_names (e.g. after ImportFrom) always maps "argv" to this slot.
+    pub fn set_argv_slot_index(&mut self, slot: Option<usize>) {
+        self.argv_slot_index = slot;
+    }
+
+    /// Get the argv slot index if set.
+    pub fn get_argv_slot_index(&self) -> Option<usize> {
+        self.argv_slot_index
+    }
+
+    /// Mutable borrow of the runtime module cache (canonical path -> CachedModule). Used by file_import.
+    pub fn get_module_cache_mut(&self) -> std::cell::RefMut<'_, HashMap<PathBuf, CachedModule>> {
+        self.module_cache.borrow_mut()
+    }
+
+    /// Mutable borrow of executed modules (canonical path -> module namespace). Used by file_import.
+    pub fn get_executed_modules_mut(&self) -> std::cell::RefMut<'_, HashMap<PathBuf, Value>> {
+        self.executed_modules.borrow_mut()
+    }
+
+    /// Mutable borrow of module dependency graph (path -> deps). Used by file_import to register edges after compile.
+    pub fn get_module_deps_mut(&self) -> std::cell::RefMut<'_, HashMap<PathBuf, Vec<PathBuf>>> {
+        self.module_deps.borrow_mut()
+    }
+
+    /// Native index for ValueError::new_1 (constructor used by raise ValueError("...")).
+    pub const VALUE_ERROR_NATIVE_INDEX: usize = 75;
 
     fn register_natives(&mut self) {
         // Регистрируем нативные функции
@@ -249,6 +291,11 @@ impl Vm {
         self.natives.push(natives::native_enum);       // 70
         self.natives.push(natives::native_table_class); // 71 - Table (built-in class for inheritance)
         self.natives.push(natives::native_array_with_capacity); // 72
+        // 73, 74: reserved for future builtins if BUILTIN_GLOBAL_NAMES grows
+        while self.natives.len() < Self::VALUE_ERROR_NATIVE_INDEX {
+            self.natives.push(natives::native_value_error_new); // placeholder so indices line up
+        }
+        self.natives.push(natives::native_value_error_new); // 75 - ValueError::new_1 for raise ValueError("...")
     }
 
     /// Добавляет в VM слоты для всех имён из chunk.global_names, которых ещё нет в VM.
@@ -257,9 +304,15 @@ impl Vm {
     /// флакующие тесты при "from settings_env import load_env").
     /// Нужно вызывать перед update_chunk_indices, чтобы главный chunk мог ссылаться на __main__.
     pub fn ensure_globals_from_chunk(&mut self, chunk: &crate::bytecode::Chunk) {
+        /// Compiler uses this for undefined variables; we must not allocate a slot (would mis-report "undefined" as null).
+        const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
+        // Не добавляем слот для "argv" из chunk: argv устанавливается в lib.rs в один слот в конце,
+        // иначе получается два слота (из chunk и наш), байткод мапится на min и может загрузить функцию.
         let mut entries: Vec<_> = chunk
             .global_names
             .iter()
+            .filter(|(idx, _)| **idx != UNDEFINED_GLOBAL_SENTINEL)
+            .filter(|(_, name)| name.as_str() != "argv")
             .filter(|(_, name)| !self.global_names.values().any(|n| n == name.as_str()))
             .map(|(idx, name)| (*idx, name.clone()))
             .collect();
@@ -277,26 +330,52 @@ impl Vm {
 
     /// Как ensure_globals_from_chunk, но сохраняет индексы из chunk: слоты создаются по chunk.global_names (idx, name),
     /// с расширением globals при необходимости. Нужно для модулей (file_import), чтобы main chunk без патча писал по тем же индексам.
+    /// Всегда привязываем (idx, name) из chunk к VM по этому индексу, чтобы StoreGlobal(idx) в main chunk записал в слот,
+    /// который при экспорте будет иметь это имя (иначе конструктор может оказаться только по другому индексу и экспортироваться Null).
     pub fn ensure_globals_from_chunk_preserve_indices(&mut self, chunk: &crate::bytecode::Chunk) {
-        let mut entries: Vec<_> = chunk.global_names.iter().map(|(i, n)| (*i, n.clone())).collect();
+        /// Compiler uses this for undefined variables; we must not allocate a slot (would overflow on resize).
+        const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
+        let mut entries: Vec<_> = chunk
+            .global_names
+            .iter()
+            .filter(|(i, _)| **i != UNDEFINED_GLOBAL_SENTINEL)
+            .map(|(i, n)| (*i, n.clone()))
+            .collect();
         entries.sort_by_key(|(idx, _)| *idx);
         for (idx, name) in entries {
-            let exists = self.global_names.iter().any(|(_, n)| n == &name);
-            if !exists {
-                if idx >= self.globals.len() {
-                    self.globals.resize(idx + 1, global_slot::default_global_slot());
-                }
-                self.global_names.insert(idx, name.clone());
-                debug_println!("[DEBUG ensure_globals_from_chunk_preserve_indices] Добавлен слот для '{}' в globals[{}]", name, idx);
-                if name == "Config" || name == "DatabaseConfig" {
-                    debug_println!("[DEBUG ensure_globals_from_chunk_preserve_indices] Config/DatabaseConfig: '{}' -> слот {}", name, idx);
-                }
+            if idx >= self.globals.len() {
+                self.globals.resize(idx + 1, global_slot::default_global_slot());
+            }
+            self.global_names.insert(idx, name.clone());
+            debug_println!("[DEBUG ensure_globals_from_chunk_preserve_indices] Добавлен слот для '{}' в globals[{}]", name, idx);
+            if name == "Config" || name == "DatabaseConfig" {
+                debug_println!("[DEBUG ensure_globals_from_chunk_preserve_indices] Config/DatabaseConfig: '{}' -> слот {}", name, idx);
             }
         }
         debug_println!(
             "[DEBUG ensure_globals_from_chunk_preserve_indices] после: global_names 75..80: {:?}",
             (75..80).filter_map(|i| self.global_names.get(&i).map(|n| (i, n.as_str()))).collect::<Vec<_>>()
         );
+    }
+
+    /// Injects built-in exception constructors (e.g. ValueError::new_1) into slots that are still null after ensure_globals_from_chunk.
+    /// Called from run_compiled_module so that raise ValueError("...") works in modules.
+    pub fn ensure_exception_constructors(&mut self) {
+        const NAME: &str = "ValueError::new_1";
+        let idx = match self.global_names.iter().find(|(_, n)| n.as_str() == NAME).map(|(i, _)| *i) {
+            Some(i) => i,
+            None => return,
+        };
+        if idx >= self.globals.len() {
+            return;
+        }
+        let value_id = self.globals[idx].resolve_to_value_id(&mut self.value_store);
+        let current = load_value(value_id, &self.value_store, &self.heavy_store);
+        if matches!(current, Value::Null) {
+            let id = self.value_store.allocate(ValueCell::NativeFunction(Self::VALUE_ERROR_NATIVE_INDEX));
+            self.globals[idx] = GlobalSlot::Heap(id);
+            debug_println!("[DEBUG ensure_exception_constructors] Injected {} at globals[{}]", NAME, idx);
+        }
     }
 
     /// Обновляет индексы глобальных переменных в chunk на основе реальных индексов в VM
@@ -307,6 +386,7 @@ impl Vm {
             Some(self.globals.as_mut_slice()),
             Some(&mut self.value_store),
             Some(&self.heavy_store),
+            self.argv_slot_index,
         );
     }
 
@@ -316,12 +396,14 @@ impl Vm {
     /// Обновляет индексы глобалов в chunk по переданной карте имён.
     /// globals_for_verify: Option<&mut [GlobalSlot]>; при проверке слот материализуется через resolve_to_value_id + load_value (с кэшем).
     /// store/heap: когда None, проверка по слотам не выполняется (для вызовов без доступа к store/heap).
+    /// argv_slot_index: когда Some(slot), имя "argv" всегда мапится на этот слот (после ImportFrom слот 79 может стать load_settings).
     pub fn update_chunk_indices_from_names(
         chunk: &mut crate::bytecode::Chunk,
-        global_names: &std::collections::HashMap<usize, String>,
-        globals_for_verify: Option<&mut [GlobalSlot]>,
-        store: Option<&mut ValueStore>,
+        global_names: &std::collections::BTreeMap<usize, String>,
+        mut globals_for_verify: Option<&mut [GlobalSlot]>,
+        mut store: Option<&mut ValueStore>,
         heap: Option<&HeavyStore>,
+        argv_slot_index: Option<usize>,
     ) {
         // Phase 1: Build old_idx → real_idx mapping (no bytecode changes).
         // Resolve real_idx by name deterministically (min index if multiple) for stability.
@@ -329,20 +411,104 @@ impl Vm {
         let mut old_to_real: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
         let mut name_index_pairs: Vec<_> = chunk.global_names.iter().map(|(i, n)| (*i, n.clone())).collect();
         name_index_pairs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let can_prefer_non_null = globals_for_verify.is_some() && store.is_some() && heap.is_some();
         for (old_idx, name) in &name_index_pairs {
-            let matching_indices: Vec<usize> = global_names
+            // Always map "argv" to the designated slot when set (avoids ImportFrom re-patch mapping it to load_settings at 79).
+            let real_idx: Option<usize> = if name == "argv" && argv_slot_index.is_some() {
+                argv_slot_index
+            } else {
+                let matching_indices: Vec<usize> = global_names
+                    .iter()
+                    .filter(|(_, n)| *n == name)
+                    .map(|(idx, _)| *idx)
+                    .collect();
+                // Prefer index whose slot is non-null when multiple indices share the same name (e.g. 84 Null, 92 Function).
+                // For constructor names (::new_), prefer slot that holds Function so we don't pick argv (Array) at lower index.
+                if matching_indices.is_empty() {
+                    None
+                } else if can_prefer_non_null {
+                    const BUILTIN_COUNT: usize = 75;
+                    if let (Some(globals), Some(store), Some(heap)) = (globals_for_verify.as_deref_mut(), store.as_deref_mut(), heap) {
+                        let want_function = name.contains("::new_");
+                        let non_null: Vec<usize> = matching_indices
+                            .iter()
+                            .filter(|&&idx| {
+                                idx >= BUILTIN_COUNT
+                                    && idx < globals.len()
+                                    && !matches!(
+                                        load_value(globals[idx].resolve_to_value_id(store), store, heap),
+                                        Value::Null
+                                    )
+                            })
+                            .copied()
+                            .collect();
+                        let preferred: Option<usize> = if want_function {
+                            non_null
+                                .iter()
+                                .filter(|&&idx| {
+                                    idx < globals.len()
+                                        && matches!(
+                                            load_value(globals[idx].resolve_to_value_id(store), store, heap),
+                                            Value::Function(_)
+                                        )
+                                })
+                                .min()
+                                .copied()
+                        } else {
+                            None
+                        };
+                        preferred
+                            .or_else(|| non_null.into_iter().min())
+                            .or_else(|| matching_indices.iter().filter(|&&i| i >= BUILTIN_COUNT).min().copied())
+                            .or_else(|| matching_indices.iter().min().copied())
+                    } else {
+                        matching_indices.iter().min().copied()
+                    }
+                } else {
+                    matching_indices.iter().min().copied()
+                }
+            };
+            if let Some(r) = real_idx {
+                // Never remap the argv slot to another index only when this chunk's name at old_idx is "argv".
+                let r_final = if name == "argv" && argv_slot_index == Some(*old_idx) && r != *old_idx {
+                    *old_idx
+                } else {
+                    r
+                };
+                if *old_idx != r_final {
+                    old_to_real.insert(*old_idx, r_final);
+                    debug_println!("[DEBUG update_chunk_indices] Маппинг '{}': {} -> {} (argv forced={})", name, old_idx, r_final, name == "argv" && argv_slot_index.is_some());
+                }
+            } else {
+                // Warn when no match: always for argv, for other names only when verbose constructor debug is on.
+                if name == "argv" || crate::common::debug::verbose_constructor_debug() {
+                    eprintln!("[update_chunk_indices] no match for name '{}' (old_idx {}), chunk LoadGlobal will not be patched", name, old_idx);
+                }
+            }
+        }
+        if crate::common::debug::verbose_constructor_debug() {
+            for (old_idx, name) in &name_index_pairs {
+                if let Some(&real_idx) = old_to_real.get(old_idx) {
+                    eprintln!("[update_chunk_indices] '{}' old_idx {} -> real_idx {}", name, old_idx, real_idx);
+                } else {
+                    eprintln!("[update_chunk_indices] '{}' old_idx {} -> no match (not in caller global_names)", name, old_idx);
+                }
+            }
+        }
+        // Resolve compiler's UNDEFINED_GLOBAL_SENTINEL (usize::MAX) by name so merged functions see caller globals
+        const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
+        if let Some(name) = chunk.global_names.get(&UNDEFINED_GLOBAL_SENTINEL) {
+            let matching: Vec<usize> = global_names
                 .iter()
                 .filter(|(_, n)| *n == name)
                 .map(|(idx, _)| *idx)
                 .collect();
-            if let Some(&real_idx) = matching_indices.iter().min() {
-                if *old_idx != real_idx {
-                    old_to_real.insert(*old_idx, real_idx);
-                    debug_println!("[DEBUG update_chunk_indices] Маппинг '{}': {} -> {}", name, old_idx, real_idx);
-                }
+            if let Some(&real_idx) = matching.iter().min() {
+                old_to_real.insert(UNDEFINED_GLOBAL_SENTINEL, real_idx);
+                debug_println!("[DEBUG update_chunk_indices] Маппинг sentinel '{}': MAX -> {}", name, real_idx);
             }
         }
-        // Всегда явно привязать model_config (sentinel) к имени класса: при наличии LoadGlobal(sentinel) разрешаем по имени из chunk.global_names и перезаписываем маппинг, чтобы не зависеть от порядка итерации HashMap.
+        // Always bind model_config sentinel to the class by name so Settings subclass constructors load the correct class for GetArrayElement(class, "model_config").
         let needs_sentinel = chunk.code.iter().any(|op| {
             matches!(op, crate::bytecode::OpCode::LoadGlobal(i) if *i == Self::MODEL_CONFIG_CLASS_LOAD_INDEX)
         });
@@ -353,10 +519,32 @@ impl Vm {
                     .filter(|(_, n)| *n == name)
                     .map(|(idx, _)| *idx)
                     .collect();
-                if let Some(&real_idx) = matching_indices.iter().min() {
+                // For __constructing_class__ use .min() so the same slot is used as in executor (global_index_by_name uses .min()).
+                let real_idx = if name.as_str() == "__constructing_class__" {
+                    matching_indices.into_iter().min()
+                } else {
+                    // Prefer the slot that holds the class Object (has __class_name, model_config), not a constructor (Function).
+                    let mut class_slots = Vec::new();
+                    if let (Some(globals), Some(store), Some(heap)) = (globals_for_verify.as_deref_mut(), store.as_deref_mut(), heap.as_deref()) {
+                        for &idx in &matching_indices {
+                            if idx < globals.len() {
+                                let id = globals[idx].resolve_to_value_id(store);
+                                let v = load_value(id, store, heap);
+                                if let Value::Object(obj_rc) = &v {
+                                    let obj = obj_rc.borrow();
+                                    if obj.get("__class_name").is_some() && obj.get("model_config").is_some() {
+                                        class_slots.push(idx);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    class_slots.into_iter().max().or_else(|| matching_indices.into_iter().max())
+                };
+                if let Some(real_idx) = real_idx {
                     old_to_real.insert(Self::MODEL_CONFIG_CLASS_LOAD_INDEX, real_idx);
                     debug_println!("[DEBUG update_chunk_indices] Маппинг model_config (sentinel) класс '{}': sentinel -> globals[{}]", name, real_idx);
-                    if let (Some(globals), Some(store), Some(heap)) = (globals_for_verify, store, heap) {
+                    if let (Some(globals), Some(store), Some(heap)) = (globals_for_verify.as_deref_mut(), store.as_deref_mut(), heap.as_deref()) {
                         if real_idx < globals.len() {
                             let id = globals[real_idx].resolve_to_value_id(store);
                             let v = load_value(id, store, heap);
@@ -434,7 +622,15 @@ impl Vm {
     /// (для run() главный chunk не входит в functions; для run_with_vm_internal_with_args можно передать None).
     /// Используется маппинг по имени (name -> new_idx), чтобы один и тот же old_idx в разных чанках
     /// с разными именами (например 72 = "config" в main и 72 = "DatabaseConfig" в конструкторе) патчился в разные слоты.
-    pub fn set_functions(&mut self, functions: Vec<crate::bytecode::Function>, main_chunk: Option<&mut crate::bytecode::Chunk>) {
+    /// main_old_idx_to_name: снимок main chunk global_names (idx -> name) до вызова update_chunk_indices,
+    /// чтобы при патче байткода вложенных функций (main/__main__) правильно резолвить индексы по имени
+    /// (иначе 78 в main() для load_settings не патчится в 79, т.к. main chunk уже имеет 78=get_settings).
+    pub fn set_functions(
+        &mut self,
+        functions: Vec<crate::bytecode::Function>,
+        main_chunk: Option<&mut crate::bytecode::Chunk>,
+        main_old_idx_to_name: Option<std::collections::HashMap<usize, String>>,
+    ) {
         let mut explicit_global_names_to_add = std::collections::HashMap::new();
 
         // First pass: collect all (old_idx, name) from main chunk + all function chunks (no overwrite by index).
@@ -456,17 +652,55 @@ impl Vm {
 
         // Build name -> new_idx: each distinct name gets one slot in the VM.
         // Встроенные имена (sum, count, ...) всегда мапятся на канонический индекс 0..69.
+        // Names that only appear as UNDEFINED_GLOBAL_SENTINEL (compiler's undefined-variable placeholder) are not given a slot so LoadGlobal(MAX) is not patched and runtime reports "Undefined variable".
+        const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
         let mut name_to_new_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut constructor_slots_used: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for name in &unique_names {
+            let only_sentinel = all_pairs.iter()
+                .filter(|(_, n)| n == name)
+                .all(|(idx, _)| *idx == UNDEFINED_GLOBAL_SENTINEL);
+            if only_sentinel {
+                // Do not allocate a slot; bytecode will keep LoadGlobal(MAX) and runtime will error.
+                continue;
+            }
             let new_idx = if let Some(builtin_idx) = globals::builtin_global_index(name) {
                 debug_println!("[DEBUG set_functions] Встроенное имя '{}' -> канонический индекс {}", name, builtin_idx);
                 builtin_idx
+            } else if name == "argv" && self.argv_slot_index.is_some() {
+                // argv must always map to the slot we reserved (lib.rs pushes the array there); otherwise
+                // min() could pick another slot and main chunk LoadGlobal could end up loading a function.
+                let slot = self.argv_slot_index.unwrap();
+                debug_println!("[DEBUG set_functions] argv -> слот {} (argv_slot_index)", slot);
+                slot
             } else {
                 let matching_indices: Vec<usize> = self.global_names.iter()
                     .filter(|(_, n)| *n == name)
                     .map(|(idx, _)| *idx)
                     .collect();
-                if let Some(&real_idx) = matching_indices.iter().min() {
+                let candidate = matching_indices.iter().min().copied();
+                let is_constructor = name.contains("::new_");
+                let new_idx = if is_constructor {
+                    if let Some(real_idx) = candidate {
+                        if constructor_slots_used.insert(real_idx) {
+                            real_idx
+                        } else {
+                            let fresh = self.globals.len();
+                            self.globals.push(global_slot::default_global_slot());
+                            self.global_names.insert(fresh, name.clone());
+                            constructor_slots_used.insert(fresh);
+                            debug_println!("[DEBUG set_functions] Конструктор '{}' -> новый слот {} (конфликт)", name, fresh);
+                            fresh
+                        }
+                    } else {
+                        let fresh = self.globals.len();
+                        self.globals.push(global_slot::default_global_slot());
+                        self.global_names.insert(fresh, name.clone());
+                        constructor_slots_used.insert(fresh);
+                        debug_println!("[DEBUG set_functions] Конструктор '{}' не найден в VM, слот {}", name, fresh);
+                        fresh
+                    }
+                } else if let Some(real_idx) = candidate {
                     debug_println!("[DEBUG set_functions] Найдена переменная '{}' в VM с индексом {} (детерминированный min)", name, real_idx);
                     if name == "Config" || name == "DatabaseConfig" {
                         debug_println!("[DEBUG set_functions] Config/DatabaseConfig: '{}' -> индекс {} (найден в self.global_names)", name, real_idx);
@@ -481,7 +715,8 @@ impl Vm {
                         debug_println!("[DEBUG set_functions] Config/DatabaseConfig: '{}' -> индекс {} (создан новый слот)", name, new_idx);
                     }
                     new_idx
-                }
+                };
+                new_idx
             };
             name_to_new_idx.insert(name.clone(), new_idx);
         }
@@ -494,7 +729,17 @@ impl Vm {
             }
         }
 
-        // Patch main chunk: один проход по байткоду с маппингом old_idx -> new_idx, чтобы уже пропатченные индексы не перезаписывались.
+        // main_old_idx_to_name used only for function chunks; main chunk is patched from current mc.global_names (after update_chunk_indices).
+        let main_old_idx_to_name: std::collections::HashMap<usize, String> = main_old_idx_to_name
+            .unwrap_or_else(|| {
+                main_chunk
+                    .as_ref()
+                    .map(|mc| mc.global_names.iter().map(|(i, n)| (*i, n.clone())).collect())
+                    .unwrap_or_default()
+            });
+
+        // Patch main chunk: используем текущие mc.global_names (после update_chunk_indices), а не снимок:
+        // в снимке 75=main, а в chunk уже 75=__main__ (кали), и патч по снимку 75→76 подменяет вызов __main__ на main.
         if let Some(mc) = main_chunk {
             let old_to_new: std::collections::HashMap<usize, usize> = mc
                 .global_names
@@ -524,10 +769,17 @@ impl Vm {
                     _ => {}
                 }
             }
-            for (old_idx, new_idx) in &old_to_new {
-                if let Some(name) = mc.global_names.remove(old_idx) {
-                    mc.global_names.insert(*new_idx, name);
-                }
+            let to_insert: Vec<_> = old_to_new
+                .iter()
+                .filter_map(|(old_idx, new_idx)| {
+                    mc.global_names.get(old_idx).map(|name| (*old_idx, *new_idx, name.clone()))
+                })
+                .collect();
+            for (old_idx, _, _) in &to_insert {
+                mc.global_names.remove(old_idx);
+            }
+            for (_, new_idx, name) in to_insert {
+                mc.global_names.insert(new_idx, name);
             }
         }
 
@@ -536,13 +788,13 @@ impl Vm {
         let existing_functions_count = self.functions.len();
         let mut updated_functions = functions;
         for function in &mut updated_functions {
-            let old_to_new: std::collections::HashMap<usize, usize> = function
+            let mut old_to_new: std::collections::HashMap<usize, usize> = function
                 .chunk
                 .global_names
                 .iter()
                 .filter_map(|(old_idx, name)| {
                     let new_idx = if *old_idx == Self::MODEL_CONFIG_CLASS_LOAD_INDEX {
-                        // Resolve sentinel by name from VM's current global_names so we patch to the real class slot.
+                        // Resolve sentinel by name from VM's current global_names. Use .min() so the same slot is used as in executor (global_index_by_name uses .min()).
                         let matching: Vec<usize> = self.global_names.iter()
                             .filter(|(_, n)| *n == name)
                             .map(|(idx, _)| *idx)
@@ -573,6 +825,26 @@ impl Vm {
                     })
                 })
                 .collect();
+            // Resolve indices that appear in this function's bytecode but not in old_to_new.
+            // Prefer this function's chunk.global_names over main_old_idx_to_name.
+            for (_op_index, opcode) in function.chunk.code.iter().enumerate() {
+                let idx = match opcode {
+                    crate::bytecode::OpCode::LoadGlobal(i) | crate::bytecode::OpCode::StoreGlobal(i) => *i,
+                    _ => continue,
+                };
+                if old_to_new.contains_key(&idx) {
+                    continue;
+                }
+                let name = function.chunk.global_names.get(&idx)
+                    .or_else(|| main_old_idx_to_name.get(&idx));
+                if let Some(name) = name {
+                    if let Some(&new_idx) = name_to_new_idx.get(name) {
+                        if idx != new_idx {
+                            old_to_new.insert(idx, new_idx);
+                        }
+                    }
+                }
+            }
             for opcode in &mut function.chunk.code {
                 match opcode {
                     crate::bytecode::OpCode::LoadGlobal(idx) => {
@@ -588,10 +860,20 @@ impl Vm {
                     _ => {}
                 }
             }
-            for (old_idx, new_idx) in &old_to_new {
-                if let Some(name) = function.chunk.global_names.remove(old_idx) {
-                    function.chunk.global_names.insert(*new_idx, name);
-                }
+            // Collect (old_idx, new_idx, name) then remove all old, then insert all new.
+            // HashMap iteration order is non-deterministic; with overlapping mappings (e.g. 78->79, 79->78)
+            // processing (79,78) first would overwrite slot 78 before we read it and lose a name.
+            let to_insert: Vec<_> = old_to_new
+                .iter()
+                .filter_map(|(old_idx, new_idx)| {
+                    function.chunk.global_names.get(old_idx).map(|name| (*old_idx, *new_idx, name.clone()))
+                })
+                .collect();
+            for (old_idx, _, _) in &to_insert {
+                function.chunk.global_names.remove(old_idx);
+            }
+            for (_, new_idx, name) in to_insert {
+                function.chunk.global_names.insert(new_idx, name);
             }
         }
         
@@ -635,6 +917,10 @@ impl Vm {
         
         for (real_global_idx, name) in &chunk_global_names {
             debug_println!("[DEBUG set_functions] Обрабатываем '{}' из chunk -> слот {}", name, real_global_idx);
+            // Не трогаем слот argv — туда lib.rs кладёт массив аргументов скрипта
+            if Some(*real_global_idx) == self.argv_slot_index {
+                continue;
+            }
             // Слот встроенного натива: пользовательская функция с тем же именем перекрывает встроенный
             if *real_global_idx < globals::BUILTIN_GLOBAL_NAMES.len() {
                 if let Some(canonical) = globals::builtin_global_name(*real_global_idx) {
@@ -781,6 +1067,9 @@ impl Vm {
         }
         
         for (global_idx, name) in self.global_names.clone().iter() {
+            if Some(*global_idx) == self.argv_slot_index {
+                continue;
+            }
             if *global_idx < self.globals.len() {
                 let gid = self.globals[*global_idx].resolve_to_value_id(&mut self.value_store);
                 let old_fn_idx_opt = self.value_store.get(gid)
@@ -821,16 +1110,27 @@ impl Vm {
         }
         debug_println!("[DEBUG set_functions] Завершено обновление индексов функций в globals");
         
+        // Не перезаписываем слот argv (там лежит массив аргументов скрипта).
+        let argv_slot = self.argv_slot_index;
         // В конце явно устанавливаем слот __main__ (точка входа из главного chunk), чтобы его не перезаписали другие циклы
         if let Some((&global_idx, _)) = self.global_names.iter().find(|(_, n)| *n == "__main__") {
             if let Some(fn_idx) = self.find_function_index_by_name("__main__") {
-                if global_idx < self.globals.len() {
+                if global_idx < self.globals.len() && Some(global_idx) != argv_slot {
                     self.globals[global_idx] = GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(fn_idx)));
                     debug_println!("[DEBUG set_functions] Установлен слот __main__ в globals[{}] = Value::Function({})", global_idx, fn_idx);
                 }
             }
         }
-        
+        // Явно устанавливаем слот main (вызывается из __main__), иначе при merge/порядке загрузки слот может остаться null
+        if let Some((&global_idx, _)) = self.global_names.iter().find(|(_, n)| *n == "main") {
+            if let Some(fn_idx) = self.find_function_index_by_name("main") {
+                if global_idx < self.globals.len() && Some(global_idx) != argv_slot {
+                    self.globals[global_idx] = GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(fn_idx)));
+                    debug_println!("[DEBUG set_functions] Установлен слот main в globals[{}] = Value::Function({})", global_idx, fn_idx);
+                }
+            }
+        }
+
         for (idx, name) in &self.global_names {
             if name.contains("::new_") {
                 if let Some(slot) = self.globals.get_mut(*idx) {
@@ -905,7 +1205,10 @@ impl Vm {
 
     // Exception handling methods moved to exceptions.rs
 
-    pub fn run(&mut self, chunk: &Chunk) -> Result<Value, LangError> {
+    /// argv_patch: when Some((argv_slot_index, old_indices, argv_value_id)), the chunk is cloned and any LoadGlobal(old_idx)
+    /// in the clone is replaced with LoadGlobal(argv_slot_index). If argv_value_id is Some(id), that value is written
+    /// to globals[argv_slot_index] immediately before the execution loop so the argv slot is never overwritten by earlier code.
+    pub fn run(&mut self, chunk: &Chunk, argv_patch: Option<(usize, &[usize], Option<ValueId>)>) -> Result<Value, LangError> {
         // Set RunContext (base_path, executing_lib, dpm_package_paths, smb_manager) so file_import and file_ops use one source
         let run_ctx = crate::vm::run_context::RunContext {
             base_path: self.base_path.clone(),
@@ -940,15 +1243,54 @@ impl Vm {
             &chunk.explicit_global_names,
         );
 
+        // Settings subclasses load model_config from __constructing_class__ (set by executor before each constructor call).
+        const CONSTRUCTING_CLASS_NAME: &str = "__constructing_class__";
+        if !self.global_names.values().any(|n| n == CONSTRUCTING_CLASS_NAME) {
+            let idx = self.globals.len();
+            self.globals.push(global_slot::default_global_slot());
+            self.global_names.insert(idx, CONSTRUCTING_CLASS_NAME.to_string());
+        }
+
         #[cfg(feature = "profile")]
         crate::vm::profile::set();
+
+        // Клонируем chunk и при необходимости патчим LoadGlobal(argv) на argv_slot_index,
+        // чтобы после merge_global_names и возможного ImportFrom слот по старому индексу не оказался функцией (load_settings и т.д.).
+        // Важно: заменяем только те LoadGlobal(old_idx), у которых в chunk по этому индексу имя "argv":
+        // после set_functions в главном chunk индекс 76 может означать __main__ (кали), и замена всех 76→82 даёт "Can only call functions, got: Array".
+        let mut chunk_to_run = chunk.clone();
+        if let Some((argv_slot_index, old_indices, _)) = argv_patch.as_ref() {
+            for &old_idx in *old_indices {
+                if chunk_to_run.global_names.get(&old_idx).map(|n| n.as_str()) != Some("argv") {
+                    continue;
+                }
+                for opcode in &mut chunk_to_run.code {
+                    if let crate::bytecode::OpCode::LoadGlobal(idx) = opcode {
+                        if *idx == old_idx {
+                            *opcode = crate::bytecode::OpCode::LoadGlobal(*argv_slot_index);
+                        }
+                    }
+                }
+            }
+        }
 
         // Создаем начальный frame (constants loaded into store here)
         let function = crate::bytecode::Function::new("<main>".to_string(), 0);
         let mut function = function;
-        function.chunk = chunk.clone();
+        function.chunk = chunk_to_run;
         let frame = CallFrame::new(function, 0, &mut self.value_store, &mut self.heavy_store);
         self.frames.push(frame);
+
+        // Записываем argv в слот в самый последний момент, чтобы никакой код (set_functions и т.д.) не мог перезаписать слот функцией.
+        if let Some((argv_slot_index, _old_indices, argv_value_id)) = argv_patch {
+            if let Some(argv_id) = argv_value_id {
+                if argv_slot_index >= self.globals.len() {
+                    self.globals
+                        .resize(argv_slot_index + 1, global_slot::default_global_slot());
+                }
+                self.globals[argv_slot_index] = GlobalSlot::Heap(argv_id);
+            }
+        }
 
         loop {
             match self.step()? {
@@ -1001,7 +1343,7 @@ impl Vm {
             &mut self.globals,
             &mut self.global_names,
             &self.explicit_global_names,
-            &self.functions,
+            &mut self.functions,
             &mut self.natives,
             &mut self.exception_handlers,
             &mut self.error_type_table,
@@ -1126,17 +1468,17 @@ impl Vm {
     }
 
     /// Получить доступ к именам глобальных переменных
-    pub fn get_global_names(&self) -> &std::collections::HashMap<usize, String> {
+    pub fn get_global_names(&self) -> &std::collections::BTreeMap<usize, String> {
         &self.global_names
     }
 
     /// Получить мутабельный доступ к именам глобальных переменных
-    pub fn get_global_names_mut(&mut self) -> &mut std::collections::HashMap<usize, String> {
+    pub fn get_global_names_mut(&mut self) -> &mut std::collections::BTreeMap<usize, String> {
         &mut self.global_names
     }
 
     /// Получить доступ к именам переменных, явно объявленных с ключевым словом 'global'
-    pub fn get_explicit_global_names(&self) -> &std::collections::HashMap<usize, String> {
+    pub fn get_explicit_global_names(&self) -> &std::collections::BTreeMap<usize, String> {
         &self.explicit_global_names
     }
 
@@ -1297,6 +1639,19 @@ impl Vm {
                         debug_println!("[DEBUG merge_globals_from] Пропуск перезаписи '{}' (слот {} — канонический натив)", name, existing_index);
                         continue;
                     }
+                    // Не перезаписывать слот, если текущее значение — нативная функция (например Config из settings_env).
+                    // Иначе при "from config import Settings" класс Config из config.dc затёр бы Config из settings_env в dev_config.
+                    if existing_index < self.globals.len() {
+                        let existing_slot = &self.globals[existing_index];
+                        let existing_val = match existing_slot {
+                            GlobalSlot::Inline(tv) => crate::vm::store_convert::slot_to_value(*tv, &self.value_store, &self.heavy_store),
+                            GlobalSlot::Heap(id) => load_value(*id, &self.value_store, &self.heavy_store),
+                        };
+                        if matches!(existing_val, Value::NativeFunction(_)) {
+                            debug_println!("[DEBUG merge_globals_from] Пропуск перезаписи '{}' (текущее значение — нативная функция)", name);
+                            continue;
+                        }
+                    }
                     // Не перезаписывать слот main встроенным модулем из other (ml, plot, settings_env, uuid):
                     // иначе затрутся экспорты модуля (Config, DatabaseConfig и т.д.), занявшие те же индексы.
                     if crate::vm::modules::is_known_module(name.as_str()) {
@@ -1356,6 +1711,440 @@ impl Vm {
                 }
         }
         debug_println!("[DEBUG merge_globals_from] Объединение завершено. Всего глобальных переменных: {}", self.global_names.len());
+    }
+
+    /// After merging a module into the caller, re-establish __main__ and main in the caller's globals
+    /// so they are not overwritten by the merge (caller's entry point slots).
+    pub fn ensure_entry_point_slots(
+        target_globals: &mut [GlobalSlot],
+        target_global_names: &std::collections::BTreeMap<usize, String>,
+        target_functions: &[crate::bytecode::Function],
+        store: &mut ValueStore,
+    ) {
+        for name in ["__main__", "main"] {
+            if let Some(&slot) = target_global_names.iter().find(|(_, n)| n.as_str() == name).map(|(idx, _)| idx) {
+                if let Some(fn_idx) = target_functions.iter().position(|f| f.name == name) {
+                    if slot < target_globals.len() {
+                        target_globals[slot] = GlobalSlot::Heap(store.allocate_arena(ValueCell::Function(fn_idx)));
+                        debug_println!("[DEBUG ensure_entry_point_slots] Установлен слот '{}' в globals[{}] = Function({})", name, slot, fn_idx);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Merge module VM into caller's buffers (used from executor to avoid double mutable borrow of VM).
+    pub fn merge_globals_from_into(
+        other: &Vm,
+        target_globals: &mut Vec<GlobalSlot>,
+        target_global_names: &mut std::collections::BTreeMap<usize, String>,
+        target_functions: &mut Vec<crate::bytecode::Function>,
+        target_natives: &mut Vec<NativeFn>,
+        store: &mut ValueStore,
+        heap: &mut HeavyStore,
+    ) {
+        const BUILTIN_COUNT: usize = 75;
+        let other_natives = other.get_natives();
+        if other_natives.len() > BUILTIN_COUNT {
+            target_natives.extend_from_slice(&other_natives[BUILTIN_COUNT..]);
+            debug_println!("[DEBUG merge_globals_from_into] Добавлено нативов из модуля: {}", other_natives.len() - BUILTIN_COUNT);
+        }
+        let other_globals = other.get_globals();
+        let other_global_names = other.get_global_names();
+        debug_println!("[DEBUG merge_globals_from_into] Объединяем глобальные переменные из другого VM");
+        let start_function_index = target_functions.len();
+        target_functions.extend(other.get_functions().iter().cloned());
+        debug_println!("[DEBUG merge_globals_from_into] start_function_index: {}, всего функций: {}", start_function_index, target_functions.len());
+
+        let mut pairs: Vec<_> = other_global_names.iter().map(|(i, n)| (*i, n.clone())).collect();
+        pairs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+        let mut by_name: std::collections::HashMap<String, (usize, Value)> = std::collections::HashMap::new();
+        for (index, name) in &pairs {
+            if name == "argv" {
+                continue;
+            }
+            if let Some(slot) = other_globals.get(*index) {
+                let value = match slot {
+                    GlobalSlot::Inline(tv) => crate::vm::store_convert::slot_to_value(*tv, other.value_store(), other.heavy_store()),
+                    GlobalSlot::Heap(id) => load_value(*id, other.value_store(), other.heavy_store()),
+                };
+                let prefer = match by_name.get(name) {
+                    Some((prev_index, existing)) => {
+                        let existing_is_null = matches!(existing, Value::Null);
+                        let value_is_null = matches!(&value, Value::Null);
+                        if value_is_null && !existing_is_null {
+                            false
+                        } else if !value_is_null && existing_is_null {
+                            true
+                        } else {
+                            let existing_is_obj = matches!(existing, Value::Object(_));
+                            let value_is_obj = matches!(&value, Value::Object(_));
+                            if value_is_obj && !existing_is_obj {
+                                true
+                            } else if !value_is_obj && existing_is_obj {
+                                false
+                            } else {
+                                *index >= *prev_index
+                            }
+                        }
+                    }
+                    None => true,
+                };
+                if prefer {
+                    by_name.insert(name.clone(), (*index, value));
+                }
+            }
+        }
+
+        let mut names_sorted: Vec<_> = by_name.keys().cloned().collect();
+        names_sorted.sort();
+        for name in names_sorted {
+            let (index, value) = by_name.get(&name).unwrap().clone();
+            debug_println!("[DEBUG merge_globals_from_into] Объединяем '{}' (index: {})", name, index);
+            let value_to_store = match value {
+                Value::Function(function_index) => {
+                    Value::Function(start_function_index + function_index)
+                }
+                Value::Object(obj_rc) => {
+                    use std::rc::Rc;
+                    use std::cell::RefCell;
+                    let obj = obj_rc.borrow();
+                    let mut new_obj = HashMap::new();
+                    let other_natives_slice = other.get_natives();
+                    for (key, val) in obj.iter() {
+                        let updated_val = match val {
+                            Value::Function(function_index) => Value::Function(start_function_index + *function_index),
+                            Value::NativeFunction(i) => {
+                                if *i >= other_natives_slice.len() {
+                                    val.clone()
+                                } else {
+                                    let fn_ptr = other_natives_slice[*i] as *const ();
+                                    let remapped = target_natives[BUILTIN_COUNT..]
+                                        .iter()
+                                        .position(|&f| std::ptr::eq(f as *const (), fn_ptr))
+                                        .map(|pos| BUILTIN_COUNT + pos)
+                                        .unwrap_or_else(|| {
+                                            target_natives.push(other_natives_slice[*i]);
+                                            target_natives.len() - 1
+                                        });
+                                    Value::NativeFunction(remapped)
+                                }
+                            }
+                            _ => val.clone(),
+                        };
+                        new_obj.insert(key.clone(), updated_val);
+                    }
+                    Value::Object(Rc::new(RefCell::new(new_obj)))
+                }
+                Value::NativeFunction(i) if i >= BUILTIN_COUNT => {
+                    let other_natives_slice = other.get_natives();
+                    if i >= other_natives_slice.len() {
+                        value.clone()
+                    } else {
+                        let fn_ptr = other_natives_slice[i] as *const ();
+                        let remapped = target_natives[BUILTIN_COUNT..]
+                            .iter()
+                            .position(|&f| std::ptr::eq(f as *const (), fn_ptr))
+                            .map(|pos| BUILTIN_COUNT + pos)
+                            .unwrap_or_else(|| {
+                                target_natives.push(other_natives_slice[i]);
+                                target_natives.len() - 1
+                            });
+                        Value::NativeFunction(remapped)
+                    }
+                }
+                _ => value.clone(),
+            };
+
+            let existing_indices: Vec<usize> = target_global_names
+                .iter()
+                .filter(|(_, n)| n.as_str() == name.as_str())
+                .map(|(idx, _)| *idx)
+                .collect();
+            if let Some(&existing_index) = existing_indices.iter().min() {
+                if existing_index < BUILTIN_COUNT {
+                    continue;
+                }
+                if existing_index < target_globals.len() {
+                    let existing_slot = &target_globals[existing_index];
+                    let existing_val = match existing_slot {
+                        GlobalSlot::Inline(tv) => crate::vm::store_convert::slot_to_value(*tv, store, heap),
+                        GlobalSlot::Heap(id) => load_value(*id, store, heap),
+                    };
+                    if matches!(existing_val, Value::NativeFunction(_)) {
+                        continue;
+                    }
+                }
+                if crate::vm::modules::is_known_module(name.as_str()) {
+                    continue;
+                }
+                if let Value::NativeFunction(i) = &value_to_store {
+                    if *i < BUILTIN_COUNT {
+                        if let Some(canonical) = globals::builtin_global_name(*i) {
+                            if canonical != name.as_str() {
+                                continue;
+                            }
+                        }
+                    }
+                }
+                let id = store_value_arena(value_to_store.clone(), store, heap);
+                if existing_index < target_globals.len() {
+                    target_globals[existing_index] = GlobalSlot::Heap(id);
+                } else {
+                    target_globals.resize(existing_index + 1, global_slot::default_global_slot());
+                    target_globals[existing_index] = GlobalSlot::Heap(id);
+                }
+                if name == "get_settings" || name == "load_settings" {
+                    let fn_info = match &value_to_store {
+                        Value::Function(fi) => format!("Function({})", fi),
+                        _ => format!("{:?}", std::mem::discriminant(&value_to_store)),
+                    };
+                    debug_println!(
+                        "[DEBUG merge_globals_from_into] merge '{}' -> caller slot {} value={}",
+                        name, existing_index, fn_info
+                    );
+                }
+            } else {
+                // Canonicalization: do not create a new slot if this name already exists in target (any slot).
+                // Duplicate name->slot entries cause wrong binding (e.g. get_settings at 74 and 78; bytecode may pick the wrong one).
+                let any_existing: Option<usize> = target_global_names
+                    .iter()
+                    .find(|(_, n)| n.as_str() == name.as_str())
+                    .map(|(i, _)| *i);
+                if let Some(canonical_slot) = any_existing {
+                    if canonical_slot >= BUILTIN_COUNT {
+                        if canonical_slot >= target_globals.len() {
+                            target_globals.resize(canonical_slot + 1, global_slot::default_global_slot());
+                        }
+                        let id = store_value_arena(value_to_store.clone(), store, heap);
+                        target_globals[canonical_slot] = GlobalSlot::Heap(id);
+                        if name == "get_settings" || name == "load_settings" {
+                            let fn_info = match &value_to_store {
+                                Value::Function(fi) => format!("Function({})", fi),
+                                _ => "non-Fn".to_string(),
+                            };
+                            debug_println!(
+                                "[DEBUG merge_globals_from_into] canonicalize '{}' -> existing slot {} value={}",
+                                name, canonical_slot, fn_info
+                            );
+                        }
+                    }
+                    continue;
+                }
+                if let Value::NativeFunction(i) = &value_to_store {
+                    if *i < BUILTIN_COUNT {
+                        if let Some(canonical) = globals::builtin_global_name(*i) {
+                            if canonical != name.as_str() {
+                                continue;
+                            }
+                        }
+                    }
+                }
+                let new_index = target_globals.len();
+                target_globals.push(GlobalSlot::Heap(store_value_arena(value_to_store, store, heap)));
+                target_global_names.insert(new_index, name.clone());
+            }
+        }
+        debug_println!("[DEBUG merge_globals_from_into] Объединение завершено. Всего глобальных переменных: {}", target_global_names.len());
+    }
+
+    /// Merges exports from an already-executed module object into this VM's globals.
+    /// Used when re-importing the same module (canonical path): no run(), just copy namespace.
+    pub fn merge_module_exports_into_globals(&mut self, module_object: &Value) {
+        const BUILTIN_COUNT: usize = 75;
+        let obj = match module_object {
+            Value::Object(rc) => rc.borrow(),
+            _ => return,
+        };
+        let mut names_sorted: Vec<String> = obj.keys().cloned().collect();
+        names_sorted.sort();
+        for name in names_sorted {
+            if name == "__start_function_index" || name == "argv" {
+                continue;
+            }
+            let value = match obj.get(&name) {
+                Some(v) => v.clone(),
+                None => continue,
+            };
+            let mut existing_indices: Vec<usize> = self.global_names
+                .iter()
+                .filter(|(_, n)| n.as_str() == name.as_str())
+                .map(|(idx, _)| *idx)
+                .collect();
+            existing_indices.sort_unstable();
+            if let Some(&first_index) = existing_indices.first() {
+                if first_index < BUILTIN_COUNT {
+                    continue;
+                }
+                if crate::vm::modules::is_known_module(name.as_str()) {
+                    continue;
+                }
+                // Do not overwrite a slot that already holds a Function (from merge); keep the remapped function.
+                if first_index < self.globals.len() {
+                    let existing_slot = &self.globals[first_index];
+                    let existing_val = match existing_slot {
+                        GlobalSlot::Inline(tv) => crate::vm::store_convert::slot_to_value(*tv, &self.value_store, &self.heavy_store),
+                        GlobalSlot::Heap(id) => load_value(*id, &self.value_store, &self.heavy_store),
+                    };
+                    if matches!(existing_val, Value::Function(_)) {
+                        continue;
+                    }
+                }
+                let id = store_value_arena(value, &mut self.value_store, &mut self.heavy_store);
+                for &idx in &existing_indices {
+                    if idx < self.globals.len() {
+                        self.globals[idx] = GlobalSlot::Heap(id);
+                    } else {
+                        self.globals.resize(idx + 1, global_slot::default_global_slot());
+                        self.globals[idx] = GlobalSlot::Heap(id);
+                    }
+                }
+            } else {
+                let value_to_store = match &value {
+                    Value::Function(fn_idx) => {
+                        if let Some(Value::Number(start)) = obj.get("__start_function_index") {
+                            Value::Function((*start as usize) + fn_idx)
+                        } else {
+                            value.clone()
+                        }
+                    }
+                    _ => value.clone(),
+                };
+                if let Value::NativeFunction(i) = &value_to_store {
+                    if *i < BUILTIN_COUNT {
+                        if let Some(canonical) = globals::builtin_global_name(*i) {
+                            if canonical != name.as_str() {
+                                continue;
+                            }
+                        }
+                    }
+                }
+                let new_index = self.globals.len();
+                self.globals.push(GlobalSlot::Heap(store_value_arena(value_to_store, &mut self.value_store, &mut self.heavy_store)));
+                self.global_names.insert(new_index, name);
+            }
+        }
+    }
+
+    /// Remap Function indices in a value from module export (and Object inner) for merge into caller.
+    fn remap_module_export_value(value: &Value, start_fn: usize) -> Value {
+        match value {
+            Value::Function(fn_idx) => Value::Function(start_fn + fn_idx),
+            Value::Object(obj_rc) => {
+                let obj = obj_rc.borrow();
+                let mut new_obj = HashMap::new();
+                for (k, v) in obj.iter() {
+                    let inner = match v {
+                        Value::Function(i) => Value::Function(start_fn + i),
+                        _ => v.clone(),
+                    };
+                    new_obj.insert(k.clone(), inner);
+                }
+                Value::Object(Rc::new(RefCell::new(new_obj)))
+            }
+            _ => value.clone(),
+        }
+    }
+
+    /// Merge module object exports into caller's globals (used from executor to avoid double mutable borrow).
+    pub fn merge_module_exports_into_globals_into(
+        module_object: &Value,
+        target_globals: &mut Vec<GlobalSlot>,
+        target_global_names: &mut std::collections::BTreeMap<usize, String>,
+        store: &mut ValueStore,
+        heap: &mut HeavyStore,
+    ) {
+        const BUILTIN_COUNT: usize = 75;
+        let obj = match module_object {
+            Value::Object(rc) => rc.borrow(),
+            _ => return,
+        };
+        let mut names_sorted: Vec<String> = obj.keys().cloned().collect();
+        names_sorted.sort();
+        for name in names_sorted {
+            if name == "__start_function_index" || name == "argv" {
+                continue;
+            }
+            let value = match obj.get(&name) {
+                Some(v) => v.clone(),
+                None => continue,
+            };
+            let mut existing_indices: Vec<usize> = target_global_names
+                .iter()
+                .filter(|(_, n)| n.as_str() == name.as_str())
+                .map(|(idx, _)| *idx)
+                .collect();
+            existing_indices.sort_unstable();
+            if let Some(&first_index) = existing_indices.first() {
+                if first_index < BUILTIN_COUNT {
+                    continue;
+                }
+                if crate::vm::modules::is_known_module(name.as_str()) {
+                    continue;
+                }
+                if first_index < target_globals.len() {
+                    let existing_slot = &target_globals[first_index];
+                    let existing_val = match existing_slot {
+                        GlobalSlot::Inline(tv) => crate::vm::store_convert::slot_to_value(*tv, store, heap),
+                        GlobalSlot::Heap(id) => load_value(*id, store, heap),
+                    };
+                    if matches!(existing_val, Value::Function(_)) {
+                        if name == "get_settings" || name == "load_settings" {
+                            let fi = if let Value::Function(fi) = &existing_val { *fi } else { 0 };
+                            debug_println!(
+                                "[DEBUG merge_module_exports_into_globals_into] skip '{}' -> slot {} (already Function({}))",
+                                name, first_index, fi
+                            );
+                        }
+                        continue;
+                    }
+                    // Keep class Object from merge_globals_from_into (already remapped); do not overwrite with raw module_object.
+                    if matches!(existing_val, Value::Object(_)) {
+                        continue;
+                    }
+                    // Do not overwrite non-null (e.g. constructor from merge_globals_from_into) with Null from export.
+                    if matches!(&value, Value::Null) && !matches!(existing_val, Value::Null) {
+                        continue;
+                    }
+                }
+                let start_fn = obj.get("__start_function_index").and_then(|v| if let Value::Number(s) = v { Some(*s as usize) } else { None }).unwrap_or(0);
+                let value_to_store = Self::remap_module_export_value(&value, start_fn);
+                if name == "get_settings" || name == "load_settings" {
+                    let fn_info = match &value_to_store {
+                        Value::Function(fi) => format!("Function({})", fi),
+                        _ => "non-Fn".to_string(),
+                    };
+                    debug_println!(
+                        "[DEBUG merge_module_exports_into_globals_into] write '{}' -> slots {:?} value={}",
+                        name, existing_indices, fn_info
+                    );
+                }
+                let id = store_value_arena(value_to_store, store, heap);
+                for &idx in &existing_indices {
+                    if idx < target_globals.len() {
+                        target_globals[idx] = GlobalSlot::Heap(id);
+                    } else {
+                        target_globals.resize(idx + 1, global_slot::default_global_slot());
+                        target_globals[idx] = GlobalSlot::Heap(id);
+                    }
+                }
+            } else {
+                let start_fn = obj.get("__start_function_index").and_then(|v| if let Value::Number(s) = v { Some(*s as usize) } else { None }).unwrap_or(0);
+                let value_to_store = Self::remap_module_export_value(&value, start_fn);
+                if let Value::NativeFunction(native_idx) = &value_to_store {
+                    if *native_idx < BUILTIN_COUNT {
+                        if let Some(canonical) = globals::builtin_global_name(*native_idx) {
+                            if canonical != name.as_str() {
+                                continue;
+                            }
+                        }
+                    }
+                }
+                let new_index = target_globals.len();
+                target_globals.push(GlobalSlot::Heap(store_value_arena(value_to_store, store, heap)));
+                target_global_names.insert(new_index, name);
+            }
+        }
     }
 
     /// Добавить явную связь между колонками таблиц

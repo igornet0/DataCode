@@ -2,6 +2,7 @@
 
 use super::chunk::Chunk;
 use crate::common::value::Value;
+use crate::parser::ast::TypePart;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -113,8 +114,8 @@ pub struct Function {
     pub chunk: Chunk,
     pub arity: usize, // Количество параметров
     pub param_names: Vec<String>, // Имена параметров для разрешения именованных аргументов
-    pub param_types: Vec<Option<Vec<String>>>, // Типы параметров для проверки типов (None если тип не указан, Vec для union типов)
-    pub return_type: Option<Vec<String>>, // Тип возвращаемого значения (None если не указан, Vec для union типов)
+    pub param_types: Vec<Option<Vec<TypePart>>>, // Типы параметров (None если не указан, Vec для union: TypeName + LiteralStr)
+    pub return_type: Option<Vec<TypePart>>, // Тип возвращаемого значения (union)
     pub default_values: Vec<Option<Value>>, // Значения по умолчанию для каждого параметра (None если нет default)
     pub captured_vars: Vec<CapturedVar>, // Information about captured variables
     pub is_cached: bool, // Флаг, указывающий, что функция должна кэшироваться

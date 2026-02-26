@@ -49,6 +49,12 @@ pub struct CompilationContext<'a> {
     pub class_constructor: &'a mut std::collections::HashMap<String, (String, usize)>,
     /// Class names marked with @Abstract; calls to these must load the class object (not constructor) so VM can check __abstract.
     pub abstract_classes: &'a mut std::collections::HashSet<String>,
+    /// Class name -> env_prefix from model_config (for Settings subclasses). Used to build nested_specs when calling load_env.
+    pub class_settings_env_prefix: &'a mut std::collections::HashMap<String, String>,
+    /// Class name -> nested_specs Value (array) for Settings subclasses. Used so subclasses (e.g. DevSettings) pass parent's nested_specs when calling super.
+    pub class_nested_specs_value: &'a mut std::collections::HashMap<String, crate::common::value::Value>,
+    /// Class name -> default required_keys array for Settings subclasses. Used at call site for Config(path) to pass 3 args.
+    pub class_required_keys_value: &'a mut std::collections::HashMap<String, crate::common::value::Value>,
     /// Current class being compiled (for super.method() resolution).
     pub current_class: Option<String>,
     /// Superclass of current class (for super() and super.method() resolution).
@@ -57,6 +63,8 @@ pub struct CompilationContext<'a> {
     pub in_constructor: bool,
     /// When in constructor body, the slot index for "this" (arity). Used so body always uses correct slot regardless of scope.
     pub constructor_this_slot: Option<usize>,
+    /// Source file path for error messages (propagated to chunk.source_name).
+    pub source_name: Option<&'a str>,
 }
 
 impl<'a> CompilationContext<'a> {

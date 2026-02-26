@@ -2,6 +2,7 @@
 
 use crate::debug_println;
 use crate::common::{error::{LangError, ErrorType}, value::Value, value_store::ValueStore, TaggedValue};
+use crate::parser::ast::TypePart;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::store_convert::store_value;
@@ -58,14 +59,24 @@ fn check_single_type(value: &Value, type_name: &str) -> bool {
     }
 }
 
-/// Проверяет, соответствует ли значение хотя бы одному из типов (union типы)
-pub fn check_type_value(value: &Value, type_names: &[String]) -> bool {
-    type_names.iter().any(|type_name| check_single_type(value, type_name))
+/// Проверяет, соответствует ли значение хотя бы одному из типов (union: TypeName + LiteralStr)
+pub fn check_type_value(value: &Value, type_parts: &[TypePart]) -> bool {
+    type_parts.iter().any(|part| match part {
+        TypePart::LiteralStr(s) => matches!(value, Value::String(v) if v == s),
+        TypePart::TypeName(n) => check_single_type(value, n),
+    })
 }
 
-/// Форматирует список типов для сообщения об ошибке
-pub fn format_type_names(type_names: &[String]) -> String {
-    type_names.join(" | ")
+/// Форматирует список типов для сообщения об ошибке (LiteralStr в кавычках)
+pub fn format_type_parts(type_parts: &[TypePart]) -> String {
+    type_parts
+        .iter()
+        .map(|p| match p {
+            TypePart::TypeName(s) => s.clone(),
+            TypePart::LiteralStr(s) => format!("\"{}\"", s),
+        })
+        .collect::<Vec<_>>()
+        .join(" | ")
 }
 
 /// Возвращает имя типа значения
@@ -155,7 +166,7 @@ pub fn setup_function_call(
                 return Err(LangError::runtime_error_with_type(
                     format!(
                         "Argument '{}' expected type '{}', got '{}'",
-                        param_name, format_type_names(type_names), get_type_name_value(arg)
+                        param_name, format_type_parts(type_names), get_type_name_value(arg)
                     ),
                     0,
                     ErrorType::TypeError,

@@ -2027,16 +2027,7 @@ impl Vm {
                     target_globals.resize(existing_index + 1, global_slot::default_global_slot());
                     target_globals[existing_index] = GlobalSlot::Heap(id);
                 }
-                if name == "get_settings" || name == "load_settings" {
-                    let fn_info = match &value_to_store {
-                        Value::Function(fi) => format!("Function({})", fi),
-                        _ => format!("{:?}", std::mem::discriminant(&value_to_store)),
-                    };
-                    debug_println!(
-                        "[DEBUG merge_globals_from_into] merge '{}' -> caller slot {} value={}",
-                        name, existing_index, fn_info
-                    );
-                }
+                
             } else {
                 // Canonicalization: do not create a new slot if this name already exists in target (any slot).
                 // Duplicate name->slot entries cause wrong binding (e.g. get_settings at 74 and 78; bytecode may pick the wrong one).
@@ -2051,16 +2042,6 @@ impl Vm {
                         }
                         let id = store_value_arena(value_to_store.clone(), store, heap);
                         target_globals[canonical_slot] = GlobalSlot::Heap(id);
-                        if name == "get_settings" || name == "load_settings" {
-                            let fn_info = match &value_to_store {
-                                Value::Function(fi) => format!("Function({})", fi),
-                                _ => "non-Fn".to_string(),
-                            };
-                            debug_println!(
-                                "[DEBUG merge_globals_from_into] canonicalize '{}' -> existing slot {} value={}",
-                                name, canonical_slot, fn_info
-                            );
-                        }
                     }
                     continue;
                 }
@@ -2227,13 +2208,6 @@ impl Vm {
                         GlobalSlot::Heap(id) => load_value(*id, store, heap),
                     };
                     if matches!(existing_val, Value::Function(_) | Value::ModuleFunction { .. }) {
-                        if name == "get_settings" || name == "load_settings" {
-                            let fi = if let Value::Function(fi) = &existing_val { *fi } else { 0 };
-                            debug_println!(
-                                "[DEBUG merge_module_exports_into_globals_into] skip '{}' -> slot {} (already Function({}))",
-                                name, first_index, fi
-                            );
-                        }
                         continue;
                     }
                     // Keep class Object from merge_globals_from_into (already remapped); do not overwrite with raw module_object.
@@ -2247,17 +2221,7 @@ impl Vm {
                 }
                 let start_fn = obj.get("__start_function_index").and_then(|v| if let Value::Number(s) = v { Some(*s as usize) } else { None }).unwrap_or(0);
                 let value_to_store = Self::remap_module_export_value(&value, start_fn);
-                if name == "get_settings" || name == "load_settings" {
-                    let fn_info = match &value_to_store {
-                        Value::Function(fi) => format!("Function({})", fi),
-                        Value::ModuleFunction { module_id, local_index } => format!("ModuleFunction({},{})", module_id, local_index),
-                        _ => "non-Fn".to_string(),
-                    };
-                    debug_println!(
-                        "[DEBUG merge_module_exports_into_globals_into] write '{}' -> slots {:?} value={}",
-                        name, existing_indices, fn_info
-                    );
-                }
+            
                 let id = store_value_arena(value_to_store, store, heap);
                 for &idx in &existing_indices {
                     if idx < target_globals.len() {

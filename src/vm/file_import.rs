@@ -392,14 +392,6 @@ pub fn export_globals_from_vm(vm: &mut Vm) -> HashMap<String, Value> {
         .collect();
     to_export.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
     debug_println!("[DEBUG export_globals_from_vm] Экспортируем {} глобальных переменных", to_export.len());
-    for (idx, name) in global_names.iter().filter(|(_, n)| n.as_str() == "get_settings" || n.as_str() == "load_settings") {
-        debug_println!("[DEBUG export_globals_from_vm] module VM global_names: slot {} -> '{}'", idx, name);
-    }
-    for (idx, name) in &to_export {
-        if name == "get_settings" || name == "load_settings" {
-            debug_println!("[DEBUG export_globals_from_vm] to_export порядок: index={} name='{}'", idx, name);
-        }
-    }
     // Group by name so we can prefer non-null when the same name appears at multiple indices.
     let mut by_name: std::collections::HashMap<String, Vec<(usize, Value)>> = std::collections::HashMap::new();
     for (index, name) in to_export {
@@ -436,19 +428,8 @@ pub fn export_globals_from_vm(vm: &mut Vm) -> HashMap<String, Value> {
             }
         });
         let best_entry = entries.last().cloned();
-        if let Some((idx_used, v)) = best_entry {
+        if let Some((_, v)) = best_entry {
             exports.insert(name.clone(), v.clone());
-            if name == "get_settings" || name == "load_settings" {
-                let fn_idx_info = match &v {
-                    crate::common::value::Value::Function(fi) => format!("Function({})", fi),
-                    crate::common::value::Value::ModuleFunction { module_id, local_index } => format!("ModuleFunction({},{})", module_id, local_index),
-                    _ => format!("{:?}", std::mem::discriminant(&v)),
-                };
-                debug_println!(
-                    "[DEBUG export_globals_from_vm] export '{}' -> slot_index={} value={} (chosen from {} entries)",
-                    name, idx_used, fn_idx_info, entries.len()
-                );
-            }
         }
     }
     debug_println!("[DEBUG export_globals_from_vm] Всего экспортировано: {} переменных", exports.len());

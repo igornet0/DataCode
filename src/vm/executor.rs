@@ -808,9 +808,6 @@ pub fn execute_instruction(
                         }
                     }
                     // Process named imports in deterministic (sorted) order
-                    for (idx, n) in global_names.iter().filter(|(_, n)| n.as_str() == "get_settings" || n.as_str() == "load_settings") {
-                        debug_println!("[DEBUG ImportFrom] caller global_names перед per-item: slot {} -> '{}'", idx, n);
-                    }
                     for (item_str, value) in named_imports {
                         debug_println!("[DEBUG ImportFrom] Импортируем '{}' из модуля '{}'", item_str, module_name);
                         debug_println!("[DEBUG ImportFrom] Доступные ключи в модуле: {:?}", module_object.keys().collect::<Vec<_>>());
@@ -846,17 +843,6 @@ pub fn execute_instruction(
                                             indices
                                         };
                                         let has_merge = module_object.get("__start_function_index").is_some();
-                                        if item_str == "get_settings" || item_str == "load_settings" {
-                                            let fn_idx_str = match &value_to_store {
-                                                Value::Function(fi) => format!("Function({})", fi),
-                                                Value::ModuleFunction { module_id, local_index } => format!("ModuleFunction({},{})", module_id, local_index),
-                                                _ => "non-Function".to_string(),
-                                            };
-                                            debug_println!(
-                                                "[DEBUG ImportFrom] per-item: '{}' -> indices {:?} value={}",
-                                                item_str, indices_to_update, fn_idx_str
-                                            );
-                                        }
                                         let id = store_value(value_to_store, value_store, heavy_store);
                                         for &global_index in &indices_to_update {
                                             // When we just merged (__start_function_index present), per-item is source of truth for

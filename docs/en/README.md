@@ -4,7 +4,7 @@ Welcome to the complete documentation of the **DataCode** programming language i
 
 ## 🎯 About DataCode
 
-**DataCode** is a simple interactive programming language designed for fast data processing and easy learning. It features intuitive syntax, powerful array support, built-in functions, and user-defined functions with local scope.
+**DataCode** is a simple interactive programming language designed for fast data processing and easy learning. It features intuitive syntax, powerful array support, built-in functions, and user-defined functions with local scope. For VM and runtime implementation details (globals, modules, profiling), see [Core / Internals](./internals/README.md).
 
 ## 📖 Documentation Contents
 
@@ -175,20 +175,28 @@ Loading environment variables from .env files, type coercion, prefix filtering, 
 
 ### 11. [uuid Module](./uuid/README.md)
 
-UUID generation: v4, v7, deterministic v3/v5, string parsing, byte representation, metadata:
-
-- **Generation** - v4, v7, new (alias v7), random (alias v4)
-- **Parsing and strings** - parse, to_string
-- **Bytes** - to_bytes, from_bytes
-- **Deterministic UUIDs** - v3, v5, namespace DNS, URL, OID
-- **Metadata** - version, variant, timestamp
-
-**📚 Usage examples:**
-- uuid module: [`examples/en/13-uuid/`](../../examples/en/13-uuid/), [`examples/ru/13-uuid/`](../../examples/ru/13-uuid/)
+UUID generation (v4, v7), parse/to_string, bytes, deterministic (v3/v5), metadata. See the [uuid README](./uuid/README.md) for details and examples.
 
 ---
 
-### 12. [Text Rendering in Plot Module](./text_rendering.md)
+### 12. [Modules and Imports](./modules_and_imports.md)(./modules_and_imports.md)
+
+How to import and use modules in DataCode:
+
+- **Import syntax** — `import M`, `from M import X, Y as Z, *`
+- **Base path** — Set from the script directory when run from CLI; local modules resolve relative to it
+- **Single-file module** — `<name>.dc`; **package** — `<name>/__lib__.dc` (preferred over a file)
+- **Dotted names** — `core.config` for nested packages (each segment = package or file)
+- **Built-in modules** — `ml`, `plot`, `settings_env`, `uuid`, `database`
+- **Exports** — Top-level globals (variables, functions, classes) of a .dc module
+
+**📚 Usage examples:**
+- Modules and packages: [`examples/en/15-modules/`](../../examples/en/15-modules/), [`examples/ru/15-модули/`](../../examples/ru/15-модули/)
+- Implementation details: [Module Import System (Internals)](./internals/module_import_system.md)
+
+---
+
+### 13. [Text Rendering in Plot Module](./text_rendering.md)
 
 Detailed description of the text rendering system in the plot module:
 
@@ -203,6 +211,18 @@ Detailed description of the text rendering system in the plot module:
 **📚 Technical documentation:**
 - Complete process description: [Text Rendering](./text_rendering.md)
 - Problem analysis: [`TEXT_RENDERING_ANALYSIS.md`](../../TEXT_RENDERING_ANALYSIS.md)
+
+---
+
+### 14. [Core / Internals (for kernel developers)](./internals/README.md)
+
+VM and runtime implementation details:
+
+- **VM Architecture** — Vm, CallFrame, executor, bytecode (OpCode, Chunk, DCB), execution loop
+- **Execution Model** — Operand stack, frames, call/return, exceptions
+- **Globals and Namespace** — GlobalSlot, global_names, update_chunk_indices_from_names
+- **Module Import System** — Import/ImportFrom compilation and runtime, file_import, ModuleObject, remap
+- **Profiling** — Feature `profile`, ProfileStats, build and usage
 
 ---
 
@@ -271,6 +291,19 @@ All examples are organized in the [`examples/en/`](../../examples/en/) folder:
 
 ---
 
+### 13. Core / Internals (for kernel developers)
+
+Technical documentation for VM and runtime implementation:
+
+- **[Internals index](./internals/README.md)** — Overview and entry point
+- **[VM Architecture](./internals/vm_architecture.md)** — VM types, bytecode, execution loop
+- **[Execution Model](./internals/execution_model.md)** — Stack, frames, call/return, exceptions
+- **[Globals and Namespace](./internals/globals_and_namespace.md)** — GlobalSlot, global_names, remap
+- **[Module Import System](./internals/module_import_system.md)** — Import/ImportFrom, file_import, remap
+- **[Profiling](./internals/profiling.md)** — Feature `profile`, metrics, build and usage
+
+---
+
 ## 🔗 Useful Links
 
 - **[Main Documentation](../README.md)** - Navigation for all documentation
@@ -302,9 +335,16 @@ docs/
     │   └── README.md            # settings_env module - environment variables
     ├── uuid/                    # uuid module documentation
     │   └── README.md            # uuid module - UUID generation
-    └── ml/                      # ML module documentation
-        ├── training_flow.md     # Neural network training flow
-        └── model_save_format.md # Model save format
+    ├── ml/                      # ML module documentation
+    │   ├── training_flow.md     # Neural network training flow
+    │   └── model_save_format.md # Model save format
+    └── internals/               # Core / kernel developer documentation
+        ├── README.md            # Internals index
+        ├── vm_architecture.md   # VM and bytecode
+        ├── execution_model.md   # Stack, frames, call/return
+        ├── globals_and_namespace.md # Globals and name remap
+        ├── module_import_system.md  # Import and modules
+        └── profiling.md         # Profile feature
 ```
 
 ---

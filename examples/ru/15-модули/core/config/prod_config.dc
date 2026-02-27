@@ -1,0 +1,10 @@
+from base import ProdAppBaseConfig
+from config import ConfigApp, DatabaseConfig
+
+# Конфигурация для среды production
+cls ProdSettings(ConfigApp) {
+    model_config = ProdAppBaseConfig
+    env = "prod"
+    debug = false
+    db = DatabaseConfig()
+}

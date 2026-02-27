@@ -1,0 +1,11 @@
+# Классы конфигурации приложения (упрощённый вариант без settings_env)
+
+cls DatabaseConfig {
+    url = "sqlite:///app.db"
+}
+
+cls ConfigApp {
+    env = "dev"
+    debug = true
+    db = DatabaseConfig()
+}

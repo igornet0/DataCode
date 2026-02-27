@@ -1,6 +1,7 @@
 pub mod vm;
 pub mod run_context;
 pub mod module_cache;
+pub mod module_object;
 pub mod dcb;
 pub mod frame;
 pub mod heavy_store;

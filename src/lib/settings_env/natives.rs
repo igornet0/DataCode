@@ -111,7 +111,7 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
                     Value::String(_) => "String",
                     Value::Object(_) => "Object",
                     Value::Array(_) => "Array",
-                    Value::Function(_) => "Function",
+                    Value::Function(_) | Value::ModuleFunction { .. } => "Function",
                     _ => "Other",
                 };
                 eprintln!("[settings_env load_env] args[2] (model_config) is {} (path_str={:?})", ty, path_str);

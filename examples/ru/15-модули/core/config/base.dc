@@ -1,0 +1,24 @@
+# Базовые константы и конфигурация для всех окружений
+
+# Путь к каталогу с env-файлами (в полном примере может быть getcwd() / "settings")
+_ENV_DIR = "./settings"
+
+# Базовая конфигурация для всех окружений
+_base_config = {
+    "case_sensitive": false,
+    "env_file_encoding": "utf-8",
+    "env_nested_delimiter": "__",
+    "extra": "ignore"
+}
+
+# Конфигурация для production
+ProdAppBaseConfig = {
+    **_base_config,
+    "env_file": _ENV_DIR + "/prod.env"
+}
+
+# Конфигурация для development
+DevAppBaseConfig = {
+    **_base_config,
+    "env_file": _ENV_DIR + "/dev.env"
+}

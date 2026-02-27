@@ -6,7 +6,7 @@ use crate::common::TaggedValue;
 use crate::vm::store_convert::tagged_to_value_id_arena;
 
 /// One global slot: either an inline primitive (number, bool, null, int) or a heap reference.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum GlobalSlot {
     Inline(TaggedValue),
     Heap(ValueId),

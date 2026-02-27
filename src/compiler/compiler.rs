@@ -122,9 +122,16 @@ impl Compiler {
         }
 
         // Второй проход: компилируем все statements (порядок детерминирован — AST/parse order, Vec).
+        // pop_value: снимать значение со стека, если не последний statement или последний не производит значения (программа без выражения должна вернуть Null).
+        // Expr и If (с ветками-выражениями) оставляют значение на стеке — не снимаем.
+        let last_is_expression = statements
+            .last()
+            .map(|s| matches!(s, Stmt::Expr { .. } | Stmt::If { .. }))
+            .unwrap_or(false);
         for (i, stmt) in statements.iter().enumerate() {
             let is_last = i == statements.len() - 1;
-            self.compile_stmt_with_pop(stmt, !is_last)?;
+            let pop_value = !is_last || !last_is_expression;
+            self.compile_stmt_with_pop(stmt, pop_value)?;
         }
         
         // Проверяем наличие функции __main__

@@ -1,5 +1,4 @@
 .vscode
-.DS_Store
 __pycache__
 .pytest_cache
 .gitreports
@@ -27,7 +26,6 @@ datacode_lib
 sandbox
 packaging/macos/DataCode.app/Contents/MacOS/datacode
 .datacode_history
-model_data.zip
 *.db
 *.sqlite
 temp_sessions/
@@ -41,3 +39,7 @@ temp_sessions/
 #  and can be added to the global gitignore or merged into this file.  For a more nuclear
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
+*.dc
+!examples/**
+model_data.zip
+.DS_Store

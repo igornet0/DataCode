@@ -54,6 +54,8 @@ pub struct CallFrame {
     pub load_local_cache_tagged: Option<TaggedValue>,
     /// Register bank for Register VM (п.4 этап 1). Используется опкодами RegAdd и др.; компилятор пока не эмитирует.
     pub regs: Vec<TaggedValue>,
+    /// Module this frame's function belongs to (for LoadGlobal/StoreGlobal). None = use VM's unified globals (legacy).
+    pub module_name: Option<String>,
 }
 
 impl CallFrame {
@@ -78,6 +80,7 @@ impl CallFrame {
                 _ => None,
             })
             .collect();
+        let module_name = function.module_name.clone();
         Self {
             slots: Vec::with_capacity(initial_slots + 64),
             ip: 0,
@@ -108,6 +111,7 @@ impl CallFrame {
             load_local_cache_slot: None,
             load_local_cache_tagged: None,
             regs: Vec::with_capacity(32),
+            module_name,
         }
     }
 

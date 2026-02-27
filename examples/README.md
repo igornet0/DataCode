@@ -42,6 +42,10 @@ Examples are organized by topics, progressing from simple to complex:
 - **09-создание модели данных / Data Model Creation** - Building data models / Создание моделей данных
 - **10-графики / Plot** - Plots and visualization / Графики и визуализация
 - **11-mnist-mlp** - MNIST MLP example / Пример MNIST MLP
+- **12-settings_env / 12-settings-env** - settings_env module, .env loading / Модуль settings_env, загрузка .env
+- **13-uuid** - UUID module (v4/v7, parse, bytes) / Модуль UUID (v4/v7, parse, bytes)
+- **14-database** - Database module (engine, DatabaseCluster) / Модуль database (engine, DatabaseCluster)
+- **15-модули / 15-modules** - Modules and packages / Модули и пакеты
 
 ## 🚀 Quick Start / Быстрый старт
 
@@ -92,7 +96,12 @@ datacode examples/ru/01-основы/привет.dc
    datacode examples/ru/04-продвинутые/комплексный.dc
    ```
 
-6. **Full demonstration / Полная демонстрация**:
+6. **Modules and packages / Модули и пакеты**:
+   ```bash
+   cargo run --bin datacode examples/ru/15-модули/main.dc
+   ```
+
+7. **Full demonstration / Полная демонстрация**:
    ```bash
    datacode examples/ru/06-демонстрации/демонстрация.dc
    ```

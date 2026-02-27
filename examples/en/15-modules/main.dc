@@ -1,0 +1,18 @@
+# Example: creating modules and using them
+# Run from project root: cargo run --bin datacode examples/en/15-modules/main.dc [dev|prod]
+
+from core.config import get_settings, load_settings
+
+fn main(env) {
+    load_settings(env)
+    let s = get_settings()
+    print(s)
+    print("env    =", s.env)
+    print("debug  =", s.debug)
+    print("db.url =", s.db.url)
+}
+
+fn __main__(env = "dev") {
+    print("Environment:", env)
+    main(env)
+}

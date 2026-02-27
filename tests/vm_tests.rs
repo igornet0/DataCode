@@ -367,7 +367,7 @@ mod tests {
         let source = r#"
             global x = 100
             fn test() {
-                let x = 50
+                x = 50
                 return x
             }
             test()
@@ -466,10 +466,10 @@ mod tests {
             global x = 1
             let y = 2
             fn outer() {
-                global x = 10
+                x = 10
                 let y = 20
                 fn inner() {
-                    global x = 100
+                    x = 100
                     let y = 200
                     return x + y
                 }

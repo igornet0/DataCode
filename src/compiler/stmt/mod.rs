@@ -48,7 +48,7 @@ pub fn compile_stmt(
         Stmt::Continue { .. } => break_continue::compile_continue(ctx, stmt),
         Stmt::Throw { .. } => throw::compile_throw(ctx, stmt),
         Stmt::Try { .. } => try_catch::compile_try_catch(ctx, stmt),
-        Stmt::Class { .. } => class::compile_class(ctx, stmt),
+        Stmt::Class { .. } => class::compile_class(ctx, stmt, pop_value),
     }
 }
 

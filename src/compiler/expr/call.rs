@@ -60,6 +60,63 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                 ctx.chunk.write_with_line(OpCode::Call(1), *line);
                 return Ok(());
             }
+
+            // Settings subclass with 0 args (e.g. ProdSettings()): expand to (path="", required_keys, model_config) and Call(3).
+            let arg_count = call_args.len();
+            if arg_count == 0 && is_in_settings_chain(name, ctx.class_superclass) {
+                let ctor_1_name = format!("{}::new_1", name);
+                let class_global_index_opt = ctx.scope.globals.get(name).copied();
+                let required_keys_value = ctx.class_required_keys_value.get(name).cloned();
+                // Same-file: use compiler's required_keys; imported class: load from class["__required_keys"] at runtime.
+                let emit_0_arg_settings = |ctx: &mut CompilationContext, line: usize, use_class_required_keys: bool| -> Result<(), LangError> {
+                    let path_empty = ctx.chunk.add_constant(Value::String(String::new()));
+                    ctx.chunk.write_with_line(OpCode::Constant(path_empty), line);
+                    if use_class_required_keys {
+                        let req_const = ctx.chunk.add_constant(required_keys_value.as_ref().unwrap().clone());
+                        ctx.chunk.write_with_line(OpCode::Constant(req_const), line);
+                    } else {
+                        let class_global_index = class_global_index_opt.expect("Settings class in globals");
+                        ctx.chunk.global_names.insert(class_global_index, name.clone());
+                        ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), line);
+                        let req_key = ctx.chunk.add_constant(Value::String("__required_keys".to_string()));
+                        ctx.chunk.write_with_line(OpCode::Constant(req_key), line);
+                        ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
+                    }
+                    let class_global_index = class_global_index_opt.expect("Settings class in globals");
+                    ctx.chunk.global_names.insert(class_global_index, name.clone());
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), line);
+                    let model_config_key = ctx.chunk.add_constant(Value::String("model_config".to_string()));
+                    ctx.chunk.write_with_line(OpCode::Constant(model_config_key), line);
+                    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
+                    Ok(())
+                };
+                if let Some(_) = &required_keys_value {
+                    if let Some(function_index) = ctx.function_names.iter().position(|n| n == &ctor_1_name) {
+                        emit_0_arg_settings(ctx, *line, true)?;
+                        let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
+                        ctx.chunk.write_with_line(OpCode::Constant(constant_index), *line);
+                        ctx.chunk.write_with_line(OpCode::Call(3), *line);
+                        return Ok(());
+                    }
+                    if ctx.scope.globals.contains_key(name) && ctx.scope.globals.contains_key(&ctor_1_name) {
+                        let &global_index = ctx.scope.globals.get(&ctor_1_name).unwrap();
+                        emit_0_arg_settings(ctx, *line, true)?;
+                        ctx.chunk.global_names.insert(global_index, ctor_1_name.clone());
+                        ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                        ctx.chunk.write_with_line(OpCode::Call(3), *line);
+                        return Ok(());
+                    }
+                }
+                // Imported Settings class: load required_keys from class["__required_keys"].
+                if ctx.scope.globals.contains_key(name) && ctx.scope.globals.contains_key(&ctor_1_name) {
+                    let &global_index = ctx.scope.globals.get(&ctor_1_name).unwrap();
+                    emit_0_arg_settings(ctx, *line, false)?;
+                    ctx.chunk.global_names.insert(global_index, ctor_1_name.clone());
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                    ctx.chunk.write_with_line(OpCode::Call(3), *line);
+                    return Ok(());
+                }
+            }
         
             // Сначала проверяем в function_names (для конструкторов, определенных в текущем файле)
         if let Some(function_index) = ctx.function_names.iter().position(|n| n == &constructor_name) {

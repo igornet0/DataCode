@@ -96,6 +96,11 @@ Working with the `uuid` module: v4/v7 generation, parse/to_string, bytes, determ
 - `04-metadata.dc` - version, variant, timestamp
 - `05-practical-example.dc` - Record ids and URLs
 
+### 📦 [15-modules](15-modules/) - Modules and Packages
+Creating modules and using them: package layout with `__lib__.dc`, nested packages (`core.config`), cross-module imports, and global state:
+- `main.dc` - Entry point; imports from `core.config`, loads settings by environment (dev/prod)
+- `core/config/` - Package with base config, classes, dev/prod settings, and `get_settings` / `load_settings`
+
 ## 🚀 Quick Start
 
 ### Recommended Learning Order
@@ -161,7 +166,12 @@ Working with the `uuid` module: v4/v7 generation, parse/to_string, bytes, determ
    datacode examples/en/13-uuid/01-basic-usage.dc
    ```
 
-11. **Complete demonstration**:
+11. **Modules and packages**:
+   ```bash
+   cargo run --bin datacode examples/en/15-modules/main.dc
+   ```
+
+12. **Complete demonstration**:
    ```bash
    datacode examples/en/06-demonstrations/showcase.dc
    ```

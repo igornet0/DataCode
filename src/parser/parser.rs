@@ -382,8 +382,8 @@ impl Parser {
         let mut public_variables = Vec::new();
         let mut constructors = Vec::new();
         let mut methods = Vec::new();
-        // None = private, Some(false) = protected, Some(true) = public
-        let mut current_section_public: Option<bool> = None;
+        // Some(true) = public (default), None = private, Some(false) = protected
+        let mut current_section_public: Option<bool> = Some(true);
         
         while !self.check(TokenKind::RBrace) && !self.is_at_end() {
             if self.match_token(TokenKind::Private) {

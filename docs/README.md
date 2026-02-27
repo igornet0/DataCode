@@ -91,6 +91,11 @@
 
 **Примеры:** [`examples/ru/13-uuid/`](../../examples/ru/13-uuid/), [`examples/en/13-uuid/`](../../examples/en/13-uuid/)
 
+#### [Модули и импорты](./ru/modules_and_imports.md)
+Импорт и использование модулей: синтаксис `import` / `from`, модуль-файл и пакет (`__lib__.dc`), составные имена (`core.config`), базовый путь, встроенные модули.
+
+**Примеры:** [`examples/ru/15-модули/`](../../examples/ru/15-модули/), [`examples/en/15-modules/`](../../examples/en/15-modules/)
+
 ---
 
 ## 🎯 Примеры кода
@@ -111,6 +116,7 @@
 - **[10-графики](../../examples/ru/10-графики/)** - Графики и визуализация
 - **[12-settings_env](../../examples/ru/12-settings_env/)** - Модуль settings_env
 - **[13-uuid](../../examples/ru/13-uuid/)** - Модуль uuid
+- **[15-модули](../../examples/ru/15-модули/)** - Модули и пакеты
 
 **Полная документация по примерам:** [`examples/ru/README.md`](../../examples/ru/README.md)
 

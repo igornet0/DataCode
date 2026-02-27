@@ -1,0 +1,10 @@
+from base import DevAppBaseConfig
+from config import ConfigApp, DatabaseConfig
+
+# Конфигурация для среды development
+cls DevSettings(ConfigApp) {
+    model_config = DevAppBaseConfig
+    env = "dev"
+    debug = true
+    db = DatabaseConfig()
+}

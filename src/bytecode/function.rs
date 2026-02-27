@@ -123,6 +123,8 @@ pub struct Function {
     /// Web route: (method, path) from @route("METHOD", "/path")
     pub route_method: Option<String>,
     pub route_path: Option<String>,
+    /// Module this function belongs to (e.g. "core.config", "__main__"). None = legacy single global space.
+    pub module_name: Option<String>,
 }
 
 impl Function {
@@ -140,6 +142,7 @@ impl Function {
             cache: None,
             route_method: None,
             route_path: None,
+            module_name: None,
         }
     }
 
@@ -157,6 +160,7 @@ impl Function {
             cache: Some(Rc::new(RefCell::new(FnCache::new()))),
             route_method: None,
             route_path: None,
+            module_name: None,
         }
     }
 }
@@ -176,6 +180,7 @@ impl Clone for Function {
             cache: self.cache.clone(),
             route_method: self.route_method.clone(),
             route_path: self.route_path.clone(),
+            module_name: self.module_name.clone(),
         }
     }
 }

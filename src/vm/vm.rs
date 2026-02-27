@@ -16,6 +16,7 @@ use crate::vm::globals;
 use crate::vm::calls;
 use crate::vm::executor;
 use crate::vm::module_cache::CachedModule;
+use crate::vm::module_object::ModuleObject;
 use libloading::Library;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -63,11 +64,24 @@ thread_local! {
     pub(crate) static VM_CALL_CONTEXT: RefCell<Option<*mut Vm>> = RefCell::new(None);
 }
 
+/// Number of builtin global slots (0..BUILTIN_END). Indices >= this are module globals.
+const BUILTIN_END: usize = 75;
+
+/// Info for a merged module: used to resolve Value::ModuleFunction { module_id, local_index } at Call.
+#[derive(Clone, Debug)]
+pub struct ModuleInfo {
+    pub name: String,
+    pub function_offset: usize,
+    pub function_count: usize,
+}
+
 pub struct Vm {
     /// Stack of TaggedValues (immediates + heap refs; no store lookup for numbers in hot path)
     stack: Vec<TaggedValue>,
     frames: Vec<CallFrame>,
-    /// Globals: Inline(TaggedValue) for primitives, Heap(ValueId) for the rest.
+    /// Builtin globals (indices 0..BUILTIN_END). Shared by all modules.
+    builtins: Vec<GlobalSlot>,
+    /// Module globals (indices >= BUILTIN_END). Used when no per-module isolation (legacy) or for __main__ before we switch fully.
     globals: Vec<GlobalSlot>,
     functions: Vec<crate::bytecode::Function>,
     natives: Vec<NativeFn>,
@@ -100,11 +114,17 @@ pub struct Vm {
     module_cache: RefCell<HashMap<PathBuf, CachedModule>>,
     /// Modules already executed once this run: canonical path -> saved namespace (module object). Re-import returns this without running again.
     executed_modules: RefCell<HashMap<PathBuf, Value>>,
+    /// Functions from each executed module (canonical path -> list). On cache hit we add these to the caller and remap the object so indices stay valid.
+    executed_module_functions: RefCell<HashMap<PathBuf, Vec<crate::bytecode::Function>>>,
     /// Dependency graph: canonical path -> list of canonical paths of imported modules (for topological order / invalidation).
     module_deps: RefCell<HashMap<PathBuf, Vec<PathBuf>>>,
+    /// Cache of loaded modules by canonical name (e.g. "core.config") or path. Each module has its own namespace.
+    modules: RefCell<HashMap<String, Rc<RefCell<ModuleObject>>>>,
     /// When set (e.g. from run_with_vm_internal_with_args), update_chunk_indices_from_names will always map "argv" to this slot,
     /// so ImportFrom re-patch does not remap LoadGlobal(argv) to load_settings (slot 79) after merge.
     argv_slot_index: Option<usize>,
+    /// Registry of merged modules: module_id = index. Resolves ModuleFunction { module_id, local_index } -> functions[offset + local_index].
+    module_registry: RefCell<Vec<ModuleInfo>>,
 }
 
 /// Preallocated capacities for hot-path Vecs to reduce resize in loop-heavy runs.
@@ -139,6 +159,7 @@ impl Vm {
         let mut vm = Self {
             stack: Vec::with_capacity(DEFAULT_STACK_CAPACITY),
             frames: Vec::with_capacity(DEFAULT_FRAMES_CAPACITY),
+            builtins: Vec::with_capacity(BUILTIN_END),
             globals: Vec::with_capacity(DEFAULT_GLOBALS_CAPACITY),
             functions: Vec::new(),
             natives: Vec::new(),
@@ -163,8 +184,11 @@ impl Vm {
             pending_primary_keys: Vec::new(),
             module_cache: RefCell::new(HashMap::new()),
             executed_modules: RefCell::new(HashMap::new()),
+            executed_module_functions: RefCell::new(HashMap::new()),
             module_deps: RefCell::new(HashMap::new()),
+            modules: RefCell::new(HashMap::new()),
             argv_slot_index: None,
+            module_registry: RefCell::new(Vec::new()),
         };
         vm.register_natives();
         vm
@@ -200,9 +224,34 @@ impl Vm {
         self.executed_modules.borrow_mut()
     }
 
+    /// Mutable borrow of executed module functions (canonical path -> functions). Used by file_import on cache hit to add and remap.
+    pub fn get_executed_module_functions_mut(&self) -> std::cell::RefMut<'_, HashMap<PathBuf, Vec<crate::bytecode::Function>>> {
+        self.executed_module_functions.borrow_mut()
+    }
+
     /// Mutable borrow of module dependency graph (path -> deps). Used by file_import to register edges after compile.
     pub fn get_module_deps_mut(&self) -> std::cell::RefMut<'_, HashMap<PathBuf, Vec<PathBuf>>> {
         self.module_deps.borrow_mut()
+    }
+
+    /// Immutable borrow of module registry (for executor to read loaded module's submodules).
+    pub fn get_module_registry(&self) -> std::cell::Ref<'_, Vec<ModuleInfo>> {
+        self.module_registry.borrow()
+    }
+
+    /// Mutable borrow of module registry (for executor to push ModuleInfo on first import).
+    pub fn get_module_registry_mut(&self) -> std::cell::RefMut<'_, Vec<ModuleInfo>> {
+        self.module_registry.borrow_mut()
+    }
+
+    /// Resolve module_id + local_index to real function index. Returns None if module_id or local_index out of range.
+    pub fn get_module_function_index(&self, module_id: usize, local_index: usize) -> Option<usize> {
+        let reg = self.module_registry.borrow();
+        let info = reg.get(module_id)?;
+        if local_index >= info.function_count {
+            return None;
+        }
+        Some(info.function_offset + local_index)
     }
 
     /// Native index for ValueError::new_1 (constructor used by raise ValueError("...")).
@@ -358,6 +407,30 @@ impl Vm {
         );
     }
 
+    /// Fills global slots at index >= 75 whose name is a builtin (e.g. "str", "path").
+    /// ensure_globals_from_chunk_preserve_indices adds (idx, name) from chunk and only resizes;
+    /// register_native_globals only fills 0..75, so slots at 75+ stay null and LoadGlobal(idx) returns null → "Can only call functions".
+    pub fn ensure_builtin_globals_high_indices(&mut self) {
+        const BUILTIN_END: usize = 75;
+        for (idx, name) in self.global_names.iter() {
+            if *idx < BUILTIN_END {
+                continue;
+            }
+            if let Some(builtin_index) = globals::builtin_global_index(name) {
+                if *idx >= self.globals.len() {
+                    continue;
+                }
+                let value_id = self.globals[*idx].resolve_to_value_id(&mut self.value_store);
+                let current = load_value(value_id, &self.value_store, &self.heavy_store);
+                if matches!(current, Value::Null) {
+                    let id = self.value_store.allocate(ValueCell::NativeFunction(builtin_index));
+                    self.globals[*idx] = GlobalSlot::Heap(id);
+                    debug_println!("[DEBUG ensure_builtin_globals_high_indices] '{}' at globals[{}] -> builtin index {}", name, idx, builtin_index);
+                }
+            }
+        }
+    }
+
     /// Injects built-in exception constructors (e.g. ValueError::new_1) into slots that are still null after ensure_globals_from_chunk.
     /// Called from run_compiled_module so that raise ValueError("...") works in modules.
     pub fn ensure_exception_constructors(&mut self) {
@@ -449,7 +522,7 @@ impl Vm {
                                     idx < globals.len()
                                         && matches!(
                                             load_value(globals[idx].resolve_to_value_id(store), store, heap),
-                                            Value::Function(_)
+                                            Value::Function(_) | Value::ModuleFunction { .. }
                                         )
                                 })
                                 .min()
@@ -476,8 +549,22 @@ impl Vm {
                     r
                 };
                 if *old_idx != r_final {
-                    old_to_real.insert(*old_idx, r_final);
-                    debug_println!("[DEBUG update_chunk_indices] Маппинг '{}': {} -> {} (argv forced={})", name, old_idx, r_final, name == "argv" && argv_slot_index.is_some());
+                    // Avoid collision: if real_idx is already used in chunk for a different name that we won't remap
+                    // (no match in global_names or match only at real_idx), don't overwrite it.
+                    let would_overwrite = chunk.global_names.get(&r_final).map(|existing| {
+                        existing != name
+                            && global_names
+                                .iter()
+                                .filter(|(_, n)| *n == existing)
+                                .map(|(idx, _)| *idx)
+                                .all(|idx| idx == r_final)
+                    }).unwrap_or(false);
+                    if !would_overwrite {
+                        old_to_real.insert(*old_idx, r_final);
+                        debug_println!("[DEBUG update_chunk_indices] Маппинг '{}': {} -> {} (argv forced={})", name, old_idx, r_final, name == "argv" && argv_slot_index.is_some());
+                    } else {
+                        debug_println!("[DEBUG update_chunk_indices] Пропуск маппинга '{}': {} -> {} (слот {} занят другим именем)", name, old_idx, r_final, r_final);
+                    }
                 }
             } else {
                 // Warn when no match: always for argv, for other names only when verbose constructor debug is on.
@@ -550,7 +637,7 @@ impl Vm {
                             let v = load_value(id, store, heap);
                             let slot_type = match &v {
                                 Value::Object(_) => "Object",
-                                Value::Function(_) => "Function",
+                                Value::Function(_) | Value::ModuleFunction { .. } => "Function",
                                 Value::Null => "Null",
                                 _ => "Other",
                             };
@@ -608,6 +695,13 @@ impl Vm {
             chunk.global_names.remove(old_idx);
         }
         for (real_idx, name) in to_insert {
+            // Don't overwrite real_idx if it already has a different name we didn't remove (collision).
+            if let Some(existing) = chunk.global_names.get(&real_idx) {
+                if existing != &name && !old_to_real.contains_key(&real_idx) {
+                    debug_println!("[DEBUG update_chunk_indices] Phase3: пропуск вставки (real_idx {} уже = '{}', не перезаписываем на '{}')", real_idx, existing, name);
+                    continue;
+                }
+            }
             chunk.global_names.insert(real_idx, name);
         }
     }
@@ -1171,6 +1265,29 @@ impl Vm {
         }
         start_index
     }
+
+    /// Adds functions to the VM without merging their global_names (for module isolation: __lib__).
+    /// Returns the start index so caller can remap Value::Function in exported namespace.
+    pub fn add_functions_only(&mut self, functions: Vec<crate::bytecode::Function>) -> usize {
+        let start_index = self.functions.len();
+        self.functions.extend(functions);
+        start_index
+    }
+
+    /// Adds functions from a loaded module and sets their module_name so LoadGlobal/StoreGlobal
+    /// resolve from that module's namespace. Returns the start index.
+    pub fn add_functions_from_module(
+        &mut self,
+        mut functions: Vec<crate::bytecode::Function>,
+        module_name: String,
+    ) -> usize {
+        let start_index = self.functions.len();
+        for f in &mut functions {
+            f.module_name = Some(module_name.clone());
+        }
+        self.functions.extend(functions);
+        start_index
+    }
     
     /// Получает количество функций в VM
     pub fn functions_count(&self) -> usize {
@@ -1189,6 +1306,10 @@ impl Vm {
 
     pub fn register_native_globals(&mut self) {
         globals::register_native_globals(&mut self.globals, &mut self.global_names, &mut self.value_store);
+        self.builtins.resize(BUILTIN_END, global_slot::default_global_slot());
+        for i in 0..BUILTIN_END.min(self.globals.len()) {
+            self.builtins[i] = self.globals[i];
+        }
     }
 
     /// Register all built-in modules (ml, plot, settings_env) so native indices are consistent
@@ -1322,19 +1443,13 @@ impl Vm {
 
     /// Выполнить один шаг VM - получить следующую инструкцию и выполнить её
     fn step(&mut self) -> Result<VMStatus, LangError> {
-        // Get raw pointer to self before any mutable borrows
         let vm_ptr = self as *mut Vm;
-        
-        // Get instruction and line from executor::step (which already increments IP)
         let (instruction, line) = {
-            let frames_ref = &mut self.frames;
-            match executor::step(frames_ref)? {
+            match executor::step(&mut self.frames)? {
                 Some((inst, ln)) => (inst, ln),
-            None => return Ok(VMStatus::FrameEnded),
+                None => return Ok(VMStatus::FrameEnded),
             }
         };
-        
-        // Execute the instruction (frames_ref is dropped, so we can borrow again)
         executor::execute_instruction(
             instruction,
             line,
@@ -1367,7 +1482,24 @@ impl Vm {
 
     // Module registration methods moved to modules.rs
 
+    /// Builtins (indices 0..BUILTIN_END). Shared by all modules.
+    pub fn get_builtins(&self) -> &[GlobalSlot] {
+        &self.builtins[..]
+    }
+    pub fn get_builtins_mut(&mut self) -> &mut Vec<GlobalSlot> {
+        &mut self.builtins
+    }
+
+    /// Module cache: name/path -> ModuleObject. Used for import and isolated module globals.
+    pub fn get_modules_mut(&self) -> std::cell::RefMut<'_, HashMap<String, Rc<RefCell<ModuleObject>>>> {
+        self.modules.borrow_mut()
+    }
+    pub fn get_modules(&self) -> std::cell::Ref<HashMap<String, Rc<RefCell<ModuleObject>>>> {
+        self.modules.borrow()
+    }
+
     /// Получить доступ к глобальным переменным (GlobalSlot; use resolve_to_value_id or store_convert::slot_to_value for Value)
+    /// Combines builtins (0..BUILTIN_END) and module globals (BUILTIN_END+). Legacy: prefer per-module lookup.
     pub fn get_globals(&self) -> &[GlobalSlot] {
         &self.globals[..]
     }
@@ -1482,8 +1614,8 @@ impl Vm {
         &self.explicit_global_names
     }
 
-    /// Объединяет глобальные переменные из другого VM в этот VM
-    /// Используется для передачи глобальных переменных из __lib__.dc в основной файл
+    /// Legacy: merges another VM's globals into this VM. Not used with module isolation (__lib__ is registered as a module instead).
+    #[allow(dead_code)]
     pub fn merge_globals_from(&mut self, other: &Vm) {
         const BUILTIN_COUNT: usize = 75;
         // Чтобы NativeFunction(i) из модуля (i >= BUILTIN_COUNT) был валиден в self, добавляем нативы модуля.
@@ -1733,7 +1865,8 @@ impl Vm {
         }
     }
 
-    /// Merge module VM into caller's buffers (used from executor to avoid double mutable borrow of VM).
+    /// Legacy: merge module VM into caller's buffers. Not used with module isolation (ImportFrom only adds requested items).
+    #[allow(dead_code)]
     pub fn merge_globals_from_into(
         other: &Vm,
         target_globals: &mut Vec<GlobalSlot>,
@@ -1950,6 +2083,7 @@ impl Vm {
 
     /// Merges exports from an already-executed module object into this VM's globals.
     /// Used when re-importing the same module (canonical path): no run(), just copy namespace.
+    #[allow(dead_code)]
     pub fn merge_module_exports_into_globals(&mut self, module_object: &Value) {
         const BUILTIN_COUNT: usize = 75;
         let obj = match module_object {
@@ -2027,15 +2161,18 @@ impl Vm {
     }
 
     /// Remap Function indices in a value from module export (and Object inner) for merge into caller.
+    /// ModuleFunction is passed through unchanged (resolved at Call via module_registry).
     fn remap_module_export_value(value: &Value, start_fn: usize) -> Value {
         match value {
             Value::Function(fn_idx) => Value::Function(start_fn + fn_idx),
+            Value::ModuleFunction { module_id, local_index } => Value::ModuleFunction { module_id: *module_id, local_index: *local_index },
             Value::Object(obj_rc) => {
                 let obj = obj_rc.borrow();
                 let mut new_obj = HashMap::new();
                 for (k, v) in obj.iter() {
                     let inner = match v {
                         Value::Function(i) => Value::Function(start_fn + i),
+                        Value::ModuleFunction { module_id, local_index } => Value::ModuleFunction { module_id: *module_id, local_index: *local_index },
                         _ => v.clone(),
                     };
                     new_obj.insert(k.clone(), inner);
@@ -2047,6 +2184,7 @@ impl Vm {
     }
 
     /// Merge module object exports into caller's globals (used from executor to avoid double mutable borrow).
+    #[allow(dead_code)]
     pub fn merge_module_exports_into_globals_into(
         module_object: &Value,
         target_globals: &mut Vec<GlobalSlot>,
@@ -2088,7 +2226,7 @@ impl Vm {
                         GlobalSlot::Inline(tv) => crate::vm::store_convert::slot_to_value(*tv, store, heap),
                         GlobalSlot::Heap(id) => load_value(*id, store, heap),
                     };
-                    if matches!(existing_val, Value::Function(_)) {
+                    if matches!(existing_val, Value::Function(_) | Value::ModuleFunction { .. }) {
                         if name == "get_settings" || name == "load_settings" {
                             let fi = if let Value::Function(fi) = &existing_val { *fi } else { 0 };
                             debug_println!(
@@ -2112,6 +2250,7 @@ impl Vm {
                 if name == "get_settings" || name == "load_settings" {
                     let fn_info = match &value_to_store {
                         Value::Function(fi) => format!("Function({})", fi),
+                        Value::ModuleFunction { module_id, local_index } => format!("ModuleFunction({},{})", module_id, local_index),
                         _ => "non-Fn".to_string(),
                     };
                     debug_println!(

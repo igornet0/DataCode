@@ -1,0 +1,11 @@
+# Application config classes (simplified, without settings_env)
+
+cls DatabaseConfig {
+    url = "sqlite:///app.db"
+}
+
+cls ConfigApp {
+    env = "dev"
+    debug = true
+    db = DatabaseConfig()
+}

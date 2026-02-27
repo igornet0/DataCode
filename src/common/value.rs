@@ -22,7 +22,9 @@ pub enum Value {
     String(String),
     Array(Rc<RefCell<Vec<Value>>>),
     Tuple(Rc<RefCell<Vec<Value>>>),
-    Function(usize), // Индекс функции в массиве функций
+    Function(usize), // Индекс функции в массиве функций (main chunk или legacy)
+    /// Функция из импортированного модуля: разрешается в момент Call через module_registry.
+    ModuleFunction { module_id: usize, local_index: usize },
     NativeFunction(usize), // Индекс нативной функции
     Path(PathBuf), // Путь к файлу или директории
     Uuid(u64, u64), // 128-bit UUID (hi, lo), value-type, ABI-friendly
@@ -83,6 +85,7 @@ impl std::fmt::Debug for Value {
                     Value::Array(arr) => f.debug_tuple("Array").field(&arr.borrow()).finish(),
                     Value::Tuple(tup) => f.debug_tuple("Tuple").field(&tup.borrow()).finish(),
                     Value::Function(i) => f.debug_tuple("Function").field(i).finish(),
+                    Value::ModuleFunction { module_id, local_index } => f.debug_struct("ModuleFunction").field("module_id", module_id).field("local_index", local_index).finish(),
                     Value::NativeFunction(i) => f.debug_tuple("NativeFunction").field(i).finish(),
                     Value::Path(p) => f.debug_tuple("Path").field(p).finish(),
                     Value::Uuid(hi, lo) => f.debug_tuple("Uuid").field(hi).field(lo).finish(),
@@ -127,6 +130,7 @@ impl PartialEq for Value {
             (Value::Array(a), Value::Array(b)) => *a.borrow() == *b.borrow(),
             (Value::Tuple(a), Value::Tuple(b)) => *a.borrow() == *b.borrow(),
             (Value::Function(a), Value::Function(b)) => a == b,
+            (Value::ModuleFunction { module_id: a_id, local_index: a_li }, Value::ModuleFunction { module_id: b_id, local_index: b_li }) => a_id == b_id && a_li == b_li,
             (Value::NativeFunction(a), Value::NativeFunction(b)) => a == b,
             (Value::Path(a), Value::Path(b)) => a == b,
             (Value::Uuid(hi_a, lo_a), Value::Uuid(hi_b, lo_b)) => hi_a == hi_b && lo_a == lo_b,
@@ -235,7 +239,7 @@ impl Value {
                 let elements: Vec<String> = tuple_ref.iter().map(|v| v.to_string()).collect();
                 format!("({})", elements.join(", "))
             }
-            Value::Function(_) => "<function>".to_string(),
+            Value::Function(_) | Value::ModuleFunction { .. } => "<function>".to_string(),
             Value::NativeFunction(_) => "<native function>".to_string(),
             Value::Path(p) => {
                 // В режиме --use-ve показываем относительные пути
@@ -459,6 +463,7 @@ impl Clone for Value {
                 Value::Tuple(Rc::new(RefCell::new(cloned_vec)))
             },
             Value::Function(idx) => Value::Function(*idx),
+            Value::ModuleFunction { module_id, local_index } => Value::ModuleFunction { module_id: *module_id, local_index: *local_index },
             Value::NativeFunction(idx) => Value::NativeFunction(*idx),
             Value::Path(p) => Value::Path(p.clone()),
             Value::Uuid(hi, lo) => Value::Uuid(*hi, *lo),

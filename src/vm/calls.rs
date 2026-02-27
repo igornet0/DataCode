@@ -30,7 +30,7 @@ fn check_single_type(value: &Value, type_name: &str) -> bool {
         // Специальные типы
         (Value::Null, "null" | "none") => true,
         (Value::Path(_), "path") => true,
-        (Value::Function(_) | Value::NativeFunction(_), "function" | "fn") => true,
+        (Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_), "function" | "fn") => true,
         // ML типы
         (Value::Tensor(_), "tensor") => true,
         (Value::Graph(_), "graph") => true,
@@ -94,7 +94,7 @@ pub fn get_type_name_value(value: &Value) -> &'static str {
         Value::Null => "null",
         Value::Path(_) => "path",
         Value::Uuid(_, _) => "uuid",
-        Value::Function(_) | Value::NativeFunction(_) => "function",
+        Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_) => "function",
         Value::Tensor(_) => "tensor",
         Value::Graph(_) => "graph",
         Value::Dataset(_) => "dataset",

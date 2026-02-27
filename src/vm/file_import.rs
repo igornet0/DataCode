@@ -134,7 +134,7 @@ pub fn load_local_module(
     Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(module_object))))
 }
 
-/// Загружает подмодуль по составному имени (например `config.xyz`).
+/// Загружает подмодуль по составному имени (например `core.config`).
 fn load_local_module_dotted_with_vm(
     module_name: &str,
     base_path: &Path,
@@ -163,7 +163,16 @@ fn load_local_module_dotted_with_vm(
         current_base = module_dir;
         search_paths = vec![current_base.clone()];
     }
-    load_local_module_with_vm_inner(parts[parts.len() - 1], &current_base, vm)
+    let last_part = parts[parts.len() - 1];
+    let result = load_local_module_with_vm_inner(last_part, &current_base, vm)?;
+    // Register under full dotted name too so LoadGlobal in module context finds it (frame.module_name is "core.config").
+    if last_part != module_name {
+        let mut modules = vm.get_modules_mut();
+        if let Some(rc) = modules.get(last_part).cloned() {
+            modules.insert(module_name.to_string(), rc);
+        }
+    }
+    Ok(result)
 }
 
 /// Result of loading a .dc module: (module namespace object, VM if first run else None).
@@ -211,16 +220,26 @@ fn load_local_module_with_vm_inner(
         })?;
 
     let cache_key = module_cache::canonical_module_cache_key(&file_path);
+    let base_path_before = get_base_path();
 
-    // Already executed this run: return saved namespace, no run().
+    // Already executed this run: return saved namespace. The object was remapped when first loaded (in executor),
+    // so do NOT add_functions_only or remap again — that would duplicate functions and double-remap indices.
+    // If we have a cache hit but no stored functions (e.g. module was first loaded in another VM context), re-load below.
     {
-        let executed = vm.get_executed_modules_mut();
-        if let Some(cached_ns) = executed.get(&cache_key) {
-            let module_object = cached_ns.clone();
-            drop(executed);
-            return Ok((module_object, None));
+        let module_object_opt = {
+            let m = vm.get_executed_modules_mut();
+            m.get(&cache_key).cloned()
+        };
+        let has_stored_fns = {
+            let m = vm.get_executed_module_functions_mut();
+            m.contains_key(&cache_key)
+        };
+        if let Some(module_object) = module_object_opt {
+            if has_stored_fns {
+                return Ok((module_object, None));
+            }
+            // Cache hit but no stored functions: object has indices from another VM. Fall through to re-load.
         }
-        drop(executed);
     }
 
     let source = std::fs::read_to_string(&file_path).map_err(|e| {
@@ -236,7 +255,6 @@ fn load_local_module_with_vm_inner(
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_nanos() as u64);
 
-    let old_base_path = get_base_path();
     set_base_path(Some(module_dir.clone()));
 
     let dcb_path = crate::vm::dcb::dcb_cache_path(&cache_key);
@@ -277,11 +295,23 @@ fn load_local_module_with_vm_inner(
             run_compiled_module(&chunk, &functions, Some(module_dir.clone()))?
         }
     };
-    set_base_path(old_base_path);
+    set_base_path(base_path_before);
     let exports = export_globals_from_vm(&mut module_vm);
     let module_object = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(exports)));
 
+    // Do NOT remap here: executor will extend functions, register module in module_registry,
+    // then convert Value::Function(local_index) -> Value::ModuleFunction { module_id, local_index } in this namespace.
+    // That keeps indices stable across cache hits and different VM states.
+
+    vm.get_executed_module_functions_mut().insert(cache_key.clone(), module_vm.get_functions().clone());
     vm.get_executed_modules_mut().insert(cache_key, module_object.clone());
+
+    // Register in vm.modules for module isolation (name -> ModuleObject with shared namespace).
+    if let Value::Object(ref namespace_rc) = module_object {
+        use crate::vm::module_object::ModuleObject;
+        let mod_obj = ModuleObject::from_namespace(module_name.to_string(), namespace_rc.clone());
+        vm.get_modules_mut().insert(module_name.to_string(), std::rc::Rc::new(std::cell::RefCell::new(mod_obj)));
+    }
 
     Ok((module_object, Some(module_vm)))
 }
@@ -328,6 +358,7 @@ fn run_compiled_module(
         LangError::runtime_error(format!("Failed to register built-in modules: {}", e), 0)
     })?;
     vm.ensure_globals_from_chunk_preserve_indices(chunk);
+    vm.ensure_builtin_globals_high_indices();
     for f in functions {
         vm.ensure_globals_from_chunk(&f.chunk);
     }
@@ -349,7 +380,8 @@ fn compile_and_run_module(source: &str, module_base_path: Option<PathBuf>) -> Re
 }
 
 /// Извлекает все глобальные переменные из VM после выполнения модуля (globals are GlobalSlot)
-fn export_globals_from_vm(vm: &mut Vm) -> HashMap<String, Value> {
+/// Exports VM globals as a name -> Value map (for module namespace / __lib__ registration).
+pub fn export_globals_from_vm(vm: &mut Vm) -> HashMap<String, Value> {
     use crate::vm::store_convert::load_value;
     let mut exports = HashMap::new();
     let globals = vm.get_globals();
@@ -375,7 +407,7 @@ fn export_globals_from_vm(vm: &mut Vm) -> HashMap<String, Value> {
         let value = load_value(value_id, vm.value_store(), vm.heavy_store());
         let value_type = match &value {
             Value::Object(_) => "Object",
-            Value::Function(_) => "Function",
+            Value::Function(_) | Value::ModuleFunction { .. } => "Function",
             Value::Null => "Null",
             _ => "Other",
         };
@@ -397,6 +429,7 @@ fn export_globals_from_vm(vm: &mut Vm) -> HashMap<String, Value> {
                 (false, true) => std::cmp::Ordering::Less,
                 (true, true) => match (&a.1, &b.1) {
                     (Value::Function(ia), Value::Function(ib)) => ia.cmp(ib),
+                    (Value::ModuleFunction { module_id: ma, local_index: la }, Value::ModuleFunction { module_id: mb, local_index: lb }) => (ma, la).cmp(&(mb, lb)),
                     _ => a.0.cmp(&b.0),
                 },
                 _ => a.0.cmp(&b.0),
@@ -408,6 +441,7 @@ fn export_globals_from_vm(vm: &mut Vm) -> HashMap<String, Value> {
             if name == "get_settings" || name == "load_settings" {
                 let fn_idx_info = match &v {
                     crate::common::value::Value::Function(fi) => format!("Function({})", fi),
+                    crate::common::value::Value::ModuleFunction { module_id, local_index } => format!("ModuleFunction({},{})", module_id, local_index),
                     _ => format!("{:?}", std::mem::discriminant(&v)),
                 };
                 debug_println!(

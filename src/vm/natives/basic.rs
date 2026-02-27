@@ -391,7 +391,7 @@ pub fn native_typeof(args: &[Value]) -> Value {
         Value::Object(_) => "object",
         Value::ColumnReference { .. } => "column",
         Value::Null => "null",
-        Value::Function(_) => "function",
+        Value::Function(_) | Value::ModuleFunction { .. } => "function",
         Value::NativeFunction(_) => "function",
         Value::Tensor(_) => "tensor",
         Value::Graph(_) => "graph",
@@ -537,7 +537,7 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
         }
         Value::ColumnReference { .. } => type_name_lower == "column",
         Value::Null => type_name_lower == "null" || type_name_lower == "none",
-        Value::Function(_) | Value::NativeFunction(_) => type_name_lower == "function",
+        Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_) => type_name_lower == "function",
         Value::Tensor(_) => type_name_lower == "tensor",
         Value::Graph(_) => type_name_lower == "graph",
         Value::LinearRegression(_) => type_name_lower == "linear_regression",

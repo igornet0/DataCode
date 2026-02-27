@@ -914,7 +914,7 @@ fn get_value_type_name(value: &Value) -> &str {
         Value::Path(_) => "Path",
         Value::Uuid(_, _) => "UUID",
         Value::ColumnReference { .. } => "ColumnReference",
-        Value::Function(_) => "Function",
+        Value::Function(_) | Value::ModuleFunction { .. } => "Function",
         Value::NativeFunction(_) => "NativeFunction",
         Value::Tensor(_) => "Tensor",
         Value::Graph(_) => "Graph",

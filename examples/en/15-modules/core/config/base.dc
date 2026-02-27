@@ -1,0 +1,26 @@
+# Base constants and configuration for all environments
+
+LOG_DEFAULT_FORMAT = "[%(asctime)s] %(name)-35s:%(lineno)-3d - %(levelname)-7s - %(message)s"
+
+# Path to env files directory (in a full example could be getcwd() / "settings")
+_ENV_DIR = "./settings"
+
+# Base configuration for all environments
+_base_config = {
+    "case_sensitive": false,
+    "env_file_encoding": "utf-8",
+    "env_nested_delimiter": "__",
+    "extra": "ignore"
+}
+
+# Configuration for production
+ProdAppBaseConfig = {
+    **_base_config,
+    "env_file": _ENV_DIR + "/prod.env"
+}
+
+# Configuration for development
+DevAppBaseConfig = {
+    **_base_config,
+    "env_file": _ENV_DIR + "/dev.env"
+}

@@ -120,6 +120,7 @@ mod tests {
 
     #[test]
     fn test_parser_class_variable_without_public_goes_to_private() {
+        // Default section is public: variable without explicit section goes to public_variables.
         let source = r#"
             cls Config {
                 model_config = 42
@@ -129,11 +130,11 @@ mod tests {
         assert_eq!(stmts.len(), 1);
         if let Stmt::Class { name, private_variables, public_variables, .. } = &stmts[0] {
             assert_eq!(name, "Config");
-            assert_eq!(private_variables.len(), 1);
-            assert_eq!(private_variables[0].name, "model_config");
-            assert!(public_variables.is_empty());
+            assert!(private_variables.is_empty());
+            assert_eq!(public_variables.len(), 1);
+            assert_eq!(public_variables[0].name, "model_config");
         } else {
-            panic!("Expected Class with private variable");
+            panic!("Expected Class with public variable (default)");
         }
     }
 
@@ -159,6 +160,7 @@ mod tests {
 
     #[test]
     fn test_parser_class_mix_variable_and_fields() {
+        // Default is public: secret = 0 and "public: name, tag" all end up in public_*.
         let source = r#"
             cls Data {
                 secret = 0
@@ -171,12 +173,12 @@ mod tests {
         assert_eq!(stmts.len(), 1);
         if let Stmt::Class { name, private_variables, public_fields, public_variables, .. } = &stmts[0] {
             assert_eq!(name, "Data");
-            assert_eq!(private_variables.len(), 1);
-            assert_eq!(private_variables[0].name, "secret");
+            assert!(private_variables.is_empty());
             assert_eq!(public_fields.len(), 1);
             assert_eq!(public_fields[0].name, "name");
-            assert_eq!(public_variables.len(), 1);
-            assert_eq!(public_variables[0].name, "tag");
+            assert_eq!(public_variables.len(), 2);
+            assert_eq!(public_variables[0].name, "secret");
+            assert_eq!(public_variables[1].name, "tag");
         } else {
             panic!("Expected Class with mix of variable and fields");
         }
@@ -262,10 +264,10 @@ mod tests {
 
     #[test]
     fn test_parser_class_field_before_section_goes_to_private() {
+        // Default is public: field before any section goes to public_fields.
         let source = r#"
             cls Parent {
                 v: int
-                public:
                 new Parent(v) {
                     this.v = v
                 }
@@ -275,12 +277,12 @@ mod tests {
         assert_eq!(stmts.len(), 1);
         if let Stmt::Class { name, private_fields, public_fields, constructors, .. } = &stmts[0] {
             assert_eq!(name, "Parent");
-            assert_eq!(private_fields.len(), 1);
-            assert_eq!(private_fields[0].name, "v");
-            assert!(public_fields.is_empty());
+            assert!(private_fields.is_empty());
+            assert_eq!(public_fields.len(), 1);
+            assert_eq!(public_fields[0].name, "v");
             assert_eq!(constructors.len(), 1);
         } else {
-            panic!("Expected Class with field before section in private_fields");
+            panic!("Expected Class with field before section in public_fields (default)");
         }
     }
 
@@ -506,9 +508,10 @@ mod tests {
         // Приватная переменная уровня класса (вне public:) недоступна снаружи — ошибка доступа.
         let source = r#"
             cls Config {
-                z = 10
-                public:
-                    x: int
+                x: int
+                private:
+                    z = 10
+                
                 new Config(x) { this.x = x }
             }
             Config.z
@@ -521,9 +524,11 @@ mod tests {
         // Попытка получить private переменную уровня класса у класса-родителя — ошибка доступа.
         let source = r#"
             cls Parent {
-                secret = 42
-                public:
-                    v: int
+                v: int
+
+                private:
+                    secret = 42
+
                 new Parent(v) { this.v = v }
             }
             cls Child(Parent) {
@@ -551,9 +556,8 @@ mod tests {
     fn test_class_method_get_y() {
         let source = r#"
             cls Point {
-                public:
-                    x: int
-                    y: int
+                x: int
+                y: int
                 new Point(x, y) {
                     this.x = x
                     this.y = y
@@ -714,6 +718,19 @@ mod tests {
             b.get()
         "#;
         assert_number(source, 33.0);
+    }
+
+    #[test]
+    fn test_class_only_returns_null_if_no_expression() {
+        // Один statement — класс без выражения; результат программы должен быть Null.
+        let source = r#"
+            cls T {
+                public:
+                    x: int
+                new T(x) { this.x = x }
+            }
+        "#;
+        assert_null(source);
     }
 
     #[test]
@@ -1080,9 +1097,11 @@ mod tests {
     #[test]
     fn test_subclass_cannot_access_parent_private_field() {
         // Подкласс не может обращаться к приватному полю родителя — ProtectError.
+        // Parent must have an explicit private: section so v is private.
         let source = r#"
             cls Parent {
-                v: int
+                private:
+                    v: int
                 protected:
                     p: int
                 public:

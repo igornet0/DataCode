@@ -1,0 +1,18 @@
+# Пример создания модулей и их использования
+# Запуск: из корня проекта: cargo run --bin datacode examples/ru/15-модули/main.dc [dev|prod]
+
+from core.config import get_settings, load_settings
+
+fn main(env) {
+    load_settings(env)
+    let s = get_settings()
+    print(s)
+    print("env   =", s.env)
+    print("debug =", s.debug)
+    print("db.url =", s.db.url)
+}
+
+fn __main__(env = "dev") {
+    print("Среда:", env)
+    main(env)
+}

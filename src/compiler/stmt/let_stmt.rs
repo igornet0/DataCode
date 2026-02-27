@@ -8,7 +8,7 @@ use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
 use crate::compiler::variable::VariableResolver;
 
-pub fn compile_let(ctx: &mut CompilationContext, stmt: &Stmt, _pop_value: bool) -> Result<(), LangError> {
+pub fn compile_let(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool) -> Result<(), LangError> {
     if let Stmt::Let { name, value, is_global, line } = stmt {
         *ctx.current_line = *line;
         
@@ -70,6 +70,10 @@ pub fn compile_let(ctx: &mut CompilationContext, stmt: &Stmt, _pop_value: bool) 
             // Загружаем последнее значение на стек
             if let Some(last_name) = names.last() {
                 VariableResolver::resolve_and_load(ctx, last_name, *line)?;
+            }
+            // Когда pop_value (не последний statement или результат не нужен), снимаем значение со стека
+            if pop_value {
+                ctx.chunk.write_with_line(OpCode::Pop, *line);
             }
             return Ok(());
         }

@@ -186,7 +186,7 @@ fn emit_instance_class_reference(
     ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), line);
 }
 
-pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), LangError> {
+pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool) -> Result<(), LangError> {
     if let Stmt::Class { name, superclass, is_abstract, private_fields, protected_fields, public_fields, private_variables, protected_variables, public_variables, constructors, methods, line } = stmt {
         *ctx.current_line = *line;
         if *is_abstract {
@@ -1352,6 +1352,19 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
         ctx.current_class = None;
         ctx.current_superclass = None;
         
+        // Конструкторы (new_0, new_1, ...) в объекте класса, чтобы Call(arity) в рантайме разрешался по ключу "new_{arity}".
+        // Добавляем в class_metadata до создания константы; при мерже модуля Value::Function заменятся на ModuleFunction.
+        let ctor_prefix_meta = format!("{}::new_", name);
+        for (global_name, _) in ctx.scope.globals.iter() {
+            if let Some(suffix) = global_name.strip_prefix(&ctor_prefix_meta) {
+                if suffix.chars().all(|c| c.is_ascii_digit()) {
+                    if let Some(fn_idx) = ctx.function_names.iter().position(|n| n == global_name) {
+                        class_metadata.insert(format!("new_{}", suffix), Value::Function(fn_idx));
+                    }
+                }
+            }
+        }
+        
         // Сохраняем класс-объект в глобальной области видимости (слот зарезервирован в начале как class_global_index)
         let class_value = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(class_metadata)));
         let class_index = ctx.chunk.add_constant(class_value);
@@ -1377,6 +1390,32 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
             ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
             ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
         }
+        // Settings: set __required_keys on class object so 0-arg call sites in other modules can load it.
+        if is_settings_chain_early {
+            if let Some(required_keys_value) = ctx.class_required_keys_value.get(name) {
+                let req_const = ctx.chunk.add_constant(required_keys_value.clone());
+                ctx.chunk.write_with_line(OpCode::Constant(req_const), *line);
+                let key_const = ctx.chunk.add_constant(Value::String("__required_keys".to_string()));
+                ctx.chunk.write_with_line(OpCode::Constant(key_const), *line);
+                ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+            }
+        }
+        
+        // Дублируем слоты конструкторов в объект класса в рантайме (на случай, если класс из константы не попал в экспорт).
+        let ctor_prefix = format!("{}::new_", name);
+        for (global_name, &ctor_global_index) in ctx.scope.globals.iter() {
+            if let Some(suffix) = global_name.strip_prefix(&ctor_prefix) {
+                if suffix.chars().all(|c| c.is_ascii_digit()) {
+                    let key_const = ctx.chunk.add_constant(Value::String(format!("new_{}", suffix)));
+                    ctx.chunk.global_names.insert(ctor_global_index, global_name.clone());
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(ctor_global_index), *line);
+                    ctx.chunk.write_with_line(OpCode::Constant(key_const), *line);
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                    ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                }
+            }
+        }
         
         // Для extends_table: добавляем Column-дескрипторы в объект класса под ключом __col_<name>
         // (обход проверки приватности; run_create_all ищет __col_* для DDL)
@@ -1396,6 +1435,13 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
         // Store this class's private and protected field names for subclass constructors (merge with parent)
         ctx.class_private_fields.insert(name.clone(), private_field_names.clone());
         ctx.class_protected_fields.insert(name.clone(), protected_field_names.clone());
+        
+        // Оставляем класс на стеке только если это последний statement (результат программы); иначе снимаем один элемент (VM Pop безопасен при пустом стеке).
+        if pop_value {
+            ctx.chunk.write_with_line(OpCode::Pop, *line);
+        } else {
+            ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+        }
         
         Ok(())
     } else {

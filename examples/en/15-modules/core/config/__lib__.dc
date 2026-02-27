@@ -1,0 +1,31 @@
+# Package core.config: entry point — exports functions and global state
+
+from prod_config import ProdSettings
+from dev_config import DevSettings
+
+global settings = null
+
+fn get_settings() {
+    """Get current application settings"""
+    if settings == null {
+        throw ValueError("Settings are not loaded. Call load_settings() first.")
+    }
+    return settings
+}
+
+fn load_settings(env) {
+    """
+    Load settings for the given environment.
+
+    Args:
+        env: Runtime environment ("prod" or "dev")
+    """
+    if env == "prod" {
+        settings = ProdSettings()
+    } else if env == "dev" {
+        settings = DevSettings()
+    } else {
+        throw ValueError("Invalid environment: ${env}. Must be \"prod\" or \"dev\"")
+    }
+    return settings
+}

@@ -712,4 +712,42 @@ from config import Config
         }
     }
 
+    /// Module isolation: importing get_settings, load_settings does NOT make "settings" visible. Must get NameError.
+    #[test]
+    fn test_module_isolation_settings_not_visible_without_import() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sandbox").join("web_api");
+        if !base.join("core").join("config").join("__lib__.dc").exists() {
+            return; // skip if sandbox layout not present
+        }
+        let source = r#"
+from core.config import get_settings, load_settings
+print(settings)
+"#;
+        let result = run_with_base_path(source, base.as_path());
+        assert!(result.is_err(), "expected NameError (settings is not defined), got {:?}", result);
+        let err = result.unwrap_err();
+        let msg = format!("{:?}", err);
+        assert!(msg.contains("settings") || msg.contains("Undefined") || msg.contains("not defined"),
+            "error should mention settings or undefined: {}", msg);
+    }
+
+    /// Module isolation: from core.config import settings and use it (should work).
+    #[test]
+    fn test_module_isolation_from_import_single_name_succeeds() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sandbox").join("web_api");
+        if !base.join("core").join("config").join("__lib__.dc").exists() {
+            return; // skip if sandbox layout not present
+        }
+        let source = r#"
+from core.config import settings
+settings == null
+"#;
+        let result = run_with_base_path(source, base.as_path());
+        match result {
+            Ok(Value::Bool(b)) => assert!(b, "settings should be null before load_settings"),
+            Ok(v) => panic!("expected Bool(true), got {:?}", v),
+            Err(e) => panic!("from core.config import settings should work: {:?}", e),
+        }
+    }
+
 }

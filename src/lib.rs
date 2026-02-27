@@ -244,6 +244,106 @@ pub fn get_main_entry_params(source: &str) -> Option<Vec<(String, Option<Value>)
     None
 }
 
+/// Remap function indices in an export map (e.g. from __lib__ or imported module) so they refer to caller VM's function table.
+pub(crate) fn remap_function_indices_in_exports(exports: &mut std::collections::HashMap<String, Value>, start_idx: usize) {
+    fn remap_value(v: &mut Value, start_idx: usize) {
+        match v {
+            Value::Function(i) => *i = start_idx + *i,
+            Value::Object(rc) => {
+                for (_, inner) in rc.borrow_mut().iter_mut() {
+                    remap_value(inner, start_idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    for v in exports.values_mut() {
+        remap_value(v, start_idx);
+    }
+}
+
+/// Replace Value::Function(local_index) with Value::ModuleFunction { module_id, local_index } in an export map.
+/// Used by executor after merging a module so namespace is valid across cache hits.
+pub(crate) fn replace_function_with_module_function_in_exports(
+    exports: &mut std::collections::HashMap<String, Value>,
+    module_id: usize,
+) {
+    fn replace_value(v: &mut Value, module_id: usize) {
+        match v {
+            Value::Function(local_index) => {
+                *v = Value::ModuleFunction {
+                    module_id,
+                    local_index: *local_index,
+                };
+            }
+            Value::Object(rc) => {
+                for (_, inner) in rc.borrow_mut().iter_mut() {
+                    replace_value(inner, module_id);
+                }
+            }
+            _ => {}
+        }
+    }
+    for v in exports.values_mut() {
+        replace_value(v, module_id);
+    }
+}
+
+/// Remap ModuleFunction { module_id, local_index } in an export map so submodule IDs refer to caller VM's registry.
+/// Used after replace_function_with_module_function_in_exports when the loaded module had submodules (e.g. dev_config);
+/// class objects from submodules carry ModuleFunction(old_id, local_index) valid in the loaded VM; this rewrites
+/// old_id to new_id so get_module_function_index resolves in the caller.
+pub(crate) fn remap_module_function_ids_in_exports(
+    exports: &mut std::collections::HashMap<String, Value>,
+    old_to_new: &std::collections::HashMap<usize, usize>,
+) {
+    fn remap_value(v: &mut Value, old_to_new: &std::collections::HashMap<usize, usize>) {
+        match v {
+            Value::ModuleFunction { module_id, local_index: _ } => {
+                if let Some(&new_id) = old_to_new.get(module_id) {
+                    *module_id = new_id;
+                }
+            }
+            Value::Object(rc) => {
+                for (_, inner) in rc.borrow_mut().iter_mut() {
+                    remap_value(inner, old_to_new);
+                }
+            }
+            _ => {}
+        }
+    }
+    for v in exports.values_mut() {
+        remap_value(v, old_to_new);
+    }
+}
+
+const BUILTIN_NATIVE_COUNT: usize = 75;
+
+/// Remap NativeFunction indices in an export map so they refer to caller VM's native table.
+/// Caller must have already extended its natives with module_natives[BUILTIN_NATIVE_COUNT..].
+/// For NativeFunction(i) with i >= BUILTIN_NATIVE_COUNT: new_idx = native_start + (i - BUILTIN_NATIVE_COUNT).
+pub(crate) fn remap_native_indices_in_exports(
+    exports: &mut std::collections::HashMap<String, Value>,
+    native_start: usize,
+) {
+    fn remap_value(v: &mut Value, native_start: usize) {
+        match v {
+            Value::NativeFunction(i) if *i >= BUILTIN_NATIVE_COUNT => {
+                *i = native_start + (*i - BUILTIN_NATIVE_COUNT);
+            }
+            Value::Object(rc) => {
+                for (_, inner) in rc.borrow_mut().iter_mut() {
+                    remap_value(inner, native_start);
+                }
+            }
+            _ => {}
+        }
+    }
+    for v in exports.values_mut() {
+        remap_value(v, native_start);
+    }
+}
+
 /// Внутренняя функция выполнения кода (используется через run_with_vm_internal_with_args)
 #[allow(dead_code)]
 fn run_with_vm_internal(source: &str) -> Result<(Value, Vm), LangError> {
@@ -300,6 +400,10 @@ fn run_with_vm_internal_with_args(
         if let Some(base_path) = base_for_lib {
             // Сначала ищем __lib__.dc в папках по импортам (from X import ...), затем поднимаемся вверх по дереву
             let module_names = import_module_names_from_ast(&ast);
+            // Ищем __lib__.dc только в директории скрипта или в папках импортов (base_path/<module>/__lib__.dc).
+            // Не поднимаемся вверх по дереву (find_nearest_lib), иначе при запуске из sandbox/web_api
+            // подхватывается __lib__.dc из корня репо, добавляются функции в VM до импорта core.config,
+            // и индексы конструкторов из модуля дают "Function index N out of bounds".
             let potential_lib_path = if !module_names.is_empty() {
                 debug_println!(
                     "[DEBUG run_with_vm_internal_with_args] Ищем __lib__.dc в папках по импортам: {:?}",
@@ -309,11 +413,16 @@ fn run_with_vm_internal_with_args(
             } else {
                 None
             }.or_else(|| {
-                debug_println!(
-                    "[DEBUG run_with_vm_internal_with_args] Ищем ближайший __lib__.dc, поднимаясь от базового пути: {:?}",
-                    base_path
-                );
-                file_import::find_nearest_lib(&base_path)
+                let in_script_dir = base_path.join("__lib__.dc");
+                if in_script_dir.exists() {
+                    debug_println!(
+                        "[DEBUG run_with_vm_internal_with_args] Найден __lib__.dc в директории скрипта: {:?}",
+                        in_script_dir
+                    );
+                    Some(in_script_dir)
+                } else {
+                    None
+                }
             });
             if let Some(potential_lib_path) = potential_lib_path {
                 debug_println!(
@@ -379,40 +488,37 @@ fn run_with_vm_internal_with_args(
     // Регистрируем встроенные модули (ml, plot, settings_env, uuid) — они заполняют слоты по имени
     vm.register_all_builtin_modules()?;
     
-    // Объединяем глобальные переменные из __lib__.dc (один раз), затем патчим байткод функций lib пост-merge global_names.
-    if let Some(ref lib_vm) = lib_vm {
-        debug_println!("[DEBUG run_with_vm_internal_with_args] Объединяем глобальные переменные из __lib__.dc");
-        let lib_function_count = lib_vm.get_functions().len();
-        vm.merge_globals_from(lib_vm);
-        // Патч чанков lib один раз, используя актуальный global_names после merge (Config в слоте 71 и т.д.).
-        let global_names = vm.get_global_names().clone();
-        for i in 0..lib_function_count {
-            crate::vm::vm::Vm::update_chunk_indices_from_names(
-                &mut vm.get_functions_mut()[i].chunk,
-                &global_names,
-                None,
-                None,
-                None,
-                None, // lib chunks have no argv
-            );
+    // Module isolation: register __lib__.dc as a module (no merge). Main must "from __lib__ import X" to use lib exports.
+    if let Some(mut lib_vm) = lib_vm {
+        debug_println!("[DEBUG run_with_vm_internal_with_args] Регистрируем __lib__.dc как модуль (без merge)");
+        let start_idx = vm.add_functions_only(lib_vm.get_functions().clone());
+        let mut exports = crate::vm::file_import::export_globals_from_vm(&mut lib_vm);
+        remap_function_indices_in_exports(&mut exports, start_idx);
+        let lib_module_value = Value::Object(Rc::new(RefCell::new(exports)));
+        {
+            use crate::vm::module_object::ModuleObject;
+            if let Value::Object(ref namespace_rc) = lib_module_value {
+                let mod_obj = ModuleObject::from_namespace("__lib__".to_string(), namespace_rc.clone());
+                vm.get_modules_mut().insert("__lib__".to_string(), Rc::new(RefCell::new(mod_obj)));
+            }
         }
-        debug_println!("[DEBUG run_with_vm_internal_with_args] После объединения __lib__.dc, глобальных переменных: {}", vm.get_global_names().len());
-        // Отладочный вывод: проверяем, что Data и Data::new_3 установлены правильно
-        let debug_merge: Vec<(usize, String)> = vm.get_global_names().iter()
-            .filter(|(_, n)| n.contains("Data"))
-            .filter_map(|(i, n)| vm.get_globals().get(*i).map(|_| (*i, n.clone())))
-            .collect();
-        for (idx, name) in debug_merge {
-            let id = vm.resolve_global_to_value_id(idx);
-            let v = crate::vm::store_convert::load_value(id, vm.value_store(), vm.heavy_store());
-            let type_str = match &v {
-                Value::Null => "Null",
-                Value::Function(_) => "Function",
-                Value::Object(_) => "Object",
-                _ => "Other",
-            };
-            debug_println!("[DEBUG run_with_vm_internal_with_args] После merge: '{}' в globals[{}] = {:?}", name, idx, type_str);
+        // Set __lib__ slot in main VM so "from __lib__ import X" and "import __lib__" resolve.
+        let lib_slot_idx = vm.get_global_names().iter()
+            .find(|(_, n)| n.as_str() == "__lib__")
+            .map(|(i, _)| *i);
+        if let Some(idx) = lib_slot_idx {
+            let id = vm.with_stores_mut(|store, heap| crate::vm::store_convert::store_value(lib_module_value.clone(), store, heap));
+            if idx >= vm.get_globals().len() {
+                vm.get_globals_mut().resize(idx + 1, crate::vm::global_slot::default_global_slot());
+            }
+            vm.get_globals_mut()[idx] = crate::vm::global_slot::GlobalSlot::Heap(id);
+        } else {
+            let id = vm.with_stores_mut(|store, heap| crate::vm::store_convert::store_value(lib_module_value, store, heap));
+            let idx = vm.get_globals().len();
+            vm.get_globals_mut().push(crate::vm::global_slot::GlobalSlot::Heap(id));
+            vm.get_global_names_mut().insert(idx, "__lib__".to_string());
         }
+        debug_println!("[DEBUG run_with_vm_internal_with_args] __lib__ зарегистрирован как модуль");
     } else {
         debug_println!("[DEBUG run_with_vm_internal_with_args] __lib__.dc не загружен (lib_path не указан)");
     }
@@ -509,7 +615,7 @@ fn run_with_vm_internal_with_args(
         let v = crate::vm::store_convert::load_value(id, vm.value_store(), vm.heavy_store());
         let type_str = match &v {
             Value::Null => "Null",
-            Value::Function(_) => "Function",
+            Value::Function(_) | Value::ModuleFunction { .. } => "Function",
             Value::Object(_) => "Object",
             _ => "Other",
         };

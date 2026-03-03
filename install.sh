@@ -26,6 +26,12 @@ fi
 
 echo "✅ DataCode project directory confirmed"
 
+# Update submodules
+echo ""
+echo "🔄 Updating submodules..."
+git submodule update --init --recursive
+echo "✅ Submodules updated successfully"
+
 # Detect platform and determine GPU feature
 GPU_FEATURE=""
 if [[ "$OSTYPE" == "darwin"* ]]; then

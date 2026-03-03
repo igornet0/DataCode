@@ -33,79 +33,12 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
             return compile_join_method(ctx, method, call_args, *line);
         }
         
-        // Проверяем, является ли это методом класса ДО сохранения объекта
-        // Методы классов имеют формат ClassName::method_<method_name>
-        let method_pattern = format!("::method_{}", method);
-        let class_method_name: Option<String> = ctx.function_names.iter()
-            .find(|name| name.ends_with(&method_pattern))
-            .map(|s| s.clone());
-        
-        debug_println!("[DEBUG compile_method_call] Проверяем метод '{}', паттерн: '{}', найденные методы класса: {:?}", 
-            method, method_pattern, 
-            ctx.function_names.iter().filter(|n| n.ends_with(&method_pattern)).collect::<Vec<_>>());
-        
-        if class_method_name.is_some() {
-            debug_println!("[DEBUG compile_method_call] Метод '{}' распознан как метод класса: '{}'", method, class_method_name.as_ref().unwrap());
-            expr::compile_expr(ctx, object)?;
-            // Это метод класса - обрабатываем его отдельно
-            let start_ip = ctx.chunk.code.len();
-            debug_println!("[DEBUG compile_method_call] Начало компиляции вызова метода класса '{}' на строке {}, начальный IP: {}", method, *line, start_ip);
-            
-            // Сохраняем объект во временную переменную
-            let temp_object_slot = ctx.scope.declare_local("__method_object");
-            ctx.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
-            debug_println!("[DEBUG compile_method_call] После StoreLocal(temp_object_slot), IP: {}", ctx.chunk.code.len());
-            
-            // Компилируем аргументы в нормальном порядке
-            for arg in call_args {
-                match arg {
-                    Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-                    Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                    Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-                }
-            }
-            debug_println!("[DEBUG compile_method_call] После компиляции аргументов, IP: {}", ctx.chunk.code.len());
-            
-            // Удаляем аргументы со стека временно
-            for _ in 0..call_args.len() {
-                ctx.chunk.write_with_line(OpCode::Pop, *line);
-            }
-            debug_println!("[DEBUG compile_method_call] После Pop аргументов, IP: {}", ctx.chunk.code.len());
-            
-            // Загружаем объект (this) первым
-            ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
-            debug_println!("[DEBUG compile_method_call] После LoadLocal(temp_object_slot), IP: {}", ctx.chunk.code.len());
-            
-            // Компилируем аргументы снова в нормальном порядке
-            for arg in call_args {
-                match arg {
-                    Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-                    Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                    Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-                }
-            }
-            debug_println!("[DEBUG compile_method_call] После повторной компиляции аргументов, IP: {}", ctx.chunk.code.len());
-            
-            // Находим функцию метода
-            if let Some(function_index) = ctx.function_names.iter().position(|n| n == class_method_name.as_ref().unwrap()) {
-                let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
-                ctx.chunk.write_with_line(OpCode::Constant(constant_index), *line);
-                debug_println!("[DEBUG compile_method_call] После Constant(Function({})), IP: {}", function_index, ctx.chunk.code.len());
-                
-                let call_ip = ctx.chunk.code.len();
-                ctx.chunk.write_with_line(OpCode::Call(call_args.len() + 1), *line);
-                debug_println!("[DEBUG compile_method_call] Сгенерирован Call({}) на IP {} для метода класса '{}'", call_args.len() + 1, call_ip, method);
-                
-                // Логируем все инструкции, которые были сгенерированы
-                debug_println!("[DEBUG compile_method_call] Сгенерированные инструкции для метода класса '{}' (IP {} - {}):", method, start_ip, ctx.chunk.code.len());
-                for i in start_ip..ctx.chunk.code.len() {
-                    debug_println!("[DEBUG compile_method_call]   IP {}: {:?}", i, ctx.chunk.code.get(i));
-                }
-                
-                return Ok(());
-            }
-        }
-        
+        // NOTE: We intentionally do NOT use the direct Constant+Call path for class methods.
+        // Private and protected methods must go through GetArrayElement so the VM can enforce
+        // visibility (__private_methods, __protected_methods) at runtime. The direct path would
+        // bypass that check. So we always use compile_generic_method -> compile_module_method for
+        // instance method calls.
+        //
         // Для методов engine/cluster (run, execute, query, ...) сначала компилируем аргументы в временные слоты,
         // затем receiver, чтобы StoreLocal(receiver) не перезаписывал слот переменной-аргумента (например create_all).
         let is_db_receiver = matches!(method.as_str(), "add" | "get" | "names" | "connect" | "execute" | "query" | "run");

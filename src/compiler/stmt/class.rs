@@ -1,4 +1,15 @@
 /// Компиляция class statements
+use crate::debug_println;
+use crate::parser::ast::{Arg, ClassField, Expr, Stmt, Param, TypePart};
+use crate::bytecode::{OpCode, Function};
+use crate::common::error::LangError;
+use crate::common::value::Value;
+use crate::compiler::context::CompilationContext;
+use crate::compiler::stmt;
+use crate::compiler::expr;
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
 
 /// Reserved global index used only for LoadGlobal when loading model_config in Settings subclasses.
 /// Name is "__constructing_class__" so the VM can set it to the leaf class (e.g. DevSettings) before calling any constructor;
@@ -15,17 +26,27 @@ fn type_parts_any(tys: Option<&Vec<TypePart>>, pred: impl Fn(&str) -> bool) -> b
     })).unwrap_or(false)
 }
 
-use crate::debug_println;
-use crate::parser::ast::{Arg, ClassField, Expr, Stmt, Param, TypePart};
-use crate::bytecode::{OpCode, Function};
-use crate::common::error::LangError;
-use crate::common::value::Value;
-use crate::compiler::context::CompilationContext;
-use crate::compiler::stmt;
-use crate::compiler::expr;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::rc::Rc;
+/// Build type suffix for constructor/function overloading: "int_str_int" from params with type annotations.
+/// Returns None if any param lacks type annotation (use arity-only naming).
+fn param_types_suffix(params: &[Param]) -> Option<String> {
+    let parts: Vec<String> = params
+        .iter()
+        .map(|p| {
+            p.type_annotation.as_ref().and_then(|tys| {
+                tys.first().map(|t| match t {
+                    TypePart::TypeName(s) => s.clone(),
+                    TypePart::LiteralStr(s) => format!("\"{}\"", s),
+                })
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if parts.is_empty() {
+        return Some(String::new());
+    }
+    Some(parts.join("_"))
+}
+
+
 
 /// Emit bytecode to set this.__extends_table when the class extends Table (for isinstance(x, Table)).
 fn emit_instance_extends_table(ctx: &mut CompilationContext, line: usize, this_slot: usize, class_name: &str) {
@@ -211,6 +232,69 @@ fn emit_instance_protected_metadata(
     ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), line);
 }
 
+/// Emit bytecode to set this.__private_methods and this.__private_method_defining_class (for VM private method access checks).
+fn emit_instance_private_methods_metadata(
+    ctx: &mut CompilationContext,
+    line: usize,
+    this_slot: usize,
+    merged_private_method_names: &[String],
+    private_method_defining_class: &HashMap<String, String>,
+) {
+    if merged_private_method_names.is_empty() {
+        return;
+    }
+    let private_names_value = Value::Array(Rc::new(RefCell::new(
+        merged_private_method_names
+            .iter()
+            .map(|n| Value::String(n.clone()))
+            .collect::<Vec<_>>(),
+    )));
+    let private_methods_const = ctx.chunk.add_constant(private_names_value);
+    ctx.chunk.write_with_line(OpCode::Constant(private_methods_const), line);
+    let key_const = ctx.chunk.add_constant(Value::String("__private_methods".to_string()));
+    ctx.chunk.write_with_line(OpCode::Constant(key_const), line);
+    ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), line);
+    ctx.chunk.write_with_line(OpCode::SetArrayElement, line);
+    ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), line);
+    let defining_class_map: HashMap<String, Value> = private_method_defining_class
+        .iter()
+        .map(|(k, v)| (k.clone(), Value::String(v.clone())))
+        .collect();
+    let defining_class_value = Value::Object(Rc::new(RefCell::new(defining_class_map)));
+    let defining_class_const = ctx.chunk.add_constant(defining_class_value);
+    ctx.chunk.write_with_line(OpCode::Constant(defining_class_const), line);
+    let defining_key_const = ctx.chunk.add_constant(Value::String("__private_method_defining_class".to_string()));
+    ctx.chunk.write_with_line(OpCode::Constant(defining_key_const), line);
+    ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), line);
+    ctx.chunk.write_with_line(OpCode::SetArrayElement, line);
+    ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), line);
+}
+
+/// Emit bytecode to set this.__protected_methods on the instance (for VM protected method access checks).
+fn emit_instance_protected_methods_metadata(
+    ctx: &mut CompilationContext,
+    line: usize,
+    this_slot: usize,
+    merged_protected_method_names: &[String],
+) {
+    if merged_protected_method_names.is_empty() {
+        return;
+    }
+    let protected_names_value = Value::Array(Rc::new(RefCell::new(
+        merged_protected_method_names
+            .iter()
+            .map(|n| Value::String(n.clone()))
+            .collect::<Vec<_>>(),
+    )));
+    let protected_methods_const = ctx.chunk.add_constant(protected_names_value);
+    ctx.chunk.write_with_line(OpCode::Constant(protected_methods_const), line);
+    let key_const = ctx.chunk.add_constant(Value::String("__protected_methods".to_string()));
+    ctx.chunk.write_with_line(OpCode::Constant(key_const), line);
+    ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), line);
+    ctx.chunk.write_with_line(OpCode::SetArrayElement, line);
+    ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), line);
+}
+
 /// Emit bytecode to set this.__class on the instance (for @class parameter injection in methods).
 fn emit_instance_class_reference(
     ctx: &mut CompilationContext,
@@ -248,9 +332,18 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
         // Создаем класс-объект с метаданными
         let mut class_metadata = HashMap::new();
         
-        // Сохраняем информацию о полях
+        // Сохраняем информацию о полях и методах
         let private_field_names: Vec<String> = private_fields.iter().map(|f| f.name.clone()).collect();
         let protected_field_names: Vec<String> = protected_fields.iter().map(|f| f.name.clone()).collect();
+        // visibility: None = private, Some(false) = protected, Some(true) = public
+        let private_method_names: Vec<String> = methods.iter()
+            .filter(|m| m.visibility.is_none())
+            .map(|m| m.name.clone())
+            .collect();
+        let protected_method_names: Vec<String> = methods.iter()
+            .filter(|m| m.visibility == Some(false))
+            .map(|m| m.name.clone())
+            .collect();
         let public_field_names: Vec<String> = public_fields.iter().map(|f| f.name.clone()).collect();
         let class_private_var_names: Vec<String> = private_variables.iter().map(|v| v.name.clone()).collect();
         let class_protected_var_names: Vec<String> = protected_variables.iter().map(|v| v.name.clone()).collect();
@@ -732,12 +825,19 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                 ctx.chunk.write_with_line(OpCode::Call(1), *line);
             }
             ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
-            // Update __class_name and __superclass when subclassing (e.g. Base(Table)); parent may return object with its own __class_name
+            // Update __class_name, name, and __superclass when subclassing (e.g. Base(Table)); parent may return object with its own __class_name
             if superclass_name != "Settings" {
                 let class_name_const = ctx.chunk.add_constant(Value::String(name.clone()));
                 ctx.chunk.write_with_line(OpCode::Constant(class_name_const), *line);
                 let class_key_const = ctx.chunk.add_constant(Value::String("__class_name".to_string()));
                 ctx.chunk.write_with_line(OpCode::Constant(class_key_const), *line);
+                ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), *line);
+                ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
+                // Also set "name" so @class.name returns the subclass name (e.g. for __tablename__)
+                let name_key_const = ctx.chunk.add_constant(Value::String("name".to_string()));
+                ctx.chunk.write_with_line(OpCode::Constant(class_name_const), *line);
+                ctx.chunk.write_with_line(OpCode::Constant(name_key_const), *line);
                 ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), *line);
                 ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
                 ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
@@ -1026,8 +1126,13 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
             ctx.class_constructor.insert(name.clone(), (constructor_name.clone(), function_index));
         }
 
+        // Build constructor names: use type suffix when all params have types, to support overloading by type
         for constructor in constructors_to_compile {
-            let constructor_name = format!("{}::new_{}", name, constructor.params.len());
+            let arity = constructor.params.len();
+            let constructor_name = match param_types_suffix(&constructor.params) {
+                Some(suffix) if !suffix.is_empty() => format!("{}::new_{}_{}", name, arity, suffix),
+                _ => format!("{}::new_{}", name, arity),
+            };
             
             // Создаем функцию для конструктора
             let mut constructor_function = Function::new(constructor_name.clone(), constructor.params.len());
@@ -1120,6 +1225,15 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                         .cloned()
                         .collect();
                     emit_instance_protected_metadata(ctx, *line, this_slot, &merged_protected);
+                    let parent_private_methods = ctx.class_private_methods.get(super_name).cloned().unwrap_or_default();
+                    let merged_private_methods: Vec<String> = parent_private_methods.iter().chain(private_method_names.iter()).cloned().collect();
+                    let mut method_defining_class: HashMap<String, String> = HashMap::new();
+                    for m in &parent_private_methods { method_defining_class.insert(m.clone(), super_name.clone()); }
+                    for m in &private_method_names { method_defining_class.insert(m.clone(), name.clone()); }
+                    emit_instance_private_methods_metadata(ctx, *line, this_slot, &merged_private_methods, &method_defining_class);
+                    let parent_protected_methods = ctx.class_protected_methods.get(super_name).cloned().unwrap_or_default();
+                    let merged_protected_methods: Vec<String> = parent_protected_methods.iter().chain(protected_method_names.iter()).cloned().collect();
+                    emit_instance_protected_methods_metadata(ctx, *line, this_slot, &merged_protected_methods);
                     emit_instance_class_reference(ctx, *line, this_slot, class_global_index);
                 } else {
                     // No delegate_args - check for explicit super(args) in body
@@ -1205,6 +1319,15 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                         .cloned()
                         .collect();
                     emit_instance_protected_metadata(ctx, *line, this_slot, &merged_protected);
+                    let parent_private_methods = ctx.class_private_methods.get(super_name).cloned().unwrap_or_default();
+                    let merged_private_methods: Vec<String> = parent_private_methods.iter().chain(private_method_names.iter()).cloned().collect();
+                    let mut method_defining_class: HashMap<String, String> = HashMap::new();
+                    for m in &parent_private_methods { method_defining_class.insert(m.clone(), super_name.clone()); }
+                    for m in &private_method_names { method_defining_class.insert(m.clone(), name.clone()); }
+                    emit_instance_private_methods_metadata(ctx, *line, this_slot, &merged_private_methods, &method_defining_class);
+                    let parent_protected_methods = ctx.class_protected_methods.get(super_name).cloned().unwrap_or_default();
+                    let merged_protected_methods: Vec<String> = parent_protected_methods.iter().chain(protected_method_names.iter()).cloned().collect();
+                    emit_instance_protected_methods_metadata(ctx, *line, this_slot, &merged_protected_methods);
                     emit_instance_class_reference(ctx, *line, this_slot, class_global_index);
                 }
             } else {
@@ -1215,6 +1338,9 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                 emit_instance_private_metadata(ctx, *line, this_slot, name, &private_field_names, &defining_class);
                 emit_instance_extends_table(ctx, *line, this_slot, name);
                 emit_instance_protected_metadata(ctx, *line, this_slot, &protected_field_names);
+                let method_defining_class: HashMap<String, String> = private_method_names.iter().map(|m| (m.clone(), name.clone())).collect();
+                emit_instance_private_methods_metadata(ctx, *line, this_slot, &private_method_names, &method_defining_class);
+                emit_instance_protected_methods_metadata(ctx, *line, this_slot, &protected_method_names);
                 emit_instance_class_reference(ctx, *line, this_slot, class_global_index);
             }
 
@@ -1559,9 +1685,11 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
             }
         }
         
-        // Store this class's private and protected field names for subclass constructors (merge with parent)
+        // Store this class's private and protected field/method names for subclass constructors (merge with parent)
         ctx.class_private_fields.insert(name.clone(), private_field_names.clone());
         ctx.class_protected_fields.insert(name.clone(), protected_field_names.clone());
+        ctx.class_private_methods.insert(name.clone(), private_method_names.clone());
+        ctx.class_protected_methods.insert(name.clone(), protected_method_names.clone());
         
         // Оставляем класс на стеке только если это последний statement (результат программы); иначе снимаем один элемент (VM Pop безопасен при пустом стеке).
         if pop_value {

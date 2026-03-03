@@ -41,6 +41,10 @@ pub struct CompilationContext<'a> {
     pub class_private_fields: &'a mut std::collections::HashMap<String, Vec<String>>,
     /// Class name -> list of protected field names (for inheritance: merge in subclass constructors).
     pub class_protected_fields: &'a mut std::collections::HashMap<String, Vec<String>>,
+    /// Class name -> list of private method names (for inheritance: merge in subclass constructors).
+    pub class_private_methods: &'a mut std::collections::HashMap<String, Vec<String>>,
+    /// Class name -> list of protected method names (for inheritance: merge in subclass constructors).
+    pub class_protected_methods: &'a mut std::collections::HashMap<String, Vec<String>>,
     /// Subclass name -> superclass name, set when implicit constructor was skipped (superclass has no matching constructor).
     pub class_superclass: &'a mut std::collections::HashMap<String, String>,
     /// Class name -> true if the class extends Table (directly or indirectly). Used for isinstance(x, Table).

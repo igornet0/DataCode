@@ -1,7 +1,7 @@
 /// Компиляция вызовов функций
 
 use crate::debug_println;
-use crate::parser::ast::{Expr, Arg};
+use crate::parser::ast::{Arg, Expr};
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
 use crate::common::value::Value;
@@ -9,6 +9,60 @@ use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
 use crate::compiler::args;
 use crate::compiler::stmt::class::{MODEL_CONFIG_CLASS_LOAD_INDEX, CONSTRUCTING_CLASS_GLOBAL_NAME};
+
+/// Infer argument type from expression for constructor/function overload resolution.
+/// Returns None when type cannot be inferred at compile time (e.g. variable).
+fn infer_arg_type_from_expr(arg: &Arg) -> Option<String> {
+    let expr = match arg {
+        Arg::Positional(e) => e,
+        Arg::Named { value, .. } => value,
+        Arg::UnpackObject(_) => return None,
+    };
+    match expr {
+        Expr::Literal { value, .. } => match value {
+            Value::Number(n) => {
+                if n.fract() == 0.0 && n.is_finite() {
+                    Some("int".to_string())
+                } else {
+                    Some("float".to_string())
+                }
+            }
+            Value::String(_) => Some("str".to_string()),
+            Value::Bool(_) => Some("bool".to_string()),
+            Value::Null => Some("null".to_string()),
+            Value::Array(_) => Some("array".to_string()),
+            Value::Object(_) => Some("object".to_string()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Build constructor name for overload resolution: try type-specific name first when args are inferrable.
+fn resolve_constructor_name(
+    name: &str,
+    call_args: &[Arg],
+    function_names: &[String],
+    globals: &std::collections::HashMap<String, usize>,
+) -> String {
+    let arity = call_args.len();
+    let base_name = format!("{}::new_{}", name, arity);
+    // Try to infer types from positional args (must be all inferrable)
+    let types: Option<Vec<String>> = call_args
+        .iter()
+        .map(infer_arg_type_from_expr)
+        .collect();
+    if let Some(types) = &types {
+        if !types.is_empty() {
+            let suffix = types.join("_");
+            let typed_name = format!("{}::new_{}_{}", name, arity, suffix);
+            if function_names.contains(&typed_name) || globals.contains_key(&typed_name) {
+                return typed_name;
+            }
+        }
+    }
+    base_name
+}
 
 /// True if class name is "Settings" or has Settings as an ancestor (used for 1-arg call expansion).
 fn is_in_settings_chain(name: &str, class_superclass: &std::collections::HashMap<String, String>) -> bool {
@@ -35,9 +89,13 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             // Пропускаем все проверки конструктора и переходим к обработке обычной функции
         } else {
             // Имя начинается с заглавной буквы - это может быть конструктор класса
-            // Проверяем, является ли это вызовом конструктора класса
-            // Конструкторы имеют формат ClassName::new_<arity>
-            let constructor_name = format!("{}::new_{}", name, call_args.len());
+            // Конструкторы: ClassName::new_<arity> или ClassName::new_<arity>_<type1>_<type2> для overloading by type
+            let constructor_name = resolve_constructor_name(
+                name,
+                call_args,
+                ctx.function_names,
+                &ctx.scope.globals,
+            );
             debug_println!("[DEBUG compile_call] Проверяем вызов '{}' с {} аргументами", name, call_args.len());
             debug_println!("[DEBUG compile_call] Ищем конструктор '{}'", constructor_name);
 

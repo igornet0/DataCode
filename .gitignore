@@ -20,8 +20,6 @@ target
 node_modules
 
 datacode_syntax
-datacode_sdk
-datacode_abi
 datacode_lib
 sandbox
 packaging/macos/DataCode.app/Contents/MacOS/datacode

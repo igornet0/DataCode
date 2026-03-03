@@ -1,0 +1,6 @@
+[submodule "datacode_abi"]
+	path = datacode_abi
+	url = https://github.com/igornet0/Datacode-abi.git
+[submodule "datacode_sdk"]
+	path = datacode_sdk
+	url = https://github.com/igornet0/Datacode-sdk.git

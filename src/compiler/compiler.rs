@@ -34,6 +34,10 @@ pub struct Compiler {
     class_private_fields: std::collections::HashMap<String, Vec<String>>,
     /// Class name -> list of protected field names (for inheritance: merge in subclass constructors).
     class_protected_fields: std::collections::HashMap<String, Vec<String>>,
+    /// Class name -> list of private method names (for inheritance: merge in subclass constructors).
+    class_private_methods: std::collections::HashMap<String, Vec<String>>,
+    /// Class name -> list of protected method names (for inheritance: merge in subclass constructors).
+    class_protected_methods: std::collections::HashMap<String, Vec<String>>,
     /// Subclass name -> superclass name, set when implicit constructor was skipped (superclass has no matching constructor).
     class_superclass: std::collections::HashMap<String, String>,
     /// Class name -> true if extends Table (directly or indirectly). Used for isinstance(x, Table).
@@ -72,6 +76,8 @@ impl Compiler {
             imported_symbols: std::collections::HashMap::new(),
             class_private_fields: std::collections::HashMap::new(),
             class_protected_fields: std::collections::HashMap::new(),
+            class_private_methods: std::collections::HashMap::new(),
+            class_protected_methods: std::collections::HashMap::new(),
             class_superclass: std::collections::HashMap::new(),
             class_extends_table: std::collections::HashMap::new(),
             class_constructor: std::collections::HashMap::new(),
@@ -406,6 +412,8 @@ impl Compiler {
             imported_symbols: &mut self.imported_symbols,
             class_private_fields: &mut self.class_private_fields,
             class_protected_fields: &mut self.class_protected_fields,
+            class_private_methods: &mut self.class_private_methods,
+            class_protected_methods: &mut self.class_protected_methods,
             class_superclass: &mut self.class_superclass,
             class_extends_table: &mut self.class_extends_table,
             class_constructor: &mut self.class_constructor,

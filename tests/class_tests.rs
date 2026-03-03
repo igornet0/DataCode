@@ -27,6 +27,15 @@ mod tests {
         }
     }
 
+    fn assert_bool_result(source: &str, expected: bool) {
+        let v = run_ok(source);
+        if let Value::Bool(b) = v {
+            assert_eq!(b, expected, "expected {}, got {}", expected, b);
+        } else {
+            panic!("expected Bool({}), got {:?}", expected, v);
+        }
+    }
+
     fn assert_null(source: &str) {
         let v = run_ok(source);
         assert!(matches!(v, Value::Null), "expected Null, got {:?}", v);
@@ -229,6 +238,22 @@ mod tests {
         } else {
             panic!("Expected Class with private and public fields");
         }
+    }
+
+    #[test]
+    fn test_private_fn_not_accessible_outside_class() {
+        let source = r#"
+            cls Data {
+                private:
+                    id: int
+                fn private_fn() { return this.id }
+                public:
+                new Data(id) { this.id = id }
+            }
+            let d = Data(1)
+            d.private_fn()
+        "#;
+        assert_runtime_error(source, "cannot be accessed");
     }
 
     #[test]
@@ -525,11 +550,11 @@ mod tests {
         let source = r#"
             cls Parent {
                 v: int
+                new Parent(v) { this.v = v }
 
                 private:
                     secret = 42
 
-                new Parent(v) { this.v = v }
             }
             cls Child(Parent) {
                 fn getV() { return this.v }
@@ -641,9 +666,42 @@ mod tests {
             }
             let d1 = Data(1, "A", 10)
             let d2 = Data(2, 100.0, "B", 20)
-            d1.getBalance()
+            d1.getBalance() == 0.0 and d2.getBalance() == 100.0
         "#;
-        assert_number(source, 0.0);
+        assert_bool_result(source, true);
+    }
+
+    #[test]
+    fn test_class_multiple_constructors_by_type() {
+        let source = r#"
+            cls Data {
+                private:
+                    id: int
+                    balance: float = 0.0
+                public:
+                    name: str
+                    value: str
+                # Конструктор 1: value как int
+                new Data(id: int, name: str, value: int) {
+                    this.id = id
+                    this.name = name
+                    this.value = str(value)
+                }
+                # Конструктор 2: value как str
+                new Data(id: int, name: str, value: str) {
+                    this.id = id
+                    this.name = name
+                    this.value = value
+                }
+                fn getBalance() { return this.balance }
+                fn getValue() { return this.value }
+            }
+
+            let d1 = Data(1, "A", 10)
+            let d2 = Data(2, "B", "twenty")
+            d1.getValue() == "10" and d2.getValue() == "twenty"
+        "#;
+        assert_bool_result(source, true);
     }
 
     #[test]
@@ -1033,6 +1091,44 @@ mod tests {
             b.getValue()
         "#;
         assert_number(source, 42.0);
+    }
+
+    #[test]
+    fn test_protected_fn_not_accessible_outside_class() {
+        let source = r#"
+            cls Base {
+                protected:
+                    value: int
+                    fn protected_fn() { return this.value }
+                public:
+                new Base(v) { this.value = v }
+            }
+            let b = Base(42)
+            b.protected_fn()
+        "#;
+        assert_runtime_error(source, "cannot be accessed outside class or subclass");
+    }
+
+    #[test]
+    fn test_protected_fn_accessible_in_subclass() {
+        let source = r#"
+            cls Base {
+                protected:
+                    value: int
+                fn protected_fn() { return this.value }
+                public:
+                new Base(v) { this.value = v }
+            }
+
+            cls Derived(Base) {
+                public:
+                new Derived(v) : this(v) { }
+                fn getBaseValue() { return this.protected_fn() }
+            }
+            let d = Derived(100)
+            d.getBaseValue()
+        "#;
+        assert_number(source, 100.0);
     }
 
     #[test]

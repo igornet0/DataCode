@@ -98,6 +98,7 @@ pub struct Constructor {
 }
 
 /// Метод класса
+/// visibility: None = private, Some(false) = protected, Some(true) = public
 #[derive(Debug, Clone)]
 pub struct Method {
     pub name: String,
@@ -105,6 +106,8 @@ pub struct Method {
     pub return_type: Option<Vec<TypePart>>, // Тип возвращаемого значения
     pub body: Vec<Stmt>,
     pub line: usize,
+    /// None = private, Some(false) = protected, Some(true) = public
+    pub visibility: Option<bool>,
 }
 
 #[derive(Debug, Clone)]

@@ -17,6 +17,20 @@ use crate::vm::types::{ExplicitRelation, ExplicitPrimaryKey};
 use std::rc::Rc;
 use std::cell::RefCell;
 
+/// Restores VM_CALL_CONTEXT to its previous value on drop.
+/// Allows nested native calls (e.g. __tablename__ calling enum()) without losing context.
+struct RestoreVmContextGuard {
+    previous: Option<*mut crate::vm::vm::Vm>,
+}
+
+impl Drop for RestoreVmContextGuard {
+    fn drop(&mut self) {
+        VM_CALL_CONTEXT.with(|ctx| {
+            *ctx.borrow_mut() = self.previous;
+        });
+    }
+}
+
 /// Execute a native (builtin or ABI) call. Called from call_dispatch when callee is Value::NativeFunction(native_index).
 #[allow(clippy::too_many_arguments)]
 pub fn execute_native_call(
@@ -445,9 +459,12 @@ pub fn execute_native_call(
         native_arg_ids = Some(reusable_native_arg_ids);
     }
 
-    VM_CALL_CONTEXT.with(|ctx| {
+    let prev_ctx = VM_CALL_CONTEXT.with(|ctx| {
+        let prev = *ctx.borrow();
         *ctx.borrow_mut() = Some(vm_ptr);
+        prev
     });
+    let _ctx_guard = RestoreVmContextGuard { previous: prev_ctx };
 
     if native_index == 2 {
         if arity < 1 || arity > 3 {
@@ -550,10 +567,6 @@ pub fn execute_native_call(
             &native_args_buffer,
         )
     };
-
-    VM_CALL_CONTEXT.with(|ctx| {
-        *ctx.borrow_mut() = None;
-    });
 
     if let Some(abi_err) = crate::vm::native_loader::take_last_abi_error() {
         match ExceptionHandler::handle_exception(stack, frames, exception_handlers, abi_err, value_store, heavy_store) {

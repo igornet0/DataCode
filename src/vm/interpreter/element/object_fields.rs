@@ -239,6 +239,84 @@ pub fn get_object(
                     }
                 }
             }
+            // Instance private methods: allow only from the defining class
+            if let (Some(Value::String(ref class_name)), Some(Value::Array(private_methods_rc))) = (
+                map.get("__class_name"),
+                map.get("__private_methods"),
+            ) {
+                let private_methods_slice = private_methods_rc.borrow();
+                let is_private_method = private_methods_slice.iter().any(|v| {
+                    if let Value::String(s) = v { s.as_str() == key } else { false }
+                });
+                if is_private_method {
+                    let defining_class = map.get("__private_method_defining_class")
+                        .and_then(|v| {
+                            if let Value::Object(rc) = v {
+                                rc.borrow().get(key).and_then(|v| {
+                                    if let Value::String(s) = v { Some(s.clone()) } else { None }
+                                })
+                            } else { None }
+                        })
+                        .unwrap_or_else(|| class_name.clone());
+                    let in_defining_class = frames.iter().any(|f| {
+                        f.function.name.starts_with(&format!("{}::", defining_class))
+                    });
+                    if !in_defining_class {
+                        let frame_class_opt = frames.iter().rev()
+                            .find_map(|f| {
+                                if f.function.name.contains("::new_") || f.function.name.contains("::method_") {
+                                    f.function.name.split("::").next().map(String::from)
+                                } else {
+                                    None
+                                }
+                            });
+                        let msg = match &frame_class_opt {
+                            Some(class) => format!("Method '{}' is private in '{}' and cannot be accessed from subclass '{}'", key, defining_class, class),
+                            None => format!("Method '{}' is private in '{}' and cannot be accessed from outside the class", key, defining_class),
+                        };
+                        let error = ExceptionHandler::runtime_error_with_type(
+                            &frames,
+                            msg,
+                            line,
+                            ErrorType::ProtectError,
+                        );
+                        return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                            Ok(()) => Ok(VMStatus::Continue),
+                            Err(e) => Err(e),
+                        };
+                    }
+                }
+            }
+            // Instance protected methods: allow from this class or any subclass
+            if let (Some(Value::String(ref instance_class)), Some(Value::Array(protected_methods_rc))) = (
+                map.get("__class_name"),
+                map.get("__protected_methods"),
+            ) {
+                let protected_methods_slice = protected_methods_rc.borrow();
+                let is_protected_method = protected_methods_slice.iter().any(|v| {
+                    if let Value::String(s) = v { s.as_str() == key } else { false }
+                });
+                if is_protected_method {
+                    let instance_chain = get_superclass_chain(globals, global_names, instance_class, value_store, heavy_store);
+                    let in_hierarchy = frames.iter().any(|f| {
+                        let frame_class = f.function.name.split("::").next().unwrap_or("");
+                        instance_chain.iter().any(|c| c == frame_class)
+                    });
+                    if !in_hierarchy {
+                        let msg = format!("Method '{}' is protected in '{}' and cannot be accessed outside class or subclass", key, instance_class);
+                        let error = ExceptionHandler::runtime_error_with_type(
+                            &frames,
+                            msg,
+                            line,
+                            ErrorType::ProtectError,
+                        );
+                        return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                            Ok(()) => Ok(VMStatus::Continue),
+                            Err(e) => Err(e),
+                        };
+                    }
+                }
+            }
             let direct = map.get(key);
             let try_class_fallback = direct.map_or(true, |v| matches!(v, Value::Null));
             if let Some(value) = direct {

@@ -506,7 +506,7 @@ impl Parser {
                 let constructor = self.parse_constructor(&name)?;
                 constructors.push(constructor);
             } else if self.check(TokenKind::Fn) {
-                let method = self.parse_method()?;
+                let method = self.parse_method(current_section_public)?;
                 methods.push(method);
             } else {
                 return Err(LangError::ParseError {
@@ -679,7 +679,7 @@ impl Parser {
         })
     }
 
-    fn parse_method(&mut self) -> Result<crate::parser::ast::Method, LangError> {
+    fn parse_method(&mut self, visibility: Option<bool>) -> Result<crate::parser::ast::Method, LangError> {
         // Парсим: fn methodName(...) -> type? { ... }
         self.consume(TokenKind::Fn, "Expect 'fn'")?;
         let method_line = self.previous().line;
@@ -771,6 +771,7 @@ impl Parser {
             return_type,
             body,
             line: method_line,
+            visibility,
         })
     }
 

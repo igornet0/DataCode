@@ -4,6 +4,8 @@ use crate::common::value::Value;
 use crate::database_engine::cluster::DatabaseCluster;
 use crate::database_engine::engine::DatabaseEngine;
 use crate::vm::globals;
+use crate::vm::natives::utils::call_user_function;
+use crate::vm::vm::VM_CALL_CONTEXT;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::cell::RefCell;
@@ -316,7 +318,7 @@ pub fn native_engine_run(args: &[Value]) -> Value {
         let obj = rc.borrow();
         if obj.get("__select").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false) {
             if let Some(Value::Object(model_class)) = obj.get("model") {
-                let table_name = get_table_name_from_class(&Value::Object(Rc::clone(model_class)));
+                let table_name = get_table_name_from_class(&Value::Object(Rc::clone(model_class)), None);
                 if let Some(name) = table_name {
                     let sql = format!("SELECT * FROM {}", name);
                     let model_class = Rc::clone(model_class);
@@ -370,9 +372,7 @@ pub fn native_engine_run(args: &[Value]) -> Value {
     if let Value::Object(rc) = &arg_resolved {
         let table_name = get_table_name_from_class_object(&arg).or_else(|| {
             let obj = rc.borrow();
-            obj.get("__class_name")
-                .and_then(|v| get_string(v))
-                .map(|n| camel_to_snake(&n) + "s")
+            obj.get("__class_name").and_then(|v| get_string(v))
         });
         if let Some(table_name) = table_name {
             let (sql, params) = build_insert_from_instance(&arg, &table_name);
@@ -390,38 +390,83 @@ pub fn native_engine_run(args: &[Value]) -> Value {
     Value::Null
 }
 
-fn get_table_name_from_class(class_obj: &Value) -> Option<String> {
-    let Value::Object(rc) = class_obj else { return None };
-    let obj = rc.borrow();
-    let name = obj.get("__class_name").and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
-    name.map(|n| camel_to_snake(&n) + "s")
+/// Find __tablename__ method in class or ancestor chain (when classes is provided).
+/// Uses build_class_chain to walk the full inheritance hierarchy; the chain yields
+/// [root, ..., parent, current], so we iterate in reverse to prefer the most specific override.
+fn find_tablename_method(
+    class_rc: &Rc<RefCell<HashMap<String, Value>>>,
+    classes: Option<&HashMap<String, Value>>,
+) -> Option<Value> {
+    let chain: Vec<Rc<RefCell<HashMap<String, Value>>>> = if let Some(classes) = classes {
+        build_class_chain(class_rc, classes)
+    } else {
+        vec![Rc::clone(class_rc)]
+    };
+    for ancestor_rc in chain.iter().rev() {
+        let obj = ancestor_rc.borrow();
+        if let Some(m) = obj.get("__tablename__").cloned() {
+            if matches!(&m, Value::Function(_) | Value::ModuleFunction { .. }) {
+                return Some(m);
+            }
+        }
+    }
+    None
+}
+
+/// Resolve function index from Value::Function or Value::ModuleFunction.
+fn resolve_function_index(method_val: &Value) -> Option<usize> {
+    match method_val {
+        Value::Function(idx) => Some(*idx),
+        Value::ModuleFunction { module_id, local_index } => {
+            VM_CALL_CONTEXT.with(|ctx| {
+                let vm_ptr = ctx.borrow();
+                vm_ptr.and_then(|ptr| unsafe { (*ptr).get_module_function_index(*module_id, *local_index) })
+            })
+        }
+        _ => None,
+    }
+}
+
+fn get_table_name_from_class(
+    class_obj: &Value,
+    classes: Option<&HashMap<String, Value>>,
+) -> Option<String> {
+    let Value::Object(rc) = class_obj else {
+        return None;
+    };
+    let class_rc = Rc::clone(rc);
+    let class_obj_val = Value::Object(class_rc.clone());
+
+    // Try __tablename__ if present
+    if let Some(method_val) = find_tablename_method(&class_rc, classes) {
+        if let Some(fn_idx) = resolve_function_index(&method_val) {
+            let args = [class_obj_val.clone(), class_obj_val];
+            if let Ok(result) = call_user_function(fn_idx, &args) {
+                if let Value::String(s) = result {
+                    return Some(s);
+                }
+            }
+        }
+    }
+
+    // Fallback: use __class_name as-is when __tablename__ call fails
+    let obj = class_rc.borrow();
+    obj.get("__class_name")
+        .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
 }
 
 fn get_table_name_from_class_object(instance: &Value) -> Option<String> {
-    let Value::Object(rc) = instance else { return None };
+    let Value::Object(rc) = instance else {
+        return None;
+    };
     let obj = rc.borrow();
     let class_opt = obj.get("__class").cloned();
     if let Some(Value::Object(class_rc)) = class_opt {
         drop(obj);
-        return get_table_name_from_class(&Value::Object(class_rc));
+        return get_table_name_from_class(&Value::Object(class_rc), None);
     }
-    let class_name = obj.get("__class_name").and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });
-    class_name.map(|n| camel_to_snake(&n) + "s")
-}
-
-fn camel_to_snake(s: &str) -> String {
-    let mut out = String::new();
-    for (i, c) in s.chars().enumerate() {
-        if c.is_uppercase() {
-            if i > 0 {
-                out.push('_');
-            }
-            out.extend(c.to_lowercase());
-        } else {
-            out.push(c);
-        }
-    }
-    out
+    obj.get("__class_name")
+        .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
 }
 
 fn build_insert_from_instance(instance: &Value, table_name: &str) -> (String, Vec<Value>) {
@@ -630,12 +675,26 @@ fn run_create_all(meta_rc: &Rc<RefCell<HashMap<String, Value>>>, engine: &mut st
         _ => HashMap::new(),
     };
     drop(meta);
-    // Prefer metadata.classes so that all registered models (including subclasses that were not pushed to tables) get a table
-    let model_classes: Vec<Value> = if !classes.is_empty() {
+    // Prefer metadata.classes so that all registered models (including subclasses that were not pushed to tables) get a table.
+    // Sort by __class_name for deterministic iteration (e.g. Base, RServoDrive, SDKDemo, User).
+    let mut model_classes: Vec<Value> = if !classes.is_empty() {
         classes.values().cloned().collect()
     } else {
         tables
     };
+    model_classes.sort_by(|a, b| {
+        let an = match a {
+            Value::Object(r) => r.borrow().get("__class_name").and_then(get_string),
+            _ => None,
+        };
+        let bn = match b {
+            Value::Object(r) => r.borrow().get("__class_name").and_then(get_string),
+            _ => None,
+        };
+        an.as_deref().unwrap_or("").cmp(bn.as_deref().unwrap_or(""))
+    });
+    // Resolve all table names first (before any engine.execute) to avoid VM re-entrancy issues
+    let mut to_create: Vec<(Rc<RefCell<HashMap<String, Value>>>, String)> = Vec::new();
     for model_class in model_classes {
         if let Value::Object(class_rc) = model_class {
             let is_abstract = {
@@ -646,27 +705,30 @@ fn run_create_all(meta_rc: &Rc<RefCell<HashMap<String, Value>>>, engine: &mut st
             if is_abstract {
                 continue;
             }
-            let table_name = get_table_name_from_class(&Value::Object(Rc::clone(&class_rc)));
+            let table_name = get_table_name_from_class(&Value::Object(Rc::clone(&class_rc)), Some(&classes));
             if let Some(name) = table_name {
-                let chain = build_class_chain(&class_rc, &classes);
-                let mut col_specs = Vec::new();
-                let mut seen = HashSet::new();
-                // Current class first (declaration order), then parent columns at end
-                for ancestor_rc in chain.iter().rev() {
-                    for (col_name, spec) in collect_column_specs_for_class(ancestor_rc) {
-                        if seen.insert(col_name) {
-                            col_specs.push(spec);
-                        }
-                    }
-                }
-                if col_specs.is_empty() {
-                    return Err(format!("no column specs for table '{}' (missing __col_* or __col_names on class)", name));
-                }
-                let cols = col_specs.join(", ");
-                let sql = format!("CREATE TABLE IF NOT EXISTS {} ({})", name, cols);
-                engine.execute(&sql, &[]).map_err(|e| e.to_string())?;
+                to_create.push((class_rc, name));
             }
         }
+    }
+    for (class_rc, name) in to_create {
+        let chain = build_class_chain(&class_rc, &classes);
+        let mut col_specs = Vec::new();
+        let mut seen = HashSet::new();
+        // Current class first (declaration order), then parent columns at end
+        for ancestor_rc in chain.iter().rev() {
+            for (col_name, spec) in collect_column_specs_for_class(ancestor_rc) {
+                if seen.insert(col_name) {
+                    col_specs.push(spec);
+                }
+            }
+        }
+        if col_specs.is_empty() {
+            return Err(format!("no column specs for table '{}' (missing __col_* or __col_names on class)", name));
+        }
+        let cols = col_specs.join(", ");
+        let sql = format!("CREATE TABLE IF NOT EXISTS {} ({})", name, cols);
+        engine.execute(&sql, &[]).map_err(|e| e.to_string())?;
     }
     Ok(())
 }

@@ -567,6 +567,7 @@ mod tests {
                 public:
                     id: int = Column(primary_key=true, autoincrement=true)
                     name: str = Column()
+                fn __tablename__(@class) -> str { return "users" }
             }
 
             let e = engine("sqlite:///:memory:")
@@ -587,6 +588,7 @@ mod tests {
             @Abstract
             cls Base(Table) {
                 metadata = MetaData()
+                fn __tablename__(@class) -> str { return "users" }
             }
 
             cls User(Base) {
@@ -614,6 +616,7 @@ mod tests {
                 public:
                     id: int = Column(primary_key=true, autoincrement=true)
                     name: str = Column()
+                fn __tablename__(@class) -> str { return "users" }
             }
 
             let e = engine("sqlite:///:memory:")
@@ -637,6 +640,7 @@ mod tests {
                 public:
                     id: int = Column(primary_key=true, autoincrement=true)
                     name: str = Column()
+                fn __tablename__(@class) -> str { return "users" }
             }
 
             let e = engine("sqlite:///:memory:")
@@ -760,5 +764,100 @@ mod tests {
         }
     }
 
+    #[test]
+    fn test_table_name_is_snake_case() {
+        let source = r#"
+            from database_engine import engine, MetaData, Column, now_call
+
+            fn camel_case_to_snake_case(input_str: str) -> str {
+                """
+                >>> camel_case_to_snake_case("SomeSDK")
+                'some_sdk'
+                >>> camel_case_to_snake_case("RServoDrive")
+                'r_servo_drive'
+                >>> camel_case_to_snake_case("SDKDemo")
+                'sdk_demo'
+                """
+                chars = []
+                for c_idx, char in enum(input_str) {
+                    if c_idx and char.isupper() {
+                        nxt_idx = c_idx + 1
+                        # idea of the flag is to separate abbreviations
+                        # as new words, show them in lower case
+                        flag = nxt_idx >= len(input_str) or input_str[nxt_idx].isupper()
+                        prev_char = input_str[c_idx - 1]
+                        if !(prev_char.isupper() and flag) { 
+                            chars.push("_")
+                        }
+                    }
+                    chars.push(char.lower())    
+                } 
+                return "".join(chars)
+
+            }
+
+                   
+            @Abstract
+            cls Base(Table) {
+
+                created: Column[date] = Column(date, default=now_call)
+                updated: Column[date] = Column(date, default=now_call, onupdate=now_call)
+
+                metadata = MetaData(
+                    schema = "public",
+                    quote_schema=null,
+                    info={
+                        "app": "billing",
+                        "version": 1
+                    }
+                )
+
+                fn __tablename__(@class) -> str {
+                    return "${camel_case_to_snake_case(@class.name)}s"
+                }
+            }
+
+            cls User(Base) {
+                id: Column[int] = Column(int, primary_key=true, autoincrement=true)
+                login: Column[str] = Column(str[50], unique=true)
+            }
+
+            cls RServoDrive(Base) {
+                id: Column[int] = Column(int, primary_key=true, autoincrement=true)
+                login: Column[str] = Column(str[50], unique=true)
+            }
+
+            cls SDKDemo(Base) {
+                id: Column[int] = Column(int, primary_key=true, autoincrement=true)
+                login: Column[str] = Column(str[50], unique=true)
+            }
+
+            sqlite_url = "sqlite:///:memory:"
+            sqlite_engine = engine(sqlite_url, echo=false, echo_pool=false, pool_size=5, max_overflow=10)
+
+            # Connect (for SQLite, returns same engine)
+            conn = sqlite_engine.connect()
+
+            conn.run(Base.metadata.create_all)
+
+            rows = conn.query("SELECT name FROM sqlite_master WHERE type = 'table';")
+
+            table_name = []
+
+            for r in rows.rows {
+                if r[0] == "sqlite_sequence" {
+                    continue
+                }
+                table_name.push(r[0])
+            }
+
+            print(table_name)
+            
+            len(table_name) == 3 and "users" in table_name and "sdk_demos" in table_name and "r_servo_drives" in table_name
+
+        "#;
+
+        assert_bool_result(source, true);
+    }
 
 }

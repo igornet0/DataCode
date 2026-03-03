@@ -1,0 +1,7 @@
+# Tests absolute import: core.config from within core.database.engine
+from core.config import get_settings, load_settings
+
+fn get_config_env(env) {
+    load_settings(env)
+    return get_settings().env
+}

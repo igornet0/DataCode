@@ -9,7 +9,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 /// Built-in module names (for error messages and is_known_module)
-const BUILTIN_MODULE_NAMES: &[&str] = &["ml", "plot", "settings_env", "uuid", "database"];
+const BUILTIN_MODULE_NAMES: &[&str] = &["ml", "plot", "settings_env", "uuid", "database_engine"];
 
 /// Check if a name is a known module name
 pub fn is_known_module(name: &str) -> bool {
@@ -44,7 +44,7 @@ pub fn register_module(
         "plot" => register_plot_module(natives, globals, global_names, store, heap),
         "settings_env" => register_settings_env_module(natives, globals, global_names, store, heap),
         "uuid" => register_uuid_module(natives, globals, global_names, store, heap),
-        "database" => register_database_module(natives, globals, global_names, store, heap),
+        "database_engine" => register_database_module(natives, globals, global_names, store, heap),
         _ => Err(LangError::runtime_error(
             format!("Unknown module: {}", module_name),
             0,
@@ -487,7 +487,7 @@ fn register_database_module(
     store: &mut ValueStore,
     heap: &mut HeavyStore,
 ) -> Result<(), LangError> {
-    use crate::database::natives;
+    use crate::database_engine::natives;
 
     let db_native_start = natives.len();
     natives.push(natives::native_engine);
@@ -516,7 +516,7 @@ fn register_database_module(
     // connect, execute, query, run are methods on engine - accessed via GetArrayElement on DatabaseEngine
     // add, get, names are methods on cluster - accessed via GetArrayElement on DatabaseCluster
 
-    let database_index = if let Some(idx) = global_index_by_name(global_names, "database") {
+    let database_index = if let Some(idx) = global_index_by_name(global_names, "database_engine") {
         if idx >= globals.len() {
             globals.resize(idx + 1, default_global_slot());
         }
@@ -524,7 +524,7 @@ fn register_database_module(
     } else {
         let idx = globals.len();
         globals.push(default_global_slot());
-        global_names.insert(idx, "database".to_string());
+        global_names.insert(idx, "database_engine".to_string());
         idx
     };
 

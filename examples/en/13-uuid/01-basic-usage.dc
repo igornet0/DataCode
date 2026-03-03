@@ -9,20 +9,20 @@ print("Type of uuid.v4(): " + typeof(u4))
 
 # Generate random UUID (version 4)
 let random_uuid = uuid.random()
-print("Random UUID (v4): " + uuid.to_string(random_uuid))
+print("Random UUID (v4): " + str(random_uuid))
 
 # Generate time-ordered UUID (version 7)
 let time_uuid = uuid.v7()
-print("Time-ordered UUID (v7): " + uuid.to_string(time_uuid))
+print("Time-ordered UUID (v7): " + str(time_uuid))
 
 # Aliases: new() = v7(), random() = v4()
 let u_new = uuid.new()
-print("uuid.new() (same as v7): " + uuid.to_string(u_new))
+print("uuid.new() (same as v7): " + str(u_new))
 
 # Parse string to UUID
 let parsed = uuid.parse("550e8400-e29b-41d4-a716-446655440000")
 if parsed != null {
-    print("Parsed UUID: " + uuid.to_string(parsed))
+    print("Parsed UUID: " + str(parsed))
 } else {
     print("Parse error")
 }

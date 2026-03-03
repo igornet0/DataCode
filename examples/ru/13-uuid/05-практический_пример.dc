@@ -14,12 +14,12 @@ print("  запись 2:", id2)
 print("  запись 3:", id3)
 
 # Сохранение в массив (например, список id для базы)
-let ids = array(uuid.to_string(id1), uuid.to_string(id2), uuid.to_string(id3))
+let ids = array(str(id1), str(id2), str(id3))
 print("Массив id (строки): " + ids)
 
 # Объект «запись» с полем id
 let record = {
-    "id": uuid.to_string(uuid.v7()),
+    "id": str(uuid.v7()),
     "name": "Пример записи",
     "created_at": uuid.timestamp(uuid.v7())
 }
@@ -27,5 +27,5 @@ print("Запись с id: " + record["id"])
 print("Время создания (timestamp): " + record["created_at"])
 
 # Детерминированный id по имени (например, для сущности по URL)
-let entity_id = uuid.to_string(uuid.v5(uuid.URL, "https://api.example.com/users/42"))
+let entity_id = str(uuid.v5(uuid.URL, "https://api.example.com/users/42"))
 print("Детерминированный id для URL: " + entity_id)

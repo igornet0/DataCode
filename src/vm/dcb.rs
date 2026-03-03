@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 pub const DCB_MAGIC: [u8; 4] = [0x44, 0x43, 0x42, 0x01]; // "DCB" + format version 1
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
-/// Bump when compiler/bytecode semantics change so old .dcb are rejected (e.g. constructor names in chunk.global_names for merge).
-pub const DCB_FORMAT_VERSION: &str = "9";
+/// Bump when compiler/bytecode semantics change so old .dcb are rejected (e.g. constructor names in chunk.global_names for merge; class object now includes methods for GetArrayElement fallback).
+pub const DCB_FORMAT_VERSION: &str = "10";
 
 /// Metadata stored at the start of a .dcb file for freshness checks.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

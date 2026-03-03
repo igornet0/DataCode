@@ -41,5 +41,6 @@ temp_sessions/
 #.idea/
 *.dc
 !examples/**
+!tests/**
 model_data.zip
 .DS_Store

@@ -13,8 +13,8 @@ use crate::ml::optimizer::{SGD, Momentum, NAG, Adagrad, RMSprop, Adam, AdamW};
 use crate::ml::dataset::Dataset;
 use crate::ml::layer::{Sequential, LayerId};
 use crate::plot::{Image, Figure, Axis, PlotWindowHandle};
-use crate::database::cluster::DatabaseCluster;
-use crate::database::engine::DatabaseEngine;
+use crate::database_engine::cluster::DatabaseCluster;
+use crate::database_engine::engine::DatabaseEngine;
 
 pub enum Value {
     Number(f64),
@@ -135,7 +135,20 @@ impl PartialEq for Value {
             (Value::Path(a), Value::Path(b)) => a == b,
             (Value::Uuid(hi_a, lo_a), Value::Uuid(hi_b, lo_b)) => hi_a == hi_b && lo_a == lo_b,
             (Value::Table(a), Value::Table(b)) => *a.borrow() == *b.borrow(),
-            (Value::Object(a), Value::Object(b)) => *a.borrow() == *b.borrow(),
+            (Value::Object(a), Value::Object(b)) => {
+                let am = a.borrow();
+                let bm = b.borrow();
+                // MetaData and create_all have circular refs; compare by pointer to avoid recursion
+                let a_meta = am.get("__meta").and_then(|v| if let Value::Bool(x) = v { Some(*x) } else { None }).unwrap_or(false);
+                let a_create_all = am.get("__create_all").and_then(|v| if let Value::Bool(x) = v { Some(*x) } else { None }).unwrap_or(false);
+                let b_meta = bm.get("__meta").and_then(|v| if let Value::Bool(x) = v { Some(*x) } else { None }).unwrap_or(false);
+                let b_create_all = bm.get("__create_all").and_then(|v| if let Value::Bool(x) = v { Some(*x) } else { None }).unwrap_or(false);
+                if (a_meta || a_create_all) && (b_meta || b_create_all) {
+                    std::rc::Rc::ptr_eq(a, b)
+                } else {
+                    *am == *bm
+                }
+            },
             (Value::ColumnReference { table: a, column_name: col_a }, Value::ColumnReference { table: b, column_name: col_b }) => {
                 Rc::ptr_eq(a, b) && col_a == col_b
             },

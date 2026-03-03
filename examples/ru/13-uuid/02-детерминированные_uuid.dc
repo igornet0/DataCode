@@ -5,26 +5,26 @@ import uuid
 
 # UUID v5 с namespace DNS и именем — воспроизводимый результат
 let u5_dns = uuid.v5(uuid.DNS, "example.com")
-print("uuid.v5(DNS, \"example.com\"): " + uuid.to_string(u5_dns))
+print("uuid.v5(DNS, \"example.com\"): " + str(u5_dns))
 
 # Повторный вызов даёт тот же UUID
 let u5_dns_again = uuid.v5(uuid.DNS, "example.com")
-print("Повторный v5(DNS, \"example.com\"): " + uuid.to_string(u5_dns_again))
-print("Одинаковые: " + (uuid.to_string(u5_dns) == uuid.to_string(u5_dns_again)))
+print("Повторный v5(DNS, \"example.com\"): " + str(u5_dns_again))
+print("Одинаковые: " + (str(u5_dns) == str(u5_dns_again)))
 
 # Другое имя — другой UUID
 let u5_other = uuid.v5(uuid.DNS, "other.org")
-print("uuid.v5(DNS, \"other.org\"): " + uuid.to_string(u5_other))
+print("uuid.v5(DNS, \"other.org\"): " + str(u5_other))
 
 # UUID v3 с namespace URL
 let u3_url = uuid.v3(uuid.URL, "https://example.com/page")
-print("uuid.v3(URL, \"https://example.com/page\"): " + uuid.to_string(u3_url))
+print("uuid.v3(URL, \"https://example.com/page\"): " + str(u3_url))
 
 # Namespace OID
 let u5_oid = uuid.v5(uuid.OID, "1.2.3.4.5")
-print("uuid.v5(OID, \"1.2.3.4.5\"): " + uuid.to_string(u5_oid))
+print("uuid.v5(OID, \"1.2.3.4.5\"): " + str(u5_oid))
 
 # Константы namespace — это тоже UUID
-print("uuid.DNS (строка): " + uuid.to_string(uuid.DNS))
-print("uuid.URL (строка): " + uuid.to_string(uuid.URL))
-print("uuid.OID (строка): " + uuid.to_string(uuid.OID))
+print("uuid.DNS (строка): " + str(uuid.DNS))
+print("uuid.URL (строка): " + str(uuid.URL))
+print("uuid.OID (строка): " + str(uuid.OID))

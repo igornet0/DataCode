@@ -113,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn test_load_env_simple_has_three_keys() {
+    fn test_load_env_simple_has_four_keys() {
         let path = fixture_path("simple.env");
         let source = format!(
             r#"
@@ -123,7 +123,7 @@ mod tests {
             "#,
             path
         );
-        assert_number_result(source.as_str(), 3.0);
+        assert_number_result(source.as_str(), 4.0);
     }
 
     // ========== load_env: empty.env ==========
@@ -520,6 +520,284 @@ mod tests {
             Ok(Value::Object(_)) => {}
             Ok(v) => panic!("expected Object from Config(path), got {:?}", v),
             Err(e) => panic!("Config(path) failed: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_missing_required_env_field() {
+        // Путь к тестовому .env файлу, который не содержит обязательного поля `env`
+        let path = fixture_path("not_env_simple.env");
+
+        let source = format!(
+            r#"
+            from settings_env import Settings, Field
+
+            cls AppConfig(Settings) {{
+                model_config = Settings.config(extra="ignore")
+                public:
+                    app_name: str = Field(default="")
+                    env: str = Field(...)   # обязательное поле
+            }}
+
+            # Попытка создать объект с .env без поля `env` должна вызвать ошибку
+            AppConfig("{}")
+            "#,
+            path
+        );
+
+        // Проверяем, что выполнение run_plain приводит к ошибке (Result::Err, не паника)
+        assert!(
+            run_plain(&source).is_err(),
+            "error for missing required field 'env'"
+        );
+    }
+
+    #[test]
+    fn test_missing_required_field_in_default_factory() {
+        // Путь к тестовому .env файлу, где нет DB__URL
+        let path = fixture_path("simple.env");
+
+        let source = format!(
+            r#"
+            from settings_env import Settings, Config, Field
+
+            base_config = {{
+                "case_sensitive": false,
+                "env_file_encoding": "utf-8",
+                "env_nested_delimiter": "__",
+                "extra": "ignore",
+                "env_file": str("{}")
+            }}
+
+            cls DatabaseConfig(Settings) {{
+                model_config = Config(env_prefix="DB__", extra="ignore")
+                url: str = Field(...)  # обязательное поле
+            }}
+
+            cls ConfigApp(Settings) {{
+                env: str = Field(...)
+                debug: bool = Field(default=True)
+                db: DatabaseConfig = Field(default_factory=DatabaseConfig)
+            }}
+
+            cls DevSettings(ConfigApp) {{
+
+                model_config = Config(
+                    **base_config
+                    )
+
+                debug: bool = Field(default=True)
+            }}
+
+            # Попытка создать объект ConfigApp без DB__URL должна вызвать ошибку
+            DevSettings()
+            "#,
+            path
+        );
+
+        // Ловим панику/ошибку при создании ConfigApp (нет DB__URL в simple.env, или base path не задан для вложенного settings/dev.env).
+        match run_plain(&source) {
+            Ok(Value::Object(_)) => panic!("expected error for missing required field 'db.url'"),
+            Ok(v) => panic!("expected Object, got {:?}", v),
+            Err(e) => {
+                let msg = e.to_string();
+                let ok = msg.contains("Missing required env variable")
+                    || msg.contains("base path not set")
+                    || msg.contains("Relative path");
+                assert!(ok, "expected error about missing required env or base path, got: {}", msg);
+            }
+        }
+    }
+
+    #[test]
+    fn test_private_fields() {
+        let path = fixture_path("simple.env");
+        let source = format!(
+            r#"
+            from settings_env import Settings, Config, Field
+
+            base_config = {{
+                "case_sensitive": false,
+                "env_file_encoding": "utf-8",
+                "env_nested_delimiter": "__",
+                "extra": "ignore",
+                "env_file": str("{}")
+            }}
+
+            cls Security(Settings) {{
+                model_config = Config(env_prefix="SECURITY__", extra="ignore")
+                private:
+                    code: str = Field(...)
+
+                public:
+                    fn get_code() {{
+                        return this.code
+                    }}
+            }}
+
+            cls ConfigApp(Settings) {{
+                secret: Security = Field(default_factory=Security)
+            }}
+
+            cls DevSettings(ConfigApp) {{
+
+                model_config = Config(
+                    **base_config
+                    )
+
+                debug: bool = Field(default=True)
+            }}
+
+            let cfg = DevSettings()
+
+            fn main() {{
+                return cfg.secret.get_code()
+            }}
+
+            fn __main__() {{
+                return main()
+            }}
+            "#,
+            path
+        );
+
+        // Nested Security() uses fallback path "settings/dev.env"; need base path so it resolves.
+        let base = fixtures_dir().join("config_run");
+        match run_with_base_path(&source, base.as_path()) {
+            Ok(Value::String(s)) => assert_eq!(s, "testtesttest"),
+            Ok(v) => panic!("expected String, got {:?}", v),
+            Err(e) => panic!("error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn error_on_private_field_access() {
+        let path = fixture_path("simple.env");
+        let source = format!(
+            r#"
+            from settings_env import Settings, Config, Field
+
+            cls Security(Settings) {{
+                model_config = Config(env_prefix="SECURITY__", extra="ignore")
+                private:
+                    code: str = Field(...)
+
+                public:
+                    fn get_code() {{
+                        return this.code
+                    }}
+            }}
+
+            cls ConfigApp(Settings) {{
+                secret: Security = Field(default_factory=Security)
+            }}
+
+            let cfg = ConfigApp("{}")
+            cfg.secret.code
+            "#,
+            path
+        );
+
+        match run_plain(&source) {
+            Ok(Value::Object(_)) => panic!("expected error for private field access"),
+            Ok(v) => panic!("expected Object, got {:?}", v),
+            Err(e) => assert!(
+                e.to_string().contains("private") && e.to_string().contains("cannot be accessed"),
+                "error for private field access (got: {})",
+                e
+            ),
+        }
+    }
+
+    #[test]
+    fn missing_required_field_on_private_field_access() {
+        let path = fixture_path("not_env_simple.env");
+        let source = format!(
+            r#"
+            from settings_env import Settings, Config, Field
+            cls Security(Settings) {{
+                model_config = Config(env_prefix="SECURITY__", extra="ignore")
+                private:
+                code: str = Field(...)
+            }}
+
+            cls DatabaseConfig(Settings) {{
+                model_config = Config(env_prefix="DB__", extra="ignore")
+                url: str = Field(...)
+            }}
+
+            cls ConfigApp(Settings) {{
+                secret: Security = Field(default_factory=Security)
+                db: DatabaseConfig = Field(default_factory=DatabaseConfig)
+            }}
+
+            ConfigApp("{}")
+            "#,
+            path
+        );
+
+        match run_plain(&source) {
+            Ok(Value::Object(_)) => panic!("expected error for missing required field 'secret.code'"),
+            Ok(v) => panic!("expected Object, got {:?}", v),
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(
+                    msg.contains("Missing required env variable") && msg.contains("secret__code") ,
+                    "error for missing required field 'secret__code' (got: {})",
+                    e
+                );
+            }
+        }
+    }
+
+
+    #[test]
+    fn test_missing_required_field_in_default_factory_with_path() {
+        // Путь к тестовому .env файлу, где нет DB__URL
+        let path = fixture_path("simple.env");
+
+        let source = format!(
+            r#"
+            from settings_env import Settings, Config, Field
+
+            base_config = {{
+                "case_sensitive": false,
+                "env_file_encoding": "utf-8",
+                "env_nested_delimiter": "__",
+                "extra": "ignore"
+            }}
+
+            cls DatabaseConfig(Settings) {{
+                model_config = Config(env_prefix="DB__", extra="ignore")
+                url: str = Field(...)  # обязательное поле
+            }}
+
+            cls ConfigApp(Settings) {{
+                env: str = Field(...)
+                debug: bool = Field(default=True)
+                db: DatabaseConfig = Field(default_factory=DatabaseConfig)
+            }}
+
+            cls DevSettings(ConfigApp) {{
+
+                model_config = Config(
+                    **base_config
+                    )
+
+                debug: bool = Field(default=True)
+            }}
+
+            # Попытка создать объект ConfigApp без DB__URL должна вызвать ошибку
+            DevSettings("{}")
+            "#,
+            path
+        );
+
+        // Ловим панику/ошибку при создании ConfigApp
+        match run_plain(&source) {
+            Ok(Value::Object(_)) => panic!("expected error for missing required field 'db.url'"),
+            Ok(v) => panic!("expected Object, got {:?}", v),
+            Err(e) => assert!(e.to_string().contains("Missing required env variable: db__url"), "error for missing required field 'db.url'"),
         }
     }
 

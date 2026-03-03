@@ -22,10 +22,10 @@ Generates a random UUID version 4. The `random()` alias is equivalent to `v4()`.
 **Example:**
 ```datacode
 let u = uuid.v4()
-print(uuid.to_string(u))
+print(str(u))
 # or
 let r = uuid.random()
-print(uuid.to_string(r))
+print(str(r))
 ```
 
 ### uuid.v7() -> UUID
@@ -38,9 +38,9 @@ Generates a time-ordered UUID version 7. Useful for indexes and sorting by creat
 **Example:**
 ```datacode
 let u = uuid.v7()
-print(uuid.to_string(u))
+print(str(u))
 let n = uuid.new()
-print(uuid.to_string(n))
+print(str(n))
 ```
 
 ## Parsing and Strings
@@ -58,7 +58,7 @@ Parses a string in hyphenated format (e.g., `550e8400-e29b-41d4-a716-44665544000
 ```datacode
 let parsed = uuid.parse("550e8400-e29b-41d4-a716-446655440000")
 if parsed != null {
-    print(uuid.to_string(parsed))
+    print(str(parsed))
 } else {
     print("Parse error")
 }
@@ -111,7 +111,7 @@ Builds a UUID from an array of 16 numbers (0–255). The array must contain exac
 let u = uuid.v4()
 let bytes = uuid.to_bytes(u)
 let restored = uuid.from_bytes(bytes)
-print(uuid.to_string(u) == uuid.to_string(restored))  # true
+print(str(u) == str(restored))  # true
 ```
 
 ## Deterministic UUIDs (v3, v5)
@@ -129,7 +129,7 @@ Generates a UUID version 3 (MD5) from namespace and name. Same namespace and nam
 **Example:**
 ```datacode
 let u = uuid.v3(uuid.URL, "https://example.com/page")
-print(uuid.to_string(u))
+print(str(u))
 ```
 
 ### uuid.v5(namespace: UUID, name: string) -> UUID
@@ -145,7 +145,7 @@ Generates a UUID version 5 (SHA-1) from namespace and name. Same namespace and n
 **Example:**
 ```datacode
 let u = uuid.v5(uuid.DNS, "example.com")
-print(uuid.to_string(u))
+print(str(u))
 ```
 
 ### Standard namespaces: uuid.DNS, uuid.URL, uuid.OID
@@ -158,8 +158,8 @@ UUID constants for use with v3 and v5:
 
 **Example:**
 ```datacode
-print(uuid.to_string(uuid.DNS))
-print(uuid.to_string(uuid.URL))
+print(str(uuid.DNS))
+print(str(uuid.URL))
 let u5 = uuid.v5(uuid.OID, "1.2.3.4.5")
 ```
 

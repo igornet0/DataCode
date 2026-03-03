@@ -1,8 +1,8 @@
 // Native functions for database module
 
 use crate::common::value::Value;
-use crate::database::cluster::DatabaseCluster;
-use crate::database::engine::DatabaseEngine;
+use crate::database_engine::cluster::DatabaseCluster;
+use crate::database_engine::engine::DatabaseEngine;
 use crate::vm::globals;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -269,17 +269,93 @@ pub fn native_engine_run(args: &[Value]) -> Value {
         }
     };
 
+    // Resolve arg: if passed a model class (has __class_name, metadata.create_all) instead of create_all
+    // (e.g. due to slot/global index mismatch in VM), use class.metadata.create_all.
+    let arg_resolved = if let Value::Object(rc) = &arg {
+        let obj = rc.borrow();
+        let is_create_all = obj.get("__create_all").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false);
+        let has_class_name = obj.get("__class_name").is_some();
+        let meta_opt = obj.get("metadata").cloned();
+        let create_all_opt: Option<Value> = meta_opt.as_ref().and_then(|m| {
+            if let Value::Object(mr) = m { mr.borrow().get("create_all").cloned() } else { None }
+        });
+        let create_all_has_marker = create_all_opt.as_ref().and_then(|c| {
+            if let Value::Object(cr) = c { cr.borrow().get("__create_all").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }) } else { None }
+        }).unwrap_or(false);
+        drop(obj);
+        if is_create_all {
+            arg.clone()
+        } else if has_class_name && create_all_has_marker {
+            create_all_opt.unwrap()
+        } else {
+            arg.clone()
+        }
+    } else {
+        arg.clone()
+    };
+
+    // Check metadata.create_all first so create_all object is never mistaken for a model instance
+    if let Value::Object(rc) = &arg_resolved {
+        let obj = rc.borrow();
+        let is_create_all = obj.get("__create_all").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false);
+        let meta_opt = obj.get("metadata").cloned();
+        drop(obj);
+        if is_create_all {
+            if let Some(Value::Object(meta_rc)) = meta_opt {
+                if let Err(e) = run_create_all(&meta_rc, &mut engine_ref) {
+                    crate::websocket::set_native_error(format!("engine.run create_all: {}", e));
+                    return Value::Null;
+                }
+                return Value::Null;
+            }
+        }
+    }
+
     // Check if arg is select(Model) result
-    if let Value::Object(rc) = &arg {
+    if let Value::Object(rc) = &arg_resolved {
         let obj = rc.borrow();
         if obj.get("__select").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false) {
             if let Some(Value::Object(model_class)) = obj.get("model") {
                 let table_name = get_table_name_from_class(&Value::Object(Rc::clone(model_class)));
                 if let Some(name) = table_name {
                     let sql = format!("SELECT * FROM {}", name);
+                    let model_class = Rc::clone(model_class);
+                    let class_name = model_class.borrow().get("__class_name").and_then(get_string).unwrap_or_default();
                     drop(obj);
                     match engine_ref.query(&sql, &[]) {
-                        Ok(table) => return Value::Table(Rc::new(RefCell::new(table))),
+                        Ok(table) => {
+                            let headers = table.headers().clone();
+                            let data_rows = match table.rows_ref() {
+                                Some(rr) => {
+                                    let len = rr.len();
+                                    (0..len)
+                                        .filter_map(|i| rr.row(i).map(|s| s.to_vec()))
+                                        .collect::<Vec<_>>()
+                                }
+                                None => vec![],
+                            };
+                            let mut data_list = Vec::with_capacity(data_rows.len());
+                            let mut rows_list = Vec::with_capacity(data_rows.len());
+                            for row_vals in &data_rows {
+                                let mut instance = HashMap::new();
+                                instance.insert("__class_name".to_string(), Value::String(class_name.clone()));
+                                instance.insert("__class".to_string(), Value::Object(Rc::clone(&model_class)));
+                                for (col_idx, col_name) in headers.iter().enumerate() {
+                                    let val = row_vals.get(col_idx).cloned().unwrap_or(Value::Null);
+                                    instance.insert(col_name.clone(), val);
+                                }
+                                instance.insert("__state".to_string(), Value::String("loaded".to_string()));
+                                data_list.push(Value::Object(Rc::new(RefCell::new(instance))));
+                                rows_list.push(Value::Array(Rc::new(RefCell::new(row_vals.clone()))));
+                            }
+                            let mut result = HashMap::new();
+                            result.insert("__result".to_string(), Value::Bool(true));
+                            result.insert("data".to_string(), Value::Array(Rc::new(RefCell::new(data_list))));
+                            result.insert("rows".to_string(), Value::Array(Rc::new(RefCell::new(rows_list))));
+                            result.insert("model".to_string(), Value::Object(model_class));
+                            result.insert("row_count".to_string(), Value::Number(data_rows.len() as f64));
+                            return Value::Object(Rc::new(RefCell::new(result)));
+                        }
                         Err(e) => {
                             crate::websocket::set_native_error(format!("engine.run select: {}", e));
                             return Value::Null;
@@ -291,7 +367,7 @@ pub fn native_engine_run(args: &[Value]) -> Value {
     }
 
     // Check if arg is model instance (object we can get table name from, e.g. __class_name) -> INSERT
-    if let Value::Object(rc) = &arg {
+    if let Value::Object(rc) = &arg_resolved {
         let table_name = get_table_name_from_class_object(&arg).or_else(|| {
             let obj = rc.borrow();
             obj.get("__class_name")
@@ -306,23 +382,6 @@ pub fn native_engine_run(args: &[Value]) -> Value {
                     crate::websocket::set_native_error(format!("engine.run insert: {}", e));
                     return Value::Null;
                 }
-            }
-        }
-    }
-
-    // Check if arg is metadata.create_all (object with __create_all and metadata)
-    if let Value::Object(rc) = &arg {
-        let obj = rc.borrow();
-        let is_create_all = obj.get("__create_all").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false);
-        let meta_opt = obj.get("metadata").cloned();
-        drop(obj);
-        if is_create_all {
-            if let Some(Value::Object(meta_rc)) = meta_opt {
-                if let Err(e) = run_create_all(&meta_rc, &mut engine_ref) {
-                    crate::websocket::set_native_error(format!("engine.run create_all: {}", e));
-                    return Value::Null;
-                }
-                return Value::Null;
             }
         }
     }
@@ -368,14 +427,62 @@ fn camel_to_snake(s: &str) -> String {
 fn build_insert_from_instance(instance: &Value, table_name: &str) -> (String, Vec<Value>) {
     let Value::Object(rc) = instance else { return (String::new(), vec![]) };
     let obj = rc.borrow();
+    // Must use __class.__col_names: order and set of columns come from the model, not instance.keys().
+    let (col_names, class_opt): (Vec<String>, _) = obj
+        .get("__class")
+        .and_then(|v| {
+            if let Value::Object(class_rc) = v {
+                let names = class_rc
+                    .borrow()
+                    .get("__col_names")
+                    .and_then(|a| {
+                        if let Value::Array(arr) = a {
+                            Some(
+                                arr.borrow()
+                                    .iter()
+                                    .filter_map(|v| get_string(v))
+                                    .collect(),
+                            )
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or_default();
+                Some((names, Some(Rc::clone(class_rc))))
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| {
+            let class_only: std::collections::HashSet<&str> =
+                ["parent", "full_name", "method_names"].into_iter().collect();
+            let names: Vec<String> = obj
+                .iter()
+                .filter(|(k, _)| !k.starts_with("__") && !k.starts_with("new_") && !class_only.contains(k.as_str()))
+                .map(|(k, _)| k.clone())
+                .collect();
+            (names, None)
+        });
+    drop(obj);
+    let obj = rc.borrow();
     let mut cols = Vec::new();
     let mut vals = Vec::new();
-    for (k, v) in obj.iter() {
-        if k.starts_with("__") {
-            continue;
-        }
+    for k in &col_names {
+        // Value from instance, else default from class __col_<name>, else Null.
+        let val = obj.get(k).cloned().or_else(|| {
+            class_opt.as_ref().and_then(|class_rc| {
+                let desc_key = format!("__col_{}", k);
+                let desc_val = class_rc.borrow().get(&desc_key).cloned();
+                // Ref dropped here; then we can borrow desc_rc
+                desc_val.and_then(|d| {
+                    let Value::Object(desc_rc) = d else { return None };
+                    let default_val = desc_rc.borrow().get("default").cloned();
+                    default_val
+                })
+            })
+        }).unwrap_or(Value::Null);
         cols.push(k.clone());
-        vals.push(v.clone());
+        vals.push(val);
     }
     drop(obj);
     let col_list: String = cols.join(", ");
@@ -516,15 +623,29 @@ fn run_create_all(meta_rc: &Rc<RefCell<HashMap<String, Value>>>, engine: &mut st
     let meta = meta_rc.borrow();
     let tables = match meta.get("tables") {
         Some(Value::Array(rc)) => rc.borrow().clone(),
-        _ => return Ok(()),
+        _ => vec![],
     };
     let classes = match meta.get("classes") {
         Some(Value::Object(rc)) => rc.borrow().clone(),
         _ => HashMap::new(),
     };
     drop(meta);
-    for model_class in tables {
+    // Prefer metadata.classes so that all registered models (including subclasses that were not pushed to tables) get a table
+    let model_classes: Vec<Value> = if !classes.is_empty() {
+        classes.values().cloned().collect()
+    } else {
+        tables
+    };
+    for model_class in model_classes {
         if let Value::Object(class_rc) = model_class {
+            let is_abstract = {
+                let class_map = class_rc.borrow();
+                class_map.get("__abstract").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
+                    || class_map.get("is_abstract").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
+            };
+            if is_abstract {
+                continue;
+            }
             let table_name = get_table_name_from_class(&Value::Object(Rc::clone(&class_rc)));
             if let Some(name) = table_name {
                 let chain = build_class_chain(&class_rc, &classes);
@@ -537,6 +658,9 @@ fn run_create_all(meta_rc: &Rc<RefCell<HashMap<String, Value>>>, engine: &mut st
                             col_specs.push(spec);
                         }
                     }
+                }
+                if col_specs.is_empty() {
+                    return Err(format!("no column specs for table '{}' (missing __col_* or __col_names on class)", name));
                 }
                 let cols = col_specs.join(", ");
                 let sql = format!("CREATE TABLE IF NOT EXISTS {} ({})", name, cols);

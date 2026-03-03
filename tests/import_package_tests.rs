@@ -55,9 +55,9 @@ get_x()
     fn test_from_pkg_import_object() {
         let base = fixtures_dir();
         let source = r#"
-from pkg import x
-x
-"#;
+        from pkg import x
+        x
+        "#;
         let result = run_with_base_path(source, base.as_path());
         assert_number_result(result, 42.0);
     }
@@ -66,9 +66,9 @@ x
     fn test_from_pkg_import_both() {
         let base = fixtures_dir();
         let source = r#"
-from pkg import x, get_x
-x + get_x()
-"#;
+        from pkg import x, get_x
+        x + get_x()
+        "#;
         let result = run_with_base_path(source, base.as_path());
         assert_number_result(result, 84.0);
     }
@@ -79,24 +79,44 @@ x + get_x()
     fn test_from_core_config_import_functions() {
         let base = fixtures_dir();
         let source = r#"
-from core.config import load_settings, get_settings
-load_settings("dev")
-let s = get_settings()
-s.env
-"#;
+        from core.config import load_settings, get_settings
+        load_settings("dev")
+        let s = get_settings()
+        s.env
+        "#;
         let result = run_with_base_path(source, base.as_path());
         assert_string_result(result, "dev");
+    }
+
+    #[test]
+    fn test_from_core_config_load_settings_prod() {
+        let base = fixtures_dir();
+        let source = r#"
+        from core.config import load_settings, get_settings
+        load_settings("prod")
+        get_settings().env
+        "#;
+        // Pass argv=["prod"] so load_env infers settings/prod.env when model_config.env_file is empty
+        let result = run_with_vm_with_args_and_lib(
+            source,
+            Some(vec!["prod".to_string()]),
+            None,
+            Some(base.as_path()),
+            None,
+        );
+        let (value, _) = result.expect("run should succeed");
+        assert_string_result(Ok(value), "prod");
     }
 
     #[test]
     fn test_from_core_config_import_settings_object_after_load() {
         let base = fixtures_dir();
         let source = r#"
-from core.config import load_settings, get_settings
-load_settings("dev")
-let s = get_settings()
-s.debug
-"#;
+        from core.config import load_settings, get_settings
+        load_settings("dev")
+        let s = get_settings()
+        s.debug
+        "#;
         let result = run_with_base_path(source, base.as_path());
         assert_bool_result(result, true);
     }
@@ -105,9 +125,9 @@ s.debug
     fn test_from_core_config_import_settings_before_load_is_null() {
         let base = fixtures_dir();
         let source = r#"
-from core.config import settings
-settings == null
-"#;
+        from core.config import settings
+        settings == null
+        "#;
         let result = run_with_base_path(source, base.as_path());
         assert_bool_result(result, true);
     }
@@ -116,9 +136,9 @@ settings == null
     fn test_from_core_config_get_settings_before_load_throws() {
         let base = fixtures_dir();
         let source = r#"
-from core.config import get_settings
-get_settings()
-"#;
+        from core.config import get_settings
+        get_settings()
+        "#;
         let result = run_with_base_path(source, base.as_path());
         assert!(result.is_err(), "expected ValueError (Settings are not loaded), got {:?}", result);
         let err = result.unwrap_err();
@@ -131,11 +151,45 @@ get_settings()
     fn test_from_core_config_load_settings_invalid_env_throws() {
         let base = fixtures_dir();
         let source = r#"
-from core.config import load_settings
-load_settings("prod")
-"#;
+        from core.config import load_settings
+        load_settings("staging")
+        "#;
         let result = run_with_base_path(source, base.as_path());
         assert!(result.is_err(), "expected ValueError (Invalid environment), got {:?}", result);
+    }
+
+    // ========== Абсолютный импорт из вложенного пакета (core.database.engine -> core.config) ==========
+    //
+    // engine.dc находится в core/database/ и делает `from core.config import get_settings`.
+    // Абсолютный импорт должен резолвиться от project_root, а не от core/database/.
+    #[test]
+    fn test_absolute_import_from_nested_module_core_database_imports_core_config() {
+        let base = fixtures_dir();
+        let source = r#"
+from core.database import get_config_env
+get_config_env("dev")
+"#;
+        let result = run_with_base_path(source, base.as_path());
+        assert_string_result(result, "dev");
+    }
+
+    #[test]
+    fn test_absolute_import_from_nested_module_core_database_imports_core_config_prod() {
+        let base = fixtures_dir();
+        let source = r#"
+from core.database import get_config_env
+get_config_env("prod")
+"#;
+        // Pass argv=["prod"] so load_env infers settings/prod.env when model_config.env_file is empty
+        let result = run_with_vm_with_args_and_lib(
+            source,
+            Some(vec!["prod".to_string()]),
+            None,
+            Some(base.as_path()),
+            None,
+        );
+        let (value, _) = result.expect("run should succeed");
+        assert_string_result(Ok(value), "prod");
     }
 
     // ========== Пакет nested: __lib__.dc импортирует из sub.dc ==========
@@ -144,9 +198,9 @@ load_settings("prod")
     fn test_from_nested_import_functions_from_lib_and_sub() {
         let base = fixtures_dir();
         let source = r#"
-from nested import one, two
-one() + two()
-"#;
+        from nested import one, two
+        one() + two()
+        "#;
         let result = run_with_base_path(source, base.as_path());
         assert_number_result(result, 3.0);
     }
@@ -155,9 +209,9 @@ one() + two()
     fn test_from_nested_import_one_only() {
         let base = fixtures_dir();
         let source = r#"
-from nested import one
-one()
-"#;
+        from nested import one
+        one()
+        "#;
         let result = run_with_base_path(source, base.as_path());
         assert_number_result(result, 1.0);
     }
@@ -167,9 +221,9 @@ one()
     #[test]
     fn test_import_package_without_base_path_fails() {
         let source = r#"
-from pkg import get_x
-get_x()
-"#;
+        from pkg import get_x
+        get_x()
+        "#;
         let result = data_code::run(source);
         assert!(result.is_err(), "without base_path import should fail: {:?}", result);
     }
@@ -182,11 +236,11 @@ get_x()
 
         let base = fixtures_dir();
         let source = r#"
-from core.config import load_settings, get_settings
-load_settings("dev")
-let s = get_settings()
-s.env
-"#;
+        from core.config import load_settings, get_settings
+        load_settings("dev")
+        let s = get_settings()
+        s.env
+        "#;
         for _ in 0..4 {
             let (value, _) = run_with_vm_and_path(source, Some(base.as_path()), None)
                 .unwrap_or_else(|e| panic!("run failed: {:?}", e));
@@ -200,21 +254,21 @@ s.env
     // ========== Опционально: sandbox/web_api (если есть core/config/__lib__.dc) ==========
 
     // ========== __main__ с base_path и импортами (как sandbox/web_api/main.dc) ==========
-
     #[test]
     fn test_main_entry_with_base_path_and_imports() {
         // Скрипт в стиле main.dc: fn __main__(env = "dev") вызывает main(env), main использует core.config
         let base = fixtures_dir();
         let source = r#"
-from core.config import get_settings, load_settings
-fn main(env) {
-    load_settings(env)
-    return get_settings().env
-}
-fn __main__(env: "dev" | "prod" = "dev") {
-    return main(env)
-}
-"#;
+            from core.config import get_settings, load_settings
+            fn main(env) {
+                load_settings(env)
+                return get_settings().env
+            }
+            fn __main__(env: "dev" | "prod" = "dev") {
+                return main(env)
+            }
+            "#;
+        // Run with no args: __main__ gets default "dev"
         let result = run_with_vm_with_args_and_lib(source, None, None, Some(base.as_path()), None);
         let (value, _) = result.expect("run should succeed");
         match &value {
@@ -223,20 +277,54 @@ fn __main__(env: "dev" | "prod" = "dev") {
         }
     }
 
+    /// Minimal: no ImportFrom; checks that argv is passed correctly with args=["prod"].
+    #[test]
+    fn test_main_entry_argv_prod_no_import() {
+        let base = fixtures_dir();
+        let source = r#"
+            fn __main__(env: "dev" | "prod" = "dev") {
+                return env
+            }
+            "#;
+        let result = run_with_vm_with_args_and_lib(source, Some(vec!["prod".to_string()]), None, Some(base.as_path()), None);
+        let (value, _) = result.expect("run should succeed");
+        match &value {
+            Value::String(s) => assert_eq!(s, "prod", "argv[0] should be 'prod'"),
+            v => panic!("expected String(\"prod\"), got {:?}", v),
+        }
+    }
+
+    /// Same as test_main_entry_with_base_path_and_imports but only the args=["prod"] case (to check if first run affects second).
+    #[test]
+    fn test_main_entry_with_base_path_and_imports_prod_only() {
+        let base = fixtures_dir();
+        let source = r#"
+            from core.config import get_settings, load_settings
+            load_settings("prod")
+            get_settings().env
+            "#;
+        let result = run_with_vm_with_args_and_lib(source, Some(vec!["prod".to_string()]), None, Some(base.as_path()), None);
+        let (value, _) = result.expect("run should succeed");
+        match &value {
+            Value::String(s) => assert_eq!(s, "prod", "when args=[\"prod\"], get_settings().env should get \"prod\", got \"{}\"", s),
+            v => panic!("expected String(\"prod\"), got {:?}", v),
+        }
+    }
+
     #[test]
     fn test_main_entry_with_args_and_base_path() {
         // Передаём argv — __main__ получает env из аргумента
         let base = fixtures_dir();
         let source = r#"
-from core.config import get_settings, load_settings
-fn main(env) {
-    load_settings(env)
-    return get_settings().env
-}
-fn __main__(env: "dev" | "prod" = "dev") {
-    return main(env)
-}
-"#;
+        from core.config import get_settings, load_settings
+        fn main(env) {
+            load_settings(env)
+            return get_settings().env
+        }
+        fn __main__(env: "dev" | "prod" = "dev") {
+            return main(env)
+        }
+        "#;
         let result = run_with_vm_with_args_and_lib(
             source,
             Some(vec!["dev".to_string()]),
@@ -248,6 +336,43 @@ fn __main__(env: "dev" | "prod" = "dev") {
         match &value {
             Value::String(s) => assert_eq!(s, "dev"),
             v => panic!("expected String(\"dev\"), got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn test_private_fields_with_model_config() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sandbox").join("web_api");
+        if !base.join("core").join("config").join("__lib__.dc").exists() {
+            return;
+        }
+        if !base.join("core").join("config").join("dev_config.dc").exists() {
+            return;
+        }
+        if !base.join("settings").join("dev.env").exists() {
+            return;
+        }
+        // So that load_env resolves "./settings/dev.env" when file_import/VM base_path is not set during constructor run.
+        let prev = std::env::current_dir().ok();
+        let _ = std::env::set_current_dir(&base);
+        let source = r#"
+            from core.config import get_settings, load_settings
+                fn main(env) {
+                    load_settings(env)
+                    return get_settings().secret.get_code()
+                }
+                fn __main__(env: "dev" | "prod" = "dev") {
+                    return main(env)
+                }
+            "#;
+
+        let result = run_with_vm_with_args_and_lib(source, Some(vec!["dev".to_string()]), None, Some(base.as_path()), None);
+        if let Some(ref p) = prev {
+            let _ = std::env::set_current_dir(p);
+        }
+        let (value, _) = result.expect("run should succeed");
+        match &value {
+            Value::String(s) => assert!(!s.is_empty(), "get_code() should return non-empty string"),
+            v => panic!("expected String from get_settings().secret.get_code(), got {:?}", v),
         }
     }
 
@@ -280,15 +405,15 @@ fn __main__(env: "dev" | "prod" = "dev") {
             return;
         }
         let source = r#"
-from core.config import get_settings, load_settings
-fn main(env) {
-    load_settings(env)
-    return get_settings().env
-}
-fn __main__(env: "dev" | "prod" = "dev") {
-    return main(env)
-}
-"#;
+        from core.config import get_settings, load_settings
+        fn main(env) {
+            load_settings(env)
+            return get_settings().env
+        }
+        fn __main__(env: "dev" | "prod" = "dev") {
+            return main(env)
+        }
+        "#;
         let result = run_with_vm_with_args_and_lib(
             source,
             Some(vec!["dev".to_string()]),
@@ -314,11 +439,11 @@ fn __main__(env: "dev" | "prod" = "dev") {
             return;
         }
         let source = r#"
-from core.config import load_settings, get_settings
-load_settings("dev")
-let s = get_settings()
-s.env
-"#;
+        from core.config import load_settings, get_settings
+        load_settings("dev")
+        let s = get_settings()
+        s.env
+        "#;
         let result = run_with_base_path(source, base.as_path());
         if let Ok(Value::String(s)) = result {
             assert_eq!(s, "dev");

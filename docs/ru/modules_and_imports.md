@@ -99,18 +99,18 @@ from core.config import get_settings, load_settings
 
 Эти модули встроены в рантайм; для них **не** нужен соответствующий файл или пакет `.dc` в базовом пути:
 
-| Модуль         | Описание |
-|----------------|----------|
-| `ml`           | Машинное обучение (тензоры, графы, нейросети, датасеты и т.д.) |
-| `plot`         | Изображения, окна, графики (столбчатые, линейные, круговые, тепловые карты, subplots) |
-| `settings_env` | Загрузка .env, Settings, Config, Field |
-| `uuid`         | Генерация UUID (v4, v7), parse, to_string, байты, v3/v5 |
-| `database`     | Движок БД и DatabaseCluster |
+| Модуль            | Описание |
+|-------------------|----------|
+| `ml`              | Машинное обучение (тензоры, графы, нейросети, датасеты и т.д.) |
+| `plot`            | Изображения, окна, графики (столбчатые, линейные, круговые, тепловые карты, subplots) |
+| `settings_env`    | Загрузка .env, Settings, Config, Field |
+| `uuid`            | Генерация UUID (v4, v7), parse, to_string, байты, v3/v5 |
+| `database_engine` | Движок БД и DatabaseCluster |
 
 Пример:
 
 ```datacode
-from database import engine, DatabaseCluster
+from database_engine import engine, DatabaseCluster
 from uuid import v4, v7
 ```
 
@@ -166,7 +166,7 @@ cargo run --bin datacode my_app/main.dc
 | **Модуль-файл** | `<base_path>/<имя>.dc` → модуль `имя`. |
 | **Пакет** | `<base_path>/<имя>/__lib__.dc` → модуль `имя`; приоритет над файлом с тем же именем. |
 | **Составное имя** | `core.config` — обход по сегментам (каждый сегмент = пакет или файл); последний сегмент — загружаемый модуль. |
-| **Встроенные модули** | `ml`, `plot`, `settings_env`, `uuid`, `database` — файлы не требуются. |
+| **Встроенные модули** | `ml`, `plot`, `settings_env`, `uuid`, `database_engine` — файлы не требуются. |
 | **Экспорты** | Для модулей .dc экспортом являются глобалы верхнего уровня (переменные, функции, классы). |
 
 Детали на уровне байткода и VM (ModuleObject, перемаппинг функций, кэш) см. в [Система импорта модулей (Internals)](./internals/module_import_system.md).

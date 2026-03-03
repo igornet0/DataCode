@@ -10,6 +10,22 @@ use std::sync::Arc;
 use crate::common::{error::LangError, value::Value};
 use crate::vm::Vm;
 
+/// Restores RunContext on drop so caller's context (e.g. argv_value_id) is restored after loading a module.
+struct RestoreRunContextGuard(Option<RunContext>);
+impl RestoreRunContextGuard {
+    /// Restore now and prevent restore on drop.
+    fn restore_now(&mut self) {
+        if let Some(ctx) = self.0.take() {
+            RunContext::set_current(ctx);
+        }
+    }
+}
+impl Drop for RestoreRunContextGuard {
+    fn drop(&mut self) {
+        self.restore_now();
+    }
+}
+
 // Legacy thread-local storage (used when RunContext is not set, e.g. before run() or in tests).
 thread_local! {
     static BASE_PATH: std::cell::RefCell<Option<PathBuf>> = std::cell::RefCell::new(None);
@@ -135,6 +151,7 @@ pub fn load_local_module(
 }
 
 /// Загружает подмодуль по составному имени (например `core.config`).
+/// Absolute import: first segment is resolved from project_root, not current base_path.
 fn load_local_module_dotted_with_vm(
     module_name: &str,
     base_path: &Path,
@@ -144,11 +161,24 @@ fn load_local_module_dotted_with_vm(
     if parts.is_empty() {
         return Err(LangError::runtime_error("Empty module name".to_string(), 0));
     }
-    let mut search_paths = vec![base_path.to_path_buf()];
+    // Absolute import: first segment resolves from project_root (if set), else base_path.
+    let project_root_opt = vm.get_project_root();
+    let root_for_first = project_root_opt
+        .as_ref()
+        .map(|p| p.as_path())
+        .unwrap_or(base_path);
+    let mut search_paths = vec![root_for_first.to_path_buf()];
     search_paths.extend(get_dpm_package_paths());
     let mut current_base = base_path.to_path_buf();
     for i in 0..parts.len() - 1 {
-        let (module_dir, _) = search_paths
+        let roots_for_segment: Vec<PathBuf> = if i == 0 {
+            vec![root_for_first.to_path_buf()]
+        } else {
+            vec![current_base.clone()]
+        };
+        let mut full_search = roots_for_segment;
+        full_search.extend(get_dpm_package_paths());
+        let (module_dir, _) = full_search
             .iter()
             .find_map(|root| try_find_module_in(parts[i], root))
             .ok_or_else(|| {
@@ -161,7 +191,6 @@ fn load_local_module_dotted_with_vm(
                 )
             })?;
         current_base = module_dir;
-        search_paths = vec![current_base.clone()];
     }
     let last_part = parts[parts.len() - 1];
     let result = load_local_module_with_vm_inner(last_part, &current_base, vm)?;
@@ -222,6 +251,12 @@ fn load_local_module_with_vm_inner(
     let cache_key = module_cache::canonical_module_cache_key(&file_path);
     let base_path_before = get_base_path();
 
+    // Save caller's RunContext before changing base_path so it can be restored after run_compiled_module
+    // (module's run() overwrites thread-local RunContext; without restore, LoadGlobal(argv) would miss argv_value_id).
+    // Also save RESTORED_SCRIPT_ARGV_AFTER_IMPORT: nested module run() may overwrite it with None; we must restore.
+    let saved_restored_argv = RunContext::get_restored_script_argv_after_import();
+    let mut _run_ctx_guard = RestoreRunContextGuard(RunContext::take_current());
+
     // Already executed this run: return saved namespace. The object was remapped when first loaded (in executor),
     // so do NOT add_functions_only or remap again — that would duplicate functions and double-remap indices.
     // If we have a cache hit but no stored functions (e.g. module was first loaded in another VM context), re-load below.
@@ -263,12 +298,14 @@ fn load_local_module_with_vm_inner(
         let mut cache = vm.get_module_cache_mut();
         if let Some(cached) = cache.get(&cache_key) {
             let cached = cached.clone();
+            let project_root = vm.get_project_root();
             drop(cache);
-            run_compiled_module(&cached.chunk, &cached.functions, Some(module_dir.clone()))?
+            run_compiled_module(&cached.chunk, &cached.functions, Some(module_dir.clone()), project_root)?
         } else if let Some(cached) = crate::vm::dcb::load_dcb_if_fresh(&dcb_path, &source, source_mtime) {
             cache.insert(cache_key.clone(), cached.clone());
+            let project_root = vm.get_project_root();
             drop(cache);
-            run_compiled_module(&cached.chunk, &cached.functions, Some(module_dir.clone()))?
+            run_compiled_module(&cached.chunk, &cached.functions, Some(module_dir.clone()), project_root)?
         } else {
             let (chunk, functions, import_names) = compile_module(&source, Some(&file_path))?;
             let mut dep_paths = Vec::new();
@@ -291,10 +328,14 @@ fn load_local_module_with_vm_inner(
                 // .dcb written; on next run we may load from disk
             }
             cache.insert(cache_key.clone(), compiled);
+            let project_root = vm.get_project_root();
             drop(cache);
-            run_compiled_module(&chunk, &functions, Some(module_dir.clone()))?
+            run_compiled_module(&chunk, &functions, Some(module_dir.clone()), project_root)?
         }
     };
+    // Restore caller's RunContext immediately so base_path and argv_value_id are correct before any further use.
+    _run_ctx_guard.restore_now();
+    RunContext::set_restored_script_argv_after_import(saved_restored_argv);
     set_base_path(base_path_before);
     let exports = export_globals_from_vm(&mut module_vm);
     let module_object = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(exports)));
@@ -341,13 +382,16 @@ fn compile_module(source: &str, source_name: Option<&Path>) -> Result<(crate::by
 }
 
 /// Runs compiled module (chunk + functions) in a new VM and returns that VM. Caller exports globals.
+/// project_root: inherited from parent VM for absolute imports; propagated to nested modules.
 fn run_compiled_module(
     chunk: &crate::bytecode::Chunk,
     functions: &[crate::bytecode::Function],
     module_base_path: Option<PathBuf>,
+    project_root: Option<PathBuf>,
 ) -> Result<Vm, LangError> {
     let mut vm = Vm::new();
     vm.set_base_path(module_base_path.or_else(get_base_path));
+    vm.set_project_root(project_root);
     let max_global_index = chunk.global_names.keys().max().copied().unwrap_or(0);
     let needed_size = (max_global_index + 1).max(74);
     if vm.get_globals().len() < needed_size {
@@ -371,7 +415,7 @@ fn run_compiled_module(
 /// Compiles and runs module (used when no cache is available, e.g. load_local_module without vm).
 fn compile_and_run_module(source: &str, module_base_path: Option<PathBuf>) -> Result<(Value, Vm), LangError> {
     let (chunk, functions, _import_names) = compile_module(source, None)?;
-    let mut vm = run_compiled_module(&chunk, &functions, module_base_path)?;
+    let mut vm = run_compiled_module(&chunk, &functions, module_base_path, None)?;
     let module_object = export_globals_from_vm(&mut vm);
     Ok((
         Value::Object(std::rc::Rc::new(std::cell::RefCell::new(module_object))),

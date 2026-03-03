@@ -177,14 +177,14 @@ impl Compiler {
                         // Загружаем индекс i
                         let index_const = self.chunk.add_constant(Value::Number(i as f64));
                         self.chunk.write_with_line(OpCode::Constant(index_const), self.current_line);
-                        // Сравниваем: i < len(argv) <=> len(argv) > i. В VM Less даёт (a < b) при pop b, pop a; стек [length, i] даёт (length < i). Нужно (i < length), поэтому эмитим Greater -> (length > i).
+                        // Сравниваем: i < len(argv) <=> len(argv) > i. Стек [length, i]; VM Greater даёт (a > b) при pop b, pop a -> (length > i). JumpIfFalse: при false (i >= length) переходим к default.
                         self.chunk.write_with_line(OpCode::Greater, self.current_line);
                         
                         // Создаем метки для условного перехода
                         let default_value_label = self.labels.create_label();
                         let after_default_label = self.labels.create_label();
                         
-                        // Если i >= len(argv), переходим к загрузке значения по умолчанию
+                        // Если (length > i) false, т.е. i >= len(argv), переходим к загрузке значения по умолчанию
                         self.labels.emit_jump(&mut self.chunk, self.current_line, true, default_value_label)?;
                         
                         // Путь 1: argv[i] существует, загружаем его
@@ -2067,8 +2067,7 @@ impl Compiler {
                         // При вызове Call(1): pop 1 раз, reverse -> функция получает [object] в правильном порядке
                         self.chunk.write_with_line(OpCode::Call(1), *line);
                     } else {
-                            // Для функций модулей: получаем метод, не добавляем объект
-                            // Пытаемся разрешить именованные аргументы
+                            // Default method call: receiver + args, then get method; Call(1 + n) so method receives (self, arg_1, ...).
                             let resolved_args = match self.resolve_function_args(method, args, None, *line) {
                                 Ok(resolved) => {
                                     resolved
@@ -2093,6 +2092,8 @@ impl Compiler {
                                 }
                             };
                             
+                            // Push receiver first so stack becomes [receiver, arg_1, ..., arg_n] for Call(1 + n)
+                            self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
                             // Компилируем разрешенные аргументы
                             for arg in &resolved_args {
                                 match arg {
@@ -2101,20 +2102,20 @@ impl Compiler {
                                     Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                                 }
                             }
-                            // Теперь на стеке: [arg_n, ..., arg_1]
+                            // Теперь на стеке: [receiver, arg_1, ..., arg_n]
                             
                             // Загружаем объект обратно для получения метода
                             self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
-                            // Теперь на стеке: [arg_n, ..., arg_1, object]
+                            // Теперь на стеке: [receiver, arg_1, ..., arg_n, object]
                             
                             // Получаем свойство объекта по имени метода
                             let method_name_index = self.chunk.add_constant(Value::String(method.clone()));
                             self.chunk.write_with_line(OpCode::Constant(method_name_index), *line);
                             self.chunk.write_with_line(OpCode::GetArrayElement, *line);
-                            // Теперь на стеке: [arg_n, ..., arg_1, NativeFunction]
+                            // Теперь на стеке: [receiver, arg_1, ..., arg_n, method]
                             
-                            // Вызываем функцию без объекта как первого аргумента
-                            self.chunk.write_with_line(OpCode::Call(resolved_args.len()), *line);
+                            // Call(1 + n): method receives (receiver, arg_1, ...)
+                            self.chunk.write_with_line(OpCode::Call(1 + resolved_args.len()), *line);
                         }
                     }
             }

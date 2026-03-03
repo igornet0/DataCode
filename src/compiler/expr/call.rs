@@ -62,6 +62,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             }
 
             // Settings subclass with 0 args (e.g. ProdSettings()): expand to (path="", required_keys, model_config) and Call(3).
+            // Set __constructing_class__ = class before pushing args so required_keys and model_config are always loaded from the class we're instantiating (fixes cross-module call e.g. load_settings() -> DevSettings()).
             let arg_count = call_args.len();
             if arg_count == 0 && is_in_settings_chain(name, ctx.class_superclass) {
                 let ctor_1_name = format!("{}::new_1", name);
@@ -69,33 +70,37 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                 let required_keys_value = ctx.class_required_keys_value.get(name).cloned();
                 // Same-file: use compiler's required_keys; imported class: load from class["__required_keys"] at runtime.
                 let emit_0_arg_settings = |ctx: &mut CompilationContext, line: usize, use_class_required_keys: bool| -> Result<(), LangError> {
+                    let class_global_index = class_global_index_opt.expect("Settings class in globals");
+                    let new_idx = ctx.scope.globals.len();
+                    let constructing_class_idx = *ctx.scope.globals.entry(CONSTRUCTING_CLASS_GLOBAL_NAME.to_string()).or_insert(new_idx);
+                    ctx.chunk.global_names.insert(constructing_class_idx, CONSTRUCTING_CLASS_GLOBAL_NAME.to_string());
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), line);
+                    ctx.chunk.write_with_line(OpCode::StoreGlobal(constructing_class_idx), line);
                     let path_empty = ctx.chunk.add_constant(Value::String(String::new()));
                     ctx.chunk.write_with_line(OpCode::Constant(path_empty), line);
                     if use_class_required_keys {
                         let req_const = ctx.chunk.add_constant(required_keys_value.as_ref().unwrap().clone());
                         ctx.chunk.write_with_line(OpCode::Constant(req_const), line);
                     } else {
-                        let class_global_index = class_global_index_opt.expect("Settings class in globals");
-                        ctx.chunk.global_names.insert(class_global_index, name.clone());
-                        ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), line);
-                        let req_key = ctx.chunk.add_constant(Value::String("__required_keys".to_string()));
-                        ctx.chunk.write_with_line(OpCode::Constant(req_key), line);
-                        ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-                    }
-                    let class_global_index = class_global_index_opt.expect("Settings class in globals");
-                    ctx.chunk.global_names.insert(class_global_index, name.clone());
-                    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), line);
-                    let model_config_key = ctx.chunk.add_constant(Value::String("model_config".to_string()));
-                    ctx.chunk.write_with_line(OpCode::Constant(model_config_key), line);
+                        ctx.chunk.write_with_line(OpCode::LoadGlobal(constructing_class_idx), line);
+                    let req_key = ctx.chunk.add_constant(Value::String("__required_keys".to_string()));
+                    ctx.chunk.write_with_line(OpCode::Constant(req_key), line);
                     ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-                    Ok(())
-                };
-                if let Some(_) = &required_keys_value {
-                    if let Some(function_index) = ctx.function_names.iter().position(|n| n == &ctor_1_name) {
-                        emit_0_arg_settings(ctx, *line, true)?;
-                        let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
-                        ctx.chunk.write_with_line(OpCode::Constant(constant_index), *line);
-                        ctx.chunk.write_with_line(OpCode::Call(3), *line);
+                }
+                ctx.chunk.write_with_line(OpCode::LoadGlobal(constructing_class_idx), line);
+                let model_config_key = ctx.chunk.add_constant(Value::String("model_config".to_string()));
+                ctx.chunk.write_with_line(OpCode::Constant(model_config_key), line);
+                ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
+                let null_const = ctx.chunk.add_constant(Value::Null);
+                ctx.chunk.write_with_line(OpCode::Constant(null_const), line);
+                Ok(())
+            };
+            if let Some(_) = &required_keys_value {
+                if let Some(function_index) = ctx.function_names.iter().position(|n| n == &ctor_1_name) {
+                    emit_0_arg_settings(ctx, *line, true)?;
+                    let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
+                    ctx.chunk.write_with_line(OpCode::Constant(constant_index), *line);
+                    ctx.chunk.write_with_line(OpCode::Call(4), *line);
                         return Ok(());
                     }
                     if ctx.scope.globals.contains_key(name) && ctx.scope.globals.contains_key(&ctor_1_name) {
@@ -103,7 +108,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                         emit_0_arg_settings(ctx, *line, true)?;
                         ctx.chunk.global_names.insert(global_index, ctor_1_name.clone());
                         ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
-                        ctx.chunk.write_with_line(OpCode::Call(3), *line);
+                        ctx.chunk.write_with_line(OpCode::Call(4), *line);
                         return Ok(());
                     }
                 }
@@ -113,7 +118,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                     emit_0_arg_settings(ctx, *line, false)?;
                     ctx.chunk.global_names.insert(global_index, ctor_1_name.clone());
                     ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
-                    ctx.chunk.write_with_line(OpCode::Call(3), *line);
+                    ctx.chunk.write_with_line(OpCode::Call(4), *line);
                     return Ok(());
                 }
             }
@@ -124,7 +129,16 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             debug_println!("[DEBUG compile_call] Найден конструктор '{}' с индексом функции {} в function_names", constructor_name, function_index);
             let arg_count = call_args.len();
             debug_println!("[DEBUG compile_call] Сохранено количество аргументов: {} для конструктора '{}' (function_names)", arg_count, constructor_name);
-            
+            // 0-arg Settings subclass: set __constructing_class__ = class so new_0's body can load required_keys/model_config from it.
+            if arg_count == 0 && is_in_settings_chain(name, ctx.class_superclass) {
+                if let Some(&class_global_index) = ctx.scope.globals.get(name) {
+                    let new_idx = ctx.scope.globals.len();
+                    let constructing_class_idx = *ctx.scope.globals.entry(CONSTRUCTING_CLASS_GLOBAL_NAME.to_string()).or_insert(new_idx);
+                    ctx.chunk.global_names.insert(constructing_class_idx, CONSTRUCTING_CLASS_GLOBAL_NAME.to_string());
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                    ctx.chunk.write_with_line(OpCode::StoreGlobal(constructing_class_idx), *line);
+                }
+            }
             // Settings subclass with 1 arg: expand to (path, required_keys, model_config) and Call(3).
             if arg_count == 1 && is_in_settings_chain(name, ctx.class_superclass) {
                 let required_keys_value = ctx.class_required_keys_value.get(name).cloned();
@@ -142,9 +156,11 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                     let model_config_key = ctx.chunk.add_constant(Value::String("model_config".to_string()));
                     ctx.chunk.write_with_line(OpCode::Constant(model_config_key), *line);
                     ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                    let null_const = ctx.chunk.add_constant(Value::Null);
+                    ctx.chunk.write_with_line(OpCode::Constant(null_const), *line);
                     let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
                     ctx.chunk.write_with_line(OpCode::Constant(constant_index), *line);
-                    ctx.chunk.write_with_line(OpCode::Call(3), *line);
+                    ctx.chunk.write_with_line(OpCode::Call(4), *line);
                     return Ok(());
                 }
             }
@@ -199,7 +215,16 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             debug_println!("[DEBUG compile_call] Найден конструктор '{}' в globals с индексом {}", constructor_name, global_index);
             let arg_count = call_args.len();
             debug_println!("[DEBUG compile_call] Сохранено количество аргументов: {} для конструктора '{}' (globals)", arg_count, constructor_name);
-            
+            // 0-arg Settings subclass: set __constructing_class__ = class so new_0's body can load required_keys/model_config from it.
+            if arg_count == 0 && is_in_settings_chain(name, ctx.class_superclass) {
+                if let Some(&class_global_index) = ctx.scope.globals.get(name) {
+                    let new_idx = ctx.scope.globals.len();
+                    let constructing_class_idx = *ctx.scope.globals.entry(CONSTRUCTING_CLASS_GLOBAL_NAME.to_string()).or_insert(new_idx);
+                    ctx.chunk.global_names.insert(constructing_class_idx, CONSTRUCTING_CLASS_GLOBAL_NAME.to_string());
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                    ctx.chunk.write_with_line(OpCode::StoreGlobal(constructing_class_idx), *line);
+                }
+            }
             // Settings subclass with 1 arg: expand to (path, required_keys, model_config) and Call(3).
             if arg_count == 1 && is_in_settings_chain(name, ctx.class_superclass) {
                 let required_keys_value = ctx.class_required_keys_value.get(name).cloned();
@@ -217,9 +242,11 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                     let model_config_key = ctx.chunk.add_constant(Value::String("model_config".to_string()));
                     ctx.chunk.write_with_line(OpCode::Constant(model_config_key), *line);
                     ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                    let null_const = ctx.chunk.add_constant(Value::Null);
+                    ctx.chunk.write_with_line(OpCode::Constant(null_const), *line);
                     ctx.chunk.global_names.insert(global_index, constructor_name.clone());
                     ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
-                    ctx.chunk.write_with_line(OpCode::Call(3), *line);
+                    ctx.chunk.write_with_line(OpCode::Call(4), *line);
                     return Ok(());
                 }
             }
@@ -274,7 +301,16 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             debug_println!("[DEBUG compile_call] Класс '{}' найден в globals, генерируем код для проверки конструктора во время выполнения", name);
             let arg_count = call_args.len();
             debug_println!("[DEBUG compile_call] Сохранено количество аргументов: {} для конструктора '{}' (класс в globals)", arg_count, constructor_name);
-            
+            // 0-arg call: set __constructing_class__ = class so Settings subclass new_0 can load required_keys/model_config (class_superclass may be empty when class is imported).
+            if arg_count == 0 {
+                if let Some(&class_global_index) = ctx.scope.globals.get(name) {
+                    let new_idx = ctx.scope.globals.len();
+                    let constructing_class_idx = *ctx.scope.globals.entry(CONSTRUCTING_CLASS_GLOBAL_NAME.to_string()).or_insert(new_idx);
+                    ctx.chunk.global_names.insert(constructing_class_idx, CONSTRUCTING_CLASS_GLOBAL_NAME.to_string());
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                    ctx.chunk.write_with_line(OpCode::StoreGlobal(constructing_class_idx), *line);
+                }
+            }
             for (i, arg) in call_args.iter().enumerate() {
                 match arg {
                     Arg::Positional(expr) => {
@@ -447,7 +483,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         // а вызов конструктора — слот Config::new_N заполнится при выполнении ImportFrom.
         // Только для файловых модулей: встроенные (settings_env, ml, plot, uuid) не экспортируют конструкторы в globals так же, оставляем старый путь (LoadGlobal(name)+Call).
         fn is_builtin_module(name: &str) -> bool {
-            matches!(name, "ml" | "plot" | "settings_env" | "uuid" | "database")
+            matches!(name, "ml" | "plot" | "settings_env" | "uuid" | "database_engine")
         }
         if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
             && ctx.imported_symbols.get(name).map_or(false, |m| !is_builtin_module(m))
@@ -467,6 +503,17 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             };
             ctx.chunk.global_names.insert(constructor_global_index, constructor_name.clone());
             let arg_count = call_args.len();
+            // 0-arg call: set __constructing_class__ = class so Settings subclass new_0 can load required_keys/model_config.
+            if arg_count == 0 {
+                if let Some(&class_global_index) = ctx.scope.globals.get(name) {
+                    ctx.chunk.global_names.insert(class_global_index, name.clone());
+                    let new_idx = ctx.scope.globals.len();
+                    let constructing_class_idx = *ctx.scope.globals.entry(CONSTRUCTING_CLASS_GLOBAL_NAME.to_string()).or_insert(new_idx);
+                    ctx.chunk.global_names.insert(constructing_class_idx, CONSTRUCTING_CLASS_GLOBAL_NAME.to_string());
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                    ctx.chunk.write_with_line(OpCode::StoreGlobal(constructing_class_idx), *line);
+                }
+            }
             for arg in call_args.iter() {
                 match arg {
                     Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,

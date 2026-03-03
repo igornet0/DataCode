@@ -29,7 +29,6 @@ impl VariableResolver {
         } else {
             // Локальная переменная или глобальная на верхнем уровне
             if let Some(local_index) = ctx.scope.resolve_local(name) {
-                // Локальная переменная уже объявлена - обновляем
                 ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), line);
             } else if ctx.current_function.is_some() {
                 // Мы находимся внутри функции - объявляем новую локальную переменную
@@ -38,11 +37,9 @@ impl VariableResolver {
             } else {
                 // Переменная не найдена локально - проверяем, является ли она глобальной
                 if let Some(&global_index) = ctx.scope.globals.get(name) {
-                    // Глобальная переменная уже существует - обновляем
                     ctx.chunk.global_names.insert(global_index, name.to_string());
                     ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), line);
                 } else {
-                    // Новая глобальная переменная на верхнем уровне
                     let global_index = ctx.scope.globals.len();
                     ctx.scope.globals.insert(name.to_string(), global_index);
                     ctx.chunk.global_names.insert(global_index, name.to_string());

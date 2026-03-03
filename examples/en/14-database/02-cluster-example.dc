@@ -1,7 +1,7 @@
 # DatabaseCluster example: multiple named connections
 # Run from project root: datacode examples/en/14-database/02-cluster-example.dc
 
-from database import engine, DatabaseCluster
+from database_engine import engine, DatabaseCluster
 
 print("DatabaseCluster example")
 print("=======================")

@@ -1,6 +1,6 @@
 // Database cluster: named collection of database engines
 
-use crate::database::engine::DatabaseEngine;
+use crate::database_engine::engine::DatabaseEngine;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;

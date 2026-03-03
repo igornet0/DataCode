@@ -26,8 +26,8 @@ pub mod plot;
 pub mod settings_env;
 #[path = "lib/uuid/mod.rs"]
 pub mod uuid;
-#[path = "lib/database/mod.rs"]
-pub mod database;
+#[path = "lib/database_engine/mod.rs"]
+pub mod database_engine;
 
 // Публичный API для запуска интерпретатора
 pub use common::{error::LangError, value::Value};
@@ -74,6 +74,13 @@ pub fn run_with_existing_vm(source: &str, existing_vm: Option<&mut Vm>) -> Resul
         vm.ensure_globals_from_chunk(&f.chunk);
     }
     vm.register_all_builtin_modules()?;
+    // Sync Path B with Path A: update LoadGlobal/StoreGlobal indices to match vm.global_names
+    // before set_functions, so create_all and other globals resolve correctly (fixes "no such table: users").
+    vm.update_chunk_indices(&mut chunk);
+    let mut functions = functions;
+    for f in &mut functions {
+        vm.update_chunk_indices(&mut f.chunk);
+    }
     // set_functions patches main chunk and all function chunks via name_to_new_idx.
     vm.set_functions(functions, Some(&mut chunk), None);
     let result = vm.run(&chunk, None)?;
@@ -319,6 +326,26 @@ pub(crate) fn remap_module_function_ids_in_exports(
 
 const BUILTIN_NATIVE_COUNT: usize = 75;
 
+/// Remap Value::Function(local_i) in chunk constants of merged module functions to global indices.
+/// After extending VM's function array with a module's functions, instances created by that module's
+/// code (e.g. Security with method get_code) would otherwise store Value::Function(local_index);
+/// calling such a method from the main script would then dispatch to the wrong function.
+pub(crate) fn remap_function_constants_in_chunks(
+    functions: &mut [crate::bytecode::Function],
+    start_idx: usize,
+    module_function_count: usize,
+) {
+    for f in functions.iter_mut().skip(start_idx) {
+        for c in &mut f.chunk.constants {
+            if let Value::Function(local_i) = c {
+                if *local_i < module_function_count {
+                    *local_i = start_idx + *local_i;
+                }
+            }
+        }
+    }
+}
+
 /// Remap NativeFunction indices in an export map so they refer to caller VM's native table.
 /// Caller must have already extended its natives with module_natives[BUILTIN_NATIVE_COUNT..].
 /// For NativeFunction(i) with i >= BUILTIN_NATIVE_COUNT: new_idx = native_start + (i - BUILTIN_NATIVE_COUNT).
@@ -374,6 +401,10 @@ fn run_with_vm_internal_with_args(
     use std::rc::Rc;
     use std::cell::RefCell;
 
+    // Set base_path up front so run_lib_file's save/restore keeps it; then load_env in Settings constructor can resolve relative paths.
+    if let Some(ref base) = explicit_base_path {
+        file_import::set_base_path(Some(base.clone()));
+    }
     let base_for_lib = explicit_base_path.clone().or_else(file_import::get_base_path);
     let source_name_str = source_name.as_deref().map(|p| p.to_string_lossy().into_owned());
 
@@ -473,8 +504,10 @@ fn run_with_vm_internal_with_args(
 
     // 5. Выполнение на VM
     let mut vm = Vm::new();
-    // Сразу задаём base_path в VM, чтобы импорты и load_env разрешались детерминированно
-    vm.set_base_path(explicit_base_path.clone().or_else(file_import::get_base_path));
+    // Сразу задаём base_path и project_root в VM, чтобы импорты и load_env разрешались детерминированно
+    let base = explicit_base_path.clone().or_else(file_import::get_base_path);
+    vm.set_base_path(base.clone());
+    vm.set_project_root(base);
 
     // Сначала регистрируем нативные функции (индексы 0-69)
     vm.register_native_globals();
@@ -492,6 +525,8 @@ fn run_with_vm_internal_with_args(
     if let Some(mut lib_vm) = lib_vm {
         debug_println!("[DEBUG run_with_vm_internal_with_args] Регистрируем __lib__.dc как модуль (без merge)");
         let start_idx = vm.add_functions_only(lib_vm.get_functions().clone());
+        let lib_fn_count = lib_vm.get_functions().len();
+        remap_function_constants_in_chunks(vm.get_functions_mut(), start_idx, lib_fn_count);
         let mut exports = crate::vm::file_import::export_globals_from_vm(&mut lib_vm);
         remap_function_indices_in_exports(&mut exports, start_idx);
         let lib_module_value = Value::Object(Rc::new(RefCell::new(exports)));
@@ -568,6 +603,10 @@ fn run_with_vm_internal_with_args(
     // (иначе в функции __main__ загрузка "main" по индексу 76 могла бы быть ошибочно заменена на argv и вызов main(env) падал бы с "Can only call functions, got: Array").
     const SWAP_TEMP_SLOT: usize = 0xFFFF; // temporary to swap 79 and 85 in bytecode
     let mut functions = functions;
+    // Обновляем индексы во всех function chunks, чтобы "argv" и остальные глобалы резолвились в правильные слоты (в т.ч. после base_path + __lib__).
+    for f in &mut functions {
+        vm.update_chunk_indices(&mut f.chunk);
+    }
     for f in &mut functions {
         for (old_idx, name) in &main_old_idx_to_name {
             if name == "argv" {
@@ -630,11 +669,22 @@ fn run_with_vm_internal_with_args(
     }
 
     // Use explicit base path when provided (e.g. from run_with_vm_and_path), else thread-local
-    vm.set_base_path(explicit_base_path.or_else(file_import::get_base_path));
+    let base = explicit_base_path.or_else(file_import::get_base_path);
+    vm.set_base_path(base.clone());
+    vm.set_project_root(base);
     // Не повторно патчим argv в главном chunk: после update_chunk_indices и set_functions индексы уже верны,
     // а замена всех LoadGlobal(old_idx) на argv_slot_index подменяет загрузку __main__ (если тот оказался по тому же индексу).
     // Guarantee main chunk has argv_slot_index -> "argv" so executor's update_chunk_indices_from_names (when argv_slot=Some) forces argv to this slot and does not remap 85 -> 79.
     chunk.global_names.insert(argv_slot_index, "argv".to_string());
+    // Патчим главный chunk только когда в chunk по этому индексу значится "argv", чтобы не подменять загрузку __main__.
+    for op in chunk.code.iter_mut() {
+        if let crate::bytecode::OpCode::LoadGlobal(idx) = op {
+            let name_is_argv = chunk.global_names.get(idx).map(|n| n.as_str()) == Some("argv");
+            if name_is_argv && *idx != argv_slot_index {
+                *idx = argv_slot_index;
+            }
+        }
+    }
     // Записываем argv в слот по сохранённому индексу (resize если merge добавил слоты и индекс ещё в границах).
     if argv_slot_index >= vm.get_globals().len() {
         vm.get_globals_mut()

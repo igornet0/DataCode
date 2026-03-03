@@ -13,16 +13,15 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
     if let Expr::MethodCall { object, method, args: call_args, line } = expr {
         *ctx.current_line = *line;
         
-        // Компилируем объект
-        expr::compile_expr(ctx, object)?;
-        
         // Специальная обработка для метода clone()
         if method == "clone" {
+            expr::compile_expr(ctx, object)?;
             return compile_clone_method(ctx, call_args, *line);
         }
         
         // Специальная обработка для метода suffixes
         if method == "suffixes" {
+            expr::compile_expr(ctx, object)?;
             return compile_suffixes_method(ctx, call_args, *line);
         }
         
@@ -30,6 +29,7 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
         if matches!(method.as_str(), "inner_join" | "left_join" | "right_join" | "full_join" | 
                    "cross_join" | "semi_join" | "anti_join" | "zip_join" | "asof_join" | 
                    "apply_join" | "join_on") {
+            expr::compile_expr(ctx, object)?;
             return compile_join_method(ctx, method, call_args, *line);
         }
         
@@ -46,6 +46,7 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
         
         if class_method_name.is_some() {
             debug_println!("[DEBUG compile_method_call] Метод '{}' распознан как метод класса: '{}'", method, class_method_name.as_ref().unwrap());
+            expr::compile_expr(ctx, object)?;
             // Это метод класса - обрабатываем его отдельно
             let start_ip = ctx.chunk.code.len();
             debug_println!("[DEBUG compile_method_call] Начало компиляции вызова метода класса '{}' на строке {}, начальный IP: {}", method, *line, start_ip);
@@ -105,9 +106,31 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
             }
         }
         
-        // Общий случай: метод может быть нативной функцией или обычной функцией в объекте
-        debug_println!("[DEBUG compile_method_call] Метод '{}' не распознан как метод класса, используем compile_generic_method", method);
-        compile_generic_method(ctx, object, method, call_args, *line)
+        // Для методов engine/cluster (run, execute, query, ...) сначала компилируем аргументы в временные слоты,
+        // затем receiver, чтобы StoreLocal(receiver) не перезаписывал слот переменной-аргумента (например create_all).
+        let is_db_receiver = matches!(method.as_str(), "add" | "get" | "names" | "connect" | "execute" | "query" | "run");
+        if is_db_receiver {
+            let mut arg_slots = Vec::with_capacity(call_args.len());
+            for (i, arg) in call_args.iter().enumerate() {
+                match arg {
+                    Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
+                    Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                    Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
+                }
+                let slot = ctx.scope.declare_local(&format!("__arg_{}", i));
+                ctx.chunk.write_with_line(OpCode::StoreLocal(slot), *line);
+                arg_slots.push(slot);
+            }
+            expr::compile_expr(ctx, object)?;
+            let temp_object_slot = ctx.scope.declare_local("__method_object");
+            ctx.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
+            compile_db_receiver_method_with_arg_slots(ctx, method, &arg_slots, temp_object_slot, *line)
+        } else {
+            // Общий случай: компилируем объект и вызываем compile_generic_method
+            debug_println!("[DEBUG compile_method_call] Метод '{}' не распознан как метод класса, используем compile_generic_method", method);
+            expr::compile_expr(ctx, object)?;
+            compile_generic_method(ctx, object, method, call_args, *line)
+        }
     } else {
         Err(LangError::ParseError {
             message: "Expected MethodCall expression".to_string(),
@@ -484,6 +507,26 @@ fn compile_db_receiver_method(
     Ok(())
 }
 
+/// То же, но аргументы уже сохранены в слоты arg_slots (чтобы receiver не перезаписывал переменную-аргумент).
+fn compile_db_receiver_method_with_arg_slots(
+    ctx: &mut CompilationContext,
+    method: &str,
+    arg_slots: &[usize],
+    temp_object_slot: usize,
+    line: usize,
+) -> Result<(), LangError> {
+    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    for &slot in arg_slots {
+        ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
+    }
+    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
+    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
+    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
+    ctx.chunk.write_with_line(OpCode::Call(1 + arg_slots.len()), line);
+    Ok(())
+}
+
 fn compile_array_method(
     ctx: &mut CompilationContext,
     method: &str,
@@ -607,8 +650,7 @@ fn compile_module_method(
     temp_object_slot: usize,
     line: usize,
 ) -> Result<(), LangError> {
-    // Для функций модулей: получаем метод, не добавляем объект
-    // Пытаемся разрешить именованные аргументы
+    // Generic method call (module functions or class instance methods): pass receiver as first arg so method receives (self, arg_1, ...).
     let resolved_args = match args::resolve_function_args(method, args, None, line, ctx.source_name) {
         Ok(resolved) => resolved,
         Err(e) => {
@@ -631,21 +673,10 @@ fn compile_module_method(
         }
     };
     
-    // ВАЖНО: Для методов модуля (ml, plot, settings_env) receiver НЕ передаётся в нативу.
-    // VM для Call(arity) извлекает функцию (с вершины стека), затем arity аргументов.
-    // Стек ДО Call: [arg_1, ..., arg_n, method_function]. Натив получает только (arg_1, ..., arg_n).
-    //
-    // Последовательность:
-    // 1. Compile args — аргументы вызова. Стек: [arg_1, ..., arg_n]
-    // 2. LoadLocal (object) + Constant(method_name) + GetArrayElement — получить метод и положить на вершину.
-    //    Стек после: [arg_1, ..., arg_n, method_function]
-    // 3. Call(n) — VM извлечёт method_function, затем arg_n..arg_1 и передаст нативу (arg_1, ..., arg_n).
-    
+    // Stack before Call: [receiver, arg_1, ..., arg_n, method]. Call(1 + n) so method receives (receiver, arg_1, ...).
     let start_ip = ctx.chunk.code.len();
     debug_println!("[DEBUG compile_module_method] Начало компиляции вызова метода '{}' на строке {}, начальный IP: {}", method, line, start_ip);
     
-    // 1. Компилируем аргументы (всегда компилируем из resolved_args; если пусто — из исходных args)
-    debug_println!("[DEBUG compile_module_method] resolved_args.len() = {}, args.len() = {}", resolved_args.len(), args.len());
     let args_to_compile = if resolved_args.is_empty() {
         debug_println!("[DEBUG compile_module_method] resolved_args пуст, используем исходные args");
         args.iter().map(|a| match a {
@@ -658,6 +689,9 @@ fn compile_module_method(
         resolved_args.clone()
     };
     debug_println!("[DEBUG compile_module_method] args_to_compile.len() = {}", args_to_compile.len());
+    
+    // 1. Push receiver first, then compile args → stack [receiver, arg_1, ..., arg_n]
+    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
     for arg in &args_to_compile {
         match arg {
             Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
@@ -665,17 +699,17 @@ fn compile_module_method(
             Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
-    debug_println!("[DEBUG compile_module_method] После компиляции аргументов, IP: {}, стек: [arg_1, ..., arg_n]", ctx.chunk.code.len());
+    debug_println!("[DEBUG compile_module_method] После компиляции аргументов, IP: {}, стек: [receiver, arg_1, ..., arg_n]", ctx.chunk.code.len());
     
-    // 2. Получаем метод и кладём на вершину стека (GetArrayElement ожидает [container, index])
+    // 2. Get method: LoadLocal object, Constant(method_name), GetArrayElement → stack [receiver, arg_1, ..., arg_n, method]
     ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
     let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
     ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
     ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-    debug_println!("[DEBUG compile_module_method] После GetArrayElement для метода '{}', IP: {}, стек: [arg_1, ..., arg_n, method_function]", method, ctx.chunk.code.len());
+    debug_println!("[DEBUG compile_module_method] После GetArrayElement для метода '{}', IP: {}, стек: [receiver, arg_1, ..., arg_n, method_function]", method, ctx.chunk.code.len());
     
-    // 3. Call(n): VM извлечёт function, затем arg_n..arg_1 → натив получит (arg_1, ..., arg_n), без receiver
-    let call_arity = args_to_compile.len();
+    // 3. Call(1 + n): VM pops method then 1+n args → method receives (receiver, arg_1, ..., arg_n)
+    let call_arity = 1 + args_to_compile.len();
     let call_ip = ctx.chunk.code.len();
     ctx.chunk.write_with_line(OpCode::Call(call_arity), line);
     debug_println!("[DEBUG compile_module_method] Сгенерирован Call({}) на IP {} для метода '{}'", call_arity, call_ip, method);

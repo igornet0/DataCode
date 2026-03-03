@@ -984,11 +984,11 @@ fn test_freeze_layer_before_training() {
         # Train again (frozen layer should not update)
         loss_history2 = ml.nn_train(model, x, y, 2, 2, 0.01, "mse")
         
-        # Both training sessions should complete
-        len(loss_history1) == 2 and len(loss_history2) == 2
+        # Both training sessions should complete (nn_train returns object with .loss array)
+        len(loss_history1.loss) == 2 and len(loss_history2.loss) == 2
         
-        # Check that training completed (loss_history should not be empty)
-        len(loss_history2) > 0
+        # Check that training completed (loss_history.loss should not be empty)
+        len(loss_history2.loss) > 0
     "#;
     let result = run(code);
     assert!(result.is_ok(), "Test failed with error: {:?}", result);

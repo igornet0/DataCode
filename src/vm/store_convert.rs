@@ -52,8 +52,17 @@ pub fn store_value(
             store.allocate(ValueCell::Heavy(idx))
         }
         Value::Object(rc) => {
-            let map: HashMap<String, ValueId> = rc
-                .borrow()
+            let map = rc.borrow();
+            // MetaData and create_all have circular refs; store in HeavyStore without decomposing
+            // Class objects (ORM models) must stay as one Rc so SetArrayElement mutations are visible to run_create_all
+            if map.get("__meta").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
+                || map.get("__create_all").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
+                || map.contains_key("__class_name")
+            {
+                let idx = heap.push(Value::Object(rc.clone()));
+                return store.allocate(ValueCell::Heavy(idx));
+            }
+            let map: HashMap<String, ValueId> = map
                 .iter()
                 .map(|(k, v)| (k.clone(), store_value(v.clone(), store, heap)))
                 .collect();
@@ -171,13 +180,23 @@ pub fn update_cell_if_mutable(
             }
         }
         Value::Object(rc) => {
-            let map: HashMap<String, ValueId> = rc
-                .borrow()
-                .iter()
-                .map(|(k, v)| (k.clone(), store_value(v.clone(), store, heap)))
-                .collect();
-            if let Some(ValueCell::Object(m)) = store.get_mut(id) {
-                *m = map;
+            let map_ref = rc.borrow();
+            // MetaData and create_all have circular refs; store in HeavyStore without decomposing
+            if map_ref.get("__meta").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
+                || map_ref.get("__create_all").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
+            {
+                let idx = heap.push(Value::Object(rc.clone()));
+                if let Some(ValueCell::Heavy(h)) = store.get_mut(id) {
+                    *h = idx;
+                }
+            } else {
+                let map: HashMap<String, ValueId> = map_ref
+                    .iter()
+                    .map(|(k, v)| (k.clone(), store_value(v.clone(), store, heap)))
+                    .collect();
+                if let Some(ValueCell::Object(m)) = store.get_mut(id) {
+                    *m = map;
+                }
             }
         }
         _ => {}
@@ -373,8 +392,20 @@ pub fn store_value_arena(
             store.allocate_arena(ValueCell::Heavy(idx))
         }
         Value::Object(rc) => {
-            let map: HashMap<String, ValueId> = rc
-                .borrow()
+            let map = rc.borrow();
+            // MetaData and create_all have circular refs; store in HeavyStore without decomposing
+            if map.get("__meta").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
+                || map.get("__create_all").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
+            {
+                let idx = heap.push(Value::Object(rc.clone()));
+                return store.allocate_arena(ValueCell::Heavy(idx));
+            }
+            // Class objects (ORM models) stay as one Rc so __col_* set by class body is visible to metadata.classes and run_create_all
+            if map.contains_key("__class_name") {
+                let idx = heap.push(Value::Object(rc.clone()));
+                return store.allocate_arena(ValueCell::Heavy(idx));
+            }
+            let map: HashMap<String, ValueId> = map
                 .iter()
                 .map(|(k, v)| (k.clone(), store_value_arena(v.clone(), store, heap)))
                 .collect();

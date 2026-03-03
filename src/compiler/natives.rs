@@ -168,7 +168,7 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "primary_key" => Some(vec!["col".to_string()]),
         "Table" => Some(vec!["path".to_string()]),
         
-        // database module (from database import engine, ...)
+        // database module (from database_engine import engine, ...)
         "engine" => Some(vec![
             "url".to_string(),
             "echo".to_string(),

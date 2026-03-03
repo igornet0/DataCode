@@ -16,7 +16,7 @@ fn type_parts_any(tys: Option<&Vec<TypePart>>, pred: impl Fn(&str) -> bool) -> b
 }
 
 use crate::debug_println;
-use crate::parser::ast::{Arg, Expr, Stmt, Param, TypePart};
+use crate::parser::ast::{Arg, ClassField, Expr, Stmt, Param, TypePart};
 use crate::bytecode::{OpCode, Function};
 use crate::common::error::LangError;
 use crate::common::value::Value;
@@ -106,6 +106,46 @@ fn extract_default_factory_name(default_value: &Option<Expr>) -> Option<String> 
         }
     }
     None
+}
+
+/// Extract constant default from Field(default=<literal>) for instance field initialization.
+fn extract_field_default_value(default_value: &Option<Expr>) -> Option<Value> {
+    let expr = default_value.as_ref()?;
+    let args = match expr {
+        Expr::Call { name, args, .. } if name == "Field" => args,
+        _ => return None,
+    };
+    for arg in args {
+        if let Arg::Named { name: n, value } = arg {
+            if n == "default" {
+                if let Some(v) = crate::compiler::constant_fold::evaluate_constant_expr(value).ok().flatten() {
+                    return Some(v);
+                }
+                // Fallback: Variable("True")/Variable("False")
+                if let Expr::Variable { name: var_name, .. } = value {
+                    if var_name == "True" {
+                        return Some(Value::Bool(true));
+                    }
+                    if var_name == "False" {
+                        return Some(Value::Bool(false));
+                    }
+                }
+                return None;
+            }
+        }
+    }
+    None
+}
+
+/// True if the field must be present in env (no default, or Field(...) required marker).
+fn field_required_for_env(field: &ClassField) -> bool {
+    match &field.default_value {
+        None => true,
+        Some(Expr::Call { name, args, .. }) if name == "Field" && args.len() == 1 => {
+            matches!(&args[0], Arg::Positional(Expr::Ellipsis { .. }))
+        }
+        _ => false,
+    }
 }
 
 /// True if superclass_name is "Settings" or has Settings as an ancestor (e.g. ConfigApp -> Settings).
@@ -247,10 +287,12 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                 class_protected_var_names.iter().map(|n| Value::String(n.clone())).collect()
             ))
         ));
-        // ORM: column names in declaration order (for CREATE TABLE column order)
+        // ORM: column names in declaration order (for CREATE TABLE column order). Include all column fields, not only those with default.
         if extends_table {
-            let col_names: Vec<Value> = private_fields.iter().chain(protected_fields.iter()).chain(public_fields.iter())
-                .filter(|f| f.default_value.is_some())
+            let col_names: Vec<Value> = private_fields
+                .iter()
+                .chain(protected_fields.iter())
+                .chain(public_fields.iter())
                 .map(|f| Value::String(f.name.clone()))
                 .collect();
             class_metadata.insert("__col_names".to_string(), Value::Array(Rc::new(RefCell::new(col_names))));
@@ -284,6 +326,19 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                     obj.insert("field".to_string(), Value::String(f.name.clone()));
                     obj.insert("env_prefix".to_string(), Value::String(env_prefix));
                     obj.insert("class_name".to_string(), Value::String(factory_name.clone()));
+                    if let Some(private_names) = ctx.class_private_fields.get(&factory_name) {
+                        obj.insert(
+                            "private_fields".to_string(),
+                            Value::Array(Rc::new(RefCell::new(
+                                private_names.iter().map(|s| Value::String(s.clone())).collect(),
+                            ))),
+                        );
+                        let defining: HashMap<String, Value> = private_names
+                            .iter()
+                            .map(|s| (s.clone(), Value::String(factory_name.clone())))
+                            .collect();
+                        obj.insert("private_field_defining_class".to_string(), Value::Object(Rc::new(RefCell::new(defining))));
+                    }
                     Some(Value::Object(Rc::new(RefCell::new(obj))))
                 })
                 .collect();
@@ -534,9 +589,9 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                 let ep = extract_env_prefix_from_class_vars(public_variables, private_variables);
                 ctx.class_settings_env_prefix.insert(name.clone(), ep.clone().unwrap_or_else(String::new));
                 // Store default required_keys for call-site expansion: Config(path) -> Call(3) with (path, required_keys, model_config).
-                let required_env_keys: Vec<String> = public_fields
-                    .iter()
-                    .filter(|f| f.default_value.is_none())
+                // Include private/protected/public fields so required env keys are checked for all (e.g. Security with private code: str = Field(...)).
+                let required_env_keys: Vec<String> = all_fields_iter()
+                    .filter(|f| field_required_for_env(f))
                     .map(|f| {
                         if ep.is_some() {
                             f.name.to_lowercase()
@@ -555,7 +610,7 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
             }
             let constructor_name = format!("{}::new_1", name);
             let (param_count, param_names) = if is_settings_chain {
-                (3, vec!["path".to_string(), "required_keys".to_string(), "model_config".to_string()])
+                (4, vec!["path".to_string(), "required_keys".to_string(), "model_config".to_string(), "parent_field_name".to_string()])
             } else {
                 (1, vec!["path".to_string()])
             };
@@ -574,7 +629,7 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
             let saved_local_count = ctx.scope.local_count;
             ctx.current_function = Some(function_index);
             ctx.scope.begin_scope();
-            for p in &["path", "required_keys", "model_config"][..param_count] {
+            for p in &["path", "required_keys", "model_config", "parent_field_name"][..param_count] {
                 ctx.scope.declare_local(p);
             }
             let this_slot = ctx.scope.declare_local("this");
@@ -592,6 +647,19 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                         obj.insert("field".to_string(), Value::String(f.name.clone()));
                         obj.insert("env_prefix".to_string(), Value::String(env_prefix));
                         obj.insert("class_name".to_string(), Value::String(factory_name.clone()));
+                        if let Some(private_names) = ctx.class_private_fields.get(&factory_name) {
+                            obj.insert(
+                                "private_fields".to_string(),
+                                Value::Array(Rc::new(RefCell::new(
+                                    private_names.iter().map(|s| Value::String(s.clone())).collect(),
+                                ))),
+                            );
+                            let defining: HashMap<String, Value> = private_names
+                                .iter()
+                                .map(|s| (s.clone(), Value::String(factory_name.clone())))
+                                .collect();
+                            obj.insert("private_field_defining_class".to_string(), Value::Object(Rc::new(RefCell::new(defining))));
+                        }
                         Some(Value::Object(Rc::new(RefCell::new(obj))))
                     })
                     .collect();
@@ -625,8 +693,9 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                 if let Some(idx) = nested_specs_const_index {
                     ctx.chunk.write_with_line(OpCode::Constant(idx), *line);
                 }
+                ctx.chunk.write_with_line(OpCode::LoadLocal(3), *line);
                 ctx.chunk.write_with_line(OpCode::LoadGlobal(supercall_global_index), *line);
-                ctx.chunk.write_with_line(OpCode::Call(if nested_specs_const_index.is_some() { 4 } else { 3 }), *line);
+                ctx.chunk.write_with_line(OpCode::Call(if nested_specs_const_index.is_some() { 5 } else { 4 }), *line);
             } else if is_settings_chain {
                 // Same third-arg logic as super(Settings): use LoadLocal(2) when non-Null, else __constructing_class__["model_config"] (so module call-site expansion and single-file default_factory both work).
                 ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
@@ -647,14 +716,15 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                 ctx.labels.mark_label(use_arg_label_sc, ctx.chunk.code.len());
                 ctx.chunk.write_with_line(OpCode::LoadLocal(2), *line);
                 ctx.labels.mark_label(after_label_sc, ctx.chunk.code.len());
-                let has_fourth = superclass_name == "Settings" && nested_specs_const_index.is_some();
-                if has_fourth {
+                let has_nested_specs = superclass_name == "Settings" && nested_specs_const_index.is_some();
+                if has_nested_specs {
                     if let Some(idx) = nested_specs_const_index {
                         ctx.chunk.write_with_line(OpCode::Constant(idx), *line);
                     }
                 }
+                ctx.chunk.write_with_line(OpCode::LoadLocal(3), *line);
                 ctx.chunk.write_with_line(OpCode::LoadGlobal(supercall_global_index), *line);
-                ctx.chunk.write_with_line(OpCode::Call(if has_fourth { 4 } else { 3 }), *line);
+                ctx.chunk.write_with_line(OpCode::Call(if has_nested_specs { 5 } else { 4 }), *line);
             } else {
                 // VM Call pops callee first (top), then args: stack must be [arg, callee]
                 ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
@@ -719,9 +789,10 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                             ctx.chunk.write_with_line(OpCode::Constant(req_const), *line);
                             let null_const = ctx.chunk.add_constant(Value::Null);
                             ctx.chunk.write_with_line(OpCode::Constant(null_const), *line);
+                            ctx.chunk.write_with_line(OpCode::Constant(field_name_const), *line);
                             ctx.chunk.global_names.insert(ctor_slot, factory_ctor_name.clone());
                             ctx.chunk.write_with_line(OpCode::LoadGlobal(ctor_slot), *line);
-                            ctx.chunk.write_with_line(OpCode::Call(3), *line);
+                            ctx.chunk.write_with_line(OpCode::Call(4), *line);
                         } else {
                             ctx.chunk.write_with_line(OpCode::LoadGlobal(factory_global_index), *line);
                             ctx.chunk.write_with_line(OpCode::Call(1), *line);
@@ -732,6 +803,29 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                         ctx.labels.mark_label(skip_label, ctx.chunk.code.len());
                     }
                 }
+            }
+            // Settings subclasses: init private/protected/public fields that have Field(default=<literal>) so s.debug etc. get the value.
+            if is_settings_chain {
+                for field in private_fields.iter().chain(protected_fields.iter()).chain(public_fields.iter()) {
+                    if let Some(ref _default_expr) = field.default_value {
+                        if let Some(constant_value) = extract_field_default_value(&field.default_value) {
+                            let const_index = ctx.chunk.add_constant(constant_value);
+                            ctx.chunk.write_with_line(OpCode::Constant(const_index), *line);
+                            let field_name_index = ctx.chunk.add_constant(Value::String(field.name.clone()));
+                            ctx.chunk.write_with_line(OpCode::Constant(field_name_index), *line);
+                            ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), *line);
+                            ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                            ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
+                        }
+                    }
+                }
+            }
+            // Settings subclasses: set __private_fields and __private_field_defining_class so VM can enforce private field access (e.g. Security with private code).
+            if is_settings_chain && !private_fields.is_empty() {
+                let private_field_names: Vec<String> = private_fields.iter().map(|f| f.name.clone()).collect();
+                let defining_class_map: HashMap<String, String> =
+                    private_fields.iter().map(|f| (f.name.clone(), name.clone())).collect();
+                emit_instance_private_metadata(ctx, *line, this_slot, name, &private_field_names, &defining_class_map);
             }
             // Re-insert class name after default_factory loop. Keep MODEL_CONFIG_CLASS_LOAD_INDEX as "__constructing_class__" so constructor loads from executor-set slot (same slot for all Settings subclasses).
             ctx.chunk.global_names.insert(class_global_index, name.clone());
@@ -782,9 +876,8 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
             if is_settings_chain {
                 // ConfigApp::new_0() => ConfigApp::new_1("", required_keys, model_config)
                 let env_prefix_0 = extract_env_prefix_from_class_vars(public_variables, private_variables);
-                let required_env_keys_0: Vec<String> = public_fields
-                    .iter()
-                    .filter(|f| f.default_value.is_none())
+                let required_env_keys_0: Vec<String> = all_fields_iter()
+                    .filter(|f| field_required_for_env(f))
                     .map(|f| {
                         if env_prefix_0.is_some() {
                             f.name.to_lowercase()
@@ -808,9 +901,11 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                 ctx.chunk.write_with_line(OpCode::LoadGlobal(MODEL_CONFIG_CLASS_LOAD_INDEX), *line);
                 ctx.chunk.write_with_line(OpCode::Constant(model_config_name_const_0), *line);
                 ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                let null_const_0 = ctx.chunk.add_constant(Value::Null);
+                ctx.chunk.write_with_line(OpCode::Constant(null_const_0), *line);
                 ctx.chunk.global_names.insert(global_index, constructor_name.clone());
                 ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
-                ctx.chunk.write_with_line(OpCode::Call(3), *line);
+                ctx.chunk.write_with_line(OpCode::Call(4), *line);
             } else {
                 let parent_new_0_name = format!("{}::new_0", superclass_name);
                 let parent_new_0_idx = if let Some(&idx) = ctx.scope.globals.get(&parent_new_0_name) {
@@ -1144,7 +1239,16 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                             ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
                         }
                         Ok(None) => {
-                            // Выражение не константное - пропускаем, пусть инициализируется в теле конструктора
+                            // Field(default=<literal>) — извлекаем константу и инициализируем поле
+                            if let Some(constant_value) = extract_field_default_value(&field.default_value) {
+                                let const_index = ctx.chunk.add_constant(constant_value);
+                                ctx.chunk.write_with_line(OpCode::Constant(const_index), *line);
+                                let field_name_index = ctx.chunk.add_constant(Value::String(field.name.clone()));
+                                ctx.chunk.write_with_line(OpCode::Constant(field_name_index), *line);
+                                ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), *line);
+                                ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                                ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
+                            }
                         }
                         Err(e) => {
                             return Err(e);
@@ -1165,7 +1269,17 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                             ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
                             ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
                         }
-                        Ok(None) => {}
+                        Ok(None) => {
+                            if let Some(constant_value) = extract_field_default_value(&field.default_value) {
+                                let const_index = ctx.chunk.add_constant(constant_value);
+                                ctx.chunk.write_with_line(OpCode::Constant(const_index), *line);
+                                let field_name_index = ctx.chunk.add_constant(Value::String(field.name.clone()));
+                                ctx.chunk.write_with_line(OpCode::Constant(field_name_index), *line);
+                                ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), *line);
+                                ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                                ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
+                            }
+                        }
                         Err(e) => return Err(e),
                     }
                 }
@@ -1190,7 +1304,16 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                             ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
                         }
                         Ok(None) => {
-                            // Выражение не константное - пропускаем, пусть инициализируется в теле конструктора
+                            // Field(default=<literal>) — извлекаем константу и инициализируем поле
+                            if let Some(constant_value) = extract_field_default_value(&field.default_value) {
+                                let const_index = ctx.chunk.add_constant(constant_value);
+                                ctx.chunk.write_with_line(OpCode::Constant(const_index), *line);
+                                let field_name_index = ctx.chunk.add_constant(Value::String(field.name.clone()));
+                                ctx.chunk.write_with_line(OpCode::Constant(field_name_index), *line);
+                                ctx.chunk.write_with_line(OpCode::LoadLocal(this_slot), *line);
+                                ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                                ctx.chunk.write_with_line(OpCode::StoreLocal(this_slot), *line);
+                            }
                         }
                         Err(e) => {
                             return Err(e);
@@ -1364,6 +1487,10 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                 }
             }
         }
+        // Methods on class object so GetArrayElement fallback (instance missing method) can resolve from class.
+        for (method_name, &fn_idx) in &method_indices {
+            class_metadata.insert(method_name.clone(), Value::Function(fn_idx));
+        }
         
         // Сохраняем класс-объект в глобальной области видимости (слот зарезервирован в начале как class_global_index)
         let class_value = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(class_metadata)));
@@ -1372,6 +1499,21 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
         
         ctx.chunk.global_names.insert(class_global_index, name.clone());
         ctx.chunk.write_with_line(OpCode::StoreGlobal(class_global_index), *line);
+        
+        // Для extends_table: добавляем Column-дескрипторы ДО переменных класса (metadata), чтобы при
+        // metadata = MetaData() класс уже имел __col_* и run_create_all мог собрать col_specs.
+        if extends_table {
+            for field in private_fields.iter().chain(protected_fields.iter()).chain(public_fields.iter()) {
+                if let Some(ref default_expr) = field.default_value {
+                    expr::compile_expr(ctx, default_expr)?;
+                    let col_key = format!("__col_{}", field.name);
+                    let name_const = ctx.chunk.add_constant(Value::String(col_key));
+                    ctx.chunk.write_with_line(OpCode::Constant(name_const), *line);
+                    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                    ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                }
+            }
+        }
         
         // Вычисляем и записываем переменные уровня класса в объект класса (стек: value, name, class -> SetArrayElement)
         for var in private_variables.iter().chain(protected_variables.iter()).chain(public_variables.iter()) {
@@ -1411,21 +1553,6 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
                     ctx.chunk.global_names.insert(ctor_global_index, global_name.clone());
                     ctx.chunk.write_with_line(OpCode::LoadGlobal(ctor_global_index), *line);
                     ctx.chunk.write_with_line(OpCode::Constant(key_const), *line);
-                    ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
-                    ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
-                }
-            }
-        }
-        
-        // Для extends_table: добавляем Column-дескрипторы в объект класса под ключом __col_<name>
-        // (обход проверки приватности; run_create_all ищет __col_* для DDL)
-        if extends_table {
-            for field in private_fields.iter().chain(protected_fields.iter()).chain(public_fields.iter()) {
-                if let Some(ref default_expr) = field.default_value {
-                    expr::compile_expr(ctx, default_expr)?;
-                    let col_key = format!("__col_{}", field.name);
-                    let name_const = ctx.chunk.add_constant(Value::String(col_key));
-                    ctx.chunk.write_with_line(OpCode::Constant(name_const), *line);
                     ctx.chunk.write_with_line(OpCode::LoadGlobal(class_global_index), *line);
                     ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
                 }

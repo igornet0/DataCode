@@ -14,12 +14,12 @@ print("  record 2:", id2)
 print("  record 3:", id3)
 
 # Store in array (e.g. list of ids for database)
-let ids = array(uuid.to_string(id1), uuid.to_string(id2), uuid.to_string(id3))
+let ids = array(str(id1), str(id2), str(id3))
 print("Array of ids (strings): " + ids)
 
 # "Record" object with id field
 let record = {
-    "id": uuid.to_string(uuid.v7()),
+    "id": str(uuid.v7()),
     "name": "Sample record",
     "created_at": uuid.timestamp(uuid.v7())
 }
@@ -27,5 +27,5 @@ print("Record with id: " + record["id"])
 print("Created at (timestamp): " + record["created_at"])
 
 # Deterministic id by name (e.g. for entity by URL)
-let entity_id = uuid.to_string(uuid.v5(uuid.URL, "https://api.example.com/users/42"))
+let entity_id = str(uuid.v5(uuid.URL, "https://api.example.com/users/42"))
 print("Deterministic id for URL: " + entity_id)

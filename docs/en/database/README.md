@@ -1,11 +1,11 @@
-# Database module
+# Database engine module
 
-The built-in `database` module provides engine and cluster types for connecting to databases (SQLite in MVP) and running SQL.
+The built-in `database_engine` module provides engine and cluster types for connecting to databases (SQLite in MVP) and running SQL.
 
 ## Import
 
 ```datacode
-from database import engine, DatabaseCluster, MetaData, Column, select
+from database_engine import engine, DatabaseCluster, MetaData, Column, select
 ```
 
 ## Engine
@@ -41,7 +41,7 @@ A cluster holds named database connections so you can add several engines and us
 ### Example
 
 ```datacode
-from database import engine, DatabaseCluster
+from database_engine import engine, DatabaseCluster
 
 cluster = DatabaseCluster()
 cluster.add("main", engine("sqlite:///main.db"))

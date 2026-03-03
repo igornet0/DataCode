@@ -41,14 +41,49 @@ fn coerce_value(s: &str) -> Value {
     Value::String(s.to_string())
 }
 
-/// Resolve path: if relative, resolve against base_path from file_import; else use as-is.
+/// Resolve path: if relative, resolve against base_path from file_import or current VM or cwd; else use as-is.
+/// For "settings/*" paths (project-level env files), prefer project_root so nested modules (e.g. core.config)
+/// find settings/ at project root, not relative to their own dir (core/config/settings/).
 fn resolve_env_path(path_str: &str) -> std::path::PathBuf {
+    let path_str = path_str.trim();
+    let path_str = path_str.strip_prefix("./").unwrap_or(path_str);
     let path = Path::new(path_str);
     if path.is_absolute() {
         return path.to_path_buf();
     }
+    // Project-level settings: try project_root first so nested modules (core.config) find settings/
+    if path_str.starts_with("settings") {
+        if let Some(proj) = crate::vm::run_context::RunContext::get_project_root() {
+            let candidate = proj.join(path);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+        if let Some(proj) = crate::vm::vm::VM_CALL_CONTEXT.with(|ctx| {
+            (*ctx.borrow()).and_then(|ptr| unsafe { (*ptr).get_project_root().clone() })
+        }) {
+            let candidate = proj.join(path);
+            if candidate.exists() {
+                return candidate;
+            }
+        }
+    }
     if let Some(base) = crate::vm::file_import::get_base_path() {
         return base.join(path);
+    }
+    if let Some(base) = crate::vm::vm::VM_CALL_CONTEXT.with(|ctx| {
+        (*ctx.borrow()).and_then(|ptr| unsafe { (*ptr).get_base_path().clone() })
+    }) {
+        return base.join(path);
+    }
+    if let Some(base) = crate::vm::vm::VM_CALL_CONTEXT.with(|ctx| {
+        (*ctx.borrow()).and_then(|ptr| unsafe { (*ptr).get_project_root().clone() })
+    }) {
+        return base.join(path);
+    }
+    // Last resort: relative to cwd (e.g. test sets cwd to project base so settings/dev.env is found).
+    if let Ok(cwd) = std::env::current_dir() {
+        return cwd.join(path);
     }
     path.to_path_buf()
 }
@@ -88,6 +123,12 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Null;
     }
+    // Optional last arg: parent_field_name (string) for nested Settings; used in error message as prefix (e.g. "secret__code").
+    let parent_field_name: Option<String> = if args.len() >= 4 {
+        args.last().and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+    } else {
+        None
+    };
     let path_str = match &args[0] {
         Value::String(s) => s.clone(),
         Value::Path(p) => p.to_string_lossy().to_string(),
@@ -139,6 +180,54 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
 
     // When path and model_config.env_file are both empty we do not search for files; return empty env.
     // For env selection, Settings subclasses must set env_file in model_config.
+    // If required_keys are passed, still validate: empty map => all required keys missing.
+    // Last-resort: when effective_path is empty but required_keys given, infer from argv if available
+    // (argv[0] = "prod" => prod.env, "dev" => dev.env) to avoid loading wrong env. Otherwise try dev.env.
+    let mut effective_path = effective_path;
+    if effective_path.is_empty() && args.len() >= 2 {
+        let required_keys = match &args[1] {
+            Value::Array(arr_rc) => {
+                let arr = arr_rc.borrow();
+                arr.iter().filter_map(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).collect::<Vec<_>>()
+            }
+            _ => vec![],
+        };
+        if !required_keys.is_empty() {
+            // Prefer model_config.env_file when present (handles Path which env_file_from_config may miss).
+            let env_file_from_model: Option<String> = if args.len() >= 3 {
+                if let Value::Object(config_rc) = &args[2] {
+                    config_rc.borrow().get("env_file").and_then(|v| match v {
+                        Value::String(s) if !s.is_empty() => Some(s.clone()),
+                        Value::Path(p) => Some(p.to_string_lossy().to_string()),
+                        _ => None,
+                    })
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+            effective_path = env_file_from_model.unwrap_or_else(|| {
+                // Fallback: argv[0] when available so ProdSettings() with args=["prod"] loads prod.env
+                crate::vm::run_context::RunContext::get_argv_value_id()
+                    .and_then(|id| {
+                        crate::vm::vm::with_current_stores(|store, heap| {
+                            let v = crate::vm::store_convert::load_value(id, store, heap);
+                            if let Value::Array(arr_rc) = &v {
+                                arr_rc.borrow().first().and_then(|e| {
+                                    if let Value::String(s) = e { Some(s.clone()) } else { None }
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                    })
+                    .as_deref()
+                    .map(|e| format!("settings/{}.env", e))
+                    .unwrap_or_else(|| "settings/dev.env".to_string())
+            });
+        }
+    }
     if effective_path.is_empty() {
         if crate::common::debug::verbose_constructor_debug() && args.len() >= 3 {
             if let Value::Object(config_rc) = &args[2] {
@@ -146,6 +235,33 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
                 if !has_env_file {
                     eprintln!("[settings_env load_env] model_config has no env_file; path_str is empty; returning empty env");
                 }
+            }
+        }
+        if args.len() >= 2 {
+            let required_keys = match &args[1] {
+                Value::Array(arr_rc) => {
+                    let arr = arr_rc.borrow();
+                    let mut keys = Vec::new();
+                    for v in arr.iter() {
+                        if let Value::String(s) = v {
+                            keys.push(s.clone());
+                        }
+                    }
+                    keys
+                }
+                _ => vec![],
+            };
+            if !required_keys.is_empty() {
+                let first_key = &required_keys[0];
+                let display_key = parent_field_name.as_ref()
+                    .map(|p| format!("{}__{}", p.to_lowercase(), first_key))
+                    .unwrap_or_else(|| if env_prefix.is_empty() {
+                        first_key.clone()
+                    } else {
+                        format!("{}{}", env_prefix.to_lowercase(), first_key)
+                    });
+                crate::websocket::set_native_error(format!("Missing required env variable: {}", display_key));
+                return Value::Null;
             }
         }
         return Value::Object(Rc::new(RefCell::new(HashMap::new())));
@@ -229,7 +345,14 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
         }
         for key in &required_keys {
             if !map.contains_key(key) {
-                crate::websocket::set_native_error(format!("Missing required env variable: {}", key));
+                let display_key = parent_field_name.as_ref()
+                    .map(|p| format!("{}__{}", p.to_lowercase(), key))
+                    .unwrap_or_else(|| if prefix_lower.is_empty() {
+                        key.clone()
+                    } else {
+                        format!("{}{}", prefix_lower, key)
+                    });
+                crate::websocket::set_native_error(format!("Missing required env variable: {}", display_key));
                 return Value::Null;
             }
         }
@@ -297,6 +420,13 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
                     let nested_value = if nested_map.len() == 1 {
                         Value::Null
                     } else {
+                        // So VM can enforce private field access, copy private metadata from spec when present.
+                        if let Some(priv_f) = spec.get("private_fields") {
+                            nested_map.insert("__private_fields".to_string(), priv_f.clone());
+                        }
+                        if let Some(priv_def) = spec.get("private_field_defining_class") {
+                            nested_map.insert("__private_field_defining_class".to_string(), priv_def.clone());
+                        }
                         Value::Object(Rc::new(RefCell::new(nested_map)))
                     };
                     map.insert(field_name.to_string(), nested_value);

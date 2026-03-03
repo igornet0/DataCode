@@ -36,6 +36,26 @@ impl Drop for MlContextGuard {
     }
 }
 
+/// Restores VM's current_argv_value_id on drop so nested run() (e.g. from natives) does not leave it cleared.
+struct RestoreArgvIdGuard(*mut Vm, Option<ValueId>);
+impl Drop for RestoreArgvIdGuard {
+    fn drop(&mut self) {
+        unsafe {
+            (*self.0).set_current_argv_value_id(self.1);
+        }
+    }
+}
+
+/// Clears RunContext::SCRIPT_ARGV_VALUE_ID on drop only if this run set it (had argv_patch), so nested module run() does not clear outer run's id.
+struct ClearScriptArgvGuard(bool);
+impl Drop for ClearScriptArgvGuard {
+    fn drop(&mut self) {
+        if self.0 {
+            crate::vm::run_context::RunContext::set_script_argv_value_id(None);
+        }
+    }
+}
+
 /// Restores VM's Plot context from thread-local on drop (any exit path from run()).
 struct PlotContextGuard(*mut Option<crate::plot::PlotContext>);
 impl Drop for PlotContextGuard {
@@ -95,6 +115,8 @@ pub struct Vm {
     abi_natives: Vec<NativeAbiFn>,
     loaded_native_libraries: Vec<Library>,
     base_path: Option<PathBuf>,
+    /// Root directory of the project (entry script dir). Never overwritten; used for absolute imports.
+    project_root: Option<PathBuf>,
     ml_context: Option<crate::ml::MlContext>,
     plot_context: Option<crate::plot::PlotContext>,
     value_store: ValueStore,
@@ -123,6 +145,11 @@ pub struct Vm {
     /// When set (e.g. from run_with_vm_internal_with_args), update_chunk_indices_from_names will always map "argv" to this slot,
     /// so ImportFrom re-patch does not remap LoadGlobal(argv) to load_settings (slot 79) after merge.
     argv_slot_index: Option<usize>,
+    /// Indices that meant "argv" in the main chunk before patching; LoadGlobal(any of these) should load script argv.
+    argv_old_indices: Option<Vec<usize>>,
+    /// During run(), when argv_patch is set, this holds the canonical argv value id so LoadGlobal(argv_slot) always loads it
+    /// even if the slot was overwritten by ImportFrom or merge.
+    current_argv_value_id: Option<ValueId>,
     /// Registry of merged modules: module_id = index. Resolves ModuleFunction { module_id, local_index } -> functions[offset + local_index].
     module_registry: RefCell<Vec<ModuleInfo>>,
 }
@@ -173,6 +200,7 @@ impl Vm {
             abi_natives: Vec::new(),
             loaded_native_libraries: Vec::new(),
             base_path: None,
+            project_root: None,
             ml_context: Some(crate::ml::MlContext::new()),
             plot_context: Some(crate::plot::PlotContext::new()),
             value_store: ValueStore::new(),
@@ -188,6 +216,8 @@ impl Vm {
             module_deps: RefCell::new(HashMap::new()),
             modules: RefCell::new(HashMap::new()),
             argv_slot_index: None,
+            argv_old_indices: None,
+            current_argv_value_id: None,
             module_registry: RefCell::new(Vec::new()),
         };
         vm.register_natives();
@@ -204,6 +234,16 @@ impl Vm {
         self.base_path.clone()
     }
 
+    /// Set project root for absolute imports. Set once at entry; never overwritten when loading nested modules.
+    pub fn set_project_root(&mut self, path: Option<PathBuf>) {
+        self.project_root = path;
+    }
+
+    /// Project root for absolute imports (e.g. from core.config). Used by module resolver.
+    pub fn get_project_root(&self) -> Option<PathBuf> {
+        self.project_root.clone()
+    }
+
     /// Set the slot index used for argv so update_chunk_indices_from_names (e.g. after ImportFrom) always maps "argv" to this slot.
     pub fn set_argv_slot_index(&mut self, slot: Option<usize>) {
         self.argv_slot_index = slot;
@@ -212,6 +252,26 @@ impl Vm {
     /// Get the argv slot index if set.
     pub fn get_argv_slot_index(&self) -> Option<usize> {
         self.argv_slot_index
+    }
+
+    /// Set the bytecode indices that meant "argv" in the main chunk (so LoadGlobal(any) is treated as argv).
+    pub(crate) fn set_argv_old_indices(&mut self, indices: Option<Vec<usize>>) {
+        self.argv_old_indices = indices;
+    }
+
+    /// Get the bytecode indices that mean "argv" for this run.
+    pub(crate) fn get_argv_old_indices(&self) -> Option<&[usize]> {
+        self.argv_old_indices.as_deref()
+    }
+
+    /// Set the canonical argv value id for this run so LoadGlobal(argv_slot) always loads it.
+    pub(crate) fn set_current_argv_value_id(&mut self, id: Option<ValueId>) {
+        self.current_argv_value_id = id;
+    }
+
+    /// Get the current run's argv value id if set.
+    pub(crate) fn get_current_argv_value_id(&self) -> Option<ValueId> {
+        self.current_argv_value_id
     }
 
     /// Mutable borrow of the runtime module cache (canonical path -> CachedModule). Used by file_import.
@@ -392,6 +452,10 @@ impl Vm {
             .collect();
         entries.sort_by_key(|(idx, _)| *idx);
         for (idx, name) in entries {
+            let existing_name = self.global_names.get(&idx).map(|s| s.as_str());
+            if std::env::var("DATACODE_DEBUG").is_ok() {
+                eprintln!("ENSURE idx={} name={} existing_name={:?}", idx, name, existing_name);
+            }
             if idx >= self.globals.len() {
                 self.globals.resize(idx + 1, global_slot::default_global_slot());
             }
@@ -451,8 +515,22 @@ impl Vm {
         }
     }
 
-    /// Обновляет индексы глобальных переменных в chunk на основе реальных индексов в VM
+    /// Обновляет индексы глобальных переменных в chunk по VM.
+    /// Перед патчем добавляет в VM.global_names все имена из chunk, которых там ещё нет,
+    /// чтобы не получать "no match" и не оставлять LoadGlobal/StoreGlobal без ремаппинга.
     pub fn update_chunk_indices(&mut self, chunk: &mut crate::bytecode::Chunk) {
+        const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
+        for (idx, name) in &chunk.global_names.clone() {
+            if *idx == UNDEFINED_GLOBAL_SENTINEL || name.as_str() == "argv" {
+                continue;
+            }
+            if !self.global_names.values().any(|n| n == name) {
+                let new_idx = self.globals.len();
+                self.globals.push(global_slot::default_global_slot());
+                self.global_names.insert(new_idx, name.clone());
+                debug_println!("[DEBUG update_chunk_indices] Добавлен слот для '{}' в globals[{}] (отсутствовал в caller)", name, new_idx);
+            }
+        }
         Self::update_chunk_indices_from_names(
             chunk,
             &self.global_names,
@@ -460,6 +538,7 @@ impl Vm {
             Some(&mut self.value_store),
             Some(&self.heavy_store),
             self.argv_slot_index,
+            true, // resolve sentinel (normal pre-run patch)
         );
     }
 
@@ -470,6 +549,8 @@ impl Vm {
     /// globals_for_verify: Option<&mut [GlobalSlot]>; при проверке слот материализуется через resolve_to_value_id + load_value (с кэшем).
     /// store/heap: когда None, проверка по слотам не выполняется (для вызовов без доступа к store/heap).
     /// argv_slot_index: когда Some(slot), имя "argv" всегда мапится на этот слот (после ImportFrom слот 79 может стать load_settings).
+    /// resolve_undefined_sentinel: когда false (main chunk после ImportFrom), не резолвим UNDEFINED_GLOBAL_SENTINEL,
+    ///   чтобы LoadGlobal(MAX) для неимпортированных имён (напр. "settings") оставался MAX и выдавал NameError.
     pub fn update_chunk_indices_from_names(
         chunk: &mut crate::bytecode::Chunk,
         global_names: &std::collections::BTreeMap<usize, String>,
@@ -477,7 +558,18 @@ impl Vm {
         mut store: Option<&mut ValueStore>,
         heap: Option<&HeavyStore>,
         argv_slot_index: Option<usize>,
+        resolve_undefined_sentinel: bool,
     ) {
+        if std::env::var("DATACODE_DEBUG").is_ok() {
+            eprintln!("[update_chunk_indices_from_names] start mapping globals...");
+            for (old_idx, name) in &chunk.global_names {
+                let exists = global_names.values().any(|n| n == name);
+                eprintln!(
+                    "  mapping old_idx={} name={} exists_in_caller_global_names={}",
+                    old_idx, name, exists
+                );
+            }
+        }
         // Phase 1: Build old_idx → real_idx mapping (no bytecode changes).
         // Resolve real_idx by name deterministically (min index if multiple) for stability.
         // Iterate in deterministic order (by name then index) to avoid HashMap iteration order affecting outcome.
@@ -551,6 +643,7 @@ impl Vm {
                 if *old_idx != r_final {
                     // Avoid collision: if real_idx is already used in chunk for a different name that we won't remap
                     // (no match in global_names or match only at real_idx), don't overwrite it.
+                    // Exception: always map "argv" to argv_slot_index so LoadGlobal(argv) after ImportFrom loads script args.
                     let would_overwrite = chunk.global_names.get(&r_final).map(|existing| {
                         existing != name
                             && global_names
@@ -559,7 +652,8 @@ impl Vm {
                                 .map(|(idx, _)| *idx)
                                 .all(|idx| idx == r_final)
                     }).unwrap_or(false);
-                    if !would_overwrite {
+                    let force_argv = name == "argv" && argv_slot_index == Some(r_final);
+                    if !would_overwrite || force_argv {
                         old_to_real.insert(*old_idx, r_final);
                         debug_println!("[DEBUG update_chunk_indices] Маппинг '{}': {} -> {} (argv forced={})", name, old_idx, r_final, name == "argv" && argv_slot_index.is_some());
                     } else {
@@ -582,17 +676,21 @@ impl Vm {
                 }
             }
         }
-        // Resolve compiler's UNDEFINED_GLOBAL_SENTINEL (usize::MAX) by name so merged functions see caller globals
+        // Resolve compiler's UNDEFINED_GLOBAL_SENTINEL (usize::MAX) by name so merged functions see caller globals.
+        // When resolve_undefined_sentinel is false (main chunk after ImportFrom), do NOT patch: keeps LoadGlobal(MAX)
+        // so runtime reports "Undefined variable" for names like "settings" that were never imported.
         const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
-        if let Some(name) = chunk.global_names.get(&UNDEFINED_GLOBAL_SENTINEL) {
-            let matching: Vec<usize> = global_names
-                .iter()
-                .filter(|(_, n)| *n == name)
-                .map(|(idx, _)| *idx)
-                .collect();
-            if let Some(&real_idx) = matching.iter().min() {
-                old_to_real.insert(UNDEFINED_GLOBAL_SENTINEL, real_idx);
-                debug_println!("[DEBUG update_chunk_indices] Маппинг sentinel '{}': MAX -> {}", name, real_idx);
+        if resolve_undefined_sentinel {
+            if let Some(name) = chunk.global_names.get(&UNDEFINED_GLOBAL_SENTINEL) {
+                let matching: Vec<usize> = global_names
+                    .iter()
+                    .filter(|(_, n)| *n == name)
+                    .map(|(idx, _)| *idx)
+                    .collect();
+                if let Some(&real_idx) = matching.iter().min() {
+                    old_to_real.insert(UNDEFINED_GLOBAL_SENTINEL, real_idx);
+                    debug_println!("[DEBUG update_chunk_indices] Маппинг sentinel '{}': MAX -> {}", name, real_idx);
+                }
             }
         }
         // Always bind model_config sentinel to the class by name so Settings subclass constructors load the correct class for GetArrayElement(class, "model_config").
@@ -703,6 +801,15 @@ impl Vm {
                 }
             }
             chunk.global_names.insert(real_idx, name);
+        }
+        if std::env::var("DATACODE_DEBUG").is_ok() {
+            eprintln!("[update_chunk_indices_from_names] AFTER mapping caller_global_names keys:");
+            for (idx, name) in global_names.iter() {
+                eprintln!("  idx={} name={}", idx, name);
+            }
+            if !global_names.values().any(|n| n == "create_all") {
+                eprintln!("[WARNING] create_all STILL MISSING AFTER update_chunk_indices_from_names");
+            }
         }
     }
 
@@ -1320,7 +1427,7 @@ impl Vm {
         modules::register_module("plot", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         modules::register_module("settings_env", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         modules::register_module("uuid", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
-        modules::register_module("database", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
+        modules::register_module("database_engine", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         Ok(())
     }
 
@@ -1330,15 +1437,38 @@ impl Vm {
     /// in the clone is replaced with LoadGlobal(argv_slot_index). If argv_value_id is Some(id), that value is written
     /// to globals[argv_slot_index] immediately before the execution loop so the argv slot is never overwritten by earlier code.
     pub fn run(&mut self, chunk: &Chunk, argv_patch: Option<(usize, &[usize], Option<ValueId>)>) -> Result<Value, LangError> {
-        // Set RunContext (base_path, executing_lib, dpm_package_paths, smb_manager) so file_import and file_ops use one source
+        let saved_argv_id = self.get_current_argv_value_id();
+        let _argv_guard = RestoreArgvIdGuard(self as *mut Vm, saved_argv_id);
+        // Set canonical argv id immediately so it is available for the whole run (including after ImportFrom).
+        let argv_value_id_to_use = argv_patch.and_then(|(_, _, id)| id);
+        self.set_current_argv_value_id(argv_value_id_to_use);
+        self.set_argv_old_indices(argv_patch.map(|(_, o, _)| o.to_vec()));
+        // Set RunContext (base_path, project_root, executing_lib, dpm_package_paths, smb_manager) so file_import and file_ops use one source
         let run_ctx = crate::vm::run_context::RunContext {
             base_path: self.base_path.clone(),
+            project_root: self.project_root.clone(),
             executing_lib: false,
             dpm_package_paths: crate::vm::file_import::get_dpm_package_paths(),
             smb_manager: crate::vm::file_ops::get_smb_manager(),
+            argv_value_id: argv_value_id_to_use,
         };
         crate::vm::run_context::RunContext::set_current(run_ctx);
+        // Only set when we have argv (do not overwrite with None in nested module run()).
+        if let Some(id) = argv_value_id_to_use {
+            crate::vm::run_context::RunContext::set_script_argv_value_id(Some(id));
+            // Only set restored id when argv is non-empty so __lib__.dc run (argv=[]) does not overwrite outer script's id.
+            let v = load_value(id, &self.value_store, &self.heavy_store);
+            let non_empty_argv = matches!(&v, Value::Array(a) if !a.borrow().is_empty());
+            crate::vm::run_context::RunContext::set_restored_script_argv_after_import(
+                if non_empty_argv { Some(id) } else { None },
+            );
+        } else {
+            // Do NOT overwrite with None: nested module run (no argv); outer script may have set it.
+            // set_restored_script_argv_after_import survives across nested runs and is re-established
+            // by the executor after ImportFrom; overwriting here would corrupt LoadGlobal(argv) in main.
+        }
         let _run_guard = RunContextGuard(&mut self.base_path as *mut Option<PathBuf>);
+        let _script_argv_guard = ClearScriptArgvGuard(argv_value_id_to_use.is_some());
         // Keep file_import thread_locals in sync for code that sets them outside run()
         crate::vm::file_import::set_base_path(self.base_path.clone());
 
@@ -1375,21 +1505,20 @@ impl Vm {
         #[cfg(feature = "profile")]
         crate::vm::profile::set();
 
-        // Клонируем chunk и при необходимости патчим LoadGlobal(argv) на argv_slot_index,
-        // чтобы после merge_global_names и возможного ImportFrom слот по старому индексу не оказался функцией (load_settings и т.д.).
-        // Важно: заменяем только те LoadGlobal(old_idx), у которых в chunk по этому индексу имя "argv":
-        // после set_functions в главном chunk индекс 76 может означать __main__ (кали), и замена всех 76→82 даёт "Can only call functions, got: Array".
+        // Клонируем chunk и при необходимости патчим LoadGlobal(argv) на argv_slot_index:
+        // любой LoadGlobal(idx), для которого в chunk по idx значится "argv", должен загружать argv_slot_index
+        // (после merge_global_names/ImportFrom слот по старому индексу мог стать функцией load_settings и т.д.).
         let mut chunk_to_run = chunk.clone();
-        if let Some((argv_slot_index, old_indices, _)) = argv_patch.as_ref() {
-            for &old_idx in *old_indices {
-                if chunk_to_run.global_names.get(&old_idx).map(|n| n.as_str()) != Some("argv") {
-                    continue;
-                }
-                for opcode in &mut chunk_to_run.code {
-                    if let crate::bytecode::OpCode::LoadGlobal(idx) = opcode {
-                        if *idx == old_idx {
-                            *opcode = crate::bytecode::OpCode::LoadGlobal(*argv_slot_index);
-                        }
+        if let Some((argv_slot_index, _old_indices, _)) = argv_patch.as_ref() {
+            // Guarantee chunk has argv_slot_index -> "argv" so patch and executor always recognize argv loads.
+            // Patch only when chunk says this index is "argv" (not by old_indices), so we never substitute
+            // a LoadGlobal that was meant for __main__ when argv and __main__ share an index in some path.
+            chunk_to_run.global_names.insert(*argv_slot_index, "argv".to_string());
+            for opcode in &mut chunk_to_run.code {
+                if let crate::bytecode::OpCode::LoadGlobal(idx) = opcode {
+                    let name_is_argv = chunk_to_run.global_names.get(idx).map(|n| n.as_str()) == Some("argv");
+                    if name_is_argv && *idx != *argv_slot_index {
+                        *idx = *argv_slot_index;
                     }
                 }
             }
@@ -1403,7 +1532,9 @@ impl Vm {
         self.frames.push(frame);
 
         // Записываем argv в слот в самый последний момент, чтобы никакой код (set_functions и т.д.) не мог перезаписать слот функцией.
+        // Также сохраняем argv value id, чтобы executor при LoadGlobal(argv_slot) всегда подставлял его (даже если слот перезаписан ImportFrom).
         if let Some((argv_slot_index, _old_indices, argv_value_id)) = argv_patch {
+            self.set_current_argv_value_id(argv_value_id);
             if let Some(argv_id) = argv_value_id {
                 if argv_slot_index >= self.globals.len() {
                     self.globals
@@ -1411,6 +1542,8 @@ impl Vm {
                 }
                 self.globals[argv_slot_index] = GlobalSlot::Heap(argv_id);
             }
+        } else {
+            self.set_current_argv_value_id(None);
         }
 
         loop {

@@ -208,5 +208,38 @@ mod tests {
         // parse() использует unwrap(), поэтому ошибка парсинга приведет к panic
         let _stmts = parse(source);
     }
+
+    /// Call arguments must parse full expression including member chain (e.g. User.metadata.create_all).
+    /// If the parser only parses primary(), run(User.metadata.create_all) would get just User as arg.
+    #[test]
+    fn test_call_argument_parses_member_chain() {
+        let source = "e.run(User.metadata.create_all)";
+        let stmts = parse(source);
+        assert_eq!(stmts.len(), 1, "expected one statement");
+        let Stmt::Expr { expr, .. } = &stmts[0] else {
+            panic!("expected Expr statement, got {:?}", stmts[0]);
+        };
+        let Expr::MethodCall { method, args, .. } = expr else {
+            panic!("expected MethodCall expression, got {:?}", expr);
+        };
+        assert_eq!(method, "run");
+        assert_eq!(args.len(), 1, "expected one argument");
+        let Arg::Positional(arg_expr) = &args[0] else {
+            panic!("expected positional argument");
+        };
+        // Argument must be Property(Property(User, "metadata"), "create_all"), not just Variable(User)
+        let Expr::Property { name, object, .. } = arg_expr else {
+            panic!("expected argument to be Property (member chain), got {:?}", arg_expr);
+        };
+        assert_eq!(name, "create_all");
+        let Expr::Property { name: inner_name, object: inner_obj, .. } = object.as_ref() else {
+            panic!("expected inner Property (metadata), got {:?}", object);
+        };
+        assert_eq!(inner_name, "metadata");
+        let Expr::Variable { name: var_name, .. } = inner_obj.as_ref() else {
+            panic!("expected Variable(User), got {:?}", inner_obj);
+        };
+        assert_eq!(var_name, "User");
+    }
 }
 

@@ -1,0 +1,2 @@
+# core/database package: imports engine (local) which in turn imports core.config (absolute)
+from engine import get_config_env

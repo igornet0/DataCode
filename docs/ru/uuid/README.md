@@ -22,10 +22,10 @@ import uuid
 **Пример:**
 ```datacode
 let u = uuid.v4()
-print(uuid.to_string(u))
+print(str(u))
 # или
 let r = uuid.random()
-print(uuid.to_string(r))
+print(str(r))
 ```
 
 ### uuid.v7() -> UUID
@@ -38,9 +38,9 @@ print(uuid.to_string(r))
 **Пример:**
 ```datacode
 let u = uuid.v7()
-print(uuid.to_string(u))
+print(str(u))
 let n = uuid.new()
-print(uuid.to_string(n))
+print(str(n))
 ```
 
 ## Разбор и строки
@@ -58,7 +58,7 @@ print(uuid.to_string(n))
 ```datacode
 let parsed = uuid.parse("550e8400-e29b-41d4-a716-446655440000")
 if parsed != null {
-    print(uuid.to_string(parsed))
+    print(str(parsed))
 } else {
     print("Ошибка разбора")
 }
@@ -76,7 +76,7 @@ if parsed != null {
 **Пример:**
 ```datacode
 let u = uuid.v4()
-print(uuid.to_string(u))
+print(str(u))
 ```
 
 ## Байты
@@ -111,7 +111,7 @@ print(len(bytes))  # 16
 let u = uuid.v4()
 let bytes = uuid.to_bytes(u)
 let restored = uuid.from_bytes(bytes)
-print(uuid.to_string(u) == uuid.to_string(restored))  # true
+print(str(u) == str(restored))  # true
 ```
 
 ## Детерминированные UUID (v3, v5)
@@ -129,7 +129,7 @@ print(uuid.to_string(u) == uuid.to_string(restored))  # true
 **Пример:**
 ```datacode
 let u = uuid.v3(uuid.URL, "https://example.com/page")
-print(uuid.to_string(u))
+print(str(u))
 ```
 
 ### uuid.v5(namespace: UUID, name: string) -> UUID
@@ -145,7 +145,7 @@ print(uuid.to_string(u))
 **Пример:**
 ```datacode
 let u = uuid.v5(uuid.DNS, "example.com")
-print(uuid.to_string(u))
+print(str(u))
 ```
 
 ### Стандартные namespace: uuid.DNS, uuid.URL, uuid.OID
@@ -158,8 +158,8 @@ print(uuid.to_string(u))
 
 **Пример:**
 ```datacode
-print(uuid.to_string(uuid.DNS))
-print(uuid.to_string(uuid.URL))
+print(str(uuid.DNS))
+print(str(uuid.URL))
 let u5 = uuid.v5(uuid.OID, "1.2.3.4.5")
 ```
 

@@ -141,12 +141,23 @@ pub fn setup_function_call(
     }
     
     let function = functions[function_index].clone();
+
+    // Module-style call: compiler passes receiver for obj.method(); if function has arity 0, treat single Object arg as receiver and drop it.
+    let effective_args: &[Value] = if function.arity == 0 && args.len() == 1 {
+        if let Value::Object(_) = &args[0] {
+            &args[1..] // empty slice
+        } else {
+            args
+        }
+    } else {
+        args
+    };
     
     debug_println!("[DEBUG setup_function_call] Вызываем функцию с индексом {}, имя: '{}', arity: {}, получено аргументов: {} (всего функций в VM: {})", 
-        function_index, function.name, function.arity, args.len(), functions.len());
+        function_index, function.name, function.arity, effective_args.len(), functions.len());
 
     // Проверяем количество аргументов
-    if args.len() != function.arity {
+    if effective_args.len() != function.arity {
         return Err(LangError::runtime_error(
             format!(
                 "Expected {} arguments but got {}",
@@ -157,7 +168,7 @@ pub fn setup_function_call(
     }
 
     // Проверяем типы аргументов, если указаны аннотации типов
-    for (i, (arg, expected_types)) in args.iter().zip(&function.param_types).enumerate() {
+    for (i, (arg, expected_types)) in effective_args.iter().zip(&function.param_types).enumerate() {
         if let Some(type_names) = expected_types {
             if !check_type_value(arg, type_names) {
                 let param_name = function.param_names.get(i)
@@ -179,7 +190,7 @@ pub fn setup_function_call(
     if function.is_cached {
         use crate::bytecode::function::CacheKey;
         
-        if let Some(cache_key) = CacheKey::new(args) {
+        if let Some(cache_key) = CacheKey::new(effective_args) {
             if let Some(cache_rc) = &function.cache {
                 let cache = cache_rc.borrow();
                 if let Some(cached_result) = cache.map.get(&cache_key) {
@@ -191,7 +202,7 @@ pub fn setup_function_call(
     }
 
     let args_tvs: Vec<TaggedValue> =
-        args.iter().map(|a| TaggedValue::from_heap(store_value(a.clone(), store, heap))).collect();
+        effective_args.iter().map(|a| TaggedValue::from_heap(store_value(a.clone(), store, heap))).collect();
     let stack_start = stack.len();
     let mut new_frame = if function.is_cached {
         CallFrame::new_with_cache(function.clone(), stack_start, args_tvs.clone(), store, heap)

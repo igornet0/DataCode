@@ -1,4 +1,4 @@
-from database import engine
+from database_engine import engine
 
 # Create SQLite engine
 db = engine("sqlite:///./test_db.sqlite", false, false, 5, 10)

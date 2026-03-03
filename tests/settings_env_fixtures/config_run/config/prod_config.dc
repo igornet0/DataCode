@@ -1,0 +1,13 @@
+from settings_env import Config, Field
+
+from base import ProdAppBaseConfig
+from config import ConfigApp
+
+cls ProdSettings(ConfigApp) {
+    
+    model_config = Config(
+        **ProdAppBaseConfig
+    )
+
+    debug: bool = Field(default=False)
+}

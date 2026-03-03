@@ -1,6 +1,6 @@
 # DatabaseCluster
 
-This section shows how to use the `DatabaseCluster` type from the `database` module to manage multiple named database connections and run SQL on them by name.
+This section shows how to use the `DatabaseCluster` type from the `database_engine` module to manage multiple named database connections and run SQL on them by name.
 
 ## Files
 
@@ -9,7 +9,7 @@ This section shows how to use the `DatabaseCluster` type from the `database` mod
 ## Usage
 
 ```datacode
-from database import engine, DatabaseCluster
+from database_engine import engine, DatabaseCluster
 
 cluster = DatabaseCluster()
 cluster.add("main", engine("sqlite:///main.db"))

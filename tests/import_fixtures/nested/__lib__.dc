@@ -1,0 +1,2 @@
+from sub import two
+fn one() { return 1 }

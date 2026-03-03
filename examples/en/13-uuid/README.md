@@ -79,7 +79,7 @@ datacode --bin datacode examples/en/13-uuid/05-practical-example.dc
 
 ### Parsing and strings
 - **uuid.parse(s)**: String in hyphenated format → UUID or `null` on error
-- **uuid.to_string(u)**: UUID → string in standard format
+- **uuid.to_string(u)**: UUID → string in standard format or str(u)
 
 ### Bytes
 - **uuid.to_bytes(u)**: UUID → array of 16 numbers 0–255

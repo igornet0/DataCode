@@ -99,18 +99,18 @@ For a **local .dc module** (single file or `__lib__.dc`), the module’s **globa
 
 These modules are built into the runtime; they do **not** require a corresponding `.dc` file or package under base path:
 
-| Module           | Description |
-|------------------|-------------|
-| `ml`             | Machine learning (tensors, graphs, neural networks, datasets, etc.) |
-| `plot`           | Images, windows, charts (bar, line, pie, heatmap, subplots) |
-| `settings_env`   | Loading .env, Settings, Config, Field |
-| `uuid`           | UUID generation (v4, v7), parse, to_string, bytes, v3/v5 |
-| `database`       | Database engine and DatabaseCluster |
+| Module            | Description |
+|-------------------|-------------|
+| `ml`              | Machine learning (tensors, graphs, neural networks, datasets, etc.) |
+| `plot`            | Images, windows, charts (bar, line, pie, heatmap, subplots) |
+| `settings_env`    | Loading .env, Settings, Config, Field |
+| `uuid`            | UUID generation (v4, v7), parse, to_string, bytes, v3/v5 |
+| `database_engine` | Database engine and DatabaseCluster |
 
 Example:
 
 ```datacode
-from database import engine, DatabaseCluster
+from database_engine import engine, DatabaseCluster
 from uuid import v4, v7
 ```
 
@@ -166,7 +166,7 @@ A complete runnable example is in the repository:
 | **Single-file module** | `<base_path>/<name>.dc` → module `name`. |
 | **Package** | `<base_path>/<name>/__lib__.dc` → module `name`; preferred over a file with the same name. |
 | **Dotted name** | `core.config` → walk segments (each segment = package or file); last segment is the loaded module. |
-| **Built-in modules** | `ml`, `plot`, `settings_env`, `uuid`, `database` — no file needed. |
+| **Built-in modules** | `ml`, `plot`, `settings_env`, `uuid`, `database_engine` — no file needed. |
 | **Exports** | For .dc modules, top-level globals (variables, functions, classes) are the exports. |
 
 For bytecode-level and VM details (ModuleObject, function remapping, cache), see [Module Import System (Internals)](./internals/module_import_system.md).

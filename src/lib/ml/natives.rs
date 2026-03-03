@@ -420,7 +420,13 @@ pub fn native_min_idx(args: &[Value]) -> Value {
 /// Create a new computational graph
 /// graph()
 pub fn native_graph(args: &[Value]) -> Value {
-    if args.len() != 0 {
+    // Module-style call ml.graph() passes receiver as first arg; native expects 0 args
+    let args = if args.len() == 1 && matches!(&args[0], Value::Object(_)) {
+        &args[1..]
+    } else {
+        args
+    };
+    if !args.is_empty() {
         return Value::Null;
     }
 

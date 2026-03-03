@@ -4,7 +4,7 @@
 import uuid
 
 let u = uuid.v4()
-print("Original UUID: " + uuid.to_string(u))
+print("Original UUID: " + str(u))
 
 # UUID → array of 16 numbers (0–255)
 let bytes = uuid.to_bytes(u)
@@ -16,11 +16,11 @@ print("Last byte: " + bytes[15])
 
 # Byte array → UUID
 let restored = uuid.from_bytes(bytes)
-print("Restored UUID: " + uuid.to_string(restored))
-print("Matches original: " + (uuid.to_string(u) == uuid.to_string(restored)))
+print("Restored UUID: " + str(restored))
+print("Matches original: " + (str(u) == str(restored)))
 
 # Round-trip: UUID → bytes → UUID → to_string
 let u2 = uuid.v7()
 let bytes2 = uuid.to_bytes(u2)
 let u2_restored = uuid.from_bytes(bytes2)
-print("Round-trip v7: " + (uuid.to_string(u2) == uuid.to_string(u2_restored)))
+print("Round-trip v7: " + (str(u2) == str(u2_restored)))

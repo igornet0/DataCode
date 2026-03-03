@@ -119,7 +119,6 @@ pub fn resolve_function_args(
                         }
                     }
                 }
-                
                 return Ok(final_args);
             } else {
                 // Нативная функция не поддерживает именованные аргументы (например, print, min, max)

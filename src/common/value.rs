@@ -321,6 +321,18 @@ impl Value {
             }
             Value::Tensor(tensor) => {
                 let t = tensor.borrow();
+                // Label-like tensor: scalar [1], one-hot [C], or logits [C] — show class index
+                if t.shape.len() == 1 && t.shape[0] >= 1 && t.shape[0] <= 1000 {
+                    let data = t.data();
+                    if data.len() == 1 {
+                        return (data[0] as i64).to_string();
+                    }
+                    if let Ok(indices) = t.max_idx() {
+                        if indices.len() == 1 {
+                            return indices[0].to_string();
+                        }
+                    }
+                }
                 format!("<tensor: shape={:?}, size={}>", t.shape, t.data.len())
             }
             Value::Graph(graph) => {

@@ -1134,3 +1134,122 @@ fn test_freeze_unfreeze_cycle() {
     }
 }
 
+/// Repeats mnist_model_demo.dc logic (without plot): load MNIST, load model, predict, format "y: X предсказание: Y".
+#[cfg(feature = "gpu")]
+#[test]
+fn test_mnist_model_demo_logic() {
+    use std::fs;
+    use std::path::Path;
+
+    let temp_model = "test_mnist_demo.nn";
+
+    let create_and_save_code = format!(
+        r#"
+        import ml
+
+        layer1 = ml.layer.linear(784, 128)
+        layer2 = ml.layer.relu()
+        layer3 = ml.layer.linear(128, 10)
+        layers = [layer1, layer2, layer3]
+        model_seq = ml.sequential(layers)
+        model = ml.neural_network(model_seq)
+        model.device("cpu")
+        ml.save_model(model, "{}")
+        true
+        "#,
+        temp_model
+    );
+
+    let save_result = run(&create_and_save_code);
+    assert!(save_result.is_ok(), "Failed to create and save model: {:?}", save_result);
+
+    let demo_logic_code = format!(
+        r#"
+        import ml
+
+        model = ml.load("{}")
+        if model == null {{ throw "Model load failed" }}
+        model.device("cpu")
+
+        data = ml.load_mnist("test")
+        if data == null {{ throw "MNIST load failed" }}
+        images = []
+        labels = []
+        count = 0
+        for x, y in data {{
+            push(images, x)
+            push(labels, y)
+            count += 1
+            if count >= 9 {{ break }}
+        }}
+
+        titles = []
+        for i in range(9) {{
+            predict = model(images[i])
+            title = "y: " + str(labels[i]) + " pred: " + str(predict.max_idx()[0])
+            push(titles, title)
+        }}
+        titles
+        "#,
+        temp_model
+    );
+
+    let run_result = run(&demo_logic_code);
+    assert!(run_result.is_ok(), "Failed to run demo logic: {:?}", run_result);
+
+    let titles = match run_result.unwrap() {
+        Value::Array(arr) => arr.borrow().clone(),
+        v => panic!("Expected Array of titles, got {:?}", v),
+    };
+
+    assert_eq!(titles.len(), 9, "Expected 9 title strings");
+    let re = regex::Regex::new(r"^y: \d+ pred: \d+$").unwrap();
+    for (i, t) in titles.iter().enumerate() {
+        if let Value::String(s) = t {
+            assert!(
+                re.is_match(s),
+                "Title {} should match 'y: X pred: Y', got: '{}' (len={})",
+                i,
+                s,
+                s.len()
+            );
+        } else {
+            panic!("Title {} should be String, got {:?}", i, t);
+        }
+    }
+
+    if Path::new(temp_model).exists() {
+        fs::remove_file(temp_model).expect("Failed to remove temp model file");
+    }
+}
+
+/// Minimal repro: string concat in for loop (no ML) - same structure as demo_logic
+#[test]
+fn test_string_concat_in_for_loop() {
+    let code = r#"
+        labels = [1, 2, 3]
+        preds = [1, 2, 3]
+        titles = []
+        for i in range(3) {
+            title = "y: " + str(labels[i]) + " pred: " + str(preds[i])
+            push(titles, title)
+        }
+        titles
+    "#;
+    let result = run(code);
+    assert!(result.is_ok(), "Failed: {:?}", result);
+    let titles = match result.unwrap() {
+        Value::Array(arr) => arr.borrow().clone(),
+        v => panic!("Expected Array, got {:?}", v),
+    };
+    assert_eq!(titles.len(), 3);
+    let expected = ["y: 1 pred: 1", "y: 2 pred: 2", "y: 3 pred: 3"];
+    for (i, t) in titles.iter().enumerate() {
+        if let Value::String(s) = t {
+            assert_eq!(s, expected[i], "Title {} mismatch", i);
+        } else {
+            panic!("Title {} should be String, got {:?}", i, t);
+        }
+    }
+}
+

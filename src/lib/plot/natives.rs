@@ -1416,15 +1416,16 @@ pub fn native_plot_line(args: &[Value]) -> Value {
         return Value::Null;
     }
 
-    // Extract x array
+    // Extract x array - use index-based access to guarantee element order matches array indices
     let x_array = match &args[0] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
-            let mut x_data = Vec::new();
-            for val in arr_ref.iter() {
-                match val {
-                    Value::Number(n) => x_data.push(*n),
-                    _ => return Value::Null, // Invalid data type in x array
+            let len = arr_ref.len();
+            let mut x_data = Vec::with_capacity(len);
+            for i in 0..len {
+                match arr_ref.get(i) {
+                    Some(Value::Number(n)) => x_data.push(*n),
+                    _ => return Value::Null, // Invalid data type or index in x array
                 }
             }
             x_data
@@ -1432,15 +1433,16 @@ pub fn native_plot_line(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    // Extract y array
+    // Extract y array - use index-based access to guarantee element order matches array indices
     let y_array = match &args[1] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
-            let mut y_data = Vec::new();
-            for val in arr_ref.iter() {
-                match val {
-                    Value::Number(n) => y_data.push(*n),
-                    _ => return Value::Null, // Invalid data type in y array
+            let len = arr_ref.len();
+            let mut y_data = Vec::with_capacity(len);
+            for i in 0..len {
+                match arr_ref.get(i) {
+                    Some(Value::Number(n)) => y_data.push(*n),
+                    _ => return Value::Null, // Invalid data type or index in y array
                 }
             }
             y_data
@@ -1529,20 +1531,6 @@ pub fn native_plot_line(args: &[Value]) -> Value {
         }
     }
 
-    // Debug: print color information
-    for (_i, arg) in args.iter().enumerate() {
-        match arg {
-            Value::Object(map_rc) => {
-                let map = map_rc.borrow();
-                if let Some(Value::String(_s)) = map.get("color") {
-                    // Color found in object
-                }
-            }
-            _ => {
-                // Other value types don't need special handling here
-            }
-        }
-    }
     // Add line data to plot state
     PlotContext::with_current(|ctx| {
         ctx.plot_state.line_data.push((x_array, y_array, show_points, point_size, line_width, color));

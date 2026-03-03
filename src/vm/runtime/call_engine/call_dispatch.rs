@@ -440,6 +440,9 @@ pub fn execute_call(
             // Callee is a builtin; function_index_resolved is None (heap cell is NativeFunction, not Function).
             // Do not error: dispatch happens in match actual_callee below.
             0
+        } else if matches!(actual_callee, Value::NeuralNetwork(_) | Value::LinearRegression(_) | Value::Layer(_)) {
+            // Models and layers are callable: model(input) -> output. Dispatch in match actual_callee below.
+            0
         } else if let Value::Object(class_rc) = &actual_callee {
             // Callee is a class Object; constructor may be ModuleFunction but registry lookup failed. Try by name.
             let class_name = class_rc.borrow().get("__class_name").and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None });

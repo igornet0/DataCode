@@ -444,10 +444,8 @@ pub fn get_tensor(
                     let max_idx_fn_ptr = ml_natives::native_max_idx as *const ();
                     let method_index = natives.iter().position(|e| e.as_fn_ptr() == Some(max_idx_fn_ptr));
                     if let Some(idx) = method_index {
-                        stack::push_id(
-                            stack,
-                            store_value(Value::Tensor(Rc::clone(&tensor)), value_store, heavy_store),
-                        );
+                        // Push only the method; receiver is already on stack from compile_module_method step 1.
+                        // Pushing tensor here would leave a stray value (e.g. "y: X pred: Y" → "22").
                         stack::push_id(
                             stack,
                             store_value(Value::NativeFunction(idx), value_store, heavy_store),
@@ -471,10 +469,7 @@ pub fn get_tensor(
                     let min_idx_fn_ptr = ml_natives::native_min_idx as *const ();
                     let method_index = natives.iter().position(|e| e.as_fn_ptr() == Some(min_idx_fn_ptr));
                     if let Some(idx) = method_index {
-                        stack::push_id(
-                            stack,
-                            store_value(Value::Tensor(Rc::clone(&tensor)), value_store, heavy_store),
-                        );
+                        // Push only the method; receiver is already on stack (same as max_idx).
                         stack::push_id(
                             stack,
                             store_value(Value::NativeFunction(idx), value_store, heavy_store),

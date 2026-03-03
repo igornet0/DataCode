@@ -653,9 +653,12 @@ pub fn execute_native_call(
     }
 
     if let Some(ref ids) = native_arg_ids {
-        for (i, &id) in ids.iter().enumerate() {
-            if i < native_args_buffer.len() {
-                update_cell_if_mutable(id, &native_args_buffer[i], value_store, heavy_store);
+        // When receiver was removed, native_args_buffer has 1 fewer element than ids.
+        // Pair ids[offset+i] with native_args_buffer[i] so we don't overwrite wrong slots.
+        let offset = ids.len().saturating_sub(native_args_buffer.len());
+        for (i, val) in native_args_buffer.iter().enumerate() {
+            if let Some(&id) = ids.get(offset + i) {
+                update_cell_if_mutable(id, val, value_store, heavy_store);
             }
         }
     }

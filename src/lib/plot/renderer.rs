@@ -1187,8 +1187,8 @@ impl Renderer {
         }
 
         // Draw all lines first (so points will be drawn on top)
+        // Connect points in the order they were passed (x[i], y[i]) -> (x[i+1], y[i+1])
         for (_line_idx, (x_data, y_data, _, _, line_width, line_color)) in lines.iter().enumerate() {
-            // Draw line segments
             for i in 0..x_data.len() - 1 {
                 let x1 = to_screen_x(x_data[i]);
                 let y1 = to_screen_y(y_data[i]);

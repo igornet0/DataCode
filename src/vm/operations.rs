@@ -72,6 +72,10 @@ pub fn binary_add(
             let inner = arr.borrow().iter().map(|v| v.to_string()).collect::<Vec<_>>().join(", ");
             Ok(Value::String(format!("[{}]{}", inner, s)))
         },
+        (Value::String(_), Value::Tensor(_)) | (Value::Tensor(_), Value::String(_)) => {
+            // String + Tensor or Tensor + String: convert both to string for concatenation
+            Ok(Value::String(format!("{}{}", a.to_string(), b.to_string())))
+        },
         _ => {
             let error = ExceptionHandler::runtime_error(
                 frames,

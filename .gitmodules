@@ -1,6 +1,8 @@
 [submodule "datacode_abi"]
 	path = datacode_abi
 	url = https://github.com/igornet0/Datacode-abi.git
+	branch = main
 [submodule "datacode_sdk"]
 	path = datacode_sdk
 	url = https://github.com/igornet0/Datacode-sdk.git
+	branch = main

@@ -293,4 +293,3 @@ pub fn handle_redraw(
             }
         }
 }
-

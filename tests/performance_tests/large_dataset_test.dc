@@ -13,7 +13,7 @@ for i in range(10000) {
     let dept_id = i - (i / 15) * 15
     let salary_mod = i - (i / 75000) * 75000
     let age_mod = i - (i / 43) * 43
-    let perf_mod = i - (i / 100) * 100
+    let perf_mod = i - (i / 100)
     let date_mod = i - (i / 28) * 28
     let loc_mod = i - (i / 8) * 8
 

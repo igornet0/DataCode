@@ -3,6 +3,7 @@
 use crate::common::{error::LangError, value::Value, value_store::ValueStore};
 use crate::vm::global_slot::{GlobalSlot, default_global_slot};
 use crate::vm::heavy_store::HeavyStore;
+use crate::vm::host::HostEntry;
 use crate::vm::store_convert::{store_value_arena, load_value};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -33,7 +34,7 @@ fn global_index_by_name(global_names: &std::collections::BTreeMap<usize, String>
 /// Register a module by name (globals as Vec<GlobalSlot>, store_value for module object)
 pub fn register_module(
     module_name: &str,
-    natives: &mut Vec<fn(&[Value]) -> Value>,
+    natives: &mut Vec<HostEntry>,
     globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
@@ -53,7 +54,7 @@ pub fn register_module(
 }
 
 fn register_ml_module(
-    natives: &mut Vec<fn(&[Value]) -> Value>,
+    natives: &mut Vec<HostEntry>,
     globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
@@ -61,87 +62,87 @@ fn register_ml_module(
 ) -> Result<(), LangError> {
     use crate::ml::natives;
     
-    // Register ML native functions
+    // Register ML native functions (Extended: fn pointer for ptr::eq in call_engine)
     let ml_native_start = natives.len();
-    natives.push(natives::native_tensor);
-    natives.push(natives::native_shape);
-    natives.push(natives::native_data);
-    natives.push(natives::native_add);
-    natives.push(natives::native_sub);
-    natives.push(natives::native_mul);
-    natives.push(natives::native_matmul);
-    natives.push(natives::native_transpose);
-    natives.push(natives::native_sum);
-    natives.push(natives::native_mean);
-    natives.push(natives::native_max_idx);
-    natives.push(natives::native_min_idx);
+    natives.push(HostEntry::Extended(natives::native_tensor));
+    natives.push(HostEntry::Extended(natives::native_shape));
+    natives.push(HostEntry::Extended(natives::native_data));
+    natives.push(HostEntry::Extended(natives::native_add));
+    natives.push(HostEntry::Extended(natives::native_sub));
+    natives.push(HostEntry::Extended(natives::native_mul));
+    natives.push(HostEntry::Extended(natives::native_matmul));
+    natives.push(HostEntry::Extended(natives::native_transpose));
+    natives.push(HostEntry::Extended(natives::native_sum));
+    natives.push(HostEntry::Extended(natives::native_mean));
+    natives.push(HostEntry::Extended(natives::native_max_idx));
+    natives.push(HostEntry::Extended(natives::native_min_idx));
     // Graph functions
-    natives.push(natives::native_graph);
-    natives.push(natives::native_graph_add_input);
-    natives.push(natives::native_graph_add_op);
-    natives.push(natives::native_graph_forward);
-    natives.push(natives::native_graph_get_output);
+    natives.push(HostEntry::Extended(natives::native_graph));
+    natives.push(HostEntry::Extended(natives::native_graph_add_input));
+    natives.push(HostEntry::Extended(natives::native_graph_add_op));
+    natives.push(HostEntry::Extended(natives::native_graph_forward));
+    natives.push(HostEntry::Extended(natives::native_graph_get_output));
     // Autograd functions
-    natives.push(natives::native_graph_backward);
-    natives.push(natives::native_graph_get_gradient);
-    natives.push(natives::native_graph_zero_grad);
-    natives.push(natives::native_graph_set_requires_grad);
+    natives.push(HostEntry::Extended(natives::native_graph_backward));
+    natives.push(HostEntry::Extended(natives::native_graph_get_gradient));
+    natives.push(HostEntry::Extended(natives::native_graph_zero_grad));
+    natives.push(HostEntry::Extended(natives::native_graph_set_requires_grad));
     // Linear Regression functions
-    natives.push(natives::native_linear_regression);
-    natives.push(natives::native_lr_predict);
-    natives.push(natives::native_lr_train);
-    natives.push(natives::native_lr_evaluate);
+    natives.push(HostEntry::Extended(natives::native_linear_regression));
+    natives.push(HostEntry::Extended(natives::native_lr_predict));
+    natives.push(HostEntry::Extended(natives::native_lr_train));
+    natives.push(HostEntry::Extended(natives::native_lr_evaluate));
     // Optimizer functions
-    natives.push(natives::native_sgd);
-    natives.push(natives::native_sgd_step);
-    natives.push(natives::native_sgd_zero_grad);
-    natives.push(natives::native_adam);
-    natives.push(natives::native_adam_step);
+    natives.push(HostEntry::Extended(natives::native_sgd));
+    natives.push(HostEntry::Extended(natives::native_sgd_step));
+    natives.push(HostEntry::Extended(natives::native_sgd_zero_grad));
+    natives.push(HostEntry::Extended(natives::native_adam));
+    natives.push(HostEntry::Extended(natives::native_adam_step));
     // Loss functions
-    natives.push(natives::native_mse_loss);
-    natives.push(natives::native_cross_entropy_loss);
-    natives.push(natives::native_binary_cross_entropy_loss);
-    natives.push(natives::native_mae_loss);
-    natives.push(natives::native_huber_loss);
-    natives.push(natives::native_hinge_loss);
-    natives.push(natives::native_kl_divergence);
-    natives.push(natives::native_smooth_l1_loss);
+    natives.push(HostEntry::Extended(natives::native_mse_loss));
+    natives.push(HostEntry::Extended(natives::native_cross_entropy_loss));
+    natives.push(HostEntry::Extended(natives::native_binary_cross_entropy_loss));
+    natives.push(HostEntry::Extended(natives::native_mae_loss));
+    natives.push(HostEntry::Extended(natives::native_huber_loss));
+    natives.push(HostEntry::Extended(natives::native_hinge_loss));
+    natives.push(HostEntry::Extended(natives::native_kl_divergence));
+    natives.push(HostEntry::Extended(natives::native_smooth_l1_loss));
     // Dataset functions
-    natives.push(natives::native_dataset);
-    natives.push(natives::native_dataset_features);
-    natives.push(natives::native_dataset_targets);
-    natives.push(natives::native_onehot);
-    natives.push(natives::native_load_mnist);
+    natives.push(HostEntry::Extended(natives::native_dataset));
+    natives.push(HostEntry::Extended(natives::native_dataset_features));
+    natives.push(HostEntry::Extended(natives::native_dataset_targets));
+    natives.push(HostEntry::Extended(natives::native_onehot));
+    natives.push(HostEntry::Extended(natives::native_load_mnist));
     // Layer functions
-    natives.push(natives::native_linear_layer);
-    natives.push(natives::native_relu_layer);
-    natives.push(natives::native_softmax_layer);
-    natives.push(natives::native_flatten_layer);
-    natives.push(natives::native_layer_call);
+    natives.push(HostEntry::Extended(natives::native_linear_layer));
+    natives.push(HostEntry::Extended(natives::native_relu_layer));
+    natives.push(HostEntry::Extended(natives::native_softmax_layer));
+    natives.push(HostEntry::Extended(natives::native_flatten_layer));
+    natives.push(HostEntry::Extended(natives::native_layer_call));
     // Neural network functions
-    natives.push(natives::native_sequential);
-    natives.push(natives::native_sequential_add);
-    natives.push(natives::native_neural_network);
-    natives.push(natives::native_nn_forward);
-    natives.push(natives::native_nn_train);
-    natives.push(natives::native_nn_train_sh);
-    natives.push(natives::native_nn_save);
-    natives.push(natives::native_nn_load);
-    natives.push(natives::native_categorical_cross_entropy_loss);
-    natives.push(natives::native_ml_save_model);
-    natives.push(natives::native_ml_load_model);
+    natives.push(HostEntry::Extended(natives::native_sequential));
+    natives.push(HostEntry::Extended(natives::native_sequential_add));
+    natives.push(HostEntry::Extended(natives::native_neural_network));
+    natives.push(HostEntry::Extended(natives::native_nn_forward));
+    natives.push(HostEntry::Extended(natives::native_nn_train));
+    natives.push(HostEntry::Extended(natives::native_nn_train_sh));
+    natives.push(HostEntry::Extended(natives::native_nn_save));
+    natives.push(HostEntry::Extended(natives::native_nn_load));
+    natives.push(HostEntry::Extended(natives::native_categorical_cross_entropy_loss));
+    natives.push(HostEntry::Extended(natives::native_ml_save_model));
+    natives.push(HostEntry::Extended(natives::native_ml_load_model));
     // Device management functions
-    natives.push(natives::native_ml_set_device);
-    natives.push(natives::native_ml_get_device);
-    natives.push(natives::native_nn_set_device);
-    natives.push(natives::native_nn_get_device);
-    natives.push(natives::native_devices);
-    natives.push(natives::native_ml_validate_model);
-    natives.push(natives::native_ml_model_info);
+    natives.push(HostEntry::Extended(natives::native_ml_set_device));
+    natives.push(HostEntry::Extended(natives::native_ml_get_device));
+    natives.push(HostEntry::Extended(natives::native_nn_set_device));
+    natives.push(HostEntry::Extended(natives::native_nn_get_device));
+    natives.push(HostEntry::Extended(natives::native_devices));
+    natives.push(HostEntry::Extended(natives::native_ml_validate_model));
+    natives.push(HostEntry::Extended(natives::native_ml_model_info));
     // Layer freeze/unfreeze functions
-    natives.push(natives::native_model_get_layer);
-    natives.push(natives::native_layer_freeze);
-    natives.push(natives::native_layer_unfreeze);
+    natives.push(HostEntry::Extended(natives::native_model_get_layer));
+    natives.push(HostEntry::Extended(natives::native_layer_freeze));
+    natives.push(HostEntry::Extended(natives::native_layer_unfreeze));
     
     // Create ML module object with native function references
     let mut ml_object = HashMap::new();
@@ -285,7 +286,7 @@ fn register_ml_module(
 }
 
 fn register_plot_module(
-    natives: &mut Vec<fn(&[Value]) -> Value>,
+    natives: &mut Vec<HostEntry>,
     globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
@@ -295,24 +296,24 @@ fn register_plot_module(
     
     // Register plot native functions
     let plot_native_start = natives.len();
-    natives.push(natives::native_plot_image);
-    natives.push(natives::native_plot_window);
-    natives.push(natives::native_window_draw);
-    natives.push(natives::native_plot_wait);
-    natives.push(natives::native_plot_show);
-    natives.push(natives::native_plot_show_grid);
-    natives.push(natives::native_plot_subplots);
-    natives.push(natives::native_plot_tight_layout);
-    natives.push(natives::native_plot_show_figure);
-    natives.push(natives::native_axis_imshow);
-    natives.push(natives::native_axis_set_title);
-    natives.push(natives::native_axis_axis);
-    natives.push(natives::native_plot_xlabel);
-    natives.push(natives::native_plot_ylabel);
-    natives.push(natives::native_plot_line);
-    natives.push(natives::native_plot_bar);
-    natives.push(natives::native_plot_pie);
-    natives.push(natives::native_plot_heatmap);
+    natives.push(HostEntry::Extended(natives::native_plot_image));
+    natives.push(HostEntry::Extended(natives::native_plot_window));
+    natives.push(HostEntry::Extended(natives::native_window_draw));
+    natives.push(HostEntry::Extended(natives::native_plot_wait));
+    natives.push(HostEntry::Extended(natives::native_plot_show));
+    natives.push(HostEntry::Extended(natives::native_plot_show_grid));
+    natives.push(HostEntry::Extended(natives::native_plot_subplots));
+    natives.push(HostEntry::Extended(natives::native_plot_tight_layout));
+    natives.push(HostEntry::Extended(natives::native_plot_show_figure));
+    natives.push(HostEntry::Extended(natives::native_axis_imshow));
+    natives.push(HostEntry::Extended(natives::native_axis_set_title));
+    natives.push(HostEntry::Extended(natives::native_axis_axis));
+    natives.push(HostEntry::Extended(natives::native_plot_xlabel));
+    natives.push(HostEntry::Extended(natives::native_plot_ylabel));
+    natives.push(HostEntry::Extended(natives::native_plot_line));
+    natives.push(HostEntry::Extended(natives::native_plot_bar));
+    natives.push(HostEntry::Extended(natives::native_plot_pie));
+    natives.push(HostEntry::Extended(natives::native_plot_heatmap));
     
     // Create plot module object with native function references
     let mut plot_object = HashMap::new();
@@ -375,7 +376,7 @@ fn register_plot_module(
 }
 
 fn register_settings_env_module(
-    natives: &mut Vec<fn(&[Value]) -> Value>,
+    natives: &mut Vec<HostEntry>,
     globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
@@ -384,10 +385,10 @@ fn register_settings_env_module(
     use crate::settings_env::natives;
     
     let settings_env_native_start = natives.len();
-    natives.push(natives::native_settings_env_load_env);
-    natives.push(natives::native_settings_env_settings);
-    natives.push(natives::native_settings_env_field);
-    natives.push(natives::native_settings_env_config);
+    natives.push(HostEntry::Extended(natives::native_settings_env_load_env));
+    natives.push(HostEntry::Extended(natives::native_settings_env_settings));
+    natives.push(HostEntry::Extended(natives::native_settings_env_field));
+    natives.push(HostEntry::Extended(natives::native_settings_env_config));
     
     let mut settings_env_object = HashMap::new();
     let load_env_fn = Value::NativeFunction(settings_env_native_start + 0);
@@ -421,7 +422,7 @@ fn register_settings_env_module(
 }
 
 fn register_uuid_module(
-    natives: &mut Vec<fn(&[Value]) -> Value>,
+    natives: &mut Vec<HostEntry>,
     globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
@@ -430,19 +431,19 @@ fn register_uuid_module(
     use crate::uuid::natives;
     
     let uuid_native_start = natives.len();
-    natives.push(natives::native_uuid_v4);
-    natives.push(natives::native_uuid_v7);
-    natives.push(natives::native_uuid_new);
-    natives.push(natives::native_uuid_random);
-    natives.push(natives::native_uuid_parse);
-    natives.push(natives::native_uuid_to_string);
-    natives.push(natives::native_uuid_to_bytes);
-    natives.push(natives::native_uuid_from_bytes);
-    natives.push(natives::native_uuid_version);
-    natives.push(natives::native_uuid_variant);
-    natives.push(natives::native_uuid_timestamp);
-    natives.push(natives::native_uuid_v3);
-    natives.push(natives::native_uuid_v5);
+    natives.push(HostEntry::Extended(natives::native_uuid_v4));
+    natives.push(HostEntry::Extended(natives::native_uuid_v7));
+    natives.push(HostEntry::Extended(natives::native_uuid_new));
+    natives.push(HostEntry::Extended(natives::native_uuid_random));
+    natives.push(HostEntry::Extended(natives::native_uuid_parse));
+    natives.push(HostEntry::Extended(natives::native_uuid_to_string));
+    natives.push(HostEntry::Extended(natives::native_uuid_to_bytes));
+    natives.push(HostEntry::Extended(natives::native_uuid_from_bytes));
+    natives.push(HostEntry::Extended(natives::native_uuid_version));
+    natives.push(HostEntry::Extended(natives::native_uuid_variant));
+    natives.push(HostEntry::Extended(natives::native_uuid_timestamp));
+    natives.push(HostEntry::Extended(natives::native_uuid_v3));
+    natives.push(HostEntry::Extended(natives::native_uuid_v5));
     
     let start = uuid_native_start;
     let mut uuid_object = HashMap::new();
@@ -481,7 +482,7 @@ fn register_uuid_module(
 }
 
 fn register_database_module(
-    natives: &mut Vec<fn(&[Value]) -> Value>,
+    natives: &mut Vec<HostEntry>,
     globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
@@ -490,19 +491,19 @@ fn register_database_module(
     use crate::database_engine::natives;
 
     let db_native_start = natives.len();
-    natives.push(natives::native_engine);
-    natives.push(natives::native_engine_connect);
-    natives.push(natives::native_engine_execute);
-    natives.push(natives::native_engine_query);
-    natives.push(natives::native_metadata);
-    natives.push(natives::native_column);
-    natives.push(natives::native_now_call);
-    natives.push(natives::native_select);
-    natives.push(natives::native_engine_run);
-    natives.push(natives::native_cluster);
-    natives.push(natives::native_cluster_add);
-    natives.push(natives::native_cluster_get);
-    natives.push(natives::native_cluster_names);
+    natives.push(HostEntry::Extended(natives::native_engine));
+    natives.push(HostEntry::Extended(natives::native_engine_connect));
+    natives.push(HostEntry::Extended(natives::native_engine_execute));
+    natives.push(HostEntry::Extended(natives::native_engine_query));
+    natives.push(HostEntry::Extended(natives::native_metadata));
+    natives.push(HostEntry::Extended(natives::native_column));
+    natives.push(HostEntry::Extended(natives::native_now_call));
+    natives.push(HostEntry::Extended(natives::native_select));
+    natives.push(HostEntry::Extended(natives::native_engine_run));
+    natives.push(HostEntry::Extended(natives::native_cluster));
+    natives.push(HostEntry::Extended(natives::native_cluster_add));
+    natives.push(HostEntry::Extended(natives::native_cluster_get));
+    natives.push(HostEntry::Extended(natives::native_cluster_names));
 
     let start = db_native_start;
     let mut database_object = HashMap::new();

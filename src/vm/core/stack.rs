@@ -2,15 +2,16 @@
 
 use crate::common::{error::LangError, value_store::{ValueId, ValueStore}};
 use crate::common::TaggedValue;
+use crate::vm::exceptions::ExceptionHandler;
+use crate::vm::heavy_store::HeavyStore;
+
+use super::frame::CallFrame;
 
 /// Push a heap value by id (converts to TaggedValue on stack).
 #[inline]
 pub fn push_id(stack: &mut Vec<TaggedValue>, id: ValueId) {
     stack.push(TaggedValue::from_heap(id));
 }
-use crate::vm::frame::CallFrame;
-use crate::vm::exceptions::ExceptionHandler;
-use crate::vm::heavy_store::HeavyStore;
 
 #[inline]
 pub fn push(stack: &mut Vec<TaggedValue>, tv: TaggedValue) {
@@ -80,4 +81,3 @@ pub fn peek<'a>(stack: &'a [TaggedValue], distance: usize, frames: &[CallFrame])
     }
     Ok(stack[stack.len() - 1 - distance])
 }
-

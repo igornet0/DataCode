@@ -3,7 +3,7 @@
 // VM is not Send, so we run the server on the current thread and store VM in thread-local.
 
 use crate::common::value::Value;
-use crate::vm::cli::HttpServerConfig;
+use crate::infra::cli::HttpServerConfig;
 use axum::{
     body::Body,
     extract::connect_info::ConnectInfo,

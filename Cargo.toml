@@ -3,7 +3,7 @@ members = ["datacode_abi", "datacode_sdk"]
 
 [package]
 name = "data-code"
-version = "2.2.5"
+version = "2.2.6"
 edition = "2021"
 description = "ДатаКод - Интерактивный язык программирования для быстрой обработки данных"
 license = "MIT"

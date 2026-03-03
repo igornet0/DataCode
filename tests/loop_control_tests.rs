@@ -352,5 +352,69 @@ mod tests {
         "#;
         assert_error(source);
     }
+
+    // ========== break/continue внутри try в цикле ==========
+
+    #[test]
+    fn test_break_inside_try_in_loop() {
+        let source = r#"
+            let sum = 0
+            let i = 0
+            while i < 10 {
+                i += 1
+                try {
+                    if i >= 5 {
+                        break
+                    }
+                    sum += i
+                } catch {
+                    sum += 100
+                }
+            }
+            sum
+        "#;
+        // sum = 1 + 2 + 3 + 4 = 10, потом break
+        assert_number_result(source, 10.0);
+    }
+
+    #[test]
+    fn test_continue_inside_try_in_loop() {
+        let source = r#"
+            let sum = 0
+            for i in [1, 2, 3, 4, 5] {
+                try {
+                    if i == 3 {
+                        continue
+                    }
+                    sum += i
+                } catch {
+                    sum += 100
+                }
+            }
+            sum
+        "#;
+        // sum = 1 + 2 + 4 + 5 = 12 (пропущен 3)
+        assert_number_result(source, 12.0);
+    }
+
+    #[test]
+    fn test_break_inside_try_catch_in_for_loop() {
+        let source = r#"
+            let count = 0
+            for x in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] {
+                try {
+                    if x > 6 {
+                        break
+                    }
+                    count += 1
+                } catch {
+                    count += 100
+                }
+            }
+            count
+        "#;
+        // count = 6 (итерации 1..6, затем break)
+        assert_number_result(source, 6.0);
+    }
 }
 

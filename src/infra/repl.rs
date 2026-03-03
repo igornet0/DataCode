@@ -2,7 +2,7 @@
 
 use crate::run;
 use crate::common::value::Value;
-use crate::vm::cli::version;
+use crate::infra::cli::version;
 
 /// Run REPL mode
 pub fn run_repl() -> Result<(), String> {
@@ -61,4 +61,3 @@ pub fn run_repl() -> Result<(), String> {
     }
     Ok(())
 }
-

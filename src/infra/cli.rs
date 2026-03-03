@@ -424,4 +424,3 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
 pub fn version() -> &'static str {
     VERSION
 }
-

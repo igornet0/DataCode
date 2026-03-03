@@ -218,7 +218,6 @@ mod tests {
             while i < 5 {
                 try {
                     let x = undefined_var
-                    count = count + 1
                 } catch e {
                     count = count + 1
                 }

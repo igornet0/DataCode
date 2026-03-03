@@ -1,7 +1,7 @@
 use data_code::compile;
 use data_code::sqlite_export;
 use data_code::common::debug;
-use data_code::vm::{cli, repl, gui, websocket, http_server};
+use data_code::infra::{cli, repl, gui, websocket, http_server};
 use std::env;
 use std::fs;
 use std::path::PathBuf;

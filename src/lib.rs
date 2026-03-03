@@ -13,6 +13,7 @@ pub mod semantic;
 pub mod bytecode;
 pub mod compiler;
 pub mod vm;
+pub mod infra;
 
 #[path = "lib/websocket/mod.rs"]
 pub mod websocket;

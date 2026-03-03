@@ -12,7 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, Condvar};
 use std::thread;
 
-use crate::vm::window_events;
+use crate::infra::window_events;
 
 /// Run DataCode code with EventLoop (for plot support)
 /// Creates EventLoop in main thread, spawns runtime in separate thread.
@@ -169,4 +169,3 @@ where
     
     Ok(result)
 }
-

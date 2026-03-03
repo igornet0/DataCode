@@ -1,26 +1,20 @@
-
-LOG_DEFAULT_FORMAT = '[%(asctime)s] %(name)-35s:%(lineno)-3d - %(levelname)-7s - %(message)s'
-
-# Путь к каталогу с env-файлами (относительно пакета: ./settings)
-#_ENV_DIR = getcwd() / "settings"
-_ENV_DIR = "./settings"
-
 # Базовая конфигурация для всех окружений
-_base_config = {
+let _base_config = {
     "case_sensitive": false,
     "env_file_encoding": "utf-8",
     "env_nested_delimiter": "__",
-    "extra": "ignore"
+    "extra": "ignore",
+    "env_prefix": "APP__"
 }
 
 # Конфигурация для production
-ProdAppBaseConfig = {
+let ProdAppBaseConfig = {
     **_base_config,
-    "env_file": str(_ENV_DIR / "prod.env")
+    "env_file": "settings/prod.env"
 }
 
 # Конфигурация для development
-DevAppBaseConfig = {
+let DevAppBaseConfig = {
     **_base_config,
-    "env_file": str(_ENV_DIR / "dev.env")
+    "env_file": "settings/dev.env"
 }

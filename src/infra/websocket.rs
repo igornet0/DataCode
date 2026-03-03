@@ -1,6 +1,6 @@
 // WebSocket server startup
 
-use crate::vm::cli::WebSocketConfig;
+use crate::infra::cli::WebSocketConfig;
 
 /// Start WebSocket server with given configuration
 pub fn start_websocket_server(config: WebSocketConfig) -> Result<(), String> {
@@ -25,4 +25,3 @@ pub fn start_websocket_server(config: WebSocketConfig) -> Result<(), String> {
     rt.block_on(crate::websocket::start_server(&address, config.use_ve, config.build_model))
         .map_err(|e| format!("Ошибка запуска WebSocket сервера: {}", e))
 }
-

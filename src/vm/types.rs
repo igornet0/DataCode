@@ -18,6 +18,14 @@ pub struct ExplicitPrimaryKey {
     pub column_name: String,
 }
 
+/// Info for a merged module: used to resolve Value::ModuleFunction { module_id, local_index } at Call.
+#[derive(Clone, Debug)]
+pub struct ModuleInfo {
+    pub name: String,
+    pub function_offset: usize,
+    pub function_count: usize,
+}
+
 /// Статус выполнения одного шага VM (Stage 1: Return carries ValueId)
 #[derive(Debug)]
 pub enum VMStatus {

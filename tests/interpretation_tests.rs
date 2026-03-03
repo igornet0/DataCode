@@ -670,6 +670,67 @@ mod tests {
         assert_number_result(source, 0.0);
     }
 
+    // ========== Тесты для short-circuit and/or ==========
+
+    #[test]
+    fn test_and_short_circuit() {
+        // false and (1/0) — правая часть не должна вычисляться, иначе division by zero
+        let source = r#"
+            let x = false and (1 / 0)
+            if x == false { 1 } else { 0 }
+        "#;
+        assert_number_result(source, 1.0);
+    }
+
+    #[test]
+    fn test_or_short_circuit() {
+        // true or (1/0) — правая часть не должна вычисляться
+        let source = r#"
+            let x = true or (1 / 0)
+            if x == true { 1 } else { 0 }
+        "#;
+        assert_number_result(source, 1.0);
+    }
+
+    #[test]
+    fn test_or_evaluates_right_when_left_false() {
+        let source = r#"
+            if false or true { 1 } else { 0 }
+        "#;
+        assert_number_result(source, 1.0);
+    }
+
+    #[test]
+    fn test_and_evaluates_right_when_left_true() {
+        let source = r#"
+            if true and true { 1 } else { 0 }
+        "#;
+        assert_number_result(source, 1.0);
+    }
+
+    // ========== Тесты для оператора in ==========
+
+    #[test]
+    fn test_in_operator_array_element_present() {
+        assert_bool_result("1 in [1, 2, 3]", true);
+    }
+
+    #[test]
+    fn test_in_operator_array_element_absent() {
+        assert_bool_result("4 in [1, 2, 3]", false);
+    }
+
+    #[test]
+    fn test_in_operator_array_string_element() {
+        assert_bool_result(r#""b" in ["a", "b", "c"]"#, true);
+        assert_bool_result(r#""x" in ["a", "b", "c"]"#, false);
+    }
+
+    #[test]
+    fn test_in_operator_empty_array() {
+        assert_bool_result("1 in []", false);
+    }
+
     // ========== Тесты для операторов сравнения ==========
 
     #[test]

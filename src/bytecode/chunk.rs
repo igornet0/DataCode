@@ -70,6 +70,20 @@ impl Chunk {
         self.constants.len() - 1
     }
 
+    /// Returns true if every Constant(index) in code has index < constants.len().
+    /// Used to reject corrupted or mismatched cached/DCB chunks and fall back to recompile.
+    pub fn constant_indices_in_bounds(&self) -> bool {
+        let len = self.constants.len();
+        for op in &self.code {
+            if let OpCode::Constant(index) = op {
+                if *index >= len {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// Debug mode: дамп байт-кода
     pub fn disassemble(&self, name: &str) -> String {
         let mut result = format!("== {} ==\n", name);
@@ -295,6 +309,11 @@ impl Chunk {
             }
             OpCode::Dup => {
                 output.push_str("DUP\n");
+                offset + 1
+            }
+            OpCode::FormatInterp(index) => {
+                let fmt = &self.constants[*index];
+                output.push_str(&format!("FORMAT_INTERP {:4} '{}'\n", index, fmt.to_string()));
                 offset + 1
             }
             OpCode::BeginTry(handler_index) => {

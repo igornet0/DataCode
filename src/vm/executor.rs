@@ -134,6 +134,7 @@ pub fn execute_instruction(
         }
 
         OpCode::Add => return arithmetic::op_add(current_ip, stack, frames, exception_handlers, value_store, heavy_store),
+        OpCode::FormatInterp(index) => return stack_ops::op_format_interp(index, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::RegAdd(rd, r1, r2) => return arithmetic::op_reg_add(rd, r1, r2, frames),
         OpCode::Sub => return arithmetic::op_sub(current_ip, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::Mul => return arithmetic::op_mul(current_ip, stack, frames, exception_handlers, value_store, heavy_store),

@@ -1173,6 +1173,25 @@ impl Parser {
         sub_parser.parse_single_expression()
     }
 
+    /// Split interpolation content into expression part, optional "=" suffix, and optional ":format" suffix.
+    /// E.g. "n=:.0f" → ("n", true, Some(".0f")); "a+b:.2f" → ("a+b", false, Some(".2f")).
+    fn split_interpolation_suffix(content: &str) -> (String, bool, Option<String>) {
+        let content = content.trim();
+        let (middle, format_spec) = match content.rfind(':') {
+            Some(colon_pos) => (
+                content[..colon_pos].trim_end(),
+                Some(content[colon_pos + 1..].to_string()),
+            ),
+            None => (content, None),
+        };
+        let (expr_content, include_name) = if middle.ends_with('=') {
+            (middle[..middle.len() - 1].trim_end().to_string(), true)
+        } else {
+            (middle.to_string(), false)
+        };
+        (expr_content, include_name, format_spec)
+    }
+
     /// Unescape literal segments: lexer \$ pushes placeholder \u{E000}; we replace it with "$" (the "{" is already in the string)
     fn unescape_literal(s: &str) -> String {
         s.replace('\u{E000}', "$")
@@ -1224,8 +1243,15 @@ impl Parser {
                         file: None,
                     })?;
                     let expr_source = raw[pos + 2..end_byte].trim();
-                    let expr = Self::parse_expression_from_source(expr_source, line)?;
-                    segments.push(InterpolatedSegment::Expr(Box::new(expr)));
+                    let (expr_content, include_name, format_spec) =
+                        Self::split_interpolation_suffix(expr_source);
+                    let expr = Self::parse_expression_from_source(&expr_content, line)?;
+                    segments.push(InterpolatedSegment::Expr {
+                        expr: Box::new(expr),
+                        include_name,
+                        display_name: if include_name { Some(expr_content.clone()) } else { None },
+                        format: format_spec,
+                    });
                     literal_start = end_byte + 1;
                 }
             }

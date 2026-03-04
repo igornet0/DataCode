@@ -296,42 +296,76 @@ fn load_local_module_with_vm_inner(
 
     let mut module_vm = {
         let mut cache = vm.get_module_cache_mut();
-        if let Some(cached) = cache.get(&cache_key) {
-            let cached = cached.clone();
-            let project_root = vm.get_project_root();
-            drop(cache);
-            run_compiled_module(&cached.chunk, &cached.functions, Some(module_dir.clone()), project_root)?
-        } else if let Some(cached) = crate::vm::dcb::load_dcb_if_fresh(&dcb_path, &source, source_mtime) {
-            cache.insert(cache_key.clone(), cached.clone());
-            let project_root = vm.get_project_root();
-            drop(cache);
-            run_compiled_module(&cached.chunk, &cached.functions, Some(module_dir.clone()), project_root)?
-        } else {
-            let (chunk, functions, import_names) = compile_module(&source, Some(&file_path))?;
-            let mut dep_paths = Vec::new();
-            let mut search_paths = vec![module_dir.clone()];
-            search_paths.extend(get_dpm_package_paths());
-            for name in &import_names {
-                if let Some((_, dep_file_path)) = search_paths.iter().find_map(|root| try_find_module_in(name, root)) {
-                    dep_paths.push(module_cache::canonical_module_cache_key(&dep_file_path));
+        let use_cached = |chunk: &crate::bytecode::Chunk, functions: &[crate::bytecode::Function]| -> bool {
+            if !chunk.constant_indices_in_bounds() {
+                return false;
+            }
+            for f in functions {
+                if !f.chunk.constant_indices_in_bounds() {
+                    return false;
                 }
             }
-            drop(cache);
-            vm.get_module_deps_mut().insert(cache_key.clone(), dep_paths);
-            let mut cache = vm.get_module_cache_mut();
-            let functions_arc = Arc::new(functions.clone());
-            let compiled = CachedModule {
-                chunk: chunk.clone(),
-                functions: functions_arc.clone(),
-            };
-            if crate::vm::dcb::save_dcb(&dcb_path, &compiled, &source, source_mtime).is_ok() {
-                // .dcb written; on next run we may load from disk
+            true
+        };
+        let (chunk, functions) = if let Some(cached) = cache.get(&cache_key) {
+            if use_cached(&cached.chunk, &cached.functions) {
+                (Some((cached.chunk.clone(), (*cached.functions).clone())), true)
+            } else {
+                cache.remove(&cache_key);
+                (None, false)
             }
-            cache.insert(cache_key.clone(), compiled);
-            let project_root = vm.get_project_root();
-            drop(cache);
-            run_compiled_module(&chunk, &functions, Some(module_dir.clone()), project_root)?
-        }
+        } else {
+            (None, false)
+        };
+        let (chunk, functions) = match (chunk, functions) {
+            (Some((c, f)), true) => (c, f),
+            _ => if let Some(cached) = crate::vm::dcb::load_dcb_if_fresh(&dcb_path, &source, source_mtime) {
+                if use_cached(&cached.chunk, &cached.functions) {
+                    cache.insert(cache_key.clone(), cached.clone());
+                    (cached.chunk, (*cached.functions).clone())
+                } else {
+                    let (chunk, functions, import_names) = compile_module(&source, Some(&file_path))?;
+                    let mut dep_paths = Vec::new();
+                    let mut search_paths = vec![module_dir.clone()];
+                    search_paths.extend(get_dpm_package_paths());
+                    for name in &import_names {
+                        if let Some((_, dep_file_path)) = search_paths.iter().find_map(|root| try_find_module_in(name, root)) {
+                            dep_paths.push(module_cache::canonical_module_cache_key(&dep_file_path));
+                        }
+                    }
+                    vm.get_module_deps_mut().insert(cache_key.clone(), dep_paths);
+                    let functions_arc = Arc::new(functions.clone());
+                    let compiled = CachedModule { chunk: chunk.clone(), functions: functions_arc.clone() };
+                    if crate::vm::dcb::save_dcb(&dcb_path, &compiled, &source, source_mtime).is_ok() {}
+                    cache.insert(cache_key.clone(), compiled);
+                    (chunk, functions)
+                }
+            } else {
+                let (chunk, functions, import_names) = compile_module(&source, Some(&file_path))?;
+                let mut dep_paths = Vec::new();
+                let mut search_paths = vec![module_dir.clone()];
+                search_paths.extend(get_dpm_package_paths());
+                for name in &import_names {
+                    if let Some((_, dep_file_path)) = search_paths.iter().find_map(|root| try_find_module_in(name, root)) {
+                        dep_paths.push(module_cache::canonical_module_cache_key(&dep_file_path));
+                    }
+                }
+                vm.get_module_deps_mut().insert(cache_key.clone(), dep_paths);
+                let functions_arc = Arc::new(functions.clone());
+                let compiled = CachedModule {
+                    chunk: chunk.clone(),
+                    functions: functions_arc.clone(),
+                };
+                if crate::vm::dcb::save_dcb(&dcb_path, &compiled, &source, source_mtime).is_ok() {
+                    // .dcb written; on next run we may load from disk
+                }
+                cache.insert(cache_key.clone(), compiled);
+                (chunk, functions)
+            }
+        };
+        let project_root = vm.get_project_root();
+        drop(cache);
+        run_compiled_module(&chunk, &functions, Some(module_dir.clone()), project_root, Some(vm))?
     };
     // Restore caller's RunContext immediately so base_path and argv_value_id are correct before any further use.
     _run_ctx_guard.restore_now();
@@ -383,13 +417,18 @@ fn compile_module(source: &str, source_name: Option<&Path>) -> Result<(crate::by
 
 /// Runs compiled module (chunk + functions) in a new VM and returns that VM. Caller exports globals.
 /// project_root: inherited from parent VM for absolute imports; propagated to nested modules.
+/// parent_vm: when Some, creates a child VM sharing executed_modules and caches so module singletons work (e.g. core.config loaded by main and engine share state).
 fn run_compiled_module(
     chunk: &crate::bytecode::Chunk,
     functions: &[crate::bytecode::Function],
     module_base_path: Option<PathBuf>,
     project_root: Option<PathBuf>,
+    parent_vm: Option<&Vm>,
 ) -> Result<Vm, LangError> {
-    let mut vm = Vm::new();
+    let mut vm = match parent_vm {
+        Some(p) => Vm::new_child(p),
+        None => Vm::new(),
+    };
     vm.set_base_path(module_base_path.or_else(get_base_path));
     vm.set_project_root(project_root);
     let max_global_index = chunk.global_names.keys().max().copied().unwrap_or(0);
@@ -415,7 +454,7 @@ fn run_compiled_module(
 /// Compiles and runs module (used when no cache is available, e.g. load_local_module without vm).
 fn compile_and_run_module(source: &str, module_base_path: Option<PathBuf>) -> Result<(Value, Vm), LangError> {
     let (chunk, functions, _import_names) = compile_module(source, None)?;
-    let mut vm = run_compiled_module(&chunk, &functions, module_base_path, None)?;
+    let mut vm = run_compiled_module(&chunk, &functions, module_base_path, None, None)?;
     let module_object = export_globals_from_vm(&mut vm);
     Ok((
         Value::Object(std::rc::Rc::new(std::cell::RefCell::new(module_object))),

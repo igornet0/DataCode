@@ -2135,7 +2135,7 @@ impl Compiler {
                             let idx = self.chunk.add_constant(Value::String(s.clone()));
                             self.chunk.write_with_line(OpCode::Constant(idx), *line);
                         }
-                        InterpolatedSegment::Expr(e) => {
+                        InterpolatedSegment::Expr { expr: e, .. } => {
                             self.compile_expr(e)?;
                         }
                     }

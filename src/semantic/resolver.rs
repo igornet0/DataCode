@@ -333,7 +333,7 @@ impl Resolver {
             Expr::InterpolatedString { segments, .. } => {
                 use crate::parser::ast::InterpolatedSegment;
                 for seg in segments {
-                    if let InterpolatedSegment::Expr(e) = seg {
+                    if let InterpolatedSegment::Expr { expr: e, .. } = seg {
                         self.resolve_expr(e)?;
                     }
                 }

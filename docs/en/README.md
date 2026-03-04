@@ -44,7 +44,13 @@ Detailed description of all data types supported by the language:
 
 ---
 
-### 3. [User-Defined Functions with Type Annotations](./user_functions.md)
+### 3. [String Formatting (Interpolation)](./string_format.md)
+
+String interpolation: embedding expressions `${expr}`, "name=value" output (`${x=}`), number formatting (`${n:.2f}`, `${n=:.0f}`), escaping `\${`.
+
+---
+
+### 4. [User-Defined Functions with Type Annotations](./user_functions.md)
 
 Complete guide to creating functions with type annotations:
 
@@ -61,7 +67,7 @@ Complete guide to creating functions with type annotations:
 
 ---
 
-### 4. [Working with Classes](./classes.md)
+### 5. [Working with Classes](./classes.md)
 
 Declaration, fields, constructors, methods, inheritance, this/super, and visibility (private, protected, public):
 
@@ -78,7 +84,7 @@ Declaration, fields, constructors, methods, inheritance, this/super, and visibil
 
 ---
 
-### 5. [Working with Tables](./table_create_function.md)
+### 6. [Working with Tables](./table_create_function.md)
 
 Creating and working with tables in DataCode:
 
@@ -93,7 +99,7 @@ Creating and working with tables in DataCode:
 
 ---
 
-### 6. [WebSocket Server](./websocket_server.md)
+### 7. [WebSocket Server](./websocket_server.md)
 
 Remote execution of DataCode code via WebSocket:
 
@@ -108,7 +114,7 @@ Remote execution of DataCode code via WebSocket:
 
 ---
 
-### 7. [JOIN Specification](./join_specification.md)
+### 8. [JOIN Specification](./join_specification.md)
 
 Table join operations:
 
@@ -123,7 +129,7 @@ Table join operations:
 
 ---
 
-### 8. [ML Module](./ml/ml_module.md)
+### 9. [ML Module](./ml/ml_module.md)
 
 Machine learning module for DataCode:
 
@@ -144,7 +150,7 @@ Machine learning module for DataCode:
 
 ---
 
-### 9. [Plot Module - Charts and Visualization](./plot/README.md)
+### 10. [Plot Module - Charts and Visualization](./plot/README.md)
 
 Complete description of the `plot` module for working with images and creating charts:
 
@@ -159,7 +165,7 @@ Complete description of the `plot` module for working with images and creating c
 
 ---
 
-### 10. [settings_env Module](./settings_env/README.md)
+### 11. [settings_env Module](./settings_env/README.md)
 
 Loading environment variables from .env files, type coercion, prefix filtering, configuration, and Settings subclasses with Field descriptors:
 
@@ -173,13 +179,13 @@ Loading environment variables from .env files, type coercion, prefix filtering, 
 
 ---
 
-### 11. [uuid Module](./uuid/README.md)
+### 12. [uuid Module](./uuid/README.md)
 
 UUID generation (v4, v7), parse/to_string, bytes, deterministic (v3/v5), metadata. See the [uuid README](./uuid/README.md) for details and examples.
 
 ---
 
-### 12. [Modules and Imports](./modules_and_imports.md)(./modules_and_imports.md)
+### 13. [Modules and Imports](./modules_and_imports.md)
 
 How to import and use modules in DataCode:
 
@@ -196,7 +202,7 @@ How to import and use modules in DataCode:
 
 ---
 
-### 13. [Text Rendering in Plot Module](./text_rendering.md)
+### 14. [Text Rendering in Plot Module](./text_rendering.md)
 
 Detailed description of the text rendering system in the plot module:
 
@@ -214,7 +220,7 @@ Detailed description of the text rendering system in the plot module:
 
 ---
 
-### 14. [Core / Internals (for kernel developers)](./internals/README.md)
+### 15. [Core / Internals (for kernel developers)](./internals/README.md)
 
 VM and runtime implementation details:
 

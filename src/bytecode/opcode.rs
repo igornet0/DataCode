@@ -93,6 +93,8 @@ pub enum OpCode {
     // Стек
     Pop, // Удалить значение со стека
     Dup, // Дублировать вершину стека (для short-circuit or/and)
+    /// Форматирование значения для интерполяции: pop value, format по константе (например .2f), push string.
+    FormatInterp(usize),
 
     // Модули
     Import(usize), // Импорт модуля (индекс имени модуля в константах)
@@ -163,6 +165,7 @@ impl OpCode {
             OpCode::PopExceptionHandler => "PopExceptionHandler",
             OpCode::Pop => "Pop",
             OpCode::Dup => "Dup",
+            OpCode::FormatInterp(_) => "FormatInterp",
             OpCode::Import(_) => "Import",
             OpCode::ImportFrom(_, _) => "ImportFrom",
             OpCode::RegAdd(_, _, _) => "RegAdd",

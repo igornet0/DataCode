@@ -192,6 +192,41 @@ get_config_env("prod")
         assert_string_result(Ok(value), "prod");
     }
 
+    #[test]
+    fn test_main_absolute_import_from_nested_module_core_database_imports_core_config_prod() {
+        let base = fixtures_dir();
+        let source = r#"
+        from core.config import get_settings, load_settings
+        from core.database import get_load_config_env
+
+        fn main(env) {
+
+            load_settings(env)
+
+            settings = get_settings()
+
+            s_env = get_load_config_env(env)
+            
+            return s_env == settings.env
+
+        }
+
+        fn __main__(env: "dev" | "prod") {
+            return main(env)
+        }
+        "#;
+        // Pass argv=["prod"] so load_env infers settings/prod.env when model_config.env_file is empty
+        let result = run_with_vm_with_args_and_lib(
+            source,
+            Some(vec!["prod".to_string()]),
+            None,
+            Some(base.as_path()),
+            None,
+        );
+        let (value, _) = result.expect("run should succeed");
+        assert_bool_result(Ok(value), true);
+    }
+
     // ========== Пакет nested: __lib__.dc импортирует из sub.dc ==========
 
     #[test]
@@ -406,6 +441,8 @@ get_config_env("prod")
         }
         let source = r#"
         from core.config import get_settings, load_settings
+        from core.database import create_engine
+
         fn main(env) {
             load_settings(env)
             return get_settings().env

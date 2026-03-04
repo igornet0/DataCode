@@ -113,7 +113,7 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
         }
         Expr::InterpolatedString { segments, .. } => {
             for seg in segments {
-                if let InterpolatedSegment::Expr(e) = seg {
+                if let InterpolatedSegment::Expr { expr: e, .. } = seg {
                     vars.extend(find_used_variables_in_expr(e));
                 }
             }

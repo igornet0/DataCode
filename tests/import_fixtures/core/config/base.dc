@@ -3,18 +3,17 @@ let _base_config = {
     "case_sensitive": false,
     "env_file_encoding": "utf-8",
     "env_nested_delimiter": "__",
-    "extra": "ignore",
-    "env_prefix": "APP__"
+    "extra": "ignore"
 }
 
 # Конфигурация для production
 let ProdAppBaseConfig = {
     **_base_config,
-    "env_file": "settings/prod.env"
+    "env_file": "./settings/prod.env"
 }
 
 # Конфигурация для development
 let DevAppBaseConfig = {
     **_base_config,
-    "env_file": "settings/dev.env"
+    "env_file": "./settings/dev.env"
 }

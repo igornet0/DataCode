@@ -100,6 +100,44 @@ let b = true
     }
 
     #[test]
+    fn test_interpolation_number_and_bool_reverse() {
+        assert_string_result(
+            r#"let n = 42
+let b = true
+"b=${b} n=${n}""#,
+            "b=true n=42",
+        );
+    }
+
+    #[test]
+    fn test_interpolation_number() {
+        assert_string_result(
+            r#"let n = 42
+let b = true
+"${b=} ${n=}""#,
+            "b=true n=42",
+        );
+    }
+
+    #[test]
+    fn test_round_number() {
+        assert_string_result(
+            r#"let n = 42.23425
+"${n:.2f}""#,
+            "42.23",
+        );
+    }
+
+    #[test]
+    fn test_round_number_reverse() {
+        assert_string_result(
+            r#"let n = 42.23425
+"${n=:.0f}""#,
+            "n=42",
+        );
+    }
+
+    #[test]
     fn test_plain_string_no_interpolation() {
         assert_string_result(r#""just a string""#, "just a string");
     }

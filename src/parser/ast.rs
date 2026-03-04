@@ -220,7 +220,15 @@ pub enum Expr {
 #[derive(Debug, Clone)]
 pub enum InterpolatedSegment {
     Literal(String),   // обычный текст (после замены "\\${" → "${" в литералах)
-    Expr(Box<Expr>),
+    /// Выражение с опциональным префиксом "name=" и/или форматом (например .2f).
+    Expr {
+        expr: Box<Expr>,
+        /// При true выводить как "name=value" (display_name — источник, например имя переменной).
+        include_name: bool,
+        display_name: Option<String>,
+        /// Спецификация формата числа, например ".2f", ".0f".
+        format: Option<String>,
+    },
 }
 
 impl Expr {

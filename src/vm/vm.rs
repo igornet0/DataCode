@@ -83,14 +83,14 @@ pub struct Vm {
     pub(crate) pending_relations: Vec<(Rc<RefCell<Table>>, String, Rc<RefCell<Table>>, String)>,
     /// Pending primary keys from primary_key() native (VM-owned).
     pub(crate) pending_primary_keys: Vec<(Rc<RefCell<Table>>, String)>,
-    /// Runtime module cache: canonical path -> compiled (chunk + functions).
-    module_cache: RefCell<HashMap<PathBuf, CachedModule>>,
-    /// Modules already executed once this run: canonical path -> saved namespace (module object). Re-import returns this without running again.
-    executed_modules: RefCell<HashMap<PathBuf, Value>>,
-    /// Functions from each executed module (canonical path -> list). On cache hit we add these to the caller and remap the object so indices stay valid.
-    executed_module_functions: RefCell<HashMap<PathBuf, Vec<crate::bytecode::Function>>>,
-    /// Dependency graph: canonical path -> list of canonical paths of imported modules (for topological order / invalidation).
-    module_deps: RefCell<HashMap<PathBuf, Vec<PathBuf>>>,
+    /// Runtime module cache: canonical path -> compiled (chunk + functions). Shared with child VMs so modules are singletons.
+    module_cache: Rc<RefCell<HashMap<PathBuf, CachedModule>>>,
+    /// Modules already executed once this run: canonical path -> saved namespace. Shared with child VMs so core.config etc. are singletons.
+    executed_modules: Rc<RefCell<HashMap<PathBuf, Value>>>,
+    /// Functions from each executed module. Shared with child VMs for cache hit remapping.
+    executed_module_functions: Rc<RefCell<HashMap<PathBuf, Vec<crate::bytecode::Function>>>>,
+    /// Dependency graph: canonical path -> list of canonical paths of imported modules. Shared with child VMs.
+    module_deps: Rc<RefCell<HashMap<PathBuf, Vec<PathBuf>>>>,
     /// Cache of loaded modules by canonical name (e.g. "core.config") or path. Each module has its own namespace.
     modules: RefCell<HashMap<String, Rc<RefCell<ModuleObject>>>>,
     /// When set (e.g. from run_with_vm_internal_with_args), update_chunk_indices_from_names will always map "argv" to this slot,
@@ -161,10 +161,54 @@ impl Vm {
             reusable_all_popped: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
             pending_relations: Vec::new(),
             pending_primary_keys: Vec::new(),
-            module_cache: RefCell::new(HashMap::new()),
-            executed_modules: RefCell::new(HashMap::new()),
-            executed_module_functions: RefCell::new(HashMap::new()),
-            module_deps: RefCell::new(HashMap::new()),
+            module_cache: Rc::new(RefCell::new(HashMap::new())),
+            executed_modules: Rc::new(RefCell::new(HashMap::new())),
+            executed_module_functions: Rc::new(RefCell::new(HashMap::new())),
+            module_deps: Rc::new(RefCell::new(HashMap::new())),
+            modules: RefCell::new(HashMap::new()),
+            argv_slot_index: None,
+            argv_old_indices: None,
+            current_argv_value_id: None,
+            module_registry: RefCell::new(Vec::new()),
+        };
+        vm.register_natives();
+        vm
+    }
+
+    /// Creates a child VM that shares module_cache, executed_modules, executed_module_functions, and module_deps with the parent.
+    /// Ensures module singletons: when engine imports core.config, it gets the same namespace as main (e.g. load_settings mutates shared state).
+    pub(crate) fn new_child(parent: &Self) -> Self {
+        let mut vm = Self {
+            stack: Vec::with_capacity(DEFAULT_STACK_CAPACITY),
+            frames: Vec::with_capacity(DEFAULT_FRAMES_CAPACITY),
+            builtins: Vec::with_capacity(BUILTIN_END),
+            globals: Vec::with_capacity(DEFAULT_GLOBALS_CAPACITY),
+            functions: Vec::new(),
+            natives: Vec::new(),
+            exception_handlers: Vec::new(),
+            error_type_table: Vec::new(),
+            global_names: std::collections::BTreeMap::new(),
+            explicit_global_names: std::collections::BTreeMap::new(),
+            explicit_relations: Vec::new(),
+            explicit_primary_keys: Vec::new(),
+            loaded_modules: std::collections::HashSet::new(),
+            abi_natives: Vec::new(),
+            loaded_native_libraries: Vec::new(),
+            base_path: None,
+            project_root: parent.project_root.clone(),
+            ml_context: Some(crate::ml::MlContext::new()),
+            plot_context: Some(crate::plot::PlotContext::new()),
+            value_store: ValueStore::new(),
+            heavy_store: HeavyStore::new(),
+            native_args_buffer: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
+            reusable_native_arg_ids: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
+            reusable_all_popped: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
+            pending_relations: Vec::new(),
+            pending_primary_keys: Vec::new(),
+            module_cache: parent.module_cache.clone(),
+            executed_modules: parent.executed_modules.clone(),
+            executed_module_functions: parent.executed_module_functions.clone(),
+            module_deps: parent.module_deps.clone(),
             modules: RefCell::new(HashMap::new()),
             argv_slot_index: None,
             argv_old_indices: None,

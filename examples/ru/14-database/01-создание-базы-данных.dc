@@ -1,7 +1,7 @@
 from database_engine import engine
 
 # Create SQLite engine
-db = engine("sqlite:///./test_db.sqlite", false, false, 5, 10)
+db = engine("sqlite:///:memory:", false, false, 5, 10)
 print("Engine created:", db)
 
 # Connect (for SQLite, returns same engine)
@@ -21,3 +21,4 @@ print("Inserted rows")
 t = conn.query("SELECT * FROM users", [])
 print("Query result:", t)
 print("Rows:", t.rows)
+show_table(t)

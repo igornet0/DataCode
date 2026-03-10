@@ -254,8 +254,13 @@ fn compile_generic_method(
     } else {
         matches!(method, "add" | "get" | "names" | "connect" | "execute" | "query" | "run")
     };
+    // Tensor methods max_idx/min_idx: GetArrayElement pushes (tensor, native_fn); Call(0) lets native take tensor from stack.
+    // Must NOT use compile_module_method which pushes extra receiver and causes stack leak.
+    let is_tensor_arity0_method = matches!(method, "max_idx" | "min_idx");
     
-    if is_db_receiver_method {
+    if is_tensor_arity0_method && args.is_empty() {
+        compile_tensor_arity0_method(ctx, method, temp_object_slot, line)
+    } else if is_db_receiver_method {
         compile_db_receiver_method(ctx, method, args, temp_object_slot, line)
     } else if is_nn_method {
         compile_nn_method(ctx, method, args, temp_object_slot, line)
@@ -270,6 +275,23 @@ fn compile_generic_method(
     } else {
         compile_module_method(ctx, method, args, temp_object_slot, line)
     }
+}
+
+/// Tensor methods max_idx/min_idx with 0 args.
+/// GetArrayElement(tensor, "max_idx") pushes (tensor, native_fn); Call(0) lets native_max_idx take tensor from stack.
+/// Do NOT push extra receiver — that would leak onto stack and cause E0400 in string concatenation.
+fn compile_tensor_arity0_method(
+    ctx: &mut CompilationContext,
+    method: &str,
+    temp_object_slot: usize,
+    line: usize,
+) -> Result<(), LangError> {
+    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
+    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
+    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
+    ctx.chunk.write_with_line(OpCode::Call(0), line);
+    Ok(())
 }
 
 fn compile_nn_method(

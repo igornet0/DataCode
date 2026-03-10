@@ -529,6 +529,9 @@ pub fn execute_call(
                     }
                 }
             }
+        } else if matches!(actual_callee, Value::NeuralNetwork(_) | Value::LinearRegression(_) | Value::Layer(_)) {
+            // Models and layers can be called as functions; dispatch happens in match actual_callee below.
+            0
         } else {
             let error = ExceptionHandler::runtime_error(
                 &frames,

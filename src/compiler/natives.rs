@@ -201,6 +201,14 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         
         // Module methods
         "show" => Some(vec!["image".to_string(), "title".to_string()]),
+        "line" => Some(vec![
+            "x".to_string(),
+            "y".to_string(),
+            "show_points".to_string(),
+            "point_size".to_string(),
+            "line_width".to_string(),
+            "color".to_string(),
+        ]),
         
         // ML functions
         "nn_train" => Some(vec![

@@ -537,6 +537,14 @@ pub fn execute_native_call(
         }
     }
 
+    use crate::plot::natives as plot_natives;
+    let is_plot_line_bar_pie_heatmap = native_index < builtin_count && {
+        let ptr = natives[native_index].as_fn_ptr();
+        ptr == Some(plot_natives::native_plot_line as *const ())
+            || ptr == Some(plot_natives::native_plot_bar as *const ())
+            || ptr == Some(plot_natives::native_plot_pie as *const ())
+            || ptr == Some(plot_natives::native_plot_heatmap as *const ())
+    };
     const INSTANCEOF_NATIVE_INDEX: usize = 9;
     let second_is_class = native_args_buffer.len() >= 2
         && matches!(&native_args_buffer[1], Value::Object(rc) if rc.borrow().get("__class_name").is_some());
@@ -544,7 +552,8 @@ pub fn execute_native_call(
         || native_index == INSTANCEOF_NATIVE_INDEX
         || second_is_class
         || (native_index == 1 && native_args_buffer.len() == 1)
-        || is_db_column;
+        || is_db_column
+        || is_plot_line_bar_pie_heatmap;
     if !skip_drop && !native_args_buffer.is_empty() {
         if let Value::Object(_) = &native_args_buffer[0] {
             native_args_buffer.remove(0);

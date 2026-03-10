@@ -84,14 +84,10 @@ pub fn handle_cursor_moved(
             if let RenderContent::Chart(chart_data) = &state.content {
                 if let ChartType::Line = chart_data.chart_type {
                     // Get physical window size (same as buffer size in draw_line_chart)
-                    // Use window's physical_size to get physical pixels, accounting for DPI scaling
                     let (buffer_width, buffer_height) = state.window.physical_size();
-                    
-                    // Calculate plot bounds (same as in draw_line_chart)
-                    let left_margin = 200;
-                    let right_margin = 40;
-                    let top_margin = 60;
-                    let bottom_margin = 80;
+                    let scale_factor = state.window.scale_factor();
+                    let (left_margin, right_margin, top_margin, bottom_margin) =
+                        Renderer::calculate_adaptive_margins(scale_factor, buffer_width, buffer_height);
                     let plot_width = buffer_width.saturating_sub(left_margin + right_margin);
                     let plot_height = buffer_height.saturating_sub(top_margin + bottom_margin);
                     let plot_x = left_margin;
@@ -137,14 +133,10 @@ pub fn handle_mouse_click(
             if let RenderContent::Chart(chart_data) = &state.content {
                 if let ChartType::Line = chart_data.chart_type {
                     if let Some(cursor_pos) = state.cursor_pos {
-                        // Get physical window size (same as buffer size in draw_line_chart)
                         let (buffer_width, buffer_height) = state.window.physical_size();
-                        
-                        // Calculate plot bounds (same as in draw_line_chart)
-                        let left_margin = 200;
-                        let right_margin = 40;
-                        let top_margin = 60;
-                        let bottom_margin = 80;
+                        let scale_factor = state.window.scale_factor();
+                        let (left_margin, right_margin, top_margin, bottom_margin) =
+                            Renderer::calculate_adaptive_margins(scale_factor, buffer_width, buffer_height);
                         let plot_width = buffer_width.saturating_sub(left_margin + right_margin);
                         let plot_height = buffer_height.saturating_sub(top_margin + bottom_margin);
                         let plot_x = left_margin;

@@ -1411,13 +1411,23 @@ fn parse_color(color_str: &str) -> u32 {
 /// plot.line(x, y, point_size=5, line_width=2) -> Null
 /// plot.line(x, y, color="blue") -> Null
 /// plot.line(x, y, color="#a434eb") -> Null
+/// Note: When called as plot.line(x, y, ...), args[0] is the receiver (plot object), so x=args[1], y=args[2].
 pub fn native_plot_line(args: &[Value]) -> Value {
-    if args.len() < 2 {
+    // When called as plot.line(x, y, ...), args[0] is receiver (plot object), args[1]=x, args[2]=y.
+    let offset = if args.len() >= 3 && matches!(&args[0], Value::Object(_)) {
+        1
+    } else {
+        0
+    };
+    if args.len() < offset + 2 {
         return Value::Null;
     }
 
+    let x_arg = &args[offset];
+    let y_arg = &args[offset + 1];
+
     // Extract x array
-    let x_array = match &args[0] {
+    let x_array = match x_arg {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut x_data = Vec::new();
@@ -1433,7 +1443,7 @@ pub fn native_plot_line(args: &[Value]) -> Value {
     };
 
     // Extract y array
-    let y_array = match &args[1] {
+    let y_array = match y_arg {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut y_data = Vec::new();
@@ -1465,8 +1475,8 @@ pub fn native_plot_line(args: &[Value]) -> Value {
     let mut color = 0xFF00BFFF; // Default: blue (Deep sky blue)
 
     // Handle positional arguments first (for backward compatibility)
-    if args.len() >= 3 {
-        match &args[2] {
+    if args.len() >= offset + 3 {
+        match &args[offset + 2] {
             Value::Bool(b) => {
                 // Positional boolean argument: show_points
                 show_points = *b;
@@ -1479,7 +1489,7 @@ pub fn native_plot_line(args: &[Value]) -> Value {
         }
     }
 
-    // Extract named parameters from all Object arguments
+    // Extract named parameters from all Object arguments (skip first two arrays for positional)
     // Named arguments can appear anywhere after the first two positional arguments
     // They can be in separate Object arguments or combined in one Object
     // Also check all arguments (not just skip(2)) in case named args come before positional
@@ -1510,10 +1520,7 @@ pub fn native_plot_line(args: &[Value]) -> Value {
     
     // Handle case where color is passed as a positional string argument after positional args
     // This happens when color="blue" is compiled as a positional argument
-    // Check if there's a string argument after positional args that looks like a color
-    if args.len() >= 4 {
-        // Check arguments after the first 3 (x, y, show_points/point_size)
-        for arg in args.iter().skip(3) {
+    for arg in args.iter() {
             if let Value::String(s) = arg {
                 // Check if this string looks like a color (named color or hex)
                 let s_lower = s.to_lowercase();
@@ -1526,23 +1533,8 @@ pub fn native_plot_line(args: &[Value]) -> Value {
                     break; // Use first valid color string found
                 }
             }
-        }
     }
 
-    // Debug: print color information
-    for (_i, arg) in args.iter().enumerate() {
-        match arg {
-            Value::Object(map_rc) => {
-                let map = map_rc.borrow();
-                if let Some(Value::String(_s)) = map.get("color") {
-                    // Color found in object
-                }
-            }
-            _ => {
-                // Other value types don't need special handling here
-            }
-        }
-    }
     // Add line data to plot state
     PlotContext::with_current(|ctx| {
         ctx.plot_state.line_data.push((x_array, y_array, show_points, point_size, line_width, color));
@@ -1556,13 +1548,15 @@ pub fn native_plot_line(args: &[Value]) -> Value {
 /// plot.bar(x, y, color="blue") -> Null
 /// plot.bar(x, y, color="#a434eb") -> Null
 /// x can be array of strings (categories) or numbers (will be converted to strings)
+/// Note: When called as plot.bar(x, y, ...), args[0] is the receiver (plot object), so x=args[1], y=args[2].
 pub fn native_plot_bar(args: &[Value]) -> Value {
-    if args.len() < 2 {
+    let offset = if args.len() >= 3 && matches!(&args[0], Value::Object(_)) { 1 } else { 0 };
+    if args.len() < offset + 2 {
         return Value::Null;
     }
 
     // Extract x array (can be strings or numbers)
-    let x_labels = match &args[0] {
+    let x_labels = match &args[offset] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut labels = Vec::new();
@@ -1586,7 +1580,7 @@ pub fn native_plot_bar(args: &[Value]) -> Value {
     };
 
     // Extract y array (must be numbers)
-    let y_array = match &args[1] {
+    let y_array = match &args[offset + 1] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut y_data = Vec::new();
@@ -1625,8 +1619,8 @@ pub fn native_plot_bar(args: &[Value]) -> Value {
     }
     
     // Handle case where color is passed as a positional string argument
-    if args.len() >= 3 {
-        for arg in args.iter().skip(2) {
+    if args.len() >= offset + 3 {
+        for arg in args.iter().skip(offset + 2) {
             if let Value::String(s) = arg {
                 let s_lower = s.to_lowercase();
                 let is_named_color = matches!(s_lower.as_str(), "blue" | "green" | "red" | "black" | "white");
@@ -1654,13 +1648,15 @@ pub fn native_plot_bar(args: &[Value]) -> Value {
 /// plot.pie(x, y, color="blue") -> Null
 /// plot.pie(x, y, color="#a434eb") -> Null
 /// x can be array of strings (categories) or numbers (will be converted to strings)
+/// Note: When called as plot.pie(x, y, ...), args[0] is the receiver (plot object), so x=args[1], y=args[2].
 pub fn native_plot_pie(args: &[Value]) -> Value {
-    if args.len() < 2 {
+    let offset = if args.len() >= 3 && matches!(&args[0], Value::Object(_)) { 1 } else { 0 };
+    if args.len() < offset + 2 {
         return Value::Null;
     }
 
     // Extract x array (can be strings or numbers)
-    let x_labels = match &args[0] {
+    let x_labels = match &args[offset] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut labels = Vec::new();
@@ -1684,7 +1680,7 @@ pub fn native_plot_pie(args: &[Value]) -> Value {
     };
 
     // Extract y array (must be numbers)
-    let y_array = match &args[1] {
+    let y_array = match &args[offset + 1] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut y_data = Vec::new();
@@ -1723,8 +1719,8 @@ pub fn native_plot_pie(args: &[Value]) -> Value {
     }
     
     // Handle case where color is passed as a positional string argument
-    if args.len() >= 3 {
-        for arg in args.iter().skip(2) {
+    if args.len() >= offset + 3 {
+        for arg in args.iter().skip(offset + 2) {
             if let Value::String(s) = arg {
                 let s_lower = s.to_lowercase();
                 let is_named_color = matches!(s_lower.as_str(), "blue" | "green" | "red" | "black" | "white");
@@ -1752,13 +1748,15 @@ pub fn native_plot_pie(args: &[Value]) -> Value {
 /// plot.heatmap(data, min=0, max=100) -> Null
 /// plot.heatmap(data, palette="red") -> Null
 /// data must be a 2D array (array of arrays of numbers)
+/// Note: When called as plot.heatmap(data, ...), args[0] is the receiver (plot object), so data=args[1].
 pub fn native_plot_heatmap(args: &[Value]) -> Value {
-    if args.is_empty() {
+    let offset = if args.len() >= 2 && matches!(&args[0], Value::Object(_)) { 1 } else { 0 };
+    if args.len() <= offset {
         return Value::Null;
     }
 
     // Extract data array (must be 2D array)
-    let heatmap_data = match &args[0] {
+    let heatmap_data = match &args[offset] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut data = Vec::new();
@@ -1848,8 +1846,8 @@ pub fn native_plot_heatmap(args: &[Value]) -> Value {
     }
     
     // Handle case where parameters are passed as positional arguments
-    if args.len() >= 2 {
-        for arg in args.iter().skip(1) {
+    if args.len() >= offset + 2 {
+        for arg in args.iter().skip(offset + 1) {
             if let Value::Number(n) = arg {
                 // If min is not set, use this as min; otherwise use as max
                 if min_val.is_none() {

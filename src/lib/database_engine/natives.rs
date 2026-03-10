@@ -4,7 +4,7 @@ use crate::common::value::Value;
 use crate::database_engine::cluster::DatabaseCluster;
 use crate::database_engine::engine::DatabaseEngine;
 use crate::vm::globals;
-use crate::vm::natives::utils::call_user_function;
+use crate::vm::natives::utils::{call_user_function, resolve_global_by_name};
 use crate::vm::vm::VM_CALL_CONTEXT;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -318,7 +318,8 @@ pub fn native_engine_run(args: &[Value]) -> Value {
         let obj = rc.borrow();
         if obj.get("__select").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false) {
             if let Some(Value::Object(model_class)) = obj.get("model") {
-                let table_name = get_table_name_from_class(&Value::Object(Rc::clone(model_class)), None);
+                let classes = get_classes_from_class_chain(model_class);
+                let table_name = get_table_name_from_class(&Value::Object(Rc::clone(model_class)), classes.as_ref());
                 if let Some(name) = table_name {
                     let sql = format!("SELECT * FROM {}", name);
                     let model_class = Rc::clone(model_class);
@@ -455,6 +456,30 @@ fn get_table_name_from_class(
         .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
 }
 
+/// Walk __superclass chain via VM globals until we find a class with metadata; return metadata.classes.
+/// Used when insert/select don't have metadata (unlike create_all) so we can build the class chain for __tablename__.
+fn get_classes_from_class_chain(class_rc: &Rc<RefCell<HashMap<String, Value>>>) -> Option<HashMap<String, Value>> {
+    let mut current_name = class_rc.borrow().get("__superclass").and_then(|v| {
+        if let Value::String(s) = v { Some(s.clone()) } else { None }
+    })?;
+    let mut seen = HashSet::new();
+    while seen.insert(current_name.clone()) {
+        let parent_val = resolve_global_by_name(&current_name)?;
+        let Value::Object(parent_rc) = parent_val else { return None };
+        let parent = parent_rc.borrow();
+        if let Some(Value::Object(meta_rc)) = parent.get("metadata") {
+            if let Some(Value::Object(classes_rc)) = meta_rc.borrow().get("classes") {
+                return Some(classes_rc.borrow().clone());
+            }
+        }
+        current_name = match parent.get("__superclass") {
+            Some(Value::String(s)) => s.clone(),
+            _ => return None,
+        };
+    }
+    None
+}
+
 fn get_table_name_from_class_object(instance: &Value) -> Option<String> {
     let Value::Object(rc) = instance else {
         return None;
@@ -463,7 +488,8 @@ fn get_table_name_from_class_object(instance: &Value) -> Option<String> {
     let class_opt = obj.get("__class").cloned();
     if let Some(Value::Object(class_rc)) = class_opt {
         drop(obj);
-        return get_table_name_from_class(&Value::Object(class_rc), None);
+        let classes = get_classes_from_class_chain(&class_rc);
+        return get_table_name_from_class(&Value::Object(class_rc), classes.as_ref());
     }
     obj.get("__class_name")
         .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })

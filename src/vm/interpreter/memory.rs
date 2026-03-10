@@ -61,6 +61,18 @@ pub fn op_load_global(
                     let modules = unsafe { (*vm_ptr).get_modules() };
                     modules.get(mod_name).cloned()
                 };
+                if crate::common::debug::is_debug_enabled() {
+                    let var_name = frame.function.chunk.global_names.get(&index).map(String::as_str);
+                    let mod_keys: Vec<_> = unsafe { (*vm_ptr).get_modules() }.keys().cloned().collect();
+                    debug_println!(
+                        "[DEBUG LoadGlobal module] frame.module_name={:?} var_name={:?} index={} mod_found={} mod_keys_sample={:?}",
+                        mod_name,
+                        var_name,
+                        index,
+                        module_rc.is_some(),
+                        mod_keys.get(..5.min(mod_keys.len())),
+                    );
+                }
                 if let Some(rc) = module_rc {
                     let var_name = frame.function.chunk.global_names.get(&index).map(String::as_str);
                     let class_name = frame.function.name.split("::").next().unwrap_or("");
@@ -113,9 +125,22 @@ pub fn op_load_global(
                             None
                         });
                     if let Some(value) = value_opt {
+                        if crate::common::debug::is_debug_enabled() {
+                            let vt = match &value {
+                                Value::NativeFunction(_) => "NativeFunction",
+                                Value::Function(_) => "Function",
+                                Value::ModuleFunction { .. } => "ModuleFunction",
+                                Value::Object(_) => "Object",
+                                _ => "Other",
+                            };
+                            debug_println!("[DEBUG LoadGlobal module] get_export({:?}) -> {} (using module path)", var_name, vt);
+                        }
                         let id = store_value(value, value_store, heavy_store);
                         stack::push_id(stack, id);
                         return Ok(VMStatus::Continue);
+                    }
+                    if crate::common::debug::is_debug_enabled() {
+                        debug_println!("[DEBUG LoadGlobal module] get_export({:?}) returned None, trying fallback modules", var_name);
                     }
                     // Fallback: primary module (e.g. "config") may not have the export; try all modules
                     // (e.g. "settings" lives in "core.config" top-level, not "config" submodule).
@@ -132,12 +157,18 @@ pub fn op_load_global(
                         }
                     }
                     if !(var_name == Some("__constructing_class__") && frame.function.name.contains("::new_")) {
+                        if crate::common::debug::is_debug_enabled() {
+                            debug_println!("[DEBUG LoadGlobal module] module {:?} not found or get_export failed for {:?}, falling through to globals", mod_name, var_name);
+                        }
                         let err_name = var_name.unwrap_or("?").to_string();
                         return Err(LangError::runtime_error(
                             format!("Undefined variable: {}", err_name),
                             line,
                         ));
                     }
+                } else if crate::common::debug::is_debug_enabled() {
+                    let var_name = frame.function.chunk.global_names.get(&index).map(String::as_str);
+                    debug_println!("[DEBUG LoadGlobal module] modules.get({:?}) = None, falling through to globals for {:?}", mod_name, var_name);
                 }
             }
         }

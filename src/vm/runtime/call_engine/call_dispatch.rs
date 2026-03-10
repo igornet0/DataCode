@@ -471,6 +471,52 @@ pub fn execute_call(
             match by_name.or_else(|| from_module) {
                 Some(idx) => idx,
                 None => {
+                    // Runtime fallback (Variant B): Object may be module/namespace; if previous LoadGlobal
+                    // was for a name that exists as callable in the object (e.g. engine from database_engine),
+                    // use it. Fixes name collision when submodule "engine" shadows imported engine().
+                    let load_global_name = frames.last().and_then(|f| {
+                        let prev_ip = current_ip.saturating_sub(1);
+                        f.function.chunk.code.get(prev_ip).and_then(|op| {
+                            if let crate::bytecode::OpCode::LoadGlobal(idx) = op {
+                                f.function.chunk.global_names.get(idx).cloned()
+                            } else {
+                                None
+                            }
+                        })
+                    });
+                    let fallback_ok = if let (Some(name), Value::Object(ref obj_rc)) = (load_global_name.as_ref(), &actual_callee) {
+                        let obj = obj_rc.borrow();
+                        let v_opt = obj.get(name).cloned();
+                        drop(obj);
+                        if let Some(v) = v_opt {
+                            if matches!(&v, Value::NativeFunction(_) | Value::Function(_) | Value::ModuleFunction { .. }) {
+                                debug_println!(
+                                    "[DEBUG Call dispatch] Object fallback: resolved '{}' from namespace to callable",
+                                    name,
+                                );
+                                actual_callee = v;
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if fallback_ok {
+                        0 // dummy; match actual_callee will dispatch to NativeFunction/closure
+                    } else {
+                    if crate::common::debug::is_debug_enabled() {
+                        let has_class = class_name.is_some();
+                        debug_println!(
+                            "[DEBUG Call dispatch] Object callee: has __class_name={}, LoadGlobal name={:?}, frame={}",
+                            has_class,
+                            load_global_name,
+                            frames.last().map(|f| f.function.name.as_str()).unwrap_or("?"),
+                        );
+                    }
                     let error = ExceptionHandler::runtime_error(
                         &frames,
                         "Can only call functions".to_string(),
@@ -479,6 +525,7 @@ pub fn execute_call(
                     match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                         Ok(()) => return Ok(VMStatus::Continue),
                         Err(e) => return Err(e),
+                    }
                     }
                 }
             }

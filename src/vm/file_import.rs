@@ -271,6 +271,15 @@ fn load_local_module_with_vm_inner(
         };
         if let Some(module_object) = module_object_opt {
             if has_stored_fns {
+                // Ensure module is registered for LoadGlobal isolation (e.g. create_engine in engine.dc
+                // needs modules.get("engine").get_export("engine") to resolve database_engine.engine).
+                if let Value::Object(ref namespace_rc) = module_object {
+                    use crate::vm::module_object::ModuleObject;
+                    let mod_obj = ModuleObject::from_namespace(module_name.to_string(), namespace_rc.clone());
+                    vm.get_modules_mut()
+                        .entry(module_name.to_string())
+                        .or_insert_with(|| std::rc::Rc::new(std::cell::RefCell::new(mod_obj)));
+                }
                 return Ok((module_object, None));
             }
             // Cache hit but no stored functions: object has indices from another VM. Fall through to re-load.

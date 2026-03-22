@@ -418,10 +418,10 @@ fn find_tablename_method(
 fn resolve_function_index(method_val: &Value) -> Option<usize> {
     match method_val {
         Value::Function(idx) => Some(*idx),
-        Value::ModuleFunction { module_id, local_index } => {
+        Value::ModuleFunction { module_uid, local_index } => {
             VM_CALL_CONTEXT.with(|ctx| {
                 let vm_ptr = ctx.borrow();
-                vm_ptr.and_then(|ptr| unsafe { (*ptr).get_module_function_index(*module_id, *local_index) })
+                vm_ptr.and_then(|ptr| unsafe { (*ptr).get_module_function_index(*module_uid, *local_index) })
             })
         }
         _ => None,

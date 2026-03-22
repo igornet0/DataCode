@@ -18,7 +18,7 @@ pub struct ExplicitPrimaryKey {
     pub column_name: String,
 }
 
-/// Info for a merged module: used to resolve Value::ModuleFunction { module_id, local_index } at Call.
+/// Info for a merged module: used to resolve Value::ModuleFunction { module_uid, local_index } at Call.
 #[derive(Clone, Debug)]
 pub struct ModuleInfo {
     pub name: String,

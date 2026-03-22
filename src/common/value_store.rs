@@ -182,7 +182,7 @@ pub enum ValueCell {
     Tuple(Vec<ValueId>),
     Object(HashMap<String, ValueId>),
     Function(usize),
-    ModuleFunction { module_id: usize, local_index: usize },
+    ModuleFunction { module_uid: u64, local_index: usize },
     NativeFunction(usize),
     Path(PathBuf),
     Uuid(u64, u64),

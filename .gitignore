@@ -42,3 +42,4 @@ temp_sessions/
 !tests/**
 model_data.zip
 .DS_Store
+Datacode-registry-index

@@ -616,14 +616,14 @@ pub fn ensure_entry_point_slots(
 pub fn remap_module_export_value(value: &Value, start_fn: usize) -> Value {
     match value {
         Value::Function(fn_idx) => Value::Function(start_fn + fn_idx),
-        Value::ModuleFunction { module_id, local_index } => Value::ModuleFunction { module_id: *module_id, local_index: *local_index },
+        Value::ModuleFunction { module_uid, local_index } => Value::ModuleFunction { module_uid: *module_uid, local_index: *local_index },
         Value::Object(obj_rc) => {
             let obj = obj_rc.borrow();
             let mut new_obj = HashMap::new();
             for (k, v) in obj.iter() {
                 let inner = match v {
                     Value::Function(i) => Value::Function(start_fn + i),
-                    Value::ModuleFunction { module_id, local_index } => Value::ModuleFunction { module_id: *module_id, local_index: *local_index },
+                    Value::ModuleFunction { module_uid, local_index } => Value::ModuleFunction { module_uid: *module_uid, local_index: *local_index },
                     _ => v.clone(),
                 };
                 new_obj.insert(k.clone(), inner);

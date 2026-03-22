@@ -35,6 +35,18 @@ pub use common::{error::LangError, value::Value};
 pub use bytecode::Chunk;
 pub use vm::Vm;
 
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
+
+/// Stable module UID from module path. Same path always yields same uid across VMs.
+pub(crate) fn module_uid(path: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut h);
+    h.finish()
+}
+
 pub fn run(source: &str) -> Result<Value, LangError> {
     run_with_existing_vm(source, None)
 }
@@ -253,75 +265,89 @@ pub fn get_main_entry_params(source: &str) -> Option<Vec<(String, Option<Value>)
 }
 
 /// Remap function indices in an export map (e.g. from __lib__ or imported module) so they refer to caller VM's function table.
-pub(crate) fn remap_function_indices_in_exports(exports: &mut std::collections::HashMap<String, Value>, start_idx: usize) {
-    fn remap_value(v: &mut Value, start_idx: usize) {
+pub(crate) fn remap_function_indices_in_exports(
+    exports: &mut std::collections::HashMap<String, Value>,
+    start_idx: usize,
+    root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+) {
+    let mut seen = HashSet::new();
+    fn remap_value(
+        v: &mut Value,
+        start_idx: usize,
+        root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+        seen: &mut HashSet<*const ()>,
+    ) {
         match v {
             Value::Function(i) => *i = start_idx + *i,
             Value::Object(rc) => {
-                for (_, inner) in rc.borrow_mut().iter_mut() {
-                    remap_value(inner, start_idx);
+                if root_rc.is_some_and(|r| Rc::ptr_eq(rc, r)) {
+                    return;
                 }
+                let ptr = Rc::as_ptr(rc) as *const ();
+                if seen.contains(&ptr) {
+                    return;
+                }
+                seen.insert(ptr);
+                for (_, inner) in rc.borrow_mut().iter_mut() {
+                    remap_value(inner, start_idx, root_rc, seen);
+                }
+                seen.remove(&ptr);
             }
             _ => {}
         }
     }
     for v in exports.values_mut() {
-        remap_value(v, start_idx);
+        remap_value(v, start_idx, root_rc, &mut seen);
     }
 }
 
-/// Replace Value::Function(local_index) with Value::ModuleFunction { module_id, local_index } in an export map.
-/// Used by executor after merging a module so namespace is valid across cache hits.
+/// Replace Value::Function(local_index) with Value::ModuleFunction { module_uid, local_index } in an export map.
+/// Uses stable module_uid per namespace so shared cached objects work across VMs.
+/// submodule_keys: keys in exports that are submodules (e.g. {"config", "dev_config", "prod_config"} for core.config).
 pub(crate) fn replace_function_with_module_function_in_exports(
     exports: &mut std::collections::HashMap<String, Value>,
-    module_id: usize,
+    module_name: &str,
+    submodule_keys: &std::collections::HashSet<String>,
+    root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
 ) {
-    fn replace_value(v: &mut Value, module_id: usize) {
+    let mut seen = HashSet::new();
+    fn replace_value(
+        v: &mut Value,
+        module_path: &str,
+        root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+        seen: &mut HashSet<*const ()>,
+    ) {
         match v {
             Value::Function(local_index) => {
                 *v = Value::ModuleFunction {
-                    module_id,
+                    module_uid: module_uid(module_path),
                     local_index: *local_index,
                 };
             }
             Value::Object(rc) => {
-                for (_, inner) in rc.borrow_mut().iter_mut() {
-                    replace_value(inner, module_id);
+                if root_rc.is_some_and(|r| Rc::ptr_eq(rc, r)) {
+                    return;
                 }
+                let ptr = Rc::as_ptr(rc) as *const ();
+                if seen.contains(&ptr) {
+                    return;
+                }
+                seen.insert(ptr);
+                for (_, inner) in rc.borrow_mut().iter_mut() {
+                    replace_value(inner, module_path, root_rc, seen);
+                }
+                seen.remove(&ptr);
             }
             _ => {}
         }
     }
-    for v in exports.values_mut() {
-        replace_value(v, module_id);
-    }
-}
-
-/// Remap ModuleFunction { module_id, local_index } in an export map so submodule IDs refer to caller VM's registry.
-/// Used after replace_function_with_module_function_in_exports when the loaded module had submodules (e.g. dev_config);
-/// class objects from submodules carry ModuleFunction(old_id, local_index) valid in the loaded VM; this rewrites
-/// old_id to new_id so get_module_function_index resolves in the caller.
-pub(crate) fn remap_module_function_ids_in_exports(
-    exports: &mut std::collections::HashMap<String, Value>,
-    old_to_new: &std::collections::HashMap<usize, usize>,
-) {
-    fn remap_value(v: &mut Value, old_to_new: &std::collections::HashMap<usize, usize>) {
-        match v {
-            Value::ModuleFunction { module_id, local_index: _ } => {
-                if let Some(&new_id) = old_to_new.get(module_id) {
-                    *module_id = new_id;
-                }
-            }
-            Value::Object(rc) => {
-                for (_, inner) in rc.borrow_mut().iter_mut() {
-                    remap_value(inner, old_to_new);
-                }
-            }
-            _ => {}
-        }
-    }
-    for v in exports.values_mut() {
-        remap_value(v, old_to_new);
+    for (k, v) in exports.iter_mut() {
+        let path = if submodule_keys.contains(k) {
+            format!("{}.{}", module_name, k)
+        } else {
+            module_name.to_string()
+        };
+        replace_value(v, &path, root_rc, &mut seen);
     }
 }
 
@@ -353,22 +379,38 @@ pub(crate) fn remap_function_constants_in_chunks(
 pub(crate) fn remap_native_indices_in_exports(
     exports: &mut std::collections::HashMap<String, Value>,
     native_start: usize,
+    root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
 ) {
-    fn remap_value(v: &mut Value, native_start: usize) {
+    let mut seen = HashSet::new();
+    fn remap_value(
+        v: &mut Value,
+        native_start: usize,
+        root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+        seen: &mut HashSet<*const ()>,
+    ) {
         match v {
             Value::NativeFunction(i) if *i >= BUILTIN_NATIVE_COUNT => {
                 *i = native_start + (*i - BUILTIN_NATIVE_COUNT);
             }
             Value::Object(rc) => {
-                for (_, inner) in rc.borrow_mut().iter_mut() {
-                    remap_value(inner, native_start);
+                if root_rc.is_some_and(|r| Rc::ptr_eq(rc, r)) {
+                    return;
                 }
+                let ptr = Rc::as_ptr(rc) as *const ();
+                if seen.contains(&ptr) {
+                    return;
+                }
+                seen.insert(ptr);
+                for (_, inner) in rc.borrow_mut().iter_mut() {
+                    remap_value(inner, native_start, root_rc, seen);
+                }
+                seen.remove(&ptr);
             }
             _ => {}
         }
     }
     for v in exports.values_mut() {
-        remap_value(v, native_start);
+        remap_value(v, native_start, root_rc, &mut seen);
     }
 }
 
@@ -529,7 +571,7 @@ fn run_with_vm_internal_with_args(
         let lib_fn_count = lib_vm.get_functions().len();
         remap_function_constants_in_chunks(vm.get_functions_mut(), start_idx, lib_fn_count);
         let mut exports = crate::vm::file_import::export_globals_from_vm(&mut lib_vm);
-        remap_function_indices_in_exports(&mut exports, start_idx);
+        remap_function_indices_in_exports(&mut exports, start_idx, None);
         let lib_module_value = Value::Object(Rc::new(RefCell::new(exports)));
         {
             use crate::vm::module_object::ModuleObject;

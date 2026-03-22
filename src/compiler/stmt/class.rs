@@ -18,6 +18,21 @@ pub const MODEL_CONFIG_CLASS_LOAD_INDEX: usize = 0x0FFF_FFFF;
 /// Global name for the slot the VM sets to the class being constructed (leaf class).
 pub const CONSTRUCTING_CLASS_GLOBAL_NAME: &str = "__constructing_class__";
 
+/// Returns true if any field (private, protected, or public) has a default expression that is a call to "Column".
+/// Used to distinguish ORM models (User with Column(int, ...)) from Settings subclasses (Config(...), Field(...)).
+fn has_column_field(
+    private_fields: &[ClassField],
+    protected_fields: &[ClassField],
+    public_fields: &[ClassField],
+) -> bool {
+    fn field_has_column_default(f: &ClassField) -> bool {
+        f.default_value.as_ref().map_or(false, |e| matches!(e, Expr::Call { name, .. } if name == "Column"))
+    }
+    private_fields.iter().any(field_has_column_default)
+        || protected_fields.iter().any(field_has_column_default)
+        || public_fields.iter().any(field_has_column_default)
+}
+
 /// True if any TypeName in the annotation satisfies the predicate (LiteralStr is ignored for type-name checks).
 fn type_parts_any(tys: Option<&Vec<TypePart>>, pred: impl Fn(&str) -> bool) -> bool {
     tys.map(|tys| tys.iter().any(|t| match t {
@@ -316,9 +331,19 @@ pub fn compile_class(ctx: &mut CompilationContext, stmt: &Stmt, pop_value: bool)
         if *is_abstract {
             ctx.abstract_classes.insert(name.clone());
         }
-        // Compute class_extends_table: true if superclass is Table or extends Table
+        // Compute class_extends_table: true if superclass is Table or extends Table.
+        // When superclass is from another module (not in class_extends_table), set extends_table = true
+        // only if this class has Column-based fields (ORM model like User(Base)); otherwise false
+        // so Settings subclasses (Security(Settings), etc.) with Config/Field don't get __col_*.
         let extends_table = superclass.as_ref().map(|s| {
-            s == "Table" || ctx.class_extends_table.get(s).copied().unwrap_or(false)
+            if s == "Table" {
+                true
+            } else if let Some(b) = ctx.class_extends_table.get(s) {
+                *b
+            } else {
+                // Superclass from another module: only assume Table descendant if class uses Column
+                has_column_field(private_fields, protected_fields, public_fields)
+            }
         }).unwrap_or(false);
         ctx.class_extends_table.insert(name.clone(), extends_table);
 

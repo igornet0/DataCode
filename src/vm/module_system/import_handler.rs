@@ -229,35 +229,30 @@ pub fn handle_import_from(
                                 let module_function_count = module_vm.get_functions().len();
                                 crate::remap_function_constants_in_chunks(functions, start_idx, module_function_count);
                                 debug_println!("[DEBUG ImportFrom] Функций в модуле: {}, start_idx: {}", module_function_count, start_idx);
-                                // Register submodules first, then the top-level module, so the top-level module_id never collides with
-                                // module VM registry indices (0, 1, ...). That way replace_function_with_module_function_in_exports
-                                // uses a distinct id and remap only rewrites submodule-origin ModuleFunctions.
-                                let (module_id, submodule_old_to_new): (usize, std::collections::HashMap<usize, usize>) = {
-                                    let sub_infos: Vec<_> = module_vm.get_module_registry().iter().cloned().collect();
+                                let parent_module = frame.module_name.as_deref().unwrap_or("__main__");
+                                let full_module_name = if parent_module == "__main__" || module_name.contains('.') { module_name.clone() } else { format!("{}.{}", parent_module, module_name) };
+                                // Register modules by stable uid so shared cached objects work across VMs.
+                                {
+                                    let sub_reg = module_vm.get_module_registry();
                                     let mut reg = unsafe { (*vm_ptr).get_module_registry_mut() };
-                                    let mut map = std::collections::HashMap::new();
-                                    for (old_id, info) in sub_infos.iter().enumerate() {
-                                        reg.push(crate::vm::types::ModuleInfo {
+                                    for (uid, info) in sub_reg.iter() {
+                                        reg.insert(*uid, crate::vm::types::ModuleInfo {
                                             name: info.name.clone(),
                                             function_offset: start_idx + info.function_offset,
                                             function_count: info.function_count,
                                         });
-                                        map.insert(old_id, reg.len() - 1);
                                     }
-                                    reg.push(crate::vm::types::ModuleInfo {
+                                    reg.insert(crate::module_uid(&full_module_name), crate::vm::types::ModuleInfo {
                                         name: module_name.clone(),
                                         function_offset: start_idx,
                                         function_count: module_vm.get_functions().len(),
                                     });
-                                    let id = reg.len() - 1;
-                                    (id, map)
-                                };
-                                // Convert namespace: Value::Function(local_index) -> Value::ModuleFunction { module_id, local_index }.
+                                }
+                                // Convert namespace: Value::Function(local_index) -> Value::ModuleFunction { module_uid, local_index }.
+                                let submodule_keys: std::collections::HashSet<String> = module_vm.get_modules().keys().cloned().collect();
                                 if let Value::Object(module_obj_rc) = &module_object {
                                     let mut module_obj = module_obj_rc.borrow_mut();
-                                    crate::replace_function_with_module_function_in_exports(&mut *module_obj, module_id);
-                                    // Remap ModuleFunction from submodule VM indices to caller VM registry (classes from dev_config/prod_config).
-                                    crate::remap_module_function_ids_in_exports(&mut *module_obj, &submodule_old_to_new);
+                                    crate::replace_function_with_module_function_in_exports(&mut *module_obj, &full_module_name, &submodule_keys, Some(module_obj_rc));
                                 }
                                 // Extend caller's natives with module's natives and remap NativeFunction in module object
                                 // (fixes "Native function index 194 out of bounds" when merged code uses Config etc.).
@@ -269,16 +264,29 @@ pub fn handle_import_from(
                                 }
                                 if let Value::Object(module_obj_rc) = &module_object {
                                     let mut module_obj = module_obj_rc.borrow_mut();
-                                    crate::remap_native_indices_in_exports(&mut *module_obj, native_start);
+                                    crate::remap_native_indices_in_exports(&mut *module_obj, native_start, Some(module_obj_rc));
                                 }
-                                // Merge submodules (e.g. config, prod_config loaded by core.config) into caller so __constructing_class__ lookup finds classes from them.
+                                // Merge submodules into caller so __constructing_class__ lookup finds classes from them.
                                 // Do not overwrite existing modules: caller may have runtime state (e.g. core.config.settings from load_settings).
                                 {
                                     let mods = module_vm.get_modules();
                                     let mut caller_mods = unsafe { (*vm_ptr).get_modules_mut() };
+                                    if let Value::Object(ref namespace_rc) = &module_object {
+                                        use crate::vm::module_object::ModuleObject;
+                                        let was_vacant = !caller_mods.contains_key(&module_name);
+                                        caller_mods.entry(module_name.clone()).or_insert_with(|| {
+                                            Rc::new(RefCell::new(ModuleObject::from_namespace(module_name.clone(), namespace_rc.clone())))
+                                        });
+                                        if was_vacant {
+                                            debug_println!("[DEBUG ImportFrom] added loaded module '{}' to caller", module_name);
+                                        }
+                                    }
                                     for (k, v) in mods.iter() {
+                                        let was_vacant = !caller_mods.contains_key(k);
                                         caller_mods.entry(k.clone()).or_insert_with(|| v.clone());
-                                        debug_println!("[DEBUG ImportFrom] merged submodule '{}' into caller", k);
+                                        if was_vacant {
+                                            debug_println!("[DEBUG ImportFrom] merged submodule '{}' into caller", k);
+                                        }
                                     }
                                 }
                                 // Feed caller globals with names that merged module chunks reference (from module object or caller's merged modules),

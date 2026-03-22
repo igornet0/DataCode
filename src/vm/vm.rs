@@ -101,8 +101,10 @@ pub struct Vm {
     /// During run(), when argv_patch is set, this holds the canonical argv value id so LoadGlobal(argv_slot) always loads it
     /// even if the slot was overwritten by ImportFrom or merge.
     current_argv_value_id: Option<ValueId>,
-    /// Registry of merged modules: module_id = index. Resolves ModuleFunction { module_id, local_index } -> functions[offset + local_index].
-    module_registry: RefCell<Vec<ModuleInfo>>,
+    /// Registry of merged modules: module_uid -> ModuleInfo. Resolves ModuleFunction { module_uid, local_index } -> functions[offset + local_index].
+    module_registry: RefCell<HashMap<u64, ModuleInfo>>,
+    /// True for the script VM; false for child VMs. Child VMs have wrong registry for shared modules, so we must not remap there.
+    is_root: bool,
 }
 
 /// Preallocated capacities for hot-path Vecs to reduce resize in loop-heavy runs.
@@ -169,7 +171,8 @@ impl Vm {
             argv_slot_index: None,
             argv_old_indices: None,
             current_argv_value_id: None,
-            module_registry: RefCell::new(Vec::new()),
+            module_registry: RefCell::new(HashMap::new()),
+            is_root: true,
         };
         vm.register_natives();
         vm
@@ -213,7 +216,8 @@ impl Vm {
             argv_slot_index: None,
             argv_old_indices: None,
             current_argv_value_id: None,
-            module_registry: RefCell::new(Vec::new()),
+            module_registry: RefCell::new(HashMap::new()),
+            is_root: false,
         };
         vm.register_natives();
         vm
@@ -341,19 +345,24 @@ impl Vm {
     }
 
     /// Immutable borrow of module registry (for executor to read loaded module's submodules).
-    pub fn get_module_registry(&self) -> std::cell::Ref<'_, Vec<ModuleInfo>> {
+    pub fn get_module_registry(&self) -> std::cell::Ref<'_, HashMap<u64, ModuleInfo>> {
         self.module_registry.borrow()
     }
 
-    /// Mutable borrow of module registry (for executor to push ModuleInfo on first import).
-    pub fn get_module_registry_mut(&self) -> std::cell::RefMut<'_, Vec<ModuleInfo>> {
+    /// Mutable borrow of module registry (for executor to insert ModuleInfo by uid on first import).
+    pub fn get_module_registry_mut(&self) -> std::cell::RefMut<'_, HashMap<u64, ModuleInfo>> {
         self.module_registry.borrow_mut()
     }
 
-    /// Resolve module_id + local_index to real function index. Returns None if module_id or local_index out of range.
-    pub fn get_module_function_index(&self, module_id: usize, local_index: usize) -> Option<usize> {
+    /// True for the script VM; false for child VMs.
+    pub fn is_root(&self) -> bool {
+        self.is_root
+    }
+
+    /// Resolve module_uid + local_index to real function index. Returns None if module_uid or local_index out of range.
+    pub fn get_module_function_index(&self, module_uid: u64, local_index: usize) -> Option<usize> {
         let reg = self.module_registry.borrow();
-        let info = reg.get(module_id)?;
+        let info = reg.get(&module_uid)?;
         if local_index >= info.function_count {
             return None;
         }

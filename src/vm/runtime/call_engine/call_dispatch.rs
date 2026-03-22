@@ -64,8 +64,8 @@ pub fn execute_call_with_unpack(
     let callee_val = load_value(callee_id, value_store, heavy_store);
     let (_function_index, function) = match &callee_val {
         Value::Function(i) if *i < functions.len() => (*i, functions[*i].clone()),
-        Value::ModuleFunction { module_id, local_index } => {
-            match unsafe { (*vm_ptr).get_module_function_index(*module_id, *local_index) } {
+        Value::ModuleFunction { module_uid, local_index } => {
+            match unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) } {
                 Some(real_idx) if real_idx < functions.len() => (real_idx, functions[real_idx].clone()),
                 _ => {
                     let error = ExceptionHandler::runtime_error(
@@ -193,8 +193,8 @@ pub fn execute_call(
                     Some(ValueCell::Function(i)) if *i < functions.len() => {
                         function_index_opt = Some(*i);
                     }
-                    Some(ValueCell::ModuleFunction { module_id, local_index }) => {
-                        if let Some(real_idx) = unsafe { (*vm_ptr).get_module_function_index(*module_id, *local_index) } {
+                    Some(ValueCell::ModuleFunction { module_uid, local_index }) => {
+                        if let Some(real_idx) = unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) } {
                             function_index_opt = Some(real_idx);
                         } else {
                             frame.call_cache_is_user_function = false;
@@ -267,18 +267,18 @@ pub fn execute_call(
                         debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to constructor '{}'", class_name, constructor_name);
                         constructing_class_opt = Some(function_value.clone());
                         Value::Function(*constructor_fn_idx)
-                    } else if let Some(Value::ModuleFunction { module_id, local_index }) = constructor_value.as_ref() {
+                    } else if let Some(Value::ModuleFunction { module_uid, local_index }) = constructor_value.as_ref() {
                         debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to module constructor '{}'", class_name, constructor_name);
                         constructing_class_opt = Some(function_value.clone());
-                        Value::ModuleFunction { module_id: *module_id, local_index: *local_index }
+                        Value::ModuleFunction { module_uid: *module_uid, local_index: *local_index }
                     } else if let Some(Value::Function(constructor_fn_idx)) = method_new {
                         debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to constructor from class key '{}'", class_name, format!("new_{}", arity));
                         constructing_class_opt = Some(function_value.clone());
                         Value::Function(constructor_fn_idx)
-                    } else if let Some(Value::ModuleFunction { module_id, local_index }) = method_new {
+                    } else if let Some(Value::ModuleFunction { module_uid, local_index }) = method_new {
                         debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to module constructor from class key '{}'", class_name, format!("new_{}", arity));
                         constructing_class_opt = Some(function_value.clone());
-                        Value::ModuleFunction { module_id, local_index }
+                        Value::ModuleFunction { module_uid, local_index }
                     } else {
                         function_value
                     }
@@ -296,8 +296,8 @@ pub fn execute_call(
                 let fr = frames.last_mut().unwrap();
                 fr.call_cache_ip = Some(current_ip);
                 fr.call_cache_is_user_function = true;
-            } else if let Value::ModuleFunction { module_id, local_index } = &ac {
-                if let Some(real_idx) = unsafe { (*vm_ptr).get_module_function_index(*module_id, *local_index) } {
+            } else if let Value::ModuleFunction { module_uid, local_index } = &ac {
+                if let Some(real_idx) = unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) } {
                     function_index_opt = Some(real_idx);
                 }
                 let fr = frames.last_mut().unwrap();
@@ -381,8 +381,8 @@ pub fn execute_call(
                 Some(ValueCell::Function(i)) => {
                     if *i < functions.len() { Some(*i) } else { function_index_opt }
                 }
-                Some(ValueCell::ModuleFunction { module_id, local_index }) => {
-                    unsafe { (*vm_ptr).get_module_function_index(*module_id, *local_index) }.or(function_index_opt)
+                Some(ValueCell::ModuleFunction { module_uid, local_index }) => {
+                    unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) }.or(function_index_opt)
                 }
                 _ => function_index_opt,
             }
@@ -460,8 +460,8 @@ pub fn execute_call(
                 drop(modules);
                 found.and_then(|exp| match &exp {
                     Value::Function(i) if *i < functions.len() => Some(*i),
-                    Value::ModuleFunction { module_id, local_index } => {
-                        unsafe { (*vm_ptr).get_module_function_index(*module_id, *local_index) }
+                    Value::ModuleFunction { module_uid, local_index } => {
+                        unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) }
                     }
                     _ => None,
                 })
@@ -517,9 +517,10 @@ pub fn execute_call(
                             frames.last().map(|f| f.function.name.as_str()).unwrap_or("?"),
                         );
                     }
+                    let hint = load_global_name.as_deref().unwrap_or("?");
                     let error = ExceptionHandler::runtime_error(
                         &frames,
-                        "Can only call functions".to_string(),
+                        format!("Can only call functions (got Object when calling '{}')", hint),
                         line,
                     );
                     match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {

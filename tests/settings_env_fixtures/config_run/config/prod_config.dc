@@ -9,5 +9,5 @@ cls ProdSettings(ConfigApp) {
         **ProdAppBaseConfig
     )
 
-    debug: bool = Field(default=False)
+    debug: bool = Field(default=false)
 }

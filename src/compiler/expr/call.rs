@@ -543,7 +543,13 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         fn is_builtin_module(name: &str) -> bool {
             matches!(name, "ml" | "plot" | "settings_env" | "uuid" | "database_engine")
         }
+        // Column, MetaData from database_engine are NativeFunctions, not classes.
+        // When re-exported via core.database.base, treat as direct call, not constructor.
+        fn is_native_callable_uppercase(name: &str) -> bool {
+            matches!(name, "Column" | "MetaData")
+        }
         if name.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+            && !is_native_callable_uppercase(name)
             && ctx.imported_symbols.get(name).map_or(false, |m| !is_builtin_module(m))
         {
             // Регистрируем класс в scope, если его там еще нет (уже есть от import, но индекс нужен для консистентности)

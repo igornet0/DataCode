@@ -193,7 +193,7 @@ fn load_local_module_dotted_with_vm(
         current_base = module_dir;
     }
     let last_part = parts[parts.len() - 1];
-    let result = load_local_module_with_vm_inner(last_part, &current_base, vm)?;
+    let result = load_local_module_with_vm_inner(last_part, &current_base, vm, Some(module_name))?;
     // Register under full dotted name too so LoadGlobal in module context finds it (frame.module_name is "core.config").
     if last_part != module_name {
         let mut modules = vm.get_modules_mut();
@@ -223,15 +223,17 @@ pub fn load_local_module_with_vm(
     if module_name.contains('.') {
         return load_local_module_dotted_with_vm(module_name, base_path, vm);
     }
-    load_local_module_with_vm_inner(module_name, base_path, vm)
+    load_local_module_with_vm_inner(module_name, base_path, vm, None)
 }
 
 /// Внутренняя загрузка одного сегмента модуля (имя без точек).
 /// Uses module_cache (compile) and executed_modules (run once per canonical path).
+/// full_module_name: when loading via dotted path (e.g. core.config), the full name for cache-bypass logic.
 fn load_local_module_with_vm_inner(
     module_name: &str,
     base_path: &Path,
     vm: &mut Vm,
+    _full_module_name: Option<&str>,
 ) -> Result<LoadModuleResult, LangError> {
     let mut search_paths = vec![base_path.to_path_buf()];
     search_paths.extend(get_dpm_package_paths());
@@ -257,33 +259,28 @@ fn load_local_module_with_vm_inner(
     let saved_restored_argv = RunContext::get_restored_script_argv_after_import();
     let mut _run_ctx_guard = RestoreRunContextGuard(RunContext::take_current());
 
-    // Already executed this run: return saved namespace. The object was remapped when first loaded (in executor),
-    // so do NOT add_functions_only or remap again — that would duplicate functions and double-remap indices.
+    // Already executed this run: return saved namespace. With stable module_uid, shared objects work across VMs.
     // If we have a cache hit but no stored functions (e.g. module was first loaded in another VM context), re-load below.
-    {
-        let module_object_opt = {
-            let m = vm.get_executed_modules_mut();
-            m.get(&cache_key).cloned()
-        };
-        let has_stored_fns = {
-            let m = vm.get_executed_module_functions_mut();
-            m.contains_key(&cache_key)
-        };
-        if let Some(module_object) = module_object_opt {
-            if has_stored_fns {
-                // Ensure module is registered for LoadGlobal isolation (e.g. create_engine in engine.dc
-                // needs modules.get("engine").get_export("engine") to resolve database_engine.engine).
-                if let Value::Object(ref namespace_rc) = module_object {
-                    use crate::vm::module_object::ModuleObject;
-                    let mod_obj = ModuleObject::from_namespace(module_name.to_string(), namespace_rc.clone());
-                    vm.get_modules_mut()
-                        .entry(module_name.to_string())
-                        .or_insert_with(|| std::rc::Rc::new(std::cell::RefCell::new(mod_obj)));
-                }
-                return Ok((module_object, None));
+    let module_object_opt = {
+        let m = vm.get_executed_modules_mut();
+        m.get(&cache_key).cloned()
+    };
+    let has_stored_fns = {
+        let m = vm.get_executed_module_functions_mut();
+        m.contains_key(&cache_key)
+    };
+    if let Some(module_object) = module_object_opt {
+        if has_stored_fns {
+            if let Value::Object(ref namespace_rc) = &module_object {
+                use crate::vm::module_object::ModuleObject;
+                let mod_obj = ModuleObject::from_namespace(module_name.to_string(), namespace_rc.clone());
+                vm.get_modules_mut()
+                    .entry(module_name.to_string())
+                    .or_insert_with(|| std::rc::Rc::new(std::cell::RefCell::new(mod_obj)));
             }
-            // Cache hit but no stored functions: object has indices from another VM. Fall through to re-load.
+            return Ok((module_object, None));
         }
+        // Cache hit but no stored functions: object has indices from another VM. Fall through to re-load.
     }
 
     let source = std::fs::read_to_string(&file_path).map_err(|e| {
@@ -440,7 +437,14 @@ fn run_compiled_module(
     };
     vm.set_base_path(module_base_path.or_else(get_base_path));
     vm.set_project_root(project_root);
-    let max_global_index = chunk.global_names.keys().max().copied().unwrap_or(0);
+    const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
+    let max_global_index = chunk
+        .global_names
+        .keys()
+        .filter(|&&idx| idx != UNDEFINED_GLOBAL_SENTINEL)
+        .max()
+        .copied()
+        .unwrap_or(0);
     let needed_size = (max_global_index + 1).max(74);
     if vm.get_globals().len() < needed_size {
         vm.get_globals_mut().resize(needed_size, crate::vm::global_slot::default_global_slot());
@@ -513,7 +517,7 @@ pub fn export_globals_from_vm(vm: &mut Vm) -> HashMap<String, Value> {
                 (false, true) => std::cmp::Ordering::Less,
                 (true, true) => match (&a.1, &b.1) {
                     (Value::Function(ia), Value::Function(ib)) => ia.cmp(ib),
-                    (Value::ModuleFunction { module_id: ma, local_index: la }, Value::ModuleFunction { module_id: mb, local_index: lb }) => (ma, la).cmp(&(mb, lb)),
+                    (Value::ModuleFunction { module_uid: ma, local_index: la }, Value::ModuleFunction { module_uid: mb, local_index: lb }) => (ma, la).cmp(&(mb, lb)),
                     _ => a.0.cmp(&b.0),
                 },
                 _ => a.0.cmp(&b.0),

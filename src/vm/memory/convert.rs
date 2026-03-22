@@ -44,7 +44,7 @@ pub fn store_value(
             store.allocate(ValueCell::Tuple(arr))
         }
         Value::Function(i) => store.allocate(ValueCell::Function(i)),
-        Value::ModuleFunction { module_id, local_index } => store.allocate(ValueCell::ModuleFunction { module_id: module_id, local_index: local_index }),
+        Value::ModuleFunction { module_uid, local_index } => store.allocate(ValueCell::ModuleFunction { module_uid, local_index }),
         Value::NativeFunction(i) => store.allocate(ValueCell::NativeFunction(i)),
         Value::Path(p) => store.allocate(ValueCell::Path(p)),
         Value::Uuid(hi, lo) => store.allocate(ValueCell::Uuid(hi, lo)),
@@ -247,7 +247,7 @@ pub fn load_value(
             Value::Object(Rc::new(RefCell::new(hm)))
         }
         ValueCell::Function(i) => Value::Function(*i),
-        ValueCell::ModuleFunction { module_id, local_index } => Value::ModuleFunction { module_id: *module_id, local_index: *local_index },
+        ValueCell::ModuleFunction { module_uid, local_index } => Value::ModuleFunction { module_uid: *module_uid, local_index: *local_index },
         ValueCell::NativeFunction(i) => Value::NativeFunction(*i),
         ValueCell::Path(p) => Value::Path(p.clone()),
         ValueCell::Uuid(hi, lo) => Value::Uuid(*hi, *lo),
@@ -384,7 +384,7 @@ pub fn store_value_arena(
             store.allocate_arena(ValueCell::Tuple(arr))
         }
         Value::Function(i) => store.allocate_arena(ValueCell::Function(i)),
-        Value::ModuleFunction { module_id, local_index } => store.allocate_arena(ValueCell::ModuleFunction { module_id: module_id, local_index: local_index }),
+        Value::ModuleFunction { module_uid, local_index } => store.allocate_arena(ValueCell::ModuleFunction { module_uid, local_index }),
         Value::NativeFunction(i) => store.allocate_arena(ValueCell::NativeFunction(i)),
         Value::Path(p) => store.allocate_arena(ValueCell::Path(p)),
         Value::Uuid(hi, lo) => store.allocate_arena(ValueCell::Uuid(hi, lo)),

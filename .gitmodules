@@ -10,7 +10,3 @@
 	path = datacode_registry_index
 	url = https://github.com/igornet0/Datacode-registry-index
 	branch = main
-[submodule "datacode_syntax"]
-	path = datacode_syntax
-	url = https://github.com/igornet0/Datacode-syntax.git
-	branch = main

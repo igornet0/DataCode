@@ -13,10 +13,10 @@ pub struct AbiVersion {
 
 /// Текущая версия контракта datacode-abi, поддерживаемая VM.
 /// Менять major при несовместимых изменениях ABI; minor — при обратно-совместимых уточнениях.
-pub const DATACODE_ABI_VERSION: AbiVersion = AbiVersion { major: 1, minor: 0 };
+pub const DATACODE_ABI_VERSION: AbiVersion = AbiVersion { major: 1, minor: 3 };
 
 /// Проверка совместимости версии модуля с версией VM.
-/// Правило: одинаковый major, у модуля minor <= vm.minor (VM 1.2 принимает модули 1.0 и 1.2; модуль 1.3 не принимается VM 1.2).
+/// Правило: одинаковый major, у модуля minor <= vm.minor (см. `datacode_abi::DATACODE_ABI_VERSION`).
 #[inline]
 pub fn abi_compatible(module: &AbiVersion, vm: &AbiVersion) -> bool {
     module.major == vm.major && module.minor <= vm.minor

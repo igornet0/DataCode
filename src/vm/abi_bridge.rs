@@ -70,8 +70,12 @@ impl AbiBridgeContext {
                 let ptr = Rc::as_ptr(self.object_refs.last().unwrap()) as *mut c_void;
                 Ok(AbiValue::Object(ptr))
             }
+            Value::PluginOpaque { tag, id } => Ok(AbiValue::PluginOpaque {
+                tag: *tag,
+                id: *id,
+            }),
             _ => Err(BridgeError::Unrepresentable(
-                "Function, NativeFunction, Path, Table, Tensor, Figure and other VM-only types are not representable in ABI",
+                "Function, NativeFunction, Path, Table, Figure and other VM-only types are not representable in ABI",
             )),
         }
     }
@@ -120,6 +124,7 @@ impl AbiBridgeContext {
                 }
                 Err(BridgeError::InvalidHandle)
             }
+            AbiValue::PluginOpaque { tag, id } => Ok(Value::PluginOpaque { tag, id }),
         }
     }
 }

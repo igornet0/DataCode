@@ -65,8 +65,8 @@ pub enum ImportItem {
 /// Тип импорта
 #[derive(Debug, Clone)]
 pub enum ImportStmt {
-    Modules(Vec<String>),      // import ml, plot
-    From {                     // from ml import load_mnist, *
+    Modules(Vec<String>),      // import plot
+    From {                     // from ... import load_mnist, *
         module: String,
         items: Vec<ImportItem>,
     },

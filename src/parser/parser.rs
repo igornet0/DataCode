@@ -36,10 +36,10 @@ impl Parser {
 
     fn declaration(&mut self) -> Result<Stmt, LangError> {
         if self.check(TokenKind::From) {
-            // from ml import ...
+            // from ... import ...
             self.from_import_declaration()
         } else if self.match_token(TokenKind::Import) {
-            // import ml, plot
+            // import ..., plot
             self.simple_import_declaration()
         } else if self.match_token(TokenKind::Global) {
             // global a = 5

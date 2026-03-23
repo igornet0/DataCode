@@ -60,7 +60,7 @@ pub fn merge_global_names(
         if *idx >= BUILTIN_END {
             continue;
         }
-        // Do not overwrite builtin indices 0..74 with a different name (would break "print", "len", "ml", etc.).
+        // Do not overwrite builtin indices 0..74 with a different name (would break "print", "len", etc.).
         if let Some(existing) = global_names.get(idx) {
             if existing != name {
                 continue;

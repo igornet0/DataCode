@@ -539,9 +539,9 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         
         // Импортированный символ с заглавной буквы (from X import Config): не fallback в обычную функцию,
         // а вызов конструктора — слот Config::new_N заполнится при выполнении ImportFrom.
-        // Только для файловых модулей: встроенные (settings_env, ml, plot, uuid) не экспортируют конструкторы в globals так же, оставляем старый путь (LoadGlobal(name)+Call).
+        // Только для файловых модулей: встроенные (settings_env, plot, uuid) не экспортируют конструкторы в globals так же, оставляем старый путь (LoadGlobal(name)+Call).
         fn is_builtin_module(name: &str) -> bool {
-            matches!(name, "ml" | "plot" | "settings_env" | "uuid" | "database_engine")
+            matches!(name, "plot" | "settings_env" | "uuid" | "database_engine")
         }
         // Column, MetaData from database_engine are NativeFunctions, not classes.
         // When re-exported via core.database.base, treat as direct call, not constructor.

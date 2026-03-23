@@ -6,12 +6,6 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use crate::common::table::Table;
-use crate::ml::tensor::Tensor;
-use crate::ml::graph::Graph;
-use crate::ml::model::{LinearRegression, NeuralNetwork};
-use crate::ml::optimizer::{SGD, Momentum, NAG, Adagrad, RMSprop, Adam, AdamW};
-use crate::ml::dataset::Dataset;
-use crate::ml::layer::{Sequential, LayerId};
 use crate::plot::{Image, Figure, Axis, PlotWindowHandle};
 use crate::database_engine::cluster::DatabaseCluster;
 use crate::database_engine::engine::DatabaseEngine;
@@ -35,20 +29,8 @@ pub enum Value {
         table: Rc<RefCell<Table>>,
         column_name: String,
     },
-    Tensor(Rc<RefCell<Tensor>>),
-    Graph(Rc<RefCell<Graph>>),
-    LinearRegression(Rc<RefCell<LinearRegression>>),
-    SGD(Rc<RefCell<SGD>>),
-    Momentum(Rc<RefCell<Momentum>>),
-    NAG(Rc<RefCell<NAG>>),
-    Adagrad(Rc<RefCell<Adagrad>>),
-    RMSprop(Rc<RefCell<RMSprop>>),
-    Adam(Rc<RefCell<Adam>>),
-    AdamW(Rc<RefCell<AdamW>>),
-    Dataset(Rc<RefCell<Dataset>>),
-    NeuralNetwork(Rc<RefCell<NeuralNetwork>>),
-    Sequential(Rc<RefCell<Sequential>>),
-    Layer(LayerId),
+    /// Opaque plugin-owned object (`tag` + `id`); semantics defined by the plugin (e.g. dylib).
+    PluginOpaque { tag: u8, id: u64 },
     Window(PlotWindowHandle), // Runtime only holds WindowId - Window lives in GUI thread
     Image(Rc<RefCell<Image>>),
     Figure(Rc<RefCell<Figure>>),
@@ -93,20 +75,11 @@ impl std::fmt::Debug for Value {
                     Value::Table(t) => f.debug_tuple("Table").field(&t.borrow()).finish(),
                     Value::Object(_) => unreachable!(),
                     Value::ColumnReference { table, column_name } => f.debug_struct("ColumnReference").field("table", table).field("column_name", column_name).finish(),
-                    Value::Tensor(t) => f.debug_tuple("Tensor").field(&t.borrow()).finish(),
-                    Value::Graph(g) => f.debug_tuple("Graph").field(&g.borrow()).finish(),
-                    Value::LinearRegression(lr) => f.debug_tuple("LinearRegression").field(&lr.borrow()).finish(),
-                    Value::SGD(s) => f.debug_tuple("SGD").field(&s.borrow()).finish(),
-                    Value::Momentum(m) => f.debug_tuple("Momentum").field(&m.borrow()).finish(),
-                    Value::NAG(n) => f.debug_tuple("NAG").field(&n.borrow()).finish(),
-                    Value::Adagrad(a) => f.debug_tuple("Adagrad").field(&a.borrow()).finish(),
-                    Value::RMSprop(r) => f.debug_tuple("RMSprop").field(&r.borrow()).finish(),
-                    Value::Adam(a) => f.debug_tuple("Adam").field(&a.borrow()).finish(),
-                    Value::AdamW(a) => f.debug_tuple("AdamW").field(&a.borrow()).finish(),
-                    Value::Dataset(d) => f.debug_tuple("Dataset").field(&d.borrow()).finish(),
-                    Value::NeuralNetwork(n) => f.debug_tuple("NeuralNetwork").field(&n.borrow()).finish(),
-                    Value::Sequential(s) => f.debug_tuple("Sequential").field(&s.borrow()).finish(),
-                    Value::Layer(id) => f.debug_tuple("Layer").field(id).finish(),
+                    Value::PluginOpaque { tag, id } => f
+                        .debug_struct("PluginOpaque")
+                        .field("tag", tag)
+                        .field("id", id)
+                        .finish(),
                     Value::Window(h) => f.debug_tuple("Window").field(h).finish(),
                     Value::Image(img) => f.debug_tuple("Image").field(&img.borrow()).finish(),
                     Value::Figure(fig) => f.debug_tuple("Figure").field(&fig.borrow()).finish(),
@@ -153,20 +126,9 @@ impl PartialEq for Value {
             (Value::ColumnReference { table: a, column_name: col_a }, Value::ColumnReference { table: b, column_name: col_b }) => {
                 Rc::ptr_eq(a, b) && col_a == col_b
             },
-            (Value::Tensor(a), Value::Tensor(b)) => *a.borrow() == *b.borrow(),
-            (Value::Graph(a), Value::Graph(b)) => Rc::ptr_eq(a, b),
-            (Value::LinearRegression(a), Value::LinearRegression(b)) => Rc::ptr_eq(a, b),
-            (Value::SGD(a), Value::SGD(b)) => Rc::ptr_eq(a, b),
-            (Value::Momentum(a), Value::Momentum(b)) => Rc::ptr_eq(a, b),
-            (Value::NAG(a), Value::NAG(b)) => Rc::ptr_eq(a, b),
-            (Value::Adagrad(a), Value::Adagrad(b)) => Rc::ptr_eq(a, b),
-            (Value::RMSprop(a), Value::RMSprop(b)) => Rc::ptr_eq(a, b),
-            (Value::Adam(a), Value::Adam(b)) => Rc::ptr_eq(a, b),
-            (Value::AdamW(a), Value::AdamW(b)) => Rc::ptr_eq(a, b),
-            (Value::Dataset(a), Value::Dataset(b)) => Rc::ptr_eq(a, b),
-            (Value::NeuralNetwork(a), Value::NeuralNetwork(b)) => Rc::ptr_eq(a, b),
-            (Value::Sequential(a), Value::Sequential(b)) => Rc::ptr_eq(a, b),
-            (Value::Layer(a), Value::Layer(b)) => a == b,
+            (Value::PluginOpaque { tag: ta, id: ia }, Value::PluginOpaque { tag: tb, id: ib }) => {
+                ta == tb && ia == ib
+            }
             (Value::Window(a), Value::Window(b)) => a.id == b.id,
             (Value::Image(a), Value::Image(b)) => Rc::ptr_eq(a, b),
             (Value::Figure(a), Value::Figure(b)) => Rc::ptr_eq(a, b),
@@ -207,19 +169,7 @@ impl Value {
                     false
                 }
             },
-            Value::Tensor(tensor) => !tensor.borrow().data.is_empty(),
-            Value::Graph(graph) => !graph.borrow().nodes.is_empty(),
-            Value::LinearRegression(_) => true,
-            Value::SGD(_) => true,
-            Value::Momentum(_) => true,
-            Value::NAG(_) => true,
-            Value::Adagrad(_) => true,
-            Value::RMSprop(_) => true,
-            Value::AdamW(_) => true,
-            Value::Dataset(dataset) => dataset.borrow().batch_size() > 0,
-            Value::NeuralNetwork(_) => true,
-            Value::Sequential(_) => true,
-            Value::Layer(_) => true,
+            Value::PluginOpaque { .. } => true,
             Value::Window(_) => true,
             Value::Image(_) => true,
             Value::Figure(_) => true,
@@ -320,60 +270,8 @@ impl Value {
                     .collect();
                 format!("{{{}}}", pairs.join(", "))
             }
-            Value::Tensor(tensor) => {
-                let t = tensor.borrow();
-                format!("<tensor: shape={:?}, size={}>", t.shape, t.data.len())
-            }
-            Value::Graph(graph) => {
-                let g = graph.borrow();
-                format!("<graph: {} nodes, {} inputs>", g.nodes.len(), g.input_nodes.len())
-            }
-            Value::LinearRegression(lr) => {
-                let model = lr.borrow();
-                format!("<linear_regression: weights={:?}, bias={:?}>", 
-                    model.get_weights().shape, model.get_bias().shape)
-            }
-            Value::SGD(sgd) => {
-                let opt = sgd.borrow();
-                format!("<sgd: lr={}>", opt.lr)
-            }
-            Value::Momentum(momentum) => {
-                let opt = momentum.borrow();
-                format!("<momentum: lr={}, beta={}>", opt.learning_rate, opt.beta)
-            }
-            Value::NAG(nag) => {
-                let opt = nag.borrow();
-                format!("<nag: lr={}, beta={}>", opt.learning_rate, opt.beta)
-            }
-            Value::Adagrad(adagrad) => {
-                let opt = adagrad.borrow();
-                format!("<adagrad: lr={}, epsilon={}>", opt.learning_rate, opt.epsilon)
-            }
-            Value::RMSprop(rmsprop) => {
-                let opt = rmsprop.borrow();
-                format!("<rmsprop: lr={}, gamma={}, epsilon={}>", opt.learning_rate, opt.gamma, opt.epsilon)
-            }
-            Value::Adam(adam) => {
-                let opt = adam.borrow();
-                format!("<adam: lr={}, beta1={}, beta2={}>", opt.lr, opt.beta1, opt.beta2)
-            }
-            Value::AdamW(adamw) => {
-                let opt = adamw.borrow();
-                format!("<adamw: lr={}, beta1={}, beta2={}, weight_decay={}>", opt.learning_rate, opt.beta1, opt.beta2, opt.weight_decay)
-            }
-            Value::Dataset(dataset) => {
-                let d = dataset.borrow();
-                format!("<dataset: batch_size={}, features={}, targets={}>", 
-                    d.batch_size(), d.num_features(), d.num_targets())
-            }
-            Value::NeuralNetwork(_) => {
-                format!("<neural_network>")
-            }
-            Value::Sequential(_) => {
-                format!("<sequential>")
-            }
-            Value::Layer(id) => {
-                format!("<layer: id={}>", id)
+            Value::PluginOpaque { tag, id } => {
+                format!("<plugin_opaque tag={} id={}>", tag, id)
             }
             Value::Window(handle) => {
                 format!("<window: id={:?}>", handle.id)
@@ -496,54 +394,10 @@ impl Clone for Value {
                 // Клонируем Rc (shallow copy), чтобы изменения сохранялись
                 Value::Object(map_rc.clone())
             },
-            Value::Tensor(tensor) => {
-                // Создаем новый Rc с глубокой копией тензора
-                Value::Tensor(Rc::new(RefCell::new(tensor.borrow().clone())))
+            Value::PluginOpaque { tag, id } => Value::PluginOpaque {
+                tag: *tag,
+                id: *id,
             },
-            Value::Graph(graph) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::Graph(graph.clone())
-            },
-            Value::LinearRegression(lr) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::LinearRegression(lr.clone())
-            },
-            Value::SGD(sgd) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::SGD(sgd.clone())
-            },
-            Value::Momentum(momentum) => {
-                Value::Momentum(momentum.clone())
-            },
-            Value::NAG(nag) => {
-                Value::NAG(nag.clone())
-            },
-            Value::Adagrad(adagrad) => {
-                Value::Adagrad(adagrad.clone())
-            },
-            Value::RMSprop(rmsprop) => {
-                Value::RMSprop(rmsprop.clone())
-            },
-            Value::Adam(adam) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::Adam(adam.clone())
-            },
-            Value::AdamW(adamw) => {
-                Value::AdamW(adamw.clone())
-            },
-            Value::Dataset(dataset) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::Dataset(dataset.clone())
-            },
-            Value::NeuralNetwork(nn) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::NeuralNetwork(nn.clone())
-            },
-            Value::Sequential(seq) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::Sequential(seq.clone())
-            },
-            Value::Layer(id) => Value::Layer(*id),
             Value::Window(handle) => {
                 // WindowHandle is Copy, so just copy it
                 Value::Window(*handle)

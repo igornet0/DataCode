@@ -57,10 +57,7 @@ pub fn native_len(args: &[Value]) -> Value {
                         .unwrap_or(Value::Null)
                 })
             },
-            Value::Dataset(dataset) => {
-                let batch_size = dataset.borrow().batch_size();
-                Value::Number(batch_size as f64)
-            },
+            Value::PluginOpaque { .. } => Value::Null,
             Value::Enumerate { data, .. } => Value::Number(data.borrow().len() as f64),
             _ => Value::Null,
         }
@@ -209,48 +206,7 @@ pub fn native_str(args: &[Value]) -> Value {
 }
 
 pub fn native_array(args: &[Value]) -> Value {
-    // Если передан один аргумент и это тензор, преобразуем его в массив чисел
-    if args.len() == 1 {
-        if let Value::Tensor(tensor) = &args[0] {
-            let tensor_ref = tensor.borrow();
-            match tensor_ref.to_cpu() {
-                Ok(cpu_tensor) => {
-                    let data_values: Vec<Value> = cpu_tensor.data.iter()
-                        .map(|&d| Value::Number(d as f64))
-                        .collect();
-                    return Value::Array(Rc::new(RefCell::new(data_values)));
-                }
-                Err(_) => {
-                    // Если не удалось преобразовать в CPU, возвращаем пустой массив
-                    return Value::Array(Rc::new(RefCell::new(Vec::new())));
-                }
-            }
-        }
-    }
-    
-    // Если передано несколько аргументов, преобразуем тензоры в массивы
-    let mut result = Vec::new();
-    for arg in args {
-        if let Value::Tensor(tensor) = arg {
-            let tensor_ref = tensor.borrow();
-            match tensor_ref.to_cpu() {
-                Ok(cpu_tensor) => {
-                    let data_values: Vec<Value> = cpu_tensor.data.iter()
-                        .map(|&d| Value::Number(d as f64))
-                        .collect();
-                    result.push(Value::Array(Rc::new(RefCell::new(data_values))));
-                }
-                Err(_) => {
-                    // Если не удалось преобразовать в CPU, добавляем пустой массив
-                    result.push(Value::Array(Rc::new(RefCell::new(Vec::new()))));
-                }
-            }
-        } else {
-            // Для не-тензоров добавляем как есть
-            result.push(arg.clone());
-        }
-    }
-    
+    let result: Vec<Value> = args.iter().cloned().collect();
     Value::Array(Rc::new(RefCell::new(result)))
 }
 
@@ -393,20 +349,7 @@ pub fn native_typeof(args: &[Value]) -> Value {
         Value::Null => "null",
         Value::Function(_) | Value::ModuleFunction { .. } => "function",
         Value::NativeFunction(_) => "function",
-        Value::Tensor(_) => "tensor",
-        Value::Graph(_) => "graph",
-        Value::LinearRegression(_) => "linear_regression",
-        Value::SGD(_) => "sgd",
-        Value::Momentum(_) => "momentum",
-        Value::NAG(_) => "nag",
-        Value::Adagrad(_) => "adagrad",
-        Value::RMSprop(_) => "rmsprop",
-        Value::Adam(_) => "adam",
-        Value::AdamW(_) => "adamw",
-        Value::Dataset(_) => "dataset",
-        Value::NeuralNetwork(_) => "neural_network",
-        Value::Sequential(_) => "sequential",
-        Value::Layer(_) => "layer",
+        Value::PluginOpaque { .. } => "plugin_opaque",
         Value::Window(_) => "window",
         Value::Image(_) => "image",
         Value::Figure(_) => "figure",
@@ -538,20 +481,7 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
         Value::ColumnReference { .. } => type_name_lower == "column",
         Value::Null => type_name_lower == "null" || type_name_lower == "none",
         Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_) => type_name_lower == "function",
-        Value::Tensor(_) => type_name_lower == "tensor",
-        Value::Graph(_) => type_name_lower == "graph",
-        Value::LinearRegression(_) => type_name_lower == "linear_regression",
-        Value::SGD(_) => type_name_lower == "sgd",
-        Value::Momentum(_) => type_name_lower == "momentum",
-        Value::NAG(_) => type_name_lower == "nag",
-        Value::Adagrad(_) => type_name_lower == "adagrad",
-        Value::RMSprop(_) => type_name_lower == "rmsprop",
-        Value::Adam(_) => type_name_lower == "adam",
-        Value::AdamW(_) => type_name_lower == "adamw",
-        Value::Dataset(_) => type_name_lower == "dataset",
-        Value::NeuralNetwork(_) => type_name_lower == "neural_network",
-        Value::Sequential(_) => type_name_lower == "sequential",
-        Value::Layer(_) => type_name_lower == "layer",
+        Value::PluginOpaque { .. } => type_name_lower == "plugin_opaque",
         Value::Window(_) => type_name_lower == "window",
         Value::Image(_) => type_name_lower == "image",
         Value::Figure(_) => type_name_lower == "figure",

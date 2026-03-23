@@ -297,13 +297,7 @@ pub fn execute_native_call(
         }
     }
 
-    // Tensor methods max_idx / min_idx and database engine methods
-    use crate::ml::natives as ml_natives;
-    let max_idx_ptr = ml_natives::native_max_idx as *const ();
-    let is_max_idx = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(max_idx_ptr);
-    let min_idx_ptr = ml_natives::native_min_idx as *const ();
-    let is_min_idx = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(min_idx_ptr);
-
+    // Database engine methods (tensor max_idx/min_idx use normal native/ABI dispatch when ml is loaded)
     use crate::database_engine::natives as db_natives;
     let is_db_connect = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(db_natives::native_engine_connect as *const ());
     let is_db_execute = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(db_natives::native_engine_execute as *const ());
@@ -341,34 +335,7 @@ pub fn execute_native_call(
         }
         native_args_buffer.extend(reusable_all_popped.drain(..));
     }
-    if (is_max_idx || is_min_idx) && arity == 0 {
-        if let Some(&top_tv) = stack.last() {
-            let top_id = tagged_to_value_id(top_tv, value_store);
-            let top_val = load_value(top_id, value_store, heavy_store);
-            if let Value::Tensor(tensor_rc) = &top_val {
-                native_args_buffer.push(Value::Tensor(Rc::clone(tensor_rc)));
-                stack.pop();
-            } else {
-                let error = ExceptionHandler::runtime_error(&frames,
-                    "Tensor method called without tensor on stack".to_string(),
-                    line,
-                );
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
-                    Ok(()) => return Ok(VMStatus::Continue),
-                    Err(e) => return Err(e),
-                }
-            }
-        } else {
-            let error = ExceptionHandler::runtime_error(&frames,
-                "Tensor method called without tensor on stack".to_string(),
-                line,
-            );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
-        }
-    } else if !is_db_engine_method {
+    if !is_db_engine_method {
         let frame = frames.last().unwrap();
         let available_args = stack.len() - frame.stack_start;
         if available_args < arity {

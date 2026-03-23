@@ -1,9 +1,18 @@
 [workspace]
-members = ["datacode_abi", "datacode_sdk"]
+members = [
+    "datacode_abi",
+    "datacode_sdk",
+]
+# Standalone cdylib crates built from integration tests via `cargo build --manifest-path ...`.
+# Without exclude, Cargo errors: "current package believes it's in a workspace when it's not".
+exclude = [
+    "tests/test_lib/math_native",
+    "tests/test_lib/ml_native",
+]
 
 [package]
 name = "data-code"
-version = "2.3.0"
+version = "2.3.1"
 edition = "2021"
 description = "ДатаКод - Интерактивный язык программирования для быстрой обработки данных"
 license = "MIT"
@@ -16,9 +25,7 @@ categories = ["command-line-utilities", "development-tools"]
 default = []
 profile = []  # Счётчики: opcodes, store allocations, store get (вывод в конце run)
 allocator_jemalloc = ["jemallocator"]
-gpu = ["candle-core", "candle-nn"]
-cuda = ["gpu", "candle-core/cuda", "candle-nn/cuda"]
-metal = ["gpu", "candle-core/metal", "candle-nn/metal"]
+# GPU ML: use ML-Datacode-lib dylib with candle features, not data-code directly
 
 [lib]
 name = "data_code"
@@ -77,15 +84,6 @@ image = "0.24"
 softbuffer = "0.4"
 fontdue = "0.7"
 
-# Progress bar for ML training
-indicatif = "0.17"
-
-# ndarray for tensor operations
-ndarray = "0.15"
-
-# Профилирование и инструментирование (используется в ml_old)
-lazy_static = "1.4"
-
 # Regular expressions
 regex = "1.10"
 
@@ -100,11 +98,14 @@ dialoguer = "0.11"
 # Dynamic native module loading (.so / .dylib)
 libloading = "0.8"
 
-# GPU support for ML (optional)
-# Using git version to avoid bf16/f16 rand compatibility issues in published versions
-# If git version doesn't work, try: version = "0.3.3"
-candle-core = { version = "0.9", default-features = false, optional = true }
-candle-nn   = { version = "0.9", default-features = false, optional = true }
+# Native module artifact (.dcmodule zip)
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Registry index for `dpm add <name>` (same crate as DPM binary)
+ureq = { version = "2", default-features = true, features = ["tls"] }
 
 # Global allocator: reduces contention under multi-threaded load (--features allocator_jemalloc)
 jemallocator = { version = "0.5", optional = true }
+
+[dev-dependencies]
+tempfile = "3"

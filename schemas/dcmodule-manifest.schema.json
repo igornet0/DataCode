@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://datacode.dev/schemas/dcmodule-manifest.schema.json",
+  "title": "Datacode module artifact manifest",
+  "description": "Root manifest.json inside a .dcmodule zip (native plugin bundle). Entry symbols are datacode_module_entry (preferred) or datacode_module; see datacode_abi.",
+  "type": "object",
+  "required": ["schema_version", "name", "version", "abi_version"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Manifest format version (currently 1)."
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Module name (matches import foo)."
+    },
+    "version": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Semantic version of the packaged artifact."
+    },
+    "abi_version": {
+      "type": "object",
+      "required": ["major", "minor"],
+      "additionalProperties": false,
+      "properties": {
+        "major": { "type": "integer", "minimum": 0 },
+        "minor": { "type": "integer", "minimum": 0 }
+      },
+      "description": "Must be compatible with the VM: same major and module.minor <= vm.minor (see datacode_abi::abi_compatible)."
+    },
+    "library": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Path to the cdylib/dll/dylib relative to the archive root (forward slashes). Use when the bundle contains a single binary for the intended platform."
+    },
+    "targets": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      },
+      "description": "Optional map from Rust-style target triple (e.g. aarch64-apple-darwin) to relative library path. Overrides library when the key matches the host."
+    }
+  },
+  "anyOf": [
+    { "required": ["library"] },
+    { "required": ["targets"] }
+  ]
+}

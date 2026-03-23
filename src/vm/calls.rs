@@ -1,7 +1,12 @@
 // Function call operations for VM (Stage 1: stack/slots as ValueId)
 
 use crate::debug_println;
-use crate::common::{error::{LangError, ErrorType}, value::Value, value_store::ValueStore, TaggedValue};
+use crate::common::{
+    error::{ErrorType, LangError},
+    value::Value,
+    value_store::ValueStore,
+    TaggedValue,
+};
 use crate::parser::ast::TypePart;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
@@ -10,6 +15,9 @@ use crate::vm::store_convert::store_value;
 /// Проверяет, соответствует ли значение одному типу
 fn check_single_type(value: &Value, type_name: &str) -> bool {
     let type_name_lower = type_name.to_lowercase();
+    if let Value::PluginOpaque { .. } = value {
+        return type_name_lower == "plugin_opaque";
+    }
     match (value, type_name_lower.as_str()) {
         // Числовые типы
         (Value::Number(n), "int" | "integer") => n.fract() == 0.0,
@@ -31,22 +39,6 @@ fn check_single_type(value: &Value, type_name: &str) -> bool {
         (Value::Null, "null" | "none") => true,
         (Value::Path(_), "path") => true,
         (Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_), "function" | "fn") => true,
-        // ML типы
-        (Value::Tensor(_), "tensor") => true,
-        (Value::Graph(_), "graph") => true,
-        (Value::Dataset(_), "dataset") => true,
-        (Value::NeuralNetwork(_), "neural_network" | "neuralnetwork") => true,
-        (Value::Sequential(_), "sequential") => true,
-        (Value::Layer(_), "layer") => true,
-        // Оптимизаторы
-        (Value::LinearRegression(_), "linear_regression" | "linearregression") => true,
-        (Value::SGD(_), "sgd") => true,
-        (Value::Momentum(_), "momentum") => true,
-        (Value::NAG(_), "nag") => true,
-        (Value::Adagrad(_), "adagrad") => true,
-        (Value::RMSprop(_), "rmsprop") => true,
-        (Value::Adam(_), "adam") => true,
-        (Value::AdamW(_), "adamw") => true,
         // Графические типы
         (Value::Window(_), "window") => true,
         (Value::Image(_), "image") => true,
@@ -95,20 +87,7 @@ pub fn get_type_name_value(value: &Value) -> &'static str {
         Value::Path(_) => "path",
         Value::Uuid(_, _) => "uuid",
         Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_) => "function",
-        Value::Tensor(_) => "tensor",
-        Value::Graph(_) => "graph",
-        Value::Dataset(_) => "dataset",
-        Value::NeuralNetwork(_) => "neural_network",
-        Value::Sequential(_) => "sequential",
-        Value::Layer(_) => "layer",
-        Value::LinearRegression(_) => "linear_regression",
-        Value::SGD(_) => "sgd",
-        Value::Momentum(_) => "momentum",
-        Value::NAG(_) => "nag",
-        Value::Adagrad(_) => "adagrad",
-        Value::RMSprop(_) => "rmsprop",
-        Value::Adam(_) => "adam",
-        Value::AdamW(_) => "adamw",
+        Value::PluginOpaque { .. } => "plugin_opaque",
         Value::Window(_) => "window",
         Value::Image(_) => "image",
         Value::Figure(_) => "figure",

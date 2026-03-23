@@ -252,9 +252,8 @@ pub fn op_get_array_length(
                 }
             }
         }
-        Value::Dataset(dataset) => {
-            let batch_size = dataset.borrow().batch_size();
-            stack::push_id(stack, store_value(Value::Number(batch_size as f64), value_store, heavy_store));
+        Value::PluginOpaque { .. } => {
+            stack::push_id(stack, store_value(Value::Null, value_store, heavy_store));
         }
         Value::Enumerate { data, .. } => {
             stack::push_id(stack, store_value(Value::Number(data.borrow().len() as f64), value_store, heavy_store));

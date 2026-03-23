@@ -15,7 +15,6 @@ use crate::vm::heavy_store::HeavyStore;
 use crate::vm::host::HostEntry;
 use crate::vm::types::{ExplicitRelation, ExplicitPrimaryKey};
 use crate::vm::interpreter::helpers::pop_to_value_id;
-
 /// Execute CallWithUnpack(unpack_arity): kwargs object unpacking into function call.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_call_with_unpack(
@@ -530,8 +529,8 @@ pub fn execute_call(
                     }
                 }
             }
-        } else if matches!(actual_callee, Value::NeuralNetwork(_) | Value::LinearRegression(_) | Value::Layer(_)) {
-            // Models and layers can be called as functions; dispatch happens in match actual_callee below.
+        } else if matches!(&actual_callee, Value::PluginOpaque { .. }) {
+            // Callable opaque values dispatch via `native_plugin_call` in the loaded plugin.
             0
         } else {
             let error = ExceptionHandler::runtime_error(
@@ -584,12 +583,26 @@ pub fn execute_call(
                 explicit_global_names,
                 vm_ptr,
             ),
-            Value::Layer(layer_id) => {
-                // Layers can be called as functions: layer(input_tensor) -> output_tensor
-                if arity != 1 {
+            Value::PluginOpaque { .. } => {
+                let Some(native_idx) = (unsafe { (*vm_ptr).plugin_call_native }) else {
                     let error = ExceptionHandler::runtime_error(
-                &frames,
-                        format!("Layer call expects 1 argument (input tensor), got {}", arity),
+                        &frames,
+                        "Plugin opaque call requires a native module that exports native_plugin_call".to_string(),
+                        line,
+                    );
+                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                        Ok(()) => {
+                            stack::push_id(stack, NULL_VALUE_ID);
+                            return Ok(VMStatus::Continue);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                };
+                let builtin_count = natives.len();
+                if native_idx < builtin_count || native_idx >= builtin_count + abi_natives.len() {
+                    let error = ExceptionHandler::runtime_error(
+                        &frames,
+                        "native_plugin_call index is invalid (reload native module)".to_string(),
                         line,
                     );
                     match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
@@ -600,21 +613,15 @@ pub fn execute_call(
                         Err(e) => return Err(e),
                     }
                 }
-                
-                let input_value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
-                let input_value = load_value(input_value_id, value_store, heavy_store);
-                use crate::ml::natives;
-                let args = vec![Value::Layer(layer_id), input_value];
-                let result = natives::native_layer_call(&args);
-                stack::push_id(stack, store_value(result, value_store, heavy_store));
-                return Ok(VMStatus::Continue);
-            }
-            Value::NeuralNetwork(_) | Value::LinearRegression(_) => {
-                // Models can be called as functions: model(input_tensor) -> output_tensor
-                if arity != 1 {
+                let frame = frames.last().unwrap();
+                let available_args = stack.len().saturating_sub(frame.stack_start);
+                if available_args < arity {
                     let error = ExceptionHandler::runtime_error(
-                &frames,
-                        format!("Model call expects 1 argument (input tensor), got {}", arity),
+                        &frames,
+                        format!(
+                            "Not enough arguments for plugin opaque call: expected {} but got {}",
+                            arity, available_args
+                        ),
                         line,
                     );
                     match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
@@ -625,12 +632,28 @@ pub fn execute_call(
                         Err(e) => return Err(e),
                     }
                 }
-                
-                let input_value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
-                let input_value = load_value(input_value_id, value_store, heavy_store);
-                use crate::ml::natives;
-                let args = vec![actual_callee.clone(), input_value];
-                let result = natives::native_nn_forward(&args);
+                let mut call_args: Vec<Value> = Vec::with_capacity(arity);
+                for _ in 0..arity {
+                    let vid = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    call_args.push(load_value(vid, value_store, heavy_store));
+                }
+                call_args.reverse();
+                let mut args = Vec::with_capacity(1 + call_args.len());
+                args.push(actual_callee.clone());
+                args.extend(call_args);
+                let result = crate::vm::native_loader::call_abi_native(
+                    abi_natives[native_idx - builtin_count],
+                    &args,
+                );
+                if let Some(abi_err) = crate::vm::native_loader::take_last_abi_error() {
+                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, abi_err, value_store, heavy_store) {
+                        Ok(()) => {
+                            stack::push_id(stack, NULL_VALUE_ID);
+                            return Ok(VMStatus::Continue);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
                 stack::push_id(stack, store_value(result, value_store, heavy_store));
                 return Ok(VMStatus::Continue);
             }

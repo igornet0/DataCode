@@ -4,9 +4,9 @@ use crate::common::{error::LangError, value::Value, value_store::{ValueStore}, T
 use crate::vm::frame::CallFrame;
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::heavy_store::HeavyStore;
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::fmt::Write;
+use std::rc::Rc;
 
 /// Get the current line number from the frames
 fn get_line(frames: &mut Vec<CallFrame>) -> usize {
@@ -187,93 +187,6 @@ pub fn binary_div(
                 Ok(Value::Number(n1 / n2))
             }
         }
-        // Tensor / Number
-        (Value::Tensor(t1), Value::Number(n2)) => {
-            if *n2 == 0.0 {
-                let error = ExceptionHandler::runtime_error(
-                    frames,
-                    "Division by zero".to_string(),
-                    line,
-                );
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
-                    Ok(()) => Ok(Value::Null),
-                    Err(e) => Err(e),
-                }
-            } else {
-                match t1.borrow().div_scalar(*n2 as f32) {
-                    Ok(result) => Ok(Value::Tensor(std::rc::Rc::new(std::cell::RefCell::new(result)))),
-                    Err(e) => {
-                        let error = ExceptionHandler::runtime_error(
-                            frames,
-                            e,
-                            line,
-                        );
-                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
-                            Ok(()) => Ok(Value::Null),
-                            Err(e) => Err(e),
-                        }
-                    }
-                }
-            }
-        }
-        // Number / Tensor
-        (Value::Number(n1), Value::Tensor(t2)) => {
-            let tensor_ref = t2.borrow();
-            match tensor_ref.to_cpu() {
-                Ok(cpu_tensor) => {
-                    // Check for division by zero
-                    if cpu_tensor.data.iter().any(|&x| x == 0.0) {
-                        let error = ExceptionHandler::runtime_error(
-                            frames,
-                            "Division by zero".to_string(),
-                            line,
-                        );
-                        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
-                            Ok(()) => Ok(Value::Null),
-                            Err(e) => Err(e),
-                        }
-                    } else {
-                        // Create a tensor filled with n1 and divide element-wise
-                        let scalar = *n1 as f32;
-                        // OPTIMIZATION: Pre-allocate vector with known capacity to avoid reallocations
-                        let len = cpu_tensor.data.len();
-                        let mut data = Vec::with_capacity(len);
-                        data.extend(cpu_tensor.data.iter().map(|&x| scalar / x));
-                        Ok(Value::Tensor(std::rc::Rc::new(std::cell::RefCell::new(
-                            crate::ml::tensor::Tensor::from_slice(&data, &cpu_tensor.shape)
-                        ))))
-                    }
-                }
-                Err(e) => {
-                    let error = ExceptionHandler::runtime_error(
-                        frames,
-                        e,
-                        line,
-                    );
-                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
-                        Ok(()) => Ok(Value::Null),
-                        Err(e) => Err(e),
-                    }
-                }
-            }
-        }
-        // Tensor / Tensor
-        (Value::Tensor(t1), Value::Tensor(t2)) => {
-            match t1.borrow().div(&t2.borrow()) {
-                Ok(result) => Ok(Value::Tensor(std::rc::Rc::new(std::cell::RefCell::new(result)))),
-                Err(e) => {
-                    let error = ExceptionHandler::runtime_error(
-                        frames,
-                        e,
-                        line,
-                    );
-                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
-                        Ok(()) => Ok(Value::Null),
-                        Err(e) => Err(e),
-                    }
-                }
-            }
-        }
         // Конкатенация путей: Path / String -> Path
         (Value::Path(p), Value::String(s)) => {
             let mut new_path = p.clone();
@@ -290,7 +203,7 @@ pub fn binary_div(
         _ => {
             let error = ExceptionHandler::runtime_error(
                 frames,
-                "Operands must be numbers, tensors, or paths".to_string(),
+                "Operands must be numbers or paths".to_string(),
                 line,
             );
             match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {

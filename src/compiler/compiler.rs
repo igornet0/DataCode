@@ -437,7 +437,7 @@ impl Compiler {
             Stmt::Import { import_stmt, line } => {
                 match import_stmt {
                     ImportStmt::Modules(modules) => {
-                        // import ml, plot
+                        // import plot
                         for module in modules {
                             // Import statements are handled at runtime by the VM
                             // We compile them as a special opcode that the VM will handle
@@ -455,7 +455,7 @@ impl Compiler {
                         }
                     }
                     ImportStmt::From { module, items } => {
-                        // from ml import load_mnist, *
+                        // from plot import plot, *
                         // Создаем массив элементов импорта в константах
                         use std::rc::Rc;
                         use std::cell::RefCell;
@@ -1895,118 +1895,12 @@ impl Compiler {
                     self.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
                     
                     // Проверяем, является ли это методом объекта (например, axis.imshow)
-                    // или функцией модуля (например, ml.load_mnist)
                     // Методы объектов (Axis) нуждаются в объекте как первом аргументе,
-                    // а функции модулей (ml, plot) - нет
+                    // а функции модулей (plot) - нет
                     // Определяем это по имени метода
                     let is_axis_method = matches!(method.as_str(), "imshow" | "set_title" | "axis");
-                    let is_nn_method = matches!(method.as_str(), "device" | "get_device" | "save" | "train" | "train_sh");
-                    let is_layer_method = matches!(method.as_str(), "freeze" | "unfreeze");
                     
-                    if is_nn_method {
-                        // Для методов device, get_device и save на NeuralNetwork, вызываем соответствующие нативные функции
-                        // Загружаем объект первым
-                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
-                        
-                        // Определяем имя функции в ml модуле
-                        let function_name = if method == "device" {
-                            "nn_set_device"
-                        } else if method == "get_device" {
-                            "nn_get_device"
-                        } else if method == "save" {
-                            "nn_save"
-                        } else if method == "train" {
-                            "nn_train"
-                        } else if method == "train_sh" {
-                            "nn_train_sh"
-                        } else {
-                            return Err(LangError::ParseError {
-                                message: format!("Unknown NeuralNetwork method: {}", method),
-                                line: *line,
-                                file: None,
-                            });
-                        };
-                        
-                        // Определяем фактическое количество аргументов для Call инструкции
-                        let actual_arg_count = if method == "get_device" {
-                            if !args.is_empty() {
-                                return Err(LangError::ParseError {
-                                    message: "get_device() takes no arguments".to_string(),
-                                    line: *line,
-                                    file: None,
-                                });
-                            }
-                            0
-                        } else if method == "train" {
-                            // Разрешаем именованные аргументы для train метода
-                            let resolved_args = match self.resolve_function_args("nn_train", args, None, *line) {
-                                Ok(resolved) => resolved,
-                                Err(e) => return Err(e),
-                            };
-                            // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
-                            for arg in resolved_args.iter().skip(1) {
-                                match arg {
-                                    Arg::Positional(expr) => self.compile_expr(expr)?,
-                                    Arg::Named { value, .. } => self.compile_expr(value)?,
-                                    Arg::UnpackObject(expr) => self.compile_expr(expr)?,
-                                }
-                            }
-                            // Всего аргументов: 1 receiver + (len-1); Call(arity) ожидает arity = это число, т.е. actual_arg_count + 1 = len, значит actual_arg_count = len - 1
-                            resolved_args.len() - 1
-                        } else if method == "train_sh" {
-                            // Разрешаем именованные аргументы для train_sh метода
-                            let resolved_args = match self.resolve_function_args("nn_train_sh", args, None, *line) {
-                                Ok(resolved) => resolved,
-                                Err(e) => return Err(e),
-                            };
-                            // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
-                            for arg in resolved_args.iter().skip(1) {
-                                match arg {
-                                    Arg::Positional(expr) => self.compile_expr(expr)?,
-                                    Arg::Named { value, .. } => self.compile_expr(value)?,
-                                    Arg::UnpackObject(expr) => self.compile_expr(expr)?,
-                                }
-                            }
-                            resolved_args.len() - 1
-                        } else {
-                            // Для device и save компилируем аргументы
-                            // device(device_string) или save(path_string)
-                            if args.len() != 1 {
-                                return Err(LangError::ParseError {
-                                    message: format!("{}() takes exactly 1 argument", method),
-                                    line: *line,
-                                    file: None,
-                                });
-                            }
-                            for arg in args {
-                                match arg {
-                                    Arg::Positional(expr) => self.compile_expr(expr)?,
-                                    Arg::Named { value, .. } => self.compile_expr(value)?,
-                                    Arg::UnpackObject(expr) => self.compile_expr(expr)?,
-                                }
-                            }
-                            args.len()
-                        };
-                        
-                        // Теперь на стеке: [object, arg_1] (для device/save), [object, arg_1, arg_2, ...] (для train) или [object] (для get_device)
-                        
-                        // Загружаем функцию из ml модуля
-                        if let Some(&ml_index) = self.scope.globals.get("ml") {
-                            self.chunk.write_with_line(OpCode::LoadGlobal(ml_index), *line);
-                            let method_name_index = self.chunk.add_constant(Value::String(function_name.to_string()));
-                            self.chunk.write_with_line(OpCode::Constant(method_name_index), *line);
-                            self.chunk.write_with_line(OpCode::GetArrayElement, *line);
-                            // Теперь на стеке: [object, arg_1, ..., NativeFunction]
-                            // При вызове Call: pop N раз, reverse -> функция получает [object, arg_1, ...] в правильном порядке
-                            self.chunk.write_with_line(OpCode::Call(actual_arg_count + 1), *line);
-                        } else {
-                            return Err(LangError::ParseError {
-                                message: "ml module not found".to_string(),
-                                line: *line,
-                                file: None,
-                            });
-                        }
-                    } else if is_axis_method {
+                    if is_axis_method {
                         // Для методов Axis компилируем аргументы сразу (они не поддерживают именованные аргументы через разрешение)
                         for arg in args {
                             match arg {
@@ -2048,32 +1942,6 @@ impl Compiler {
                         
                         // Вызываем метод
                         self.chunk.write_with_line(OpCode::Call(args.len() + 1), *line);
-                    } else if is_layer_method {
-                        // Для методов Layer (freeze, unfreeze) компилируем аргументы сразу
-                        // Эти методы не принимают аргументов, кроме самого layer
-                        if !args.is_empty() {
-                            return Err(LangError::ParseError {
-                                message: format!("layer.{}() takes no arguments", method),
-                                line: *line,
-                                file: None,
-                            });
-                        }
-                        
-                        // Загружаем объект первым
-                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
-                        // Теперь на стеке: [object]
-                        
-                        // Получаем свойство объекта по имени метода
-                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
-                        // Теперь на стеке: [object, object]
-                        
-                        let method_name_index = self.chunk.add_constant(Value::String(method.clone()));
-                        self.chunk.write_with_line(OpCode::Constant(method_name_index), *line);
-                        self.chunk.write_with_line(OpCode::GetArrayElement, *line);
-                        // Теперь на стеке: [object, NativeFunction]
-                        
-                        // При вызове Call(1): pop 1 раз, reverse -> функция получает [object] в правильном порядке
-                        self.chunk.write_with_line(OpCode::Call(1), *line);
                     } else {
                             // Default method call: receiver + args, then get method; Call(1 + n) so method receives (self, arg_1, ...).
                             let resolved_args = match self.resolve_function_args(method, args, None, *line) {
@@ -2087,7 +1955,13 @@ impl Compiler {
                                         _ => "",
                                     };
                                     
+                                    let ml_train_named_forbidden = matches!(method.as_str(), "train" | "train_sh" | "nn_train" | "nn_train_sh")
+                                        && args.iter().any(|a| matches!(a, Arg::Named { .. }));
+
                                     if error_msg.contains("not supported") || error_msg.contains("Named arguments are not supported") {
+                                        if ml_train_named_forbidden {
+                                            return Err(e);
+                                        }
                                         // Fallback: компилируем аргументы как есть (именованные аргументы будут преобразованы в объекты)
                                         args.iter().map(|a| match a {
                                             Arg::Positional(e) => Arg::Positional(e.clone()),

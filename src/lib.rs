@@ -6,6 +6,7 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 pub mod abi;
 pub mod common;
+pub mod dcmodule;
 pub mod dpm;
 pub mod lexer;
 pub mod parser;
@@ -19,8 +20,6 @@ pub mod infra;
 pub mod websocket;
 #[path = "lib/sqlite_export/mod.rs"]
 pub mod sqlite_export;
-#[path = "lib/ml/mod.rs"]
-pub mod ml;
 #[path = "lib/plot/mod.rs"]
 pub mod plot;
 #[path = "lib/settings_env/mod.rs"]
@@ -561,7 +560,7 @@ fn run_with_vm_internal_with_args(
     for f in &functions {
         vm.ensure_globals_from_chunk(&f.chunk);
     }
-    // Регистрируем встроенные модули (ml, plot, settings_env, uuid) — они заполняют слоты по имени
+    // Регистрируем встроенные модули (plot, settings_env, uuid) — они заполняют слоты по имени
     vm.register_all_builtin_modules()?;
     
     // Module isolation: register __lib__.dc as a module (no merge). Main must "from __lib__ import X" to use lib exports.

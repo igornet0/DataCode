@@ -23,4 +23,6 @@ pub enum Value {
     Array(*mut Value, usize),
     /// Непрозрачный handle объекта (словарь в VM).
     Object(NativeHandle),
+    /// Opaque plugin object; `tag` + `id` interpreted by the owning plugin.
+    PluginOpaque { tag: u8, id: u64 },
 }

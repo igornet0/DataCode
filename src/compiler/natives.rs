@@ -184,7 +184,7 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "naming_convention".to_string(),
             "info".to_string(),
         ]),
-        "Column" | "Сolumn" => Some(vec![
+        "Column" => Some(vec![
             "type".to_string(),
             "primary_key".to_string(),
             "autoincrement".to_string(),
@@ -199,6 +199,14 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             Some(vec!["left".to_string(), "right".to_string(), "on".to_string(), "type".to_string(), "suffixes".to_string()])
         },
         
+        // ML native module (`import ml`): `ml.model_info(model, verbose=..., format=..., show_graph=...)`
+        "model_info" => Some(vec![
+            "model".to_string(),
+            "verbose".to_string(),
+            "format".to_string(),
+            "show_graph".to_string(),
+        ]),
+
         // Module methods
         "show" => Some(vec!["image".to_string(), "title".to_string()]),
         "line" => Some(vec![
@@ -210,36 +218,6 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "color".to_string(),
         ]),
         
-        // ML functions
-        "nn_train" => Some(vec![
-            "nn".to_string(),  // Model object (first parameter, added separately for method calls)
-            "x".to_string(),
-            "y".to_string(),
-            "epochs".to_string(),
-            "batch_size".to_string(),
-            "learning_rate".to_string(),
-            "loss".to_string(),
-            "optimizer".to_string(),
-            "x_val".to_string(),
-            "y_val".to_string(),
-        ]),
-        "nn_train_sh" => Some(vec![
-            "nn".to_string(),  // Model object (first parameter, added separately for method calls)
-            "x".to_string(),
-            "y".to_string(),
-            "epochs".to_string(),
-            "batch_size".to_string(),
-            "learning_rate".to_string(),
-            "loss".to_string(),
-            "optimizer".to_string(),
-            "monitor".to_string(),
-            "patience".to_string(),
-            "min_delta".to_string(),
-            "restore_best".to_string(),
-            "x_val".to_string(),
-            "y_val".to_string(),
-        ]),
-
         // settings_env.Config(...) / Settings.config(...) — config dict for load_env
         "Config" | "config" => Some(vec![
             "env_prefix".to_string(),

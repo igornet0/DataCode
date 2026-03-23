@@ -77,59 +77,7 @@ pub fn store_value(
                 column_name,
             })
         }
-        Value::Tensor(rc) => {
-            let idx = heap.push(Value::Tensor(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Graph(rc) => {
-            let idx = heap.push(Value::Graph(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::LinearRegression(rc) => {
-            let idx = heap.push(Value::LinearRegression(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::SGD(rc) => {
-            let idx = heap.push(Value::SGD(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Momentum(rc) => {
-            let idx = heap.push(Value::Momentum(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::NAG(rc) => {
-            let idx = heap.push(Value::NAG(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Adagrad(rc) => {
-            let idx = heap.push(Value::Adagrad(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::RMSprop(rc) => {
-            let idx = heap.push(Value::RMSprop(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Adam(rc) => {
-            let idx = heap.push(Value::Adam(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::AdamW(rc) => {
-            let idx = heap.push(Value::AdamW(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Dataset(rc) => {
-            let idx = heap.push(Value::Dataset(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::NeuralNetwork(rc) => {
-            let idx = heap.push(Value::NeuralNetwork(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Sequential(rc) => {
-            let idx = heap.push(Value::Sequential(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Layer(id) => store.allocate(ValueCell::Layer(id)),
+        Value::PluginOpaque { tag, id } => store.allocate(ValueCell::PluginOpaque { tag, id }),
         Value::Window(h) => store.allocate(ValueCell::Window(h)),
         Value::Image(rc) => {
             let idx = heap.push(Value::Image(rc));
@@ -266,7 +214,10 @@ pub fn load_value(
                 Value::Null
             }
         }
-        ValueCell::Layer(id) => Value::Layer(*id),
+        ValueCell::PluginOpaque { tag, id } => Value::PluginOpaque {
+            tag: *tag,
+            id: *id,
+        },
         ValueCell::Window(h) => Value::Window(*h),
         ValueCell::Enumerate { data_id, start } => {
             let data_val = load_value(*data_id, store, heap);
@@ -420,59 +371,7 @@ pub fn store_value_arena(
                 column_name,
             })
         }
-        Value::Tensor(rc) => {
-            let idx = heap.push(Value::Tensor(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Graph(rc) => {
-            let idx = heap.push(Value::Graph(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::LinearRegression(rc) => {
-            let idx = heap.push(Value::LinearRegression(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::SGD(rc) => {
-            let idx = heap.push(Value::SGD(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Momentum(rc) => {
-            let idx = heap.push(Value::Momentum(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::NAG(rc) => {
-            let idx = heap.push(Value::NAG(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Adagrad(rc) => {
-            let idx = heap.push(Value::Adagrad(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::RMSprop(rc) => {
-            let idx = heap.push(Value::RMSprop(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Adam(rc) => {
-            let idx = heap.push(Value::Adam(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::AdamW(rc) => {
-            let idx = heap.push(Value::AdamW(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Dataset(rc) => {
-            let idx = heap.push(Value::Dataset(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::NeuralNetwork(rc) => {
-            let idx = heap.push(Value::NeuralNetwork(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Sequential(rc) => {
-            let idx = heap.push(Value::Sequential(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Layer(id) => store.allocate_arena(ValueCell::Layer(id)),
+        Value::PluginOpaque { tag, id } => store.allocate_arena(ValueCell::PluginOpaque { tag, id }),
         Value::Window(h) => store.allocate_arena(ValueCell::Window(h)),
         Value::Image(rc) => {
             let idx = heap.push(Value::Image(rc));

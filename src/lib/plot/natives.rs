@@ -711,13 +711,8 @@ pub fn native_plot_show(args: &[Value]) -> Value {
                 _ => return Value::Null,
             }
         }
-        Value::Tensor(tensor_ref) => {
-            // Convert tensor to image
-            let tensor = tensor_ref.borrow();
-            match Image::from_tensor(&tensor) {
-                Ok(img) => Rc::new(RefCell::new(img)),
-                Err(_) => return Value::Null,
-            }
+        Value::PluginOpaque { .. } => {
+            return Value::Null;
         }
         _ => return Value::Null,
     };
@@ -844,14 +839,7 @@ pub fn native_plot_show_grid(args: &[Value]) -> Value {
                     _ => continue, // Skip invalid images
                 }
             }
-            Value::Tensor(tensor_ref) => {
-                // Convert tensor to image
-                let tensor = tensor_ref.borrow();
-                match Image::from_tensor(&tensor) {
-                    Ok(img) => Rc::new(RefCell::new(img)),
-                    Err(_) => continue, // Skip invalid tensors
-                }
-            }
+            Value::PluginOpaque { .. } => continue,
             Value::Image(img) => img.clone(),
             _ => continue, // Skip invalid values
         };
@@ -1023,17 +1011,7 @@ pub fn native_axis_imshow(args: &[Value]) -> Value {
     // Find tensor/image in args (skip the axis we already found)
     let image = args.iter().find_map(|arg| {
         match arg {
-            Value::Tensor(tensor_ref) => {
-                let tensor = tensor_ref.borrow();
-                match Image::from_tensor(&tensor) {
-                    Ok(img) => {
-                        Some(Rc::new(RefCell::new(img)))
-                    },
-                    Err(_e) => {
-                        None
-                    },
-                }
-            }
+            Value::PluginOpaque { .. } => None,
             Value::Image(img) => {
                 Some(img.clone())
             }

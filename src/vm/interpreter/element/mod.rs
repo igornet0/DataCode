@@ -12,7 +12,7 @@ use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::stack;
-use crate::vm::store_convert::{load_value, tagged_to_value_id};
+use crate::vm::store_convert::{load_value, store_value, tagged_to_value_id};
 use crate::vm::types::VMStatus;
 
 use super::helpers::pop_to_value_id;
@@ -177,12 +177,6 @@ pub fn op_get_array_element(
                 index_value,
             );
         }
-        Value::Layer(_layer_id) => {
-            return indexing_lib::get_layer(
-                line, stack, frames, globals, global_names, exception_handlers,
-                value_store, heavy_store, index_value,
-            );
-        }
         Value::ColumnReference { table, column_name } => {
             return indexing::get_column_reference(
                 line, stack, frames, exception_handlers, value_store, heavy_store,
@@ -195,23 +189,44 @@ pub fn op_get_array_element(
                 path, index_value,
             );
         }
-        Value::Dataset(dataset) => {
-            return indexing_lib::get_dataset(
-                line, stack, frames, exception_handlers, value_store, heavy_store,
-                dataset, index_value,
+        Value::PluginOpaque { .. } => {
+            let Some(native_idx) = (unsafe { (*vm_ptr).plugin_call_native }) else {
+                let error = ExceptionHandler::runtime_error(
+                    &frames,
+                    "GetArrayElement on plugin opaque values requires native_plugin_call (import a native module that exports it)".to_string(),
+                    line,
+                );
+                return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                    Ok(()) => Ok(VMStatus::Continue),
+                    Err(e) => Err(e),
+                };
+            };
+            let builtin_count = natives.len();
+            let abi_slice = unsafe { (*vm_ptr).get_abi_natives() };
+            if native_idx < builtin_count || native_idx >= builtin_count + abi_slice.len() {
+                let error = ExceptionHandler::runtime_error(
+                    &frames,
+                    "native_plugin_call index is invalid (reload native module)".to_string(),
+                    line,
+                );
+                return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                    Ok(()) => Ok(VMStatus::Continue),
+                    Err(e) => Err(e),
+                };
+            }
+            let args = [container.clone(), index_value.clone()];
+            let result = crate::vm::native_loader::call_abi_native(
+                abi_slice[native_idx - builtin_count],
+                &args,
             );
-        }
-        Value::Tensor(tensor) => {
-            return indexing_lib::get_tensor(
-                line, stack, frames, exception_handlers, value_store, heavy_store,
-                natives, tensor, index_value,
-            );
-        }
-        Value::NeuralNetwork(nn_rc) => {
-            return indexing_lib::get_neural_network(
-                line, stack, frames, globals, global_names, exception_handlers,
-                value_store, heavy_store, nn_rc, index_value,
-            );
+            if let Some(abi_err) = crate::vm::native_loader::take_last_abi_error() {
+                return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, abi_err, value_store, heavy_store) {
+                    Ok(()) => Ok(VMStatus::Continue),
+                    Err(e) => Err(e),
+                };
+            }
+            stack::push_id(stack, store_value(result, value_store, heavy_store));
+            return Ok(VMStatus::Continue);
         }
         Value::DatabaseEngine(_engine_rc) => {
             return indexing_lib::get_database_engine(

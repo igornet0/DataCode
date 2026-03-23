@@ -68,7 +68,8 @@ pub struct Vm {
     base_path: Option<PathBuf>,
     /// Root directory of the project (entry script dir). Never overwritten; used for absolute imports.
     project_root: Option<PathBuf>,
-    ml_context: Option<crate::ml::MlContext>,
+    /// Set when native `ml` module loads: ABI indices for callable opaque values (`import ml` dylib).
+    pub(crate) plugin_call_native: Option<usize>,
     plot_context: Option<crate::plot::PlotContext>,
     value_store: ValueStore,
     /// Heavy values (Table, Tensor, etc.) indexed by ValueCell::Heavy(usize)
@@ -154,7 +155,7 @@ impl Vm {
             loaded_native_libraries: Vec::new(),
             base_path: None,
             project_root: None,
-            ml_context: Some(crate::ml::MlContext::new()),
+            plugin_call_native: None,
             plot_context: Some(crate::plot::PlotContext::new()),
             value_store: ValueStore::new(),
             heavy_store: HeavyStore::new(),
@@ -199,7 +200,7 @@ impl Vm {
             loaded_native_libraries: Vec::new(),
             base_path: None,
             project_root: parent.project_root.clone(),
-            ml_context: Some(crate::ml::MlContext::new()),
+            plugin_call_native: parent.plugin_call_native,
             plot_context: Some(crate::plot::PlotContext::new()),
             value_store: ValueStore::new(),
             heavy_store: HeavyStore::new(),
@@ -277,12 +278,17 @@ impl Vm {
     pub(crate) fn get_base_path_mut_ptr(&mut self) -> *mut Option<PathBuf> {
         &mut self.base_path as *mut _
     }
-    pub(crate) fn take_ml_context(&mut self) -> Option<crate::ml::MlContext> {
-        self.ml_context.take()
+    /// Called when a native module is loaded; wires `import ml` callable handles for Layer / models.
+    pub(crate) fn register_plugin_native_indices_from_module(
+        &mut self,
+        _module_name: &str,
+        module_object: &std::collections::HashMap<String, Value>,
+    ) {
+        if let Some(Value::NativeFunction(i)) = module_object.get("native_plugin_call") {
+            self.plugin_call_native = Some(*i);
+        }
     }
-    pub(crate) fn get_ml_context_mut_ptr(&mut self) -> *mut Option<crate::ml::MlContext> {
-        &mut self.ml_context as *mut _
-    }
+
     pub(crate) fn take_plot_context(&mut self) -> Option<crate::plot::PlotContext> {
         self.plot_context.take()
     }
@@ -519,11 +525,11 @@ impl Vm {
         }
     }
 
-    /// Register all built-in modules (ml, plot, settings_env) so native indices are consistent
+    /// Register all built-in modules (plot, settings_env, uuid, database_engine) so native indices are consistent
     /// across all VMs (main and sub-VMs used for module loading).
+    /// The `ml` module is not registered here: it loads from a native `.dylib`/`.so` when present (`import ml`).
     pub fn register_all_builtin_modules(&mut self) -> Result<(), LangError> {
         use crate::vm::modules;
-        modules::register_module("ml", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         modules::register_module("plot", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         modules::register_module("settings_env", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         modules::register_module("uuid", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;

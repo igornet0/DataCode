@@ -102,6 +102,9 @@ pub fn handle_import(
         abi_natives,
         loaded_native_libraries,
     ) {
+        unsafe {
+            (*vm_ptr).register_plugin_native_indices_from_module(&module_name, &module_object);
+        }
         let module_value = Value::Object(Rc::new(RefCell::new(module_object)));
         let id = store_value(module_value, value_store, heavy_store);
         if let Some(idx) = global_index_by_name(global_names, &module_name) {
@@ -652,12 +655,15 @@ pub fn handle_import_from(
                         Err(load_err) => {
                             match crate::vm::native_loader::try_load_native_module(
                                 &module_name,
-                                Some(&base_path),
+                                Some(base_path.as_path()),
                                 natives.len(),
                                 abi_natives,
                                 loaded_native_libraries,
                             ) {
                                 Ok(module_object) => {
+                                    unsafe {
+                                        (*vm_ptr).register_plugin_native_indices_from_module(&module_name, &module_object);
+                                    }
                                     let module_value = Value::Object(Rc::new(RefCell::new(module_object)));
                                     let id = store_value(module_value, value_store, heavy_store);
                                     if let Some(idx) = global_index_by_name(global_names, &module_name) {

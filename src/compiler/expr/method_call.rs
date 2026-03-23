@@ -236,42 +236,18 @@ fn compile_generic_method(
     ctx.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), line);
     
     // Проверяем, является ли это методом объекта (например, axis.imshow)
-    // или функцией модуля (например, ml.load_mnist)
-    // ml.add/sum/... are module functions (no receiver); cluster.add/array.sum need receiver.
-    let is_ml_receiver = matches!(object, Expr::Variable { name, .. } if name == "ml");
     let is_axis_method = matches!(method, "imshow" | "set_title" | "axis");
-    let is_nn_method = matches!(method, "device" | "get_device" | "save" | "train" | "train_sh");
-    let is_layer_method = matches!(method, "freeze" | "unfreeze");
     let is_string_method = matches!(method, "lower" | "upper" | "isupper" | "islower" | "trim" | "split" | "join" | "contains");
-    // ml.sum/mean are module functions (no receiver); array.sum/average need receiver.
-    let is_array_method = if is_ml_receiver {
-        matches!(method, "push" | "pop" | "unique" | "reverse" | "sort" | "average" | "count" | "any" | "all")
-    } else {
-        matches!(method, "push" | "pop" | "unique" | "reverse" | "sort" | "sum" | "average" | "count" | "any" | "all")
-    };
-    let is_db_receiver_method = if is_ml_receiver {
-        matches!(method, "get" | "names" | "connect" | "execute" | "query" | "run")
-    } else {
-        matches!(method, "add" | "get" | "names" | "connect" | "execute" | "query" | "run")
-    };
     // Tensor methods max_idx/min_idx: GetArrayElement pushes (tensor, native_fn); Call(0) lets native take tensor from stack.
     // Must NOT use compile_module_method which pushes extra receiver and causes stack leak.
     let is_tensor_arity0_method = matches!(method, "max_idx" | "min_idx");
     
     if is_tensor_arity0_method && args.is_empty() {
         compile_tensor_arity0_method(ctx, method, temp_object_slot, line)
-    } else if is_db_receiver_method {
-        compile_db_receiver_method(ctx, method, args, temp_object_slot, line)
-    } else if is_nn_method {
-        compile_nn_method(ctx, method, args, temp_object_slot, line)
     } else if is_axis_method {
         compile_axis_method(ctx, method, args, temp_object_slot, line)
-    } else if is_layer_method {
-        compile_layer_method(ctx, method, args, temp_object_slot, line)
     } else if is_string_method {
         compile_string_method(ctx, method, args, temp_object_slot, line)
-    } else if is_array_method {
-        compile_array_method(ctx, method, args, temp_object_slot, line)
     } else {
         compile_module_method(ctx, method, args, temp_object_slot, line)
     }
@@ -292,104 +268,6 @@ fn compile_tensor_arity0_method(
     ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
     ctx.chunk.write_with_line(OpCode::Call(0), line);
     Ok(())
-}
-
-fn compile_nn_method(
-    ctx: &mut CompilationContext,
-    method: &str,
-    args: &[Arg],
-    temp_object_slot: usize,
-    line: usize,
-) -> Result<(), LangError> {
-    // Для методов device, get_device и save на NeuralNetwork, вызываем соответствующие нативные функции
-    // Загружаем объект первым
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    
-    // Определяем имя функции в ml модуле
-    let function_name = match method {
-        "device" => "nn_set_device",
-        "get_device" => "nn_get_device",
-        "save" => "nn_save",
-        "train" => "nn_train",
-        "train_sh" => "nn_train_sh",
-        _ => {
-            return Err(LangError::ParseError {
-                message: format!("Unknown NeuralNetwork method: {}", method),
-                line,
-                file: None,
-            });
-        }
-    };
-    
-    // Определяем фактическое количество аргументов для Call инструкции
-    let actual_arg_count = if method == "get_device" {
-        if !args.is_empty() {
-            return Err(LangError::ParseError {
-                message: "get_device() takes no arguments".to_string(),
-                line,
-                file: None,
-            });
-        }
-        0
-    } else if method == "train" {
-        // Разрешаем именованные аргументы для train метода
-        let resolved_args = args::resolve_function_args("nn_train", args, None, line, ctx.source_name)?;
-        // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
-        for arg in resolved_args.iter().skip(1) {
-            match arg {
-                Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-                Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-            }
-        }
-        // Всего аргументов на стеке: 1 receiver + (resolved_args.len() - 1). Call(arity) принимает arity = это число; мы передаём actual_arg_count+1 в Call, значит actual_arg_count = resolved_args.len() - 1.
-        resolved_args.len() - 1
-    } else if method == "train_sh" {
-        // Разрешаем именованные аргументы для train_sh метода
-        let resolved_args = args::resolve_function_args("nn_train_sh", args, None, line, ctx.source_name)?;
-        // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
-        for arg in resolved_args.iter().skip(1) {
-            match arg {
-                Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-                Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-            }
-        }
-        resolved_args.len() - 1
-    } else {
-        // Для device и save компилируем аргументы
-        if args.len() != 1 {
-            return Err(LangError::ParseError {
-                message: format!("{}() takes exactly 1 argument", method),
-                line,
-                file: None,
-            });
-        }
-        for arg in args {
-            match arg {
-                Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-                Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-            }
-        }
-        args.len()
-    };
-    
-    // Загружаем функцию из ml модуля
-    if let Some(&ml_index) = ctx.scope.globals.get("ml") {
-        ctx.chunk.write_with_line(OpCode::LoadGlobal(ml_index), line);
-        let method_name_index = ctx.chunk.add_constant(Value::String(function_name.to_string()));
-        ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
-        ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-        ctx.chunk.write_with_line(OpCode::Call(actual_arg_count + 1), line);
-        Ok(())
-    } else {
-        Err(LangError::ParseError {
-            message: "ml module not found".to_string(),
-            line,
-            file: None,
-        })
-    }
 }
 
 fn compile_axis_method(
@@ -567,37 +445,6 @@ fn compile_string_method(
     Ok(())
 }
 
-fn compile_layer_method(
-    ctx: &mut CompilationContext,
-    method: &str,
-    args: &[Arg],
-    temp_object_slot: usize,
-    line: usize,
-) -> Result<(), LangError> {
-    // Для методов Layer (freeze, unfreeze) компилируем аргументы сразу
-    // Эти методы не принимают аргументов, кроме самого layer
-    if !args.is_empty() {
-        return Err(LangError::ParseError {
-            message: format!("layer.{}() takes no arguments", method),
-            line,
-            file: None,
-        });
-    }
-    
-    // Загружаем объект первым
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    
-    // Получаем свойство объекта по имени метода
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
-    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
-    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-    
-    // При вызове Call(1): pop 1 раз, reverse -> функция получает [object] в правильном порядке
-    ctx.chunk.write_with_line(OpCode::Call(1), line);
-    Ok(())
-}
-
 fn compile_module_method(
     ctx: &mut CompilationContext,
     method: &str,
@@ -615,7 +462,13 @@ fn compile_module_method(
                 _ => "",
             };
             
+            let ml_train_named_forbidden = matches!(method, "train" | "train_sh" | "nn_train" | "nn_train_sh")
+                && args.iter().any(|a| matches!(a, Arg::Named { .. }));
+
             if error_msg.contains("not supported") || error_msg.contains("Named arguments are not supported") {
+                if ml_train_named_forbidden {
+                    return Err(e);
+                }
                 // Fallback: компилируем аргументы как есть
                 args.iter().map(|a| match a {
                     Arg::Positional(e) => Arg::Positional(e.clone()),

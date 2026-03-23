@@ -30,7 +30,13 @@ pub fn resolve_function_args(
                 
                 // Для методов объектов (например, nn_train), первый параметр - это объект,
                 // который не передается в args метода, поэтому пропускаем позицию 0
-                let start_position = if (function_name == "nn_train" || function_name == "nn_train_sh") && !param_names.is_empty() && param_names[0] == "nn" {
+                let start_position = if (function_name == "nn_train"
+                    || function_name == "nn_train_sh"
+                    || function_name == "train"
+                    || function_name == "train_sh")
+                    && !param_names.is_empty()
+                    && param_names[0] == "nn"
+                {
                     1  // Пропускаем первый параметр "nn" (объект метода)
                 } else {
                     0
@@ -133,6 +139,19 @@ pub fn resolve_function_args(
             }
         } else {
             // Нет именованных аргументов, просто возвращаем позиционные
+            if let Some(param_names) = natives::get_native_function_params(function_name) {
+                if param_names.is_empty() && !args.is_empty() {
+                    return Err(LangError::ParseError {
+                        message: format!(
+                            "Function '{}' takes no arguments but {} were provided",
+                            function_name,
+                            args.len()
+                        ),
+                        line,
+                        file: file_owned.clone(),
+                    });
+                }
+            }
             return Ok(args.iter().map(|a| match a {
                 Arg::Positional(e) => Arg::Positional(e.clone()),
                 Arg::Named { .. } => unreachable!(),

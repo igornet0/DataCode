@@ -160,10 +160,6 @@ pub fn native_sum(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Number(0.0);
     }
-    if let Value::Tensor(tensor) = &args[0] {
-        let tensor_ref = tensor.borrow();
-        return Value::Number(tensor_ref.sum() as f64);
-    }
     let (mut sum, mut has_numbers) = (0.0, false);
     match &args[0] {
         Value::Array(a) => {
@@ -195,10 +191,6 @@ pub fn native_sum(args: &[Value]) -> Value {
 pub fn native_average(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Number(0.0);
-    }
-    if let Value::Tensor(tensor) = &args[0] {
-        let tensor_ref = tensor.borrow();
-        return Value::Number(tensor_ref.mean() as f64);
     }
     let (mut sum, mut count) = (0.0, 0);
     match &args[0] {
@@ -233,13 +225,6 @@ pub fn native_count(args: &[Value]) -> Value {
         return Value::Number(0.0);
     }
     
-    // Check if first argument is a tensor
-    if let Value::Tensor(tensor) = &args[0] {
-        let tensor_ref = tensor.borrow();
-        let count = tensor_ref.total_size();
-        return Value::Number(count as f64);
-    }
-    
     // Handle array and column reference (lazy: no materialization)
     match &args[0] {
         Value::Array(arr) => Value::Number(arr.borrow().len() as f64),
@@ -258,26 +243,6 @@ pub fn native_count(args: &[Value]) -> Value {
 pub fn native_any(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Bool(false);
-    }
-    
-    // Check if first argument is a tensor
-    if let Value::Tensor(tensor) = &args[0] {
-        let tensor_ref = tensor.borrow();
-        match tensor_ref.to_cpu() {
-            Ok(cpu_tensor) => {
-                if cpu_tensor.data.is_empty() {
-                    return Value::Bool(false);
-                }
-                // Check if there's at least one non-zero element
-                for &val in cpu_tensor.data.iter() {
-                    if val != 0.0 {
-                        return Value::Bool(true);
-                    }
-                }
-                return Value::Bool(false);
-            }
-            Err(_) => return Value::Bool(false),
-        }
     }
     
     // Handle array (original behavior)
@@ -306,26 +271,6 @@ pub fn native_any(args: &[Value]) -> Value {
 pub fn native_all(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Bool(false);
-    }
-    
-    // Check if first argument is a tensor
-    if let Value::Tensor(tensor) = &args[0] {
-        let tensor_ref = tensor.borrow();
-        match tensor_ref.to_cpu() {
-            Ok(cpu_tensor) => {
-                if cpu_tensor.data.is_empty() {
-                    return Value::Bool(false);
-                }
-                // Check if all elements are non-zero
-                for &val in cpu_tensor.data.iter() {
-                    if val == 0.0 {
-                        return Value::Bool(false);
-                    }
-                }
-                return Value::Bool(true);
-            }
-            Err(_) => return Value::Bool(false),
-        }
     }
     
     // Handle array (original behavior)

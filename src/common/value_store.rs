@@ -189,8 +189,8 @@ pub enum ValueCell {
     /// Index into HeavyStore (Table, Tensor, Image, etc.)
     Heavy(usize),
     ColumnReference { table_handle: usize, column_name: String },
-    /// Layer registry id (ml::layer::LayerId)
-    Layer(usize),
+    /// Opaque plugin object (tag + id)
+    PluginOpaque { tag: u8, id: u64 },
     Window(crate::plot::PlotWindowHandle),
     Enumerate { data_id: ValueId, start: i64 },
     Ellipsis,

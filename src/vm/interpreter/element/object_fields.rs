@@ -32,15 +32,6 @@ pub fn get_object(
 ) -> Result<VMStatus, LangError> {
     let map = map_rc.borrow();
 
-    // Check if this is a layer accessor object (has __neural_network key)
-    if map.contains_key("__neural_network") {
-        drop(map);
-        return get_layer_accessor(
-            line, stack, frames, exception_handlers, value_store, heavy_store,
-            &map_rc, index_value,
-        );
-    }
-
     // Regular object access
     match &index_value {
         Value::String(key) => {
@@ -397,54 +388,6 @@ pub fn get_object(
             let error = ExceptionHandler::runtime_error(
                 &frames,
                 "Object index must be a string".to_string(),
-                line,
-            );
-            return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
-                Ok(()) => Ok(VMStatus::Continue),
-                Err(e) => Err(e),
-            };
-        }
-    }
-    Ok(VMStatus::Continue)
-}
-
-fn get_layer_accessor(
-    line: usize,
-    stack: &mut Vec<crate::common::TaggedValue>,
-    frames: &mut Vec<CallFrame>,
-    exception_handlers: &mut Vec<ExceptionHandler>,
-    value_store: &mut ValueStore,
-    heavy_store: &mut HeavyStore,
-    map_rc: &Rc<RefCell<HashMap<String, Value>>>,
-    index_value: Value,
-) -> Result<VMStatus, LangError> {
-    match index_value {
-        Value::Number(n) => {
-            let idx = n as i64;
-            if idx < 0 {
-                let error = ExceptionHandler::runtime_error(
-                    &frames,
-                    "Layer index must be non-negative".to_string(),
-                    line,
-                );
-                return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
-                    Ok(()) => Ok(VMStatus::Continue),
-                    Err(e) => Err(e),
-                };
-            }
-            let map = map_rc.borrow();
-            if let Some(Value::NeuralNetwork(nn_rc)) = map.get("__neural_network") {
-                use crate::ml::natives;
-                let args = vec![Value::NeuralNetwork(Rc::clone(nn_rc)), Value::Number(n)];
-                let result = natives::native_model_get_layer(&args);
-                stack::push_id(stack, store_value(result, value_store, heavy_store));
-                return Ok(VMStatus::Continue);
-            }
-        }
-        _ => {
-            let error = ExceptionHandler::runtime_error(
-                &frames,
-                "Layer accessor index must be a number".to_string(),
                 line,
             );
             return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {

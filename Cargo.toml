@@ -13,7 +13,7 @@ exclude = [
 
 [package]
 name = "data-code"
-version = "2.3.1"
+version = "2.3.2"
 edition = "2021"
 description = "ДатаКод - Интерактивный язык программирования для быстрой обработки данных"
 license = "MIT"
@@ -26,7 +26,7 @@ categories = ["command-line-utilities", "development-tools"]
 default = []
 profile = []  # Счётчики: opcodes, store allocations, store get (вывод в конце run)
 allocator_jemalloc = ["jemallocator"]
-# GPU ML: use ML-Datacode-lib dylib with candle features, not data-code directly
+# ML/GPU: не в data-code. Готовый libml подкладывается отдельно (см. install.sh: DATACODE_ML_LIB_DIR, make ml-link).
 
 [lib]
 name = "data_code"

@@ -1,7 +1,8 @@
 # Makefile для DataCode
 # Удобные команды для сборки, тестирования и установки DataCode
+# ML (libml) не собирается здесь — подключается готовый артефакт через DATACODE_ML_LIB_DIR
 
-.PHONY: help build test run install update uninstall clean dev release examples build-metal build-cuda run-metal run-cuda
+.PHONY: help build test run install update uninstall clean dev release examples build-metal build-cuda run-metal run-cuda ml-check ml-link run-with-ml
 
 # Цель по умолчанию
 help:
@@ -14,16 +15,19 @@ help:
 	@echo "  make run        - Запустить DataCode REPL"
 	@echo "  make dev        - Собрать и запустить в режиме разработки"
 	@echo ""
-	@echo "GPU поддержка:"
-	@echo "  make build-metal - Собрать с поддержкой Metal (macOS)"
-	@echo "  make build-cuda  - Собрать с поддержкой CUDA (Linux/Windows)"
-	@echo "  make run-metal   - Запустить с Metal (FILE=path/to/file.dc)"
-	@echo "  make run-cuda    - Запустить с CUDA (FILE=path/to/file.dc)"
+	@echo "ML (внешняя сборка, не data-code):"
+	@echo "  export DATACODE_ML_LIB_DIR=/path/to/dir   # каталог с libml.dylib / libml.so / ml.dll"
+	@echo "  make ml-check   - проверить наличие библиотеки в DATACODE_ML_LIB_DIR"
+	@echo "  make ml-link    - скопировать libml в packages/ml (install.sh --ml-artifact-only)"
+	@echo "  make run-with-ml FILE=path.dc  - ml-check затем cargo run --release"
+	@echo ""
+	@echo "Совместимость (alias): build-metal / build-cuda / run-metal / run-cuda —"
+	@echo "  только data-code + при необходимости проверка ml; без сборки ML в этом репозитории."
 	@echo ""
 	@echo "Релиз:"
 	@echo "  make release    - Собрать DataCode в релизном режиме"
 	@echo "  make install    - Установить DataCode как глобальную команду"
-	@echo "  make update     - Обновить DataCode без полной установки (зависимости + пересборка + переустановка)"
+	@echo "  make update     - Обновить зависимости и переустановить data-code"
 	@echo "  make uninstall  - Удалить глобальную команду DataCode"
 	@echo "  make app-bundle - Создать macOS app bundle с иконкой (только macOS)"
 	@echo ""
@@ -61,15 +65,11 @@ release:
 	@echo "🔨 Сборка DataCode (релизный режим)..."
 	cargo build --release
 
-# Сборка с поддержкой Metal (macOS)
-build-metal:
-	@echo "🔨 Сборка DataCode с поддержкой Metal (macOS)..."
-	cargo build --features metal
-
-# Сборка с поддержкой CUDA (Linux/Windows)
-build-cuda:
-	@echo "🔨 Сборка DataCode с поддержкой CUDA (Linux/Windows)..."
-	cargo build --features cuda
+# Сборка только data-code (release). GPU/Metal/CUDA — в отдельно собранном libml, не в data-code.
+build-metal build-cuda:
+	@echo "🔨 Сборка только data-code (release). ML/libml не собирается в этом репозитории."
+	@echo "   Установите DATACODE_ML_LIB_DIR и при необходимости: make ml-link"
+	@$(MAKE) release
 
 # Запуск тестов
 test:
@@ -111,23 +111,45 @@ run:
 	@echo "🚀 Запуск DataCode REPL..."
 	cargo run
 
-# Запуск с поддержкой Metal (macOS)
-run-metal:
-	@if [ -z "$(FILE)" ]; then \
-		echo "❌ Укажите файл: make run-metal FILE=examples/en/10-mnist-mlp/mnist_mlp.dc"; \
-	else \
-		echo "🚀 Запуск $(FILE) с Metal GPU..."; \
-		cargo run --features metal -- $(FILE); \
+# Проверка наличия prebuilt libml (DATACODE_ML_LIB_DIR обязателен)
+ml-check:
+	@if [ -z "$$DATACODE_ML_LIB_DIR" ]; then \
+		echo "❌ DATACODE_ML_LIB_DIR не задан."; \
+		echo "   Пример: export DATACODE_ML_LIB_DIR=/path/to/dir/with/libml"; \
+		exit 1; \
 	fi
+	@LIB_NAME="$$DATACODE_ML_LIB_NAME"; \
+	if [ -z "$$LIB_NAME" ]; then \
+		case $$(uname -s) in \
+			Darwin) LIB_NAME=libml.dylib ;; \
+			MINGW*|MSYS*|CYGWIN*) LIB_NAME=ml.dll ;; \
+			*) LIB_NAME=libml.so ;; \
+		esac; \
+	fi; \
+	SRC="$$DATACODE_ML_LIB_DIR/$$LIB_NAME"; \
+	if [ ! -f "$$SRC" ]; then \
+		echo "❌ Не найдено: $$SRC"; \
+		exit 1; \
+	fi; \
+	echo "✅ ML library: $$SRC"
 
-# Запуск с поддержкой CUDA (Linux/Windows)
-run-cuda:
+# Копирование libml в packages/ml (install.sh --ml-artifact-only)
+ml-link:
+	@chmod +x install.sh
+	@./install.sh --ml-artifact-only
+
+# Запуск с проверкой ML-артефакта
+run-with-ml:
 	@if [ -z "$(FILE)" ]; then \
-		echo "❌ Укажите файл: make run-cuda FILE=examples/en/10-mnist-mlp/mnist_mlp.dc"; \
-	else \
-		echo "🚀 Запуск $(FILE) с CUDA GPU..."; \
-		cargo run --features cuda -- $(FILE); \
+		echo "❌ Укажите файл: make run-with-ml FILE=examples/en/10-mnist-mlp/mnist_mlp.dc"; \
+		exit 1; \
 	fi
+	@$(MAKE) ml-check
+	@echo "🚀 Запуск $(FILE)..."
+	cargo run --release -- $(FILE)
+
+# Alias: раньше подразумевали сборку libml с Metal/CUDA — теперь только проверка + run
+run-metal run-cuda: run-with-ml
 
 # Режим разработки (сборка + запуск)
 dev: build run
@@ -150,26 +172,14 @@ update:
 	@echo "📦 Обновление зависимостей Cargo..."
 	@cargo update || (echo "❌ Ошибка: Не удалось обновить зависимости" && exit 1)
 	@echo ""
-	@if [ "$$(uname)" = "Darwin" ]; then \
-		echo "🍎 macOS detected - updating with Metal GPU support"; \
-		echo "🔨 Пересборка и переустановка DataCode с Metal..."; \
-		cargo install --path . --features metal --force || (echo "❌ Ошибка: Не удалось переустановить DataCode" && exit 1); \
-		echo "✅ DataCode обновлен успешно!"; \
+	@echo "🔨 Пересборка и переустановка DataCode (без сборки ML)..."
+	@cargo install --path . --force || (echo "❌ Ошибка: Не удалось переустановить DataCode" && exit 1)
+	@echo "✅ DataCode обновлен успешно!"
+	@if [ "$$(uname)" = "Darwin" ] && [ -d "packaging/macos/DataCode.app" ]; then \
 		echo ""; \
-		if [ -d "packaging/macos/DataCode.app" ]; then \
-			echo "🍎 Обновление macOS app bundle..."; \
-			chmod +x packaging/macos/build-app-bundle.sh; \
-			./packaging/macos/build-app-bundle.sh || echo "⚠️  Предупреждение: Не удалось обновить app bundle"; \
-		fi; \
-	elif [ "$$(uname)" = "Linux" ]; then \
-		echo "🐧 Linux detected - updating with CUDA GPU support"; \
-		echo "🔨 Пересборка и переустановка DataCode с CUDA..."; \
-		cargo install --path . --features cuda --force || (echo "❌ Ошибка: Не удалось переустановить DataCode" && exit 1); \
-		echo "✅ DataCode обновлен успешно!"; \
-	else \
-		echo "🔨 Пересборка и переустановка DataCode..."; \
-		cargo install --path . --force || (echo "❌ Ошибка: Не удалось переустановить DataCode" && exit 1); \
-		echo "✅ DataCode обновлен успешно!"; \
+		echo "🍎 Обновление macOS app bundle..."; \
+		chmod +x packaging/macos/build-app-bundle.sh; \
+		./packaging/macos/build-app-bundle.sh || echo "⚠️  Предупреждение: Не удалось обновить app bundle"; \
 	fi
 	@echo ""
 	@echo "🎉 Обновление завершено!"
@@ -251,4 +261,4 @@ info:
 	@echo "  examples/      - Примеры .dc файлов"
 	@echo "  tests/         - Тестовые файлы"
 	@echo ""
-	@echo "🔧 Доступные цели: build, test, run, install, examples, app-bundle"
+	@echo "🔧 Доступные цели: build, test, run, install, examples, app-bundle, ml-check, ml-link"

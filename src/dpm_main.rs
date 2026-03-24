@@ -5,8 +5,8 @@ use data_code::dpm::{
     clear_manifest_env_base, datacode_version_satisfies, env_root, find_project_root,
     install_package, load_lock, load_manifest, lock_file_name, packages_dir,
     resolve_registry_package, run_add_database, run_init_database, run_init_wizard,
-    set_manifest_env_base, set_virtualenvs_in_project, virtualenvs_in_project, write_lock,
-    LockPackage, ENV_DPM_ENV_BASE,
+    run_setup_for_package, run_setup_if_present, set_manifest_env_base,
+    set_virtualenvs_in_project, virtualenvs_in_project, write_lock, LockPackage, ENV_DPM_ENV_BASE,
 };
 use std::path::{Path, PathBuf};
 
@@ -65,6 +65,7 @@ fn main() {
     let result = match cmd {
         "init" => cmd_init(&args[2..]),
         "add" => cmd_add(&args[2..]),
+        "setup" => cmd_setup(&args[2..]),
         "config" => cmd_config(&args[2..]),
         "pack" => cmd_pack(&args[2..]),
         "-h" | "--help" => {
@@ -92,6 +93,7 @@ fn print_help() {
     println!("  dpm init database     Create core/database module interactively");
     println!("  dpm add database       Add another database connection (new folder under core/database)");
     println!("  dpm add <name> [<source>]  Add dependency; source from registry if omitted, or git+https://...");
+    println!("  dpm setup <package_name>  Run setup.dcmodule in an installed package (see docs)");
     println!("  dpm config virtualenvs.in-project <true|false>  Use .dpm in project (default: cache)");
     println!("  dpm config env-base <dir>|clear  Store env base in dpm.toml (or clear)");
     println!("  dpm pack <dir> [-o|--output <path.dcmodule>]  Zip dir (manifest.json + libs) → .dcmodule");
@@ -104,6 +106,8 @@ fn print_help() {
     println!("  Custom base: dpm --env-path <dir> init  saves [dpm] env_base in dpm.toml;");
     println!("               later dpm/datacode use it without repeating the flag.");
     println!("               One-off: {}=<dir> overrides manifest for that process.", ENV_DPM_ENV_BASE);
+    println!("  After `dpm add` / `dpm init`, if a package contains setup.dcmodule, DPM runs it.");
+    println!("  Disable: DPM_SETUP_AUTO=0");
     println!();
     println!("Registry (package index JSON):");
     println!("  GET uses the raw GitHub URL (not the blob HTML page), e.g.:");
@@ -162,6 +166,7 @@ fn cmd_init(args: &[String]) -> Result<(), String> {
         let dest = packages_dir(&env_root_path).join(name);
         println!("Installing {} from {}...", name, source);
         let revision = install_package(name, source, &dest)?;
+        run_setup_if_present(&dest)?;
         lock.package.push(LockPackage {
             name: name.clone(),
             source: source.clone(),
@@ -237,6 +242,7 @@ fn cmd_add(args: &[String]) -> Result<(), String> {
     let dest = packages_dir(&env_root_path).join(name);
     println!("Installing {} from {}...", name, source);
     let revision = install_package(name, source, &dest)?;
+    run_setup_if_present(&dest)?;
     let mut lock = load_lock(&project_root, lock_file)?;
     if let Some(p) = lock.package.iter_mut().find(|p| p.name == name) {
         p.source = source.to_string();
@@ -259,6 +265,25 @@ fn cmd_add(args: &[String]) -> Result<(), String> {
     }
     println!("Added {} and updated lock file.", name);
     Ok(())
+}
+
+fn cmd_setup(args: &[String]) -> Result<(), String> {
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let name = args
+        .first()
+        .ok_or_else(|| "Usage: dpm setup <package_name>".to_string())?;
+    let project_root =
+        find_project_root(&cwd).ok_or("No dpm.toml found (run from project with dpm.toml)")?;
+    let manifest = load_manifest(&project_root)?;
+    let env_root_path = env_root(&project_root, &manifest).ok_or("Could not determine env root")?;
+    let dest = packages_dir(&env_root_path).join(name);
+    if !dest.is_dir() {
+        return Err(format!(
+            "Package directory not found: {} (run dpm add first)",
+            dest.display()
+        ));
+    }
+    run_setup_for_package(&dest)
 }
 
 fn cmd_pack(args: &[String]) -> Result<(), String> {

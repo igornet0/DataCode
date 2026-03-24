@@ -59,3 +59,48 @@ The VM searches for `name.dcmodule` in the same locations as the loose `lib<name
 ## Registry / DPM
 
 `dpm install` resolves a package into `<env>/packages/<name>/`. Native modules can live there as **`name.dcmodule`** alongside the clone; see `data_code::dpm::expected_dcmodule_path` for the conventional path.
+
+## `setup.dcmodule` (DPM — not a zip)
+
+This is a **different** file with the same extension name: a **JSON** descriptor at the **root of a cloned package**, used only by **DPM** after `git clone`. It is **not** a zip and is **not** loaded by the VM.
+
+### Purpose
+
+- Document the native module (`module_name`, `package_version`).
+- Run **build** steps (shell commands) with optional OS filters.
+- **Copy** built artifacts into the package root so the VM can resolve them as loose libs:
+
+  - `<env>/packages/<name>/lib<module>.dylib` / `lib<module>.so` / `<module>.dll`
+  - or place `<module>.dcmodule` (the zip artifact) in the same directory if you pack it in a `post_build` hook.
+
+### When DPM runs it
+
+- Automatically after **`dpm add`** and **`dpm init`** install a dependency (if `setup.dcmodule` exists).
+- Manually: **`dpm setup <package_name>`** (re-runs build + install rules).
+- Disable auto-run: **`DPM_SETUP_AUTO=0`**.
+
+### Minimal schema (`schema_version`: 1)
+
+| Field | Meaning |
+|-------|---------|
+| `schema_version` | `1` |
+| `module_name` | Import name (e.g. `ml`) — informational |
+| `package_version` | Optional version string |
+| `hooks` | Optional: `pre_build`, `post_build` — shell strings |
+| `build` | List of steps: `command` (required), optional `cwd` (relative to package root), optional `when.os` (`macos` / `linux` / `windows`) |
+| `install` | List of copies: `from` (relative to package root), `to` (relative to package root, usually the loose lib filename), optional `when` |
+
+### Example (see `setup.dcmodule` in ML-Datacode-lib repo root)
+
+```json
+{
+  "schema_version": 1,
+  "module_name": "ml",
+  "build": [
+    { "when": { "os": ["macos"] }, "command": "cargo build --release --features metal" }
+  ],
+  "install": [
+    { "when": { "os": ["macos"] }, "from": "target/release/libml.dylib", "to": "libml.dylib" }
+  ]
+}
+```

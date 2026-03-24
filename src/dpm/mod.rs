@@ -11,6 +11,7 @@ pub mod lock;
 pub mod manifest;
 pub mod registry;
 pub mod dcmodule;
+pub mod setup;
 
 pub use config::{virtualenvs_in_project, set_virtualenvs_in_project, config_file_path};
 pub use registry::{
@@ -28,6 +29,7 @@ pub use manifest::{
 pub use init_wizard::run_init_wizard;
 pub use install::install_package;
 pub use dcmodule::{expected_dcmodule_path, path_in_packages_directory};
+pub use setup::{run_setup_for_package, run_setup_if_present, ENV_DPM_SETUP_AUTO};
 
 use std::path::Path;
 

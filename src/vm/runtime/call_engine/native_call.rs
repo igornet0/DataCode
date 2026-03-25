@@ -538,9 +538,20 @@ pub fn execute_native_call(
             }
         }
     } else {
+        let mut abi_args: Vec<Value> = native_args_buffer.clone();
+        for v in &mut abi_args {
+            if let Value::Table(rc) = v {
+                let t = rc.borrow();
+                if t.is_view() {
+                    let owned = t.materialize_with(|id| load_value(id, value_store, heavy_store));
+                    drop(t);
+                    *v = Value::Table(Rc::new(RefCell::new(owned)));
+                }
+            }
+        }
         crate::vm::native_loader::call_abi_native(
             abi_natives[native_index - builtin_count],
-            &native_args_buffer,
+            &abi_args,
         )
     };
 

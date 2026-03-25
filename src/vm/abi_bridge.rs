@@ -9,6 +9,7 @@ use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use crate::common::table::TableData;
 use crate::common::value::Value;
 use crate::abi::AbiValue;
 
@@ -26,6 +27,8 @@ pub struct AbiBridgeContext {
     cstrings: Vec<CString>,
     array_buffers: Vec<Vec<AbiValue>>,
     object_refs: Vec<Rc<RefCell<HashMap<String, Value>>>>,
+    /// Keeps header + cell buffers alive for `AbiValue::Table` for the duration of the call.
+    table_buffers: Vec<(Vec<AbiValue>, Vec<AbiValue>)>,
 }
 
 impl AbiBridgeContext {
@@ -34,6 +37,7 @@ impl AbiBridgeContext {
             cstrings: Vec::new(),
             array_buffers: Vec::new(),
             object_refs: Vec::new(),
+            table_buffers: Vec::new(),
         }
     }
 
@@ -74,8 +78,48 @@ impl AbiBridgeContext {
                 tag: *tag,
                 id: *id,
             }),
+            Value::Table(rc) => {
+                let t = rc.borrow();
+                match &t.data {
+                    TableData::View { .. } => Err(BridgeError::Unrepresentable(
+                        "Table View must be materialized to Owned before ABI conversion",
+                    )),
+                    TableData::Owned {
+                        flat,
+                        num_cols,
+                        headers,
+                        ..
+                    } => {
+                        let cols = *num_cols;
+                        let rows = if cols == 0 {
+                            0
+                        } else {
+                            flat.len() / cols
+                        };
+                        let mut header_abi = Vec::with_capacity(headers.len());
+                        for h in headers.iter() {
+                            let cstr = CString::new(h.as_str()).map_err(|_| BridgeError::InvalidUtf8)?;
+                            self.cstrings.push(cstr);
+                            header_abi.push(AbiValue::Str(self.cstrings.last().unwrap().as_ptr()));
+                        }
+                        let mut cells_abi = Vec::with_capacity(flat.len());
+                        for cell in flat.iter() {
+                            cells_abi.push(self.value_to_abi(cell)?);
+                        }
+                        self.table_buffers.push((header_abi, cells_abi));
+                        let (h_buf, c_buf) = self.table_buffers.last().unwrap();
+                        Ok(AbiValue::Table {
+                            headers: h_buf.as_ptr() as *mut AbiValue,
+                            headers_len: h_buf.len(),
+                            cells: c_buf.as_ptr() as *mut AbiValue,
+                            rows,
+                            cols,
+                        })
+                    }
+                }
+            }
             _ => Err(BridgeError::Unrepresentable(
-                "Function, NativeFunction, Path, Table, Figure and other VM-only types are not representable in ABI",
+                "Function, NativeFunction, Path, Figure and other VM-only types are not representable in ABI",
             )),
         }
     }
@@ -125,6 +169,9 @@ impl AbiBridgeContext {
                 Err(BridgeError::InvalidHandle)
             }
             AbiValue::PluginOpaque { tag, id } => Ok(Value::PluginOpaque { tag, id }),
+            AbiValue::Table { .. } => Err(BridgeError::Unrepresentable(
+                "Table return values are not supported on VM←module ABI path yet",
+            )),
         }
     }
 }

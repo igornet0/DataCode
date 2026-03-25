@@ -25,4 +25,13 @@ pub enum Value {
     Object(NativeHandle),
     /// Opaque plugin object; `tag` + `id` interpreted by the owning plugin.
     PluginOpaque { tag: u8, id: u64 },
+    /// Tabular data: `headers_len` column names (`Str`), then `rows * cols` cell values row-major.
+    /// Pointers valid for the duration of the native call.
+    Table {
+        headers: *mut Value,
+        headers_len: usize,
+        cells: *mut Value,
+        rows: usize,
+        cols: usize,
+    },
 }

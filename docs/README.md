@@ -91,6 +91,9 @@
 
 **Примеры:** [`examples/ru/13-uuid/`](../../examples/ru/13-uuid/), [`examples/en/13-uuid/`](../../examples/en/13-uuid/)
 
+#### [Модуль system](./ru/system-lib/README.md)
+Встроенный модуль `system`: ОС, рантайм, пути, железо, сеть, процессы, ФС, логирование, политика прав. [English](./en/system-lib/README.md).
+
 #### [Модули и импорты](./ru/modules_and_imports.md)
 Импорт и использование модулей: синтаксис `import` / `from`, модуль-файл и пакет (`__lib__.dc`), составные имена (`core.config`), базовый путь, встроенные модули.
 
@@ -150,6 +153,8 @@ docs/
 │   │   └── README.md            # Модуль settings_env - переменные окружения
 │   ├── uuid/                    # Документация модуля uuid
 │   │   └── README.md            # Модуль uuid - генерация UUID
+│   ├── system-lib/              # Встроенный модуль system
+│   │   └── README.md            # ОС, рантайм, sandbox
 │   └── ml/                      # Документация ML модуля
 │       ├── training_flow.md     # Схема обучения нейронной сети
 │       └── model_save_format.md  # Формат сохранения моделей
@@ -168,6 +173,8 @@ docs/
     │   └── README.md            # settings_env module - environment variables
     ├── uuid/                    # uuid module documentation
     │   └── README.md            # uuid module - UUID generation
+    ├── system-lib/              # Built-in system module
+    │   └── README.md            # OS, runtime, sandbox
     └── ml/                      # ML module documentation
         ├── training_flow.md     # Neural network training flow
         └── model_save_format.md  # Model save format

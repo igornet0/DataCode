@@ -33,10 +33,12 @@ pub mod module_system;
 pub mod memory;
 pub mod runtime;
 pub mod profile;
+pub mod permission_policy;
 
 // Re-export core types for backward compatibility (crate::vm::frame, crate::vm::stack)
 pub use core::{frame, stack};
 
 pub use vm::Vm;
 pub use types::{ExplicitRelation, ExplicitPrimaryKey, ModuleInfo};
+pub use permission_policy::PermissionPolicy;
 

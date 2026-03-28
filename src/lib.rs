@@ -28,9 +28,12 @@ pub mod settings_env;
 pub mod uuid;
 #[path = "lib/database_engine/mod.rs"]
 pub mod database_engine;
+#[path = "lib/system/mod.rs"]
+pub mod system;
 
 // Публичный API для запуска интерпретатора
 pub use common::{error::LangError, value::Value};
+pub use vm::PermissionPolicy;
 pub use bytecode::Chunk;
 pub use vm::Vm;
 

@@ -107,6 +107,9 @@ ureq = { version = "2", default-features = true, features = ["tls"] }
 
 # Global allocator: reduces contention under multi-threaded load (--features allocator_jemalloc)
 jemallocator = { version = "0.5", optional = true }
+sysinfo = { version = "0.31", default-features = false, features = ["system"] }
+hostname = { version = "0.4.2", default-features = false }
+if-addrs = { version = "0.15.0", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"

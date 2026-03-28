@@ -198,14 +198,6 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "inner_join" | "left_join" | "right_join" | "full_join" | "semi_join" | "anti_join" | "zip_join" | "asof_join" | "join_on" | "apply_join" => {
             Some(vec!["left".to_string(), "right".to_string(), "on".to_string(), "type".to_string(), "suffixes".to_string()])
         },
-        
-        // ML native module (`import ml`): `ml.model_info(model, verbose=..., format=..., show_graph=...)`
-        "model_info" => Some(vec![
-            "model".to_string(),
-            "verbose".to_string(),
-            "format".to_string(),
-            "show_graph".to_string(),
-        ]),
 
         // Module methods
         "show" => Some(vec!["image".to_string(), "title".to_string()]),

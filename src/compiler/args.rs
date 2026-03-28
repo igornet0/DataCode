@@ -27,20 +27,7 @@ pub fn resolve_function_args(
                 // Разрешаем их аналогично пользовательским функциям
                 let mut resolved = vec![None; param_names.len()];
                 let mut positional_count = 0;
-                
-                // Для методов объектов (например, nn_train), первый параметр - это объект,
-                // который не передается в args метода, поэтому пропускаем позицию 0
-                let start_position = if (function_name == "nn_train"
-                    || function_name == "nn_train_sh"
-                    || function_name == "train"
-                    || function_name == "train_sh")
-                    && !param_names.is_empty()
-                    && param_names[0] == "nn"
-                {
-                    1  // Пропускаем первый параметр "nn" (объект метода)
-                } else {
-                    0
-                };
+                let start_position = 0;
                 
                 // Обрабатываем аргументы
                 for arg in args {

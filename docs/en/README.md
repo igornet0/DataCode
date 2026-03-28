@@ -185,7 +185,18 @@ UUID generation (v4, v7), parse/to_string, bytes, deterministic (v3/v5), metadat
 
 ---
 
-### 13. [Modules and Imports](./modules_and_imports.md)
+### 13. [system Module](./system-lib/README.md)
+
+Built-in **`system`** module: OS, architecture, environment, DataCode version, paths and venv, package registry, hardware, time, networking, processes, files, logging, and permission policy (sandbox).
+
+- **Namespaces** — `env`, `runtime`, `hardware`, `time`, `permissions`, `log`, `net`, `process`, `fs`
+- **Security** — not an ABI `.so`; sensitive calls depend on `PermissionPolicy`
+
+**📚 Docs:** [system (EN)](./system-lib/README.md), [system (RU)](../ru/system-lib/README.md)
+
+---
+
+### 14. [Modules and Imports](./modules_and_imports.md)
 
 How to import and use modules in DataCode:
 
@@ -193,7 +204,7 @@ How to import and use modules in DataCode:
 - **Base path** — Set from the script directory when run from CLI; local modules resolve relative to it
 - **Single-file module** — `<name>.dc`; **package** — `<name>/__lib__.dc` (preferred over a file)
 - **Dotted names** — `core.config` for nested packages (each segment = package or file)
-- **Built-in modules** — `ml`, `plot`, `settings_env`, `uuid`, `database`
+- **Built-in modules** — `ml`, `plot`, `settings_env`, `uuid`, `system`, `database`
 - **Exports** — Top-level globals (variables, functions, classes) of a .dc module
 
 **📚 Usage examples:**
@@ -202,7 +213,7 @@ How to import and use modules in DataCode:
 
 ---
 
-### 14. [Text Rendering in Plot Module](./text_rendering.md)
+### 15. [Text Rendering in Plot Module](./text_rendering.md)
 
 Detailed description of the text rendering system in the plot module:
 
@@ -220,7 +231,7 @@ Detailed description of the text rendering system in the plot module:
 
 ---
 
-### 15. [Core / Internals (for kernel developers)](./internals/README.md)
+### 16. [Core / Internals (for kernel developers)](./internals/README.md)
 
 VM and runtime implementation details:
 
@@ -341,6 +352,8 @@ docs/
     │   └── README.md            # settings_env module - environment variables
     ├── uuid/                    # uuid module documentation
     │   └── README.md            # uuid module - UUID generation
+    ├── system-lib/              # Built-in system module
+    │   └── README.md            # OS, runtime, sandbox
     ├── ml/                      # ML module documentation
     │   ├── training_flow.md     # Neural network training flow
     │   └── model_save_format.md # Model save format

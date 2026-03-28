@@ -10,7 +10,13 @@ use std::rc::Rc;
 use std::cell::RefCell;
 
 /// Built-in module names (for error messages and is_known_module)
-const BUILTIN_MODULE_NAMES: &[&str] = &["plot", "settings_env", "uuid", "database_engine"];
+const BUILTIN_MODULE_NAMES: &[&str] = &[
+    "plot",
+    "settings_env",
+    "uuid",
+    "database_engine",
+    "system",
+];
 
 /// Check if a name is a known module name
 pub fn is_known_module(name: &str) -> bool {
@@ -45,6 +51,7 @@ pub fn register_module(
         "settings_env" => register_settings_env_module(natives, globals, global_names, store, heap),
         "uuid" => register_uuid_module(natives, globals, global_names, store, heap),
         "database_engine" => register_database_module(natives, globals, global_names, store, heap),
+        "system" => register_system_module(natives, globals, global_names, store, heap),
         _ => Err(LangError::runtime_error(
             format!("Unknown module: {}", module_name),
             0,
@@ -296,6 +303,190 @@ fn register_database_module(
     };
 
     globals[database_index] = GlobalSlot::Heap(store_value_arena(Value::Object(Rc::new(RefCell::new(database_object))), store, heap));
+
+    Ok(())
+}
+
+fn register_system_module(
+    natives: &mut Vec<HostEntry>,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
+) -> Result<(), LangError> {
+    use crate::system::natives;
+
+    let start = natives.len();
+    natives.push(HostEntry::Extended(natives::native_system_get_os));
+    natives.push(HostEntry::Extended(natives::native_system_get_arch));
+    natives.push(HostEntry::Extended(natives::native_system_get_os_version));
+    natives.push(HostEntry::Extended(natives::native_system_get_hostname));
+    natives.push(HostEntry::Extended(natives::native_system_get_username));
+    natives.push(HostEntry::Extended(natives::native_system_get_home_dir));
+    natives.push(HostEntry::Extended(natives::native_system_get_temp_dir));
+    natives.push(HostEntry::Extended(natives::native_system_env_get));
+    natives.push(HostEntry::Extended(natives::native_system_env_set));
+    natives.push(HostEntry::Extended(natives::native_system_get_datacode_version));
+    natives.push(HostEntry::Extended(natives::native_system_get_vm_version));
+    natives.push(HostEntry::Extended(natives::native_system_get_module_path));
+    natives.push(HostEntry::Extended(natives::native_system_get_venv_path));
+    natives.push(HostEntry::Extended(natives::native_system_get_loaded_modules));
+    natives.push(HostEntry::Extended(natives::native_system_get_registry_url));
+    natives.push(HostEntry::Extended(natives::native_system_cpu_count));
+    natives.push(HostEntry::Extended(natives::native_system_memory_total));
+    natives.push(HostEntry::Extended(natives::native_system_memory_free));
+    natives.push(HostEntry::Extended(natives::native_system_gpu_count));
+    natives.push(HostEntry::Extended(natives::native_system_gpu_info));
+    natives.push(HostEntry::Extended(natives::native_system_time_now));
+    natives.push(HostEntry::Extended(natives::native_system_sleep_ms));
+    natives.push(HostEntry::Extended(natives::native_system_uptime));
+    natives.push(HostEntry::Extended(natives::native_system_has_permission));
+    natives.push(HostEntry::Extended(natives::native_system_request_permission));
+    natives.push(HostEntry::Extended(natives::native_system_log_info));
+    natives.push(HostEntry::Extended(natives::native_system_log_warn));
+    natives.push(HostEntry::Extended(natives::native_system_log_error));
+    natives.push(HostEntry::Extended(natives::native_system_log_debug));
+    natives.push(HostEntry::Extended(natives::native_system_net_get_ip));
+    natives.push(HostEntry::Extended(natives::native_system_net_get_interfaces));
+    natives.push(HostEntry::Extended(natives::native_system_process_exec));
+    natives.push(HostEntry::Extended(natives::native_system_fs_read));
+    natives.push(HostEntry::Extended(natives::native_system_fs_write));
+    natives.push(HostEntry::Extended(natives::native_system_get_dpm_env_base));
+    natives.push(HostEntry::Extended(natives::native_system_get_dpm_env_root));
+
+    let mut env = HashMap::new();
+    env.insert("get_os".to_string(), Value::NativeFunction(start + 0));
+    env.insert("get_arch".to_string(), Value::NativeFunction(start + 1));
+    env.insert("get_version".to_string(), Value::NativeFunction(start + 2));
+    env.insert("get_hostname".to_string(), Value::NativeFunction(start + 3));
+    env.insert("get_username".to_string(), Value::NativeFunction(start + 4));
+    env.insert("get_home_dir".to_string(), Value::NativeFunction(start + 5));
+    env.insert("get_temp_dir".to_string(), Value::NativeFunction(start + 6));
+    env.insert("get".to_string(), Value::NativeFunction(start + 7));
+    env.insert("set_env".to_string(), Value::NativeFunction(start + 8));
+
+    let mut runtime = HashMap::new();
+    runtime.insert(
+        "get_datacode_version".to_string(),
+        Value::NativeFunction(start + 9),
+    );
+    runtime.insert("get_vm_version".to_string(), Value::NativeFunction(start + 10));
+    runtime.insert("get_module_path".to_string(), Value::NativeFunction(start + 11));
+    runtime.insert("get_venv_path".to_string(), Value::NativeFunction(start + 12));
+    runtime.insert(
+        "get_loaded_modules".to_string(),
+        Value::NativeFunction(start + 13),
+    );
+    runtime.insert(
+        "get_registry_url".to_string(),
+        Value::NativeFunction(start + 14),
+    );
+    runtime.insert(
+        "get_dpm_env_base".to_string(),
+        Value::NativeFunction(start + 34),
+    );
+    runtime.insert(
+        "get_dpm_env_root".to_string(),
+        Value::NativeFunction(start + 35),
+    );
+
+    let mut hardware = HashMap::new();
+    hardware.insert("cpu_count".to_string(), Value::NativeFunction(start + 15));
+    hardware.insert("memory_total".to_string(), Value::NativeFunction(start + 16));
+    hardware.insert("memory_free".to_string(), Value::NativeFunction(start + 17));
+    hardware.insert("gpu_count".to_string(), Value::NativeFunction(start + 18));
+    hardware.insert("gpu_info".to_string(), Value::NativeFunction(start + 19));
+
+    let mut time = HashMap::new();
+    time.insert("now".to_string(), Value::NativeFunction(start + 20));
+    time.insert("sleep".to_string(), Value::NativeFunction(start + 21));
+    time.insert("uptime".to_string(), Value::NativeFunction(start + 22));
+
+    let mut permissions = HashMap::new();
+    permissions.insert(
+        "has_permission".to_string(),
+        Value::NativeFunction(start + 23),
+    );
+    permissions.insert(
+        "request_permission".to_string(),
+        Value::NativeFunction(start + 24),
+    );
+
+    let mut log = HashMap::new();
+    log.insert("log_info".to_string(), Value::NativeFunction(start + 25));
+    log.insert("log_warn".to_string(), Value::NativeFunction(start + 26));
+    log.insert("log_error".to_string(), Value::NativeFunction(start + 27));
+    log.insert("debug".to_string(), Value::NativeFunction(start + 28));
+
+    let mut net = HashMap::new();
+    net.insert("get_ip".to_string(), Value::NativeFunction(start + 29));
+    net.insert(
+        "get_interfaces".to_string(),
+        Value::NativeFunction(start + 30),
+    );
+
+    let mut process = HashMap::new();
+    process.insert("exec".to_string(), Value::NativeFunction(start + 31));
+
+    let mut fs = HashMap::new();
+    fs.insert("read".to_string(), Value::NativeFunction(start + 32));
+    fs.insert("write".to_string(), Value::NativeFunction(start + 33));
+
+    let mut system_object = HashMap::new();
+    system_object.insert(
+        "env".to_string(),
+        Value::Object(Rc::new(RefCell::new(env))),
+    );
+    system_object.insert(
+        "runtime".to_string(),
+        Value::Object(Rc::new(RefCell::new(runtime))),
+    );
+    system_object.insert(
+        "hardware".to_string(),
+        Value::Object(Rc::new(RefCell::new(hardware))),
+    );
+    system_object.insert(
+        "time".to_string(),
+        Value::Object(Rc::new(RefCell::new(time))),
+    );
+    system_object.insert(
+        "permissions".to_string(),
+        Value::Object(Rc::new(RefCell::new(permissions))),
+    );
+    system_object.insert(
+        "log".to_string(),
+        Value::Object(Rc::new(RefCell::new(log))),
+    );
+    system_object.insert(
+        "net".to_string(),
+        Value::Object(Rc::new(RefCell::new(net))),
+    );
+    system_object.insert(
+        "process".to_string(),
+        Value::Object(Rc::new(RefCell::new(process))),
+    );
+    system_object.insert(
+        "fs".to_string(),
+        Value::Object(Rc::new(RefCell::new(fs))),
+    );
+
+    let system_index = if let Some(idx) = global_index_by_name(global_names, "system") {
+        if idx >= globals.len() {
+            globals.resize(idx + 1, default_global_slot());
+        }
+        idx
+    } else {
+        let idx = globals.len();
+        globals.push(default_global_slot());
+        global_names.insert(idx, "system".to_string());
+        idx
+    };
+
+    globals[system_index] = GlobalSlot::Heap(store_value_arena(
+        Value::Object(Rc::new(RefCell::new(system_object))),
+        store,
+        heap,
+    ));
 
     Ok(())
 }

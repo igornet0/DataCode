@@ -462,13 +462,7 @@ fn compile_module_method(
                 _ => "",
             };
             
-            let ml_train_named_forbidden = matches!(method, "train" | "train_sh" | "nn_train" | "nn_train_sh")
-                && args.iter().any(|a| matches!(a, Arg::Named { .. }));
-
             if error_msg.contains("not supported") || error_msg.contains("Named arguments are not supported") {
-                if ml_train_named_forbidden {
-                    return Err(e);
-                }
                 // Fallback: компилируем аргументы как есть
                 args.iter().map(|a| match a {
                     Arg::Positional(e) => Arg::Positional(e.clone()),

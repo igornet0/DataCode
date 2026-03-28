@@ -453,31 +453,8 @@ pub fn try_load_native_module(
         );
     }
 
-    if name == "ml" {
-        inject_ml_layer_namespace(&mut module_object);
-    }
-
     loaded_libs.push(lib);
 
     Ok(module_object)
 }
 
-/// Exposes `ml.layer.linear` / `relu` / … as aliases of the flat `*_layer` exports (tests & scripts).
-fn inject_ml_layer_namespace(module_object: &mut std::collections::HashMap<String, Value>) {
-    let mut layer_ns = std::collections::HashMap::new();
-    let aliases: &[(&str, &str)] = &[
-        ("linear", "linear_layer"),
-        ("relu", "relu_layer"),
-        ("softmax", "softmax_layer"),
-        ("flatten", "flatten_layer"),
-    ];
-    for (sub, flat) in aliases {
-        if let Some(v) = module_object.get(*flat).cloned() {
-            layer_ns.insert((*sub).to_string(), v);
-        }
-    }
-    module_object.insert(
-        "layer".to_string(),
-        Value::Object(Rc::new(RefCell::new(layer_ns))),
-    );
-}

@@ -86,7 +86,7 @@ This is a **different** file with the same extension name: a **JSON** descriptor
 | `schema_version` | `1` |
 | `module_name` | Import name (e.g. `ml`) — informational |
 | `package_version` | Optional version string |
-| `hooks` | Optional: `pre_build`, `post_build` — shell strings |
+| `hooks` | Optional: `pre_build`, `post_build` — shell strings (run in package root; e.g. `pre_build` can run `git submodule update --init --recursive` before `cargo build`) |
 | `build` | List of steps: `command` (required), optional `cwd` (relative to package root), optional `when.os` (`macos` / `linux` / `windows`) |
 | `install` | List of copies: `from` (relative to package root), `to` (relative to package root, usually the loose lib filename), optional `when` |
 

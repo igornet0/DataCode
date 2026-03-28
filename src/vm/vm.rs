@@ -17,6 +17,7 @@ use crate::vm::executor;
 use crate::vm::host::HostEntry;
 use crate::vm::module_cache::CachedModule;
 use crate::vm::module_object::ModuleObject;
+use crate::vm::permission_policy::PermissionPolicy;
 use libloading::Library;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -106,6 +107,8 @@ pub struct Vm {
     module_registry: RefCell<HashMap<u64, ModuleInfo>>,
     /// True for the script VM; false for child VMs. Child VMs have wrong registry for shared modules, so we must not remap there.
     is_root: bool,
+    /// Policy for the built-in `system` module (`fs`, `process.exec`, `set_env`).
+    permission_policy: PermissionPolicy,
 }
 
 /// Preallocated capacities for hot-path Vecs to reduce resize in loop-heavy runs.
@@ -174,6 +177,7 @@ impl Vm {
             current_argv_value_id: None,
             module_registry: RefCell::new(HashMap::new()),
             is_root: true,
+            permission_policy: PermissionPolicy::default(),
         };
         vm.register_natives();
         vm
@@ -219,6 +223,7 @@ impl Vm {
             current_argv_value_id: None,
             module_registry: RefCell::new(HashMap::new()),
             is_root: false,
+            permission_policy: parent.permission_policy,
         };
         vm.register_natives();
         vm
@@ -242,6 +247,27 @@ impl Vm {
     /// Project root for absolute imports (e.g. from core.config). Used by module resolver.
     pub fn get_project_root(&self) -> Option<PathBuf> {
         self.project_root.clone()
+    }
+
+    /// Policy for `system.fs` / `system.process` / `system.env.set_env`.
+    pub fn permission_policy(&self) -> PermissionPolicy {
+        self.permission_policy
+    }
+
+    pub fn set_permission_policy(&mut self, p: PermissionPolicy) {
+        self.permission_policy = p;
+    }
+
+    /// Whether a capability string (e.g. `"fs.read"`) is allowed under the current policy.
+    pub fn can_system_permission(&self, perm: &str) -> bool {
+        crate::vm::permission_policy::is_permission_allowed(self.permission_policy, perm)
+    }
+
+    /// Sorted list of module names loaded this run (`import` / built-ins).
+    pub fn get_loaded_module_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.loaded_modules.iter().cloned().collect();
+        v.sort();
+        v
     }
 
     /// Set the slot index used for argv so update_chunk_indices_from_names (e.g. after ImportFrom) always maps "argv" to this slot.
@@ -534,6 +560,7 @@ impl Vm {
         modules::register_module("settings_env", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         modules::register_module("uuid", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         modules::register_module("database_engine", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
+        modules::register_module("system", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         Ok(())
     }
 

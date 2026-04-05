@@ -169,6 +169,83 @@ pub fn op_mul(
     Ok(VMStatus::Continue)
 }
 
+pub fn op_binary_op(
+    const_idx: usize,
+    current_ip: usize,
+    stack: &mut Vec<TaggedValue>,
+    frames: &mut Vec<CallFrame>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+) -> Result<VMStatus, LangError> {
+    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+    let op_name = {
+        let chunk = &frames.last().unwrap().function.chunk;
+        match chunk.constants.get(const_idx) {
+            Some(Value::String(s)) => s.clone(),
+            _ => {
+                let line = chunk.get_line(current_ip.saturating_sub(1));
+                return Err(LangError::runtime_error(
+                    format!("BinaryOp: bad constant index {}", const_idx),
+                    line,
+                ));
+            }
+        }
+    };
+    {
+        let frame = frames.last_mut().unwrap();
+        if frame.mul_cache_ip == Some(current_ip) {
+            frame.mul_cache_both_number = false;
+        }
+    }
+    let a_id = tagged_to_value_id(a_tv, value_store);
+    let b_id = tagged_to_value_id(b_tv, value_store);
+    let a = load_value(a_id, value_store, heavy_store);
+    let b = load_value(b_id, value_store, heavy_store);
+    let result = operations::exec_binary_op_by_name(
+        op_name.as_str(),
+        &a,
+        &b,
+        frames,
+        stack,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    )?;
+    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    Ok(VMStatus::Continue)
+}
+
+pub fn op_matmul(
+    current_ip: usize,
+    stack: &mut Vec<TaggedValue>,
+    frames: &mut Vec<CallFrame>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+) -> Result<VMStatus, LangError> {
+    let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+    let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+    if a_tv.is_number() && b_tv.is_number() {
+        stack::push(stack, TaggedValue::from_f64(a_tv.get_f64() * b_tv.get_f64()));
+        return Ok(VMStatus::Continue);
+    }
+    {
+        let frame = frames.last_mut().unwrap();
+        if frame.mul_cache_ip == Some(current_ip) {
+            frame.mul_cache_both_number = false;
+        }
+    }
+    let a_id = tagged_to_value_id(a_tv, value_store);
+    let b_id = tagged_to_value_id(b_tv, value_store);
+    let a = load_value(a_id, value_store, heavy_store);
+    let b = load_value(b_id, value_store, heavy_store);
+    let result = operations::binary_matmul(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?;
+    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    Ok(VMStatus::Continue)
+}
+
 pub fn op_div(
     current_ip: usize,
     stack: &mut Vec<TaggedValue>,

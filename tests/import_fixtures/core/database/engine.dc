@@ -5,3 +5,7 @@ fn get_config_env(env) {
     load_settings(env)
     return get_settings().env
 }
+
+fn get_load_config_env(env) {
+    return get_settings().env
+}

@@ -1,12 +1,13 @@
 /// Компиляция присваиваний (Assign, AssignOp, UnpackAssign)
 
-use crate::parser::ast::Expr;
+use crate::parser::ast::{Expr, IndexExpr};
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use crate::lexer::TokenKind;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
+use crate::compiler::expr::array::emit_slice_bound;
 use crate::compiler::variable::VariableResolver;
 
 pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), LangError> {
@@ -135,6 +136,64 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
         Expr::AssignOp { name, op, value, line } => {
             *ctx.current_line = *line;
             compile_assign_op(ctx, name, op, value, *line)
+        }
+        Expr::AssignArray { array, index, value, line } => {
+            *ctx.current_line = *line;
+            expr::compile_expr(ctx, value)?;
+            match index {
+                IndexExpr::Scalar(e) => {
+                    expr::compile_expr(ctx, e)?;
+                    expr::compile_expr(ctx, array)?;
+                    ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                }
+                IndexExpr::Slice {
+                    start,
+                    stop,
+                    step,
+                    line: sl,
+                } => {
+                    emit_slice_bound(ctx, start.as_ref(), *sl)?;
+                    emit_slice_bound(ctx, stop.as_ref(), *sl)?;
+                    emit_slice_bound(ctx, step.as_ref(), *sl)?;
+                    expr::compile_expr(ctx, array)?;
+                    ctx.chunk.write_with_line(OpCode::SetArraySlice, *line);
+                }
+            }
+            Ok(())
+        }
+        Expr::AssignArrayOp { array, index, op, value, line } => {
+            *ctx.current_line = *line;
+            let IndexExpr::Scalar(ie) = index else {
+                return Err(LangError::ParseError {
+                    message: "Augmented assignment on array slice is not supported".to_string(),
+                    line: *line,
+                    file: None,
+                });
+            };
+            expr::compile_expr(ctx, array)?;
+            expr::compile_expr(ctx, ie)?;
+            ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
+            expr::compile_expr(ctx, value)?;
+            match op {
+                TokenKind::PlusEqual => ctx.chunk.write_with_line(OpCode::Add, *line),
+                TokenKind::MinusEqual => ctx.chunk.write_with_line(OpCode::Sub, *line),
+                TokenKind::StarEqual => ctx.chunk.write_with_line(OpCode::Mul, *line),
+                TokenKind::StarStarEqual => ctx.chunk.write_with_line(OpCode::Pow, *line),
+                TokenKind::SlashEqual => ctx.chunk.write_with_line(OpCode::Div, *line),
+                TokenKind::SlashSlashEqual => ctx.chunk.write_with_line(OpCode::IntDiv, *line),
+                TokenKind::PercentEqual => ctx.chunk.write_with_line(OpCode::Mod, *line),
+                _ => {
+                    return Err(LangError::ParseError {
+                        message: format!("Unknown assignment operator: {:?}", op),
+                        line: *line,
+                        file: None,
+                    });
+                }
+            }
+            expr::compile_expr(ctx, array)?;
+            expr::compile_expr(ctx, ie)?;
+            ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+            Ok(())
         }
         Expr::UnpackAssign { names, value, line } => {
             *ctx.current_line = *line;

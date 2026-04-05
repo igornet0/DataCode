@@ -14,6 +14,152 @@ use crate::vm::executor::{global_index_by_name, global_indices_by_name};
 use std::rc::Rc;
 use std::cell::RefCell;
 
+/// `from ml.layer import ...` — не файловый модуль, а объект `globals["ml"]["layer"]` после `import ml`
+/// (нативный модуль с `nest_dotted_module_exports`, например `layer.linear` → `ml.layer.linear`).
+fn resolve_dotted_namespace_from_loaded_parent(
+    module_name: &str,
+    global_names: &std::collections::BTreeMap<usize, String>,
+    globals: &mut [GlobalSlot],
+    value_store: &mut ValueStore,
+    heavy_store: &HeavyStore,
+) -> Option<Value> {
+    let parts: Vec<&str> = module_name.split('.').collect();
+    if parts.len() < 2 {
+        return None;
+    }
+    let root_name = parts[0];
+    let root_idx = global_index_by_name(global_names, root_name)?;
+    let slot = globals.get_mut(root_idx)?;
+    let mut cur = load_value(
+        slot.resolve_to_value_id(value_store),
+        value_store,
+        heavy_store,
+    );
+    for seg in &parts[1..] {
+        match cur {
+            Value::Object(rc) => {
+                let v = rc.borrow().get(*seg)?.clone();
+                cur = v;
+            }
+            _ => return None,
+        }
+    }
+    Some(cur)
+}
+
+/// Загрузить один top-level модуль (builtin / .dc / native), если его ещё нет в `loaded_modules`.
+/// Нужен для `from ml.layer import …` до строки `import ml`: сначала подгружается `ml`, затем разрешается вложенный namespace.
+fn ensure_module_loaded(
+    module_name: &str,
+    line: usize,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    natives: &mut Vec<crate::vm::host::HostEntry>,
+    loaded_modules: &mut std::collections::HashSet<String>,
+    abi_natives: &mut Vec<crate::abi::NativeAbiFn>,
+    loaded_native_libraries: &mut Vec<libloading::Library>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+    vm_ptr: *mut crate::vm::vm::Vm,
+) -> Result<(), LangError> {
+    if loaded_modules.contains(module_name) {
+        return Ok(());
+    }
+    if modules::is_known_module(module_name) {
+        modules::register_module(module_name, natives, globals, global_names, value_store, heavy_store)?;
+        loaded_modules.insert(module_name.to_string());
+        return Ok(());
+    }
+    let base_path = unsafe { (*vm_ptr).get_base_path() }.or_else(crate::vm::file_import::get_base_path);
+    let load_dc_err = if let Some(ref base_path) = base_path {
+        match crate::vm::file_import::load_local_module_with_vm(module_name, base_path, unsafe { &mut *vm_ptr }) {
+            Ok((module_object, opt_vm)) => {
+                if let Some(module_vm) = opt_vm {
+                    let start_function_index = unsafe {
+                        let vm_ref = &mut *vm_ptr;
+                        vm_ref.add_functions_from_module(
+                            module_vm.get_functions().clone(),
+                            module_name.to_string(),
+                        )
+                    };
+                    if let Value::Object(module_obj_rc) = &module_object {
+                        let mut module_obj = module_obj_rc.borrow_mut();
+                        module_obj.insert("__start_function_index".to_string(), Value::Number(start_function_index as f64));
+                        for (_, v) in module_obj.iter_mut() {
+                            if let Value::Function(i) = v {
+                                *v = Value::Function(start_function_index + *i);
+                            }
+                        }
+                    }
+                }
+                let id = store_value(module_object, value_store, heavy_store);
+                if let Some(idx) = global_index_by_name(global_names, module_name) {
+                    if idx < globals.len() {
+                        globals[idx] = GlobalSlot::Heap(id);
+                    } else {
+                        globals.resize(idx + 1, default_global_slot());
+                        globals[idx] = GlobalSlot::Heap(id);
+                    }
+                } else {
+                    let idx = globals.len();
+                    globals.push(GlobalSlot::Heap(id));
+                    global_names.insert(idx, module_name.to_string());
+                }
+                loaded_modules.insert(module_name.to_string());
+                return Ok(());
+            }
+            Err(e) => Some(e),
+        }
+    } else {
+        None
+    };
+    if let Ok((module_object, sidecar)) = crate::vm::native_loader::try_load_native_module(
+        module_name,
+        base_path.as_deref(),
+        natives.len(),
+        abi_natives,
+        loaded_native_libraries,
+        Some(unsafe { (*vm_ptr).get_abi_native_export_names_mut() }),
+    ) {
+        unsafe {
+            (*vm_ptr).register_plugin_native_indices_from_module(
+                module_name,
+                &module_object,
+                sidecar.plugin_hooks.as_ref(),
+            );
+            (*vm_ptr).merge_abi_export_param_meta(sidecar.export_param_meta);
+        }
+        let module_value = Value::Object(Rc::new(RefCell::new(module_object)));
+        let id = store_value(module_value, value_store, heavy_store);
+        if let Some(idx) = global_index_by_name(global_names, module_name) {
+            if idx < globals.len() {
+                globals[idx] = GlobalSlot::Heap(id);
+            } else {
+                globals.resize(idx + 1, default_global_slot());
+                globals[idx] = GlobalSlot::Heap(id);
+            }
+        } else {
+            let idx = globals.len();
+            globals.push(GlobalSlot::Heap(id));
+            global_names.insert(idx, module_name.to_string());
+        }
+        loaded_modules.insert(module_name.to_string());
+        return Ok(());
+    }
+    Err(load_dc_err.map_or_else(
+        || {
+            LangError::runtime_error(
+                format!(
+                    "Module '{}' not found (built-in, .dc file, or native module)",
+                    module_name
+                ),
+                line,
+            )
+        },
+        |e| LangError::runtime_error_with_source(format!("Failed to load module '{}'", module_name), e),
+    ))
+}
+
 /// Execute Import(module_index): load module by name and store in globals.
 #[allow(clippy::too_many_arguments)]
 pub fn handle_import(
@@ -52,78 +198,20 @@ pub fn handle_import(
     if loaded_modules.contains(&module_name) {
         return Ok(VMStatus::Continue);
     }
-    if modules::is_known_module(&module_name) {
-        modules::register_module(&module_name, natives, globals, global_names, value_store, heavy_store)?;
-        loaded_modules.insert(module_name);
-        return Ok(VMStatus::Continue);
-    }
-    let base_path = unsafe { (*vm_ptr).get_base_path() }.or_else(crate::vm::file_import::get_base_path);
-    let load_dc_err = if let Some(ref base_path) = base_path {
-        match crate::vm::file_import::load_local_module_with_vm(&module_name, base_path, unsafe { &mut *vm_ptr }) {
-            Ok((module_object, opt_vm)) => {
-                if let Some(module_vm) = opt_vm {
-                    let start_function_index = unsafe {
-                        let vm_ref = &mut *vm_ptr;
-                        vm_ref.add_functions_from_module(
-                            module_vm.get_functions().clone(),
-                            module_name.clone(),
-                        )
-                    };
-                    if let Value::Object(module_obj_rc) = &module_object {
-                        let mut module_obj = module_obj_rc.borrow_mut();
-                        module_obj.insert("__start_function_index".to_string(), Value::Number(start_function_index as f64));
-                        for (_, v) in module_obj.iter_mut() {
-                            if let Value::Function(i) = v {
-                                *v = Value::Function(start_function_index + *i);
-                            }
-                        }
-                    }
-                }
-                let id = store_value(module_object, value_store, heavy_store);
-                if let Some(idx) = global_index_by_name(global_names, &module_name) {
-                    if idx < globals.len() { globals[idx] = GlobalSlot::Heap(id); } else { globals.resize(idx + 1, default_global_slot()); globals[idx] = GlobalSlot::Heap(id); }
-                } else {
-                    let idx = globals.len();
-                    globals.push(GlobalSlot::Heap(id));
-                    global_names.insert(idx, module_name.clone());
-                }
-                loaded_modules.insert(module_name);
-                return Ok(VMStatus::Continue);
-            }
-            Err(e) => Some(e),
-        }
-    } else {
-        None
-    };
-    if let Ok(module_object) = crate::vm::native_loader::try_load_native_module(
+    ensure_module_loaded(
         &module_name,
-        base_path.as_deref(),
-        natives.len(),
+        line,
+        globals,
+        global_names,
+        natives,
+        loaded_modules,
         abi_natives,
         loaded_native_libraries,
-    ) {
-        let module_value = Value::Object(Rc::new(RefCell::new(module_object)));
-        let id = store_value(module_value, value_store, heavy_store);
-        if let Some(idx) = global_index_by_name(global_names, &module_name) {
-            if idx < globals.len() { globals[idx] = GlobalSlot::Heap(id); } else { globals.resize(idx + 1, default_global_slot()); globals[idx] = GlobalSlot::Heap(id); }
-        } else {
-            let idx = globals.len();
-            globals.push(GlobalSlot::Heap(id));
-            global_names.insert(idx, module_name.clone());
-        }
-        loaded_modules.insert(module_name);
-        return Ok(VMStatus::Continue);
-    }
-    Err(load_dc_err.map_or_else(
-        || LangError::runtime_error(
-            format!("Module '{}' not found (built-in, .dc file, or native module)", module_name),
-            line,
-        ),
-        |e| LangError::runtime_error_with_source(
-            format!("Failed to load module '{}'", module_name),
-            e,
-        ),
-    ))
+        value_store,
+        heavy_store,
+        vm_ptr,
+    )?;
+    Ok(VMStatus::Continue)
 }
 
 
@@ -210,9 +298,64 @@ pub fn handle_import_from(
                 modules::register_module(&module_name, natives, globals, global_names, value_store, heavy_store)?;
                 loaded_modules.insert(module_name.clone());
             } else {
-                // Попробуем загрузить как локальный файл (VM base_path затем thread-local)
                 use crate::vm::file_import;
                 let base_path = unsafe { (*vm_ptr).get_base_path() }.or_else(file_import::get_base_path);
+                let mut loaded_from_parent = false;
+                if module_name.contains('.') {
+                    if let Some(root_name) = module_name.split('.').next().filter(|s| !s.is_empty()) {
+                        if !loaded_modules.contains(root_name) {
+                            // Подгрузить top-level модуль (например нативный `ml`) до разрешения `ml.layer`.
+                            // Для пакетов вроде `core.database` корень может быть только каталогом — тогда ensure вернёт Err;
+                            // игнорируем и ниже пробуем load_local_module_with_vm по полному имени.
+                            let _ = ensure_module_loaded(
+                                root_name,
+                                line,
+                                globals,
+                                global_names,
+                                natives,
+                                loaded_modules,
+                                abi_natives,
+                                loaded_native_libraries,
+                                value_store,
+                                heavy_store,
+                                vm_ptr,
+                            );
+                        }
+                    }
+                    if let Some(ns) = resolve_dotted_namespace_from_loaded_parent(
+                        &module_name,
+                        global_names,
+                        globals.as_mut_slice(),
+                        value_store,
+                        heavy_store,
+                    ) {
+                        if matches!(&ns, Value::Object(_)) {
+                            let module_id = store_value(ns, value_store, heavy_store);
+                            if let Some(idx) = global_index_by_name(global_names, &module_name) {
+                                if Some(idx) != argv_slot_import {
+                                    if idx < globals.len() {
+                                        globals[idx] = GlobalSlot::Heap(module_id);
+                                    } else {
+                                        globals.resize(idx + 1, default_global_slot());
+                                        globals[idx] = GlobalSlot::Heap(module_id);
+                                    }
+                                } else {
+                                    let new_idx = globals.len();
+                                    globals.push(GlobalSlot::Heap(module_id));
+                                    global_names.remove(&idx);
+                                    global_names.insert(new_idx, module_name.clone());
+                                }
+                            } else {
+                                let idx = globals.len();
+                                globals.push(GlobalSlot::Heap(module_id));
+                                global_names.insert(idx, module_name.clone());
+                            }
+                            loaded_modules.insert(module_name.clone());
+                            loaded_from_parent = true;
+                        }
+                    }
+                }
+                if !loaded_from_parent {
                 if let Some(ref base_path) = base_path {
                     let functions_len_before = functions.len();
                     match file_import::load_local_module_with_vm(&module_name, base_path, unsafe { &mut *vm_ptr }) {
@@ -229,39 +372,34 @@ pub fn handle_import_from(
                                 let module_function_count = module_vm.get_functions().len();
                                 crate::remap_function_constants_in_chunks(functions, start_idx, module_function_count);
                                 debug_println!("[DEBUG ImportFrom] Функций в модуле: {}, start_idx: {}", module_function_count, start_idx);
-                                // Register submodules first, then the top-level module, so the top-level module_id never collides with
-                                // module VM registry indices (0, 1, ...). That way replace_function_with_module_function_in_exports
-                                // uses a distinct id and remap only rewrites submodule-origin ModuleFunctions.
-                                let (module_id, submodule_old_to_new): (usize, std::collections::HashMap<usize, usize>) = {
-                                    let sub_infos: Vec<_> = module_vm.get_module_registry().iter().cloned().collect();
+                                let parent_module = frame.module_name.as_deref().unwrap_or("__main__");
+                                let full_module_name = if parent_module == "__main__" || module_name.contains('.') { module_name.clone() } else { format!("{}.{}", parent_module, module_name) };
+                                // Register modules by stable uid so shared cached objects work across VMs.
+                                {
+                                    let sub_reg = module_vm.get_module_registry();
                                     let mut reg = unsafe { (*vm_ptr).get_module_registry_mut() };
-                                    let mut map = std::collections::HashMap::new();
-                                    for (old_id, info) in sub_infos.iter().enumerate() {
-                                        reg.push(crate::vm::types::ModuleInfo {
+                                    for (uid, info) in sub_reg.iter() {
+                                        reg.insert(*uid, crate::vm::types::ModuleInfo {
                                             name: info.name.clone(),
                                             function_offset: start_idx + info.function_offset,
                                             function_count: info.function_count,
                                         });
-                                        map.insert(old_id, reg.len() - 1);
                                     }
-                                    reg.push(crate::vm::types::ModuleInfo {
+                                    reg.insert(crate::module_uid(&full_module_name), crate::vm::types::ModuleInfo {
                                         name: module_name.clone(),
                                         function_offset: start_idx,
                                         function_count: module_vm.get_functions().len(),
                                     });
-                                    let id = reg.len() - 1;
-                                    (id, map)
-                                };
-                                // Convert namespace: Value::Function(local_index) -> Value::ModuleFunction { module_id, local_index }.
+                                }
+                                // Convert namespace: Value::Function(local_index) -> Value::ModuleFunction { module_uid, local_index }.
+                                let submodule_keys: std::collections::HashSet<String> = module_vm.get_modules().keys().cloned().collect();
                                 if let Value::Object(module_obj_rc) = &module_object {
                                     let mut module_obj = module_obj_rc.borrow_mut();
-                                    crate::replace_function_with_module_function_in_exports(&mut *module_obj, module_id);
-                                    // Remap ModuleFunction from submodule VM indices to caller VM registry (classes from dev_config/prod_config).
-                                    crate::remap_module_function_ids_in_exports(&mut *module_obj, &submodule_old_to_new);
+                                    crate::replace_function_with_module_function_in_exports(&mut *module_obj, &full_module_name, &submodule_keys, Some(module_obj_rc));
                                 }
                                 // Extend caller's natives with module's natives and remap NativeFunction in module object
                                 // (fixes "Native function index 194 out of bounds" when merged code uses Config etc.).
-                                const BUILTIN_NATIVE_COUNT: usize = 75;
+                                const BUILTIN_NATIVE_COUNT: usize = crate::vm::globals::BUILTIN_GLOBAL_COUNT;
                                 let other_natives = module_vm.get_natives();
                                 let native_start = natives.len();
                                 if other_natives.len() > BUILTIN_NATIVE_COUNT {
@@ -269,16 +407,29 @@ pub fn handle_import_from(
                                 }
                                 if let Value::Object(module_obj_rc) = &module_object {
                                     let mut module_obj = module_obj_rc.borrow_mut();
-                                    crate::remap_native_indices_in_exports(&mut *module_obj, native_start);
+                                    crate::remap_native_indices_in_exports(&mut *module_obj, native_start, Some(module_obj_rc));
                                 }
-                                // Merge submodules (e.g. config, prod_config loaded by core.config) into caller so __constructing_class__ lookup finds classes from them.
+                                // Merge submodules into caller so __constructing_class__ lookup finds classes from them.
                                 // Do not overwrite existing modules: caller may have runtime state (e.g. core.config.settings from load_settings).
                                 {
                                     let mods = module_vm.get_modules();
                                     let mut caller_mods = unsafe { (*vm_ptr).get_modules_mut() };
+                                    if let Value::Object(ref namespace_rc) = &module_object {
+                                        use crate::vm::module_object::ModuleObject;
+                                        let was_vacant = !caller_mods.contains_key(&module_name);
+                                        caller_mods.entry(module_name.clone()).or_insert_with(|| {
+                                            Rc::new(RefCell::new(ModuleObject::from_namespace(module_name.clone(), namespace_rc.clone())))
+                                        });
+                                        if was_vacant {
+                                            debug_println!("[DEBUG ImportFrom] added loaded module '{}' to caller", module_name);
+                                        }
+                                    }
                                     for (k, v) in mods.iter() {
+                                        let was_vacant = !caller_mods.contains_key(k);
                                         caller_mods.entry(k.clone()).or_insert_with(|| v.clone());
-                                        debug_println!("[DEBUG ImportFrom] merged submodule '{}' into caller", k);
+                                        if was_vacant {
+                                            debug_println!("[DEBUG ImportFrom] merged submodule '{}' into caller", k);
+                                        }
                                     }
                                 }
                                 // Feed caller globals with names that merged module chunks reference (from module object or caller's merged modules),
@@ -644,12 +795,21 @@ pub fn handle_import_from(
                         Err(load_err) => {
                             match crate::vm::native_loader::try_load_native_module(
                                 &module_name,
-                                Some(&base_path),
+                                Some(base_path.as_path()),
                                 natives.len(),
                                 abi_natives,
                                 loaded_native_libraries,
+                                Some(unsafe { (*vm_ptr).get_abi_native_export_names_mut() }),
                             ) {
-                                Ok(module_object) => {
+                                Ok((module_object, sidecar)) => {
+                                    unsafe {
+                                        (*vm_ptr).register_plugin_native_indices_from_module(
+                                            &module_name,
+                                            &module_object,
+                                            sidecar.plugin_hooks.as_ref(),
+                                        );
+                                        (*vm_ptr).merge_abi_export_param_meta(sidecar.export_param_meta);
+                                    }
                                     let module_value = Value::Object(Rc::new(RefCell::new(module_object)));
                                     let id = store_value(module_value, value_store, heavy_store);
                                     if let Some(idx) = global_index_by_name(global_names, &module_name) {
@@ -702,6 +862,7 @@ pub fn handle_import_from(
                         Ok(()) => return Ok(VMStatus::Continue),
                         Err(e) => return Err(e),
                     }
+                }
                 }
             }
         }
@@ -766,6 +927,44 @@ pub fn handle_import_from(
         };
         // Clone the HashMap to avoid borrowing issues - we can now mutate globals
         let module_object = module_object_rc.borrow().clone();
+
+        for item_value in &items_array {
+            if let Value::String(ref item_str) = item_value {
+                if item_str != "*" && !item_str.contains(':') && !module_object.contains_key(item_str) {
+                    let mut avail: Vec<_> = module_object
+                        .keys()
+                        .filter(|k| !k.starts_with("__"))
+                        .cloned()
+                        .collect();
+                    avail.sort();
+                    let list = if avail.is_empty() {
+                        "(none)".to_string()
+                    } else {
+                        avail.join(", ")
+                    };
+                    let error = ExceptionHandler::runtime_error_with_type(
+                        &frames,
+                        format!(
+                            "Module '{}' has no attribute '{}'. Available: {}",
+                            module_name, item_str, list
+                        ),
+                        line,
+                        crate::common::error::ErrorType::KeyError,
+                    );
+                    match ExceptionHandler::handle_exception(
+                        stack,
+                        frames,
+                        exception_handlers,
+                        error,
+                        value_store,
+                        heavy_store,
+                    ) {
+                        Ok(()) => return Ok(VMStatus::Continue),
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+        }
         
         // Collect named imports (no *, no alias) to process in deterministic (sorted) order,
         // so slot assignment does not depend on source order or HashMap iteration.
@@ -793,6 +992,9 @@ pub fn handle_import_from(
                         let mut star_keys: Vec<_> = module_object.keys().cloned().collect();
                         star_keys.sort();
                         for key in star_keys {
+                            if key.starts_with("__") {
+                                continue;
+                            }
                             let value = module_object.get(&key).unwrap();
                             let global_index = global_index_by_name(global_names, &key);
                             let global_index = match global_index {

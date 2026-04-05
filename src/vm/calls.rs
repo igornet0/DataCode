@@ -1,7 +1,14 @@
 // Function call operations for VM (Stage 1: stack/slots as ValueId)
 
 use crate::debug_println;
-use crate::common::{error::{LangError, ErrorType}, value::Value, value_store::ValueStore, TaggedValue};
+use crate::common::{
+    error::{ErrorType, LangError},
+    value::{GeneratorState, Value},
+    value_store::ValueStore,
+    TaggedValue,
+};
+use std::cell::RefCell;
+use std::rc::Rc;
 use crate::parser::ast::TypePart;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
@@ -10,6 +17,9 @@ use crate::vm::store_convert::store_value;
 /// Проверяет, соответствует ли значение одному типу
 fn check_single_type(value: &Value, type_name: &str) -> bool {
     let type_name_lower = type_name.to_lowercase();
+    if let Value::PluginOpaque { .. } = value {
+        return type_name_lower == "plugin_opaque";
+    }
     match (value, type_name_lower.as_str()) {
         // Числовые типы
         (Value::Number(n), "int" | "integer") => n.fract() == 0.0,
@@ -19,7 +29,8 @@ fn check_single_type(value: &Value, type_name: &str) -> bool {
         // Булевы типы
         (Value::Bool(_), "bool" | "boolean") => true,
         // Коллекции
-        (Value::Array(_), "array" | "list") => true,
+        (Value::Array(_) | Value::ArrayView(_) | Value::ByteBuffer(_), "array" | "list") => true,
+        (Value::Iterable(_), "iterable") => true,
         (Value::Tuple(_), "tuple") => true,
         (Value::Object(_), "object" | "dict" | "dictionary") => true,
         (Value::Object(map_rc), "table") => {
@@ -31,22 +42,6 @@ fn check_single_type(value: &Value, type_name: &str) -> bool {
         (Value::Null, "null" | "none") => true,
         (Value::Path(_), "path") => true,
         (Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_), "function" | "fn") => true,
-        // ML типы
-        (Value::Tensor(_), "tensor") => true,
-        (Value::Graph(_), "graph") => true,
-        (Value::Dataset(_), "dataset") => true,
-        (Value::NeuralNetwork(_), "neural_network" | "neuralnetwork") => true,
-        (Value::Sequential(_), "sequential") => true,
-        (Value::Layer(_), "layer") => true,
-        // Оптимизаторы
-        (Value::LinearRegression(_), "linear_regression" | "linearregression") => true,
-        (Value::SGD(_), "sgd") => true,
-        (Value::Momentum(_), "momentum") => true,
-        (Value::NAG(_), "nag") => true,
-        (Value::Adagrad(_), "adagrad") => true,
-        (Value::RMSprop(_), "rmsprop") => true,
-        (Value::Adam(_), "adam") => true,
-        (Value::AdamW(_), "adamw") => true,
         // Графические типы
         (Value::Window(_), "window") => true,
         (Value::Image(_), "image") => true,
@@ -55,6 +50,7 @@ fn check_single_type(value: &Value, type_name: &str) -> bool {
         (Value::DatabaseEngine(_), "database_engine") => true,
         (Value::DatabaseCluster(_), "database_cluster") => true,
         (Value::ColumnReference { .. }, "column") => true,
+        (Value::Generator(_), "generator") => true,
         _ => false,
     }
 }
@@ -87,7 +83,8 @@ pub fn get_type_name_value(value: &Value) -> &'static str {
         }
         Value::Bool(_) => "bool",
         Value::String(_) => "str",
-        Value::Array(_) => "array",
+        Value::Array(_) | Value::ArrayView(_) | Value::ByteBuffer(_) => "array",
+        Value::Iterable(_) => "iterable",
         Value::Tuple(_) => "tuple",
         Value::Object(_) => "object",
         Value::Table(_) => "table",
@@ -95,20 +92,7 @@ pub fn get_type_name_value(value: &Value) -> &'static str {
         Value::Path(_) => "path",
         Value::Uuid(_, _) => "uuid",
         Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_) => "function",
-        Value::Tensor(_) => "tensor",
-        Value::Graph(_) => "graph",
-        Value::Dataset(_) => "dataset",
-        Value::NeuralNetwork(_) => "neural_network",
-        Value::Sequential(_) => "sequential",
-        Value::Layer(_) => "layer",
-        Value::LinearRegression(_) => "linear_regression",
-        Value::SGD(_) => "sgd",
-        Value::Momentum(_) => "momentum",
-        Value::NAG(_) => "nag",
-        Value::Adagrad(_) => "adagrad",
-        Value::RMSprop(_) => "rmsprop",
-        Value::Adam(_) => "adam",
-        Value::AdamW(_) => "adamw",
+        Value::PluginOpaque { .. } => "plugin_opaque",
         Value::Window(_) => "window",
         Value::Image(_) => "image",
         Value::Figure(_) => "figure",
@@ -117,6 +101,7 @@ pub fn get_type_name_value(value: &Value) -> &'static str {
         Value::DatabaseCluster(_) => "database_cluster",
         Value::ColumnReference { .. } => "column",
         Value::Enumerate { .. } => "enumerate",
+        Value::Generator(_) => "generator",
         Value::Ellipsis => "ellipsis",
     }
 }
@@ -184,6 +169,28 @@ pub fn setup_function_call(
                 ));
             }
         }
+    }
+
+    if function.is_stream {
+        if !function.captured_vars.is_empty() {
+            return Err(LangError::runtime_error(
+                "stream fn with captured variables is not supported yet".to_string(),
+                0,
+            ));
+        }
+        let gen = GeneratorState {
+            fn_index: function_index,
+            ip: 0,
+            slots: Vec::new(),
+            finished: false,
+            final_value: None,
+            pending_args: Some(effective_args.to_vec()),
+            waiting_for_input: false,
+            pending_first_send: None,
+            cold_send_first_yield: None,
+            pending_deferred_yield: None,
+        };
+        return Ok(Some(Value::Generator(Rc::new(RefCell::new(gen)))));
     }
 
     // Проверяем кэш, если функция помечена как кэшируемая

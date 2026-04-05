@@ -1,6 +1,7 @@
 // Виртуальная машина
 
 use crate::abi::NativeAbiFn;
+use crate::vm::native_loader::{PluginHookNames, ResolvedNativeParamMeta};
 use crate::debug_println;
 use crate::bytecode::Chunk;
 use crate::common::{error::LangError, table::Table, value::Value, value_store::{ValueStore, ValueCell, ValueId, NULL_VALUE_ID}, TaggedValue};
@@ -17,11 +18,13 @@ use crate::vm::executor;
 use crate::vm::host::HostEntry;
 use crate::vm::module_cache::CachedModule;
 use crate::vm::module_object::ModuleObject;
+use crate::vm::permission_policy::PermissionPolicy;
 use libloading::Library;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Legacy function pointer type for native functions. Host layer uses HostEntry (Builtin/Extended).
 pub type NativeFn = fn(&[Value]) -> Value;
@@ -37,6 +40,19 @@ impl Drop for RestoreArgvIdGuard {
     }
 }
 
+/// Restores [`VM_CALL_CONTEXT`] after [`Vm::step`] (so `operations::try_plugin_opaque_binop` and natives see the VM).
+struct StepVmCallContextGuard {
+    previous: Option<*mut Vm>,
+}
+
+impl Drop for StepVmCallContextGuard {
+    fn drop(&mut self) {
+        VM_CALL_CONTEXT.with(|ctx| {
+            *ctx.borrow_mut() = self.previous;
+        });
+    }
+}
+
 // Thread-local storage для хранения контекста VM во время вызова нативных функций
 // Это позволяет нативным функциям вызывать пользовательские функции
 thread_local! {
@@ -44,7 +60,7 @@ thread_local! {
 }
 
 /// Number of builtin global slots (0..BUILTIN_END). Indices >= this are module globals.
-const BUILTIN_END: usize = 75;
+const BUILTIN_END: usize = crate::vm::globals::BUILTIN_GLOBAL_COUNT;
 
 pub struct Vm {
     /// Stack of TaggedValues (immediates + heap refs; no store lookup for numbers in hot path)
@@ -64,14 +80,27 @@ pub struct Vm {
     explicit_primary_keys: Vec<ExplicitPrimaryKey>,
     loaded_modules: std::collections::HashSet<String>,
     abi_natives: Vec<NativeAbiFn>,
+    /// Parallel to [`Self::abi_natives`]: UTF-8 export name for each ABI native (for `isinstance(x, ctor)` vs plugin `opaque_type_name`).
+    abi_native_export_names: Vec<String>,
+    /// Merged from ABI 1.5+ root descriptors: full export name -> param metadata.
+    abi_export_param_meta: HashMap<String, ResolvedNativeParamMeta>,
     loaded_native_libraries: Vec<Library>,
     base_path: Option<PathBuf>,
     /// Root directory of the project (entry script dir). Never overwritten; used for absolute imports.
     project_root: Option<PathBuf>,
-    ml_context: Option<crate::ml::MlContext>,
+    /// Set when native `ml` module loads: ABI indices for callable opaque values (`import ml` dylib).
+    pub(crate) plugin_call_native: Option<usize>,
+    /// Set when native plugin exports `opaque_type_name` for `typeof()` on `PluginOpaque`.
+    pub(crate) plugin_typeof_opaque: Option<usize>,
+    /// `ml.opaque_display` — короткая строка для `print` на `PluginOpaque` (например `<tensor tag=0 id=4>`).
+    pub(crate) plugin_opaque_display: Option<usize>,
+    /// `ml.dataset_len` native index (for `for x in dataset` / `len(dataset)` when dataset is `PluginOpaque`).
+    pub(crate) plugin_dataset_len_native: Option<usize>,
+    /// `ml.opaque_binop` — binary `+ - * @` on two `PluginOpaque` values (libml dispatches by op string).
+    pub(crate) plugin_opaque_binop: Option<usize>,
     plot_context: Option<crate::plot::PlotContext>,
     value_store: ValueStore,
-    /// Heavy values (Table, Tensor, etc.) indexed by ValueCell::Heavy(usize)
+    /// Heavy values (Table, etc.) indexed by ValueCell::Heavy(usize)
     heavy_store: HeavyStore,
     /// Reusable buffer for native call arguments (avoids allocating Vec on every CallNative).
     native_args_buffer: Vec<Value>,
@@ -83,14 +112,14 @@ pub struct Vm {
     pub(crate) pending_relations: Vec<(Rc<RefCell<Table>>, String, Rc<RefCell<Table>>, String)>,
     /// Pending primary keys from primary_key() native (VM-owned).
     pub(crate) pending_primary_keys: Vec<(Rc<RefCell<Table>>, String)>,
-    /// Runtime module cache: canonical path -> compiled (chunk + functions).
-    module_cache: RefCell<HashMap<PathBuf, CachedModule>>,
-    /// Modules already executed once this run: canonical path -> saved namespace (module object). Re-import returns this without running again.
-    executed_modules: RefCell<HashMap<PathBuf, Value>>,
-    /// Functions from each executed module (canonical path -> list). On cache hit we add these to the caller and remap the object so indices stay valid.
-    executed_module_functions: RefCell<HashMap<PathBuf, Vec<crate::bytecode::Function>>>,
-    /// Dependency graph: canonical path -> list of canonical paths of imported modules (for topological order / invalidation).
-    module_deps: RefCell<HashMap<PathBuf, Vec<PathBuf>>>,
+    /// Runtime module cache: canonical path -> compiled (chunk + functions). Shared with child VMs so modules are singletons.
+    module_cache: Rc<RefCell<HashMap<PathBuf, CachedModule>>>,
+    /// Modules already executed once this run: canonical path -> saved namespace. Shared with child VMs so core.config etc. are singletons.
+    executed_modules: Rc<RefCell<HashMap<PathBuf, Value>>>,
+    /// Functions from each executed module. Shared with child VMs for cache hit remapping.
+    executed_module_functions: Rc<RefCell<HashMap<PathBuf, Vec<crate::bytecode::Function>>>>,
+    /// Dependency graph: canonical path -> list of canonical paths of imported modules. Shared with child VMs.
+    module_deps: Rc<RefCell<HashMap<PathBuf, Vec<PathBuf>>>>,
     /// Cache of loaded modules by canonical name (e.g. "core.config") or path. Each module has its own namespace.
     modules: RefCell<HashMap<String, Rc<RefCell<ModuleObject>>>>,
     /// When set (e.g. from run_with_vm_internal_with_args), update_chunk_indices_from_names will always map "argv" to this slot,
@@ -101,8 +130,20 @@ pub struct Vm {
     /// During run(), when argv_patch is set, this holds the canonical argv value id so LoadGlobal(argv_slot) always loads it
     /// even if the slot was overwritten by ImportFrom or merge.
     current_argv_value_id: Option<ValueId>,
-    /// Registry of merged modules: module_id = index. Resolves ModuleFunction { module_id, local_index } -> functions[offset + local_index].
-    module_registry: RefCell<Vec<ModuleInfo>>,
+    /// Registry of merged modules: module_uid -> ModuleInfo. Resolves ModuleFunction { module_uid, local_index } -> functions[offset + local_index].
+    module_registry: RefCell<HashMap<u64, ModuleInfo>>,
+    /// True for the script VM; false for child VMs. Child VMs have wrong registry for shared modules, so we must not remap there.
+    is_root: bool,
+    /// Policy for the built-in `system` module (`fs`, `process.exec`, `set_env`).
+    permission_policy: PermissionPolicy,
+    /// Parse-time operator table snapshot (for `debug.operators()`); set by hosts that preload [`crate::vm::operator_registry::OperatorRegistry`].
+    pub(crate) operator_registry_snapshot: Option<Arc<crate::vm::operator_registry::OperatorRegistry>>,
+    /// Перед шагом VM: потребляет [`OpCode::YieldAwaitInput`].
+    pub(crate) pending_generator_send: Option<crate::vm::types::PendingGeneratorSend>,
+    /// RHS последнего `YieldAwaitInput` (пока слот не заполнен). Нужен при повторном входе в opcode: стек уже пуст.
+    pub(crate) yield_await_resume_value: Option<Value>,
+    /// Перед `Explicit`: RHS yield-await — возвращается из `send()`, сам следующий `Yield` идёт в `pending_deferred_yield`.
+    pub(crate) pending_send_rhs_return: Option<Value>,
 }
 
 /// Preallocated capacities for hot-path Vecs to reduce resize in loop-heavy runs.
@@ -149,10 +190,16 @@ impl Vm {
             explicit_primary_keys: Vec::new(),
             loaded_modules: std::collections::HashSet::new(),
             abi_natives: Vec::new(),
+            abi_native_export_names: Vec::new(),
+            abi_export_param_meta: HashMap::new(),
             loaded_native_libraries: Vec::new(),
             base_path: None,
             project_root: None,
-            ml_context: Some(crate::ml::MlContext::new()),
+            plugin_call_native: None,
+            plugin_typeof_opaque: None,
+            plugin_opaque_display: None,
+            plugin_dataset_len_native: None,
+            plugin_opaque_binop: None,
             plot_context: Some(crate::plot::PlotContext::new()),
             value_store: ValueStore::new(),
             heavy_store: HeavyStore::new(),
@@ -161,18 +208,88 @@ impl Vm {
             reusable_all_popped: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
             pending_relations: Vec::new(),
             pending_primary_keys: Vec::new(),
-            module_cache: RefCell::new(HashMap::new()),
-            executed_modules: RefCell::new(HashMap::new()),
-            executed_module_functions: RefCell::new(HashMap::new()),
-            module_deps: RefCell::new(HashMap::new()),
+            module_cache: Rc::new(RefCell::new(HashMap::new())),
+            executed_modules: Rc::new(RefCell::new(HashMap::new())),
+            executed_module_functions: Rc::new(RefCell::new(HashMap::new())),
+            module_deps: Rc::new(RefCell::new(HashMap::new())),
             modules: RefCell::new(HashMap::new()),
             argv_slot_index: None,
             argv_old_indices: None,
             current_argv_value_id: None,
-            module_registry: RefCell::new(Vec::new()),
+            module_registry: RefCell::new(HashMap::new()),
+            is_root: true,
+            permission_policy: PermissionPolicy::default(),
+            operator_registry_snapshot: None,
+            pending_generator_send: None,
+            yield_await_resume_value: None,
+            pending_send_rhs_return: None,
         };
         vm.register_natives();
         vm
+    }
+
+    /// Creates a child VM that shares module_cache, executed_modules, executed_module_functions, and module_deps with the parent.
+    /// Ensures module singletons: when engine imports core.config, it gets the same namespace as main (e.g. load_settings mutates shared state).
+    pub(crate) fn new_child(parent: &Self) -> Self {
+        let mut vm = Self {
+            stack: Vec::with_capacity(DEFAULT_STACK_CAPACITY),
+            frames: Vec::with_capacity(DEFAULT_FRAMES_CAPACITY),
+            builtins: Vec::with_capacity(BUILTIN_END),
+            globals: Vec::with_capacity(DEFAULT_GLOBALS_CAPACITY),
+            functions: Vec::new(),
+            natives: Vec::new(),
+            exception_handlers: Vec::new(),
+            error_type_table: Vec::new(),
+            global_names: std::collections::BTreeMap::new(),
+            explicit_global_names: std::collections::BTreeMap::new(),
+            explicit_relations: Vec::new(),
+            explicit_primary_keys: Vec::new(),
+            loaded_modules: std::collections::HashSet::new(),
+            abi_natives: Vec::new(),
+            abi_native_export_names: Vec::new(),
+            abi_export_param_meta: parent.abi_export_param_meta.clone(),
+            loaded_native_libraries: Vec::new(),
+            base_path: None,
+            project_root: parent.project_root.clone(),
+            plugin_call_native: parent.plugin_call_native,
+            plugin_typeof_opaque: parent.plugin_typeof_opaque,
+            plugin_opaque_display: parent.plugin_opaque_display,
+            plugin_dataset_len_native: parent.plugin_dataset_len_native,
+            plugin_opaque_binop: parent.plugin_opaque_binop,
+            plot_context: Some(crate::plot::PlotContext::new()),
+            value_store: ValueStore::new(),
+            heavy_store: HeavyStore::new(),
+            native_args_buffer: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
+            reusable_native_arg_ids: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
+            reusable_all_popped: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
+            pending_relations: Vec::new(),
+            pending_primary_keys: Vec::new(),
+            module_cache: parent.module_cache.clone(),
+            executed_modules: parent.executed_modules.clone(),
+            executed_module_functions: parent.executed_module_functions.clone(),
+            module_deps: parent.module_deps.clone(),
+            modules: RefCell::new(HashMap::new()),
+            argv_slot_index: None,
+            argv_old_indices: None,
+            current_argv_value_id: None,
+            module_registry: RefCell::new(HashMap::new()),
+            is_root: false,
+            permission_policy: parent.permission_policy,
+            operator_registry_snapshot: parent.operator_registry_snapshot.clone(),
+            pending_generator_send: None,
+            yield_await_resume_value: None,
+            pending_send_rhs_return: None,
+        };
+        vm.register_natives();
+        vm
+    }
+
+    /// Stores the operator registry used for parsing this run (enables `debug.operators()`).
+    pub fn set_operator_registry_snapshot(
+        &mut self,
+        snapshot: Option<Arc<crate::vm::operator_registry::OperatorRegistry>>,
+    ) {
+        self.operator_registry_snapshot = snapshot;
     }
 
     /// Set base path for resolving relative paths (e.g. in settings_env). Used at start of run() to set thread-local.
@@ -193,6 +310,27 @@ impl Vm {
     /// Project root for absolute imports (e.g. from core.config). Used by module resolver.
     pub fn get_project_root(&self) -> Option<PathBuf> {
         self.project_root.clone()
+    }
+
+    /// Policy for `system.fs` / `system.process` / `system.env.set_env`.
+    pub fn permission_policy(&self) -> PermissionPolicy {
+        self.permission_policy
+    }
+
+    pub fn set_permission_policy(&mut self, p: PermissionPolicy) {
+        self.permission_policy = p;
+    }
+
+    /// Whether a capability string (e.g. `"fs.read"`) is allowed under the current policy.
+    pub fn can_system_permission(&self, perm: &str) -> bool {
+        crate::vm::permission_policy::is_permission_allowed(self.permission_policy, perm)
+    }
+
+    /// Sorted list of module names loaded this run (`import` / built-ins).
+    pub fn get_loaded_module_names(&self) -> Vec<String> {
+        let mut v: Vec<String> = self.loaded_modules.iter().cloned().collect();
+        v.sort();
+        v
     }
 
     /// Set the slot index used for argv so update_chunk_indices_from_names (e.g. after ImportFrom) always maps "argv" to this slot.
@@ -229,12 +367,57 @@ impl Vm {
     pub(crate) fn get_base_path_mut_ptr(&mut self) -> *mut Option<PathBuf> {
         &mut self.base_path as *mut _
     }
-    pub(crate) fn take_ml_context(&mut self) -> Option<crate::ml::MlContext> {
-        self.ml_context.take()
+    /// Called when a native module is loaded; wires `import ml` callable handles for Layer / models.
+    pub(crate) fn register_plugin_native_indices_from_module(
+        &mut self,
+        _module_name: &str,
+        module_object: &std::collections::HashMap<String, Value>,
+        hook_names: Option<&PluginHookNames>,
+    ) {
+        if let Some(Value::NativeFunction(i)) = module_object.get(
+            hook_names
+                .and_then(|h| h.native_plugin_call.as_deref())
+                .unwrap_or("native_plugin_call"),
+        ) {
+            self.plugin_call_native = Some(*i);
+        }
+        if let Some(Value::NativeFunction(i)) = module_object.get(
+            hook_names
+                .and_then(|h| h.opaque_type_name.as_deref())
+                .unwrap_or("opaque_type_name"),
+        ) {
+            self.plugin_typeof_opaque = Some(*i);
+        }
+        if let Some(Value::NativeFunction(i)) = module_object.get(
+            hook_names
+                .and_then(|h| h.opaque_display.as_deref())
+                .unwrap_or("opaque_display"),
+        ) {
+            self.plugin_opaque_display = Some(*i);
+        }
+        if let Some(Value::NativeFunction(i)) = module_object.get(
+            hook_names
+                .and_then(|h| h.dataset_len.as_deref())
+                .unwrap_or("dataset_len"),
+        ) {
+            self.plugin_dataset_len_native = Some(*i);
+        }
+        if let Some(Value::NativeFunction(i)) = module_object.get(
+            hook_names
+                .and_then(|h| h.opaque_binop.as_deref())
+                .unwrap_or("opaque_binop"),
+        ) {
+            self.plugin_opaque_binop = Some(*i);
+        }
     }
-    pub(crate) fn get_ml_context_mut_ptr(&mut self) -> *mut Option<crate::ml::MlContext> {
-        &mut self.ml_context as *mut _
+
+    pub(crate) fn merge_abi_export_param_meta(
+        &mut self,
+        meta: std::collections::HashMap<String, ResolvedNativeParamMeta>,
+    ) {
+        self.abi_export_param_meta.extend(meta);
     }
+
     pub(crate) fn take_plot_context(&mut self) -> Option<crate::plot::PlotContext> {
         self.plot_context.take()
     }
@@ -269,6 +452,27 @@ impl Vm {
     pub(crate) fn push_frame(&mut self, frame: CallFrame) {
         self.frames.push(frame);
     }
+
+    pub(crate) fn frame_len(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// Снять фреймы выше `len` (после шага генератора не должно оставаться лишнего фрейма stream fn).
+    pub(crate) fn truncate_frames_to(&mut self, len: usize) {
+        if self.frames.len() > len {
+            self.frames.truncate(len);
+        }
+    }
+
+    pub(crate) fn stack_len(&self) -> usize {
+        self.stack.len()
+    }
+
+    /// Снять верхний фрейм после yield в stream fn (состояние копируется в [`GeneratorState`]).
+    pub(crate) fn pop_last_frame_for_generator(&mut self) -> Option<CallFrame> {
+        self.frames.pop()
+    }
+
     pub(crate) fn stack_is_empty(&self) -> bool {
         self.stack.is_empty()
     }
@@ -297,19 +501,24 @@ impl Vm {
     }
 
     /// Immutable borrow of module registry (for executor to read loaded module's submodules).
-    pub fn get_module_registry(&self) -> std::cell::Ref<'_, Vec<ModuleInfo>> {
+    pub fn get_module_registry(&self) -> std::cell::Ref<'_, HashMap<u64, ModuleInfo>> {
         self.module_registry.borrow()
     }
 
-    /// Mutable borrow of module registry (for executor to push ModuleInfo on first import).
-    pub fn get_module_registry_mut(&self) -> std::cell::RefMut<'_, Vec<ModuleInfo>> {
+    /// Mutable borrow of module registry (for executor to insert ModuleInfo by uid on first import).
+    pub fn get_module_registry_mut(&self) -> std::cell::RefMut<'_, HashMap<u64, ModuleInfo>> {
         self.module_registry.borrow_mut()
     }
 
-    /// Resolve module_id + local_index to real function index. Returns None if module_id or local_index out of range.
-    pub fn get_module_function_index(&self, module_id: usize, local_index: usize) -> Option<usize> {
+    /// True for the script VM; false for child VMs.
+    pub fn is_root(&self) -> bool {
+        self.is_root
+    }
+
+    /// Resolve module_uid + local_index to real function index. Returns None if module_uid or local_index out of range.
+    pub fn get_module_function_index(&self, module_uid: u64, local_index: usize) -> Option<usize> {
         let reg = self.module_registry.borrow();
-        let info = reg.get(module_id)?;
+        let info = reg.get(&module_uid)?;
         if local_index >= info.function_count {
             return None;
         }
@@ -317,7 +526,7 @@ impl Vm {
     }
 
     /// Native index for ValueError::new_1 (constructor used by raise ValueError("...")).
-    pub const VALUE_ERROR_NATIVE_INDEX: usize = 75;
+    pub const VALUE_ERROR_NATIVE_INDEX: usize = 79;
 
     fn register_natives(&mut self) {
         crate::vm::native_registry::register_builtin_natives(&mut self.natives);
@@ -333,9 +542,9 @@ impl Vm {
         crate::vm::module_system::linker::ensure_globals_from_chunk_preserve_indices(&mut self.globals, &mut self.global_names, chunk);
     }
 
-    /// Fills global slots at index >= 75 whose name is a builtin (e.g. "str", "path").
+    /// Fills global slots at index >= `BUILTIN_GLOBAL_COUNT` whose name is a builtin (e.g. "str", "path").
     /// ensure_globals_from_chunk_preserve_indices adds (idx, name) from chunk and only resizes;
-    /// register_native_globals only fills 0..75, so slots at 75+ stay null and LoadGlobal(idx) returns null → "Can only call functions".
+    /// register_native_globals only fills builtin slots, so high-index slots stay null and LoadGlobal(idx) returns null → "Can only call functions".
     pub fn ensure_builtin_globals_high_indices(&mut self) {
         crate::vm::module_system::linker::ensure_builtin_globals_high_indices(
             &mut self.globals,
@@ -466,15 +675,22 @@ impl Vm {
         }
     }
 
-    /// Register all built-in modules (ml, plot, settings_env) so native indices are consistent
+    /// Register all built-in modules (plot, settings_env, uuid, database_engine) so native indices are consistent
     /// across all VMs (main and sub-VMs used for module loading).
+    /// The `ml` module is not registered here: it loads from a native `.dylib`/`.so` when present (`import ml`).
     pub fn register_all_builtin_modules(&mut self) -> Result<(), LangError> {
         use crate::vm::modules;
-        modules::register_module("ml", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         modules::register_module("plot", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         modules::register_module("settings_env", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         modules::register_module("uuid", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         modules::register_module("database_engine", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
+        modules::register_module("system", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
+        modules::register_module("debug", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
+        // So `import plot` / `ensure_module_loaded` does not call register_module again and shift natives.len(),
+        // which would desync ml native indices (builtin_count) from abi_natives indexing.
+        for name in modules::BUILTIN_MODULE_NAMES {
+            self.loaded_modules.insert((*name).to_string());
+        }
         Ok(())
     }
 
@@ -491,6 +707,14 @@ impl Vm {
     /// Pub(crate) for vm::run::execute_run.
     pub(crate) fn step(&mut self) -> Result<VMStatus, LangError> {
         let vm_ptr = self as *mut Vm;
+        let _vm_call_ctx = {
+            let previous = VM_CALL_CONTEXT.with(|ctx| {
+                let p = *ctx.borrow();
+                *ctx.borrow_mut() = Some(vm_ptr);
+                p
+            });
+            StepVmCallContextGuard { previous }
+        };
         let (instruction, line) = {
             match executor::step(&mut self.frames)? {
                 Some((inst, ln)) => (inst, ln),
@@ -541,7 +765,7 @@ impl Vm {
     pub fn get_modules_mut(&self) -> std::cell::RefMut<'_, HashMap<String, Rc<RefCell<ModuleObject>>>> {
         self.modules.borrow_mut()
     }
-    pub fn get_modules(&self) -> std::cell::Ref<HashMap<String, Rc<RefCell<ModuleObject>>>> {
+    pub fn get_modules(&self) -> std::cell::Ref<'_, HashMap<String, Rc<RefCell<ModuleObject>>>> {
         self.modules.borrow()
     }
 
@@ -638,6 +862,21 @@ impl Vm {
     #[allow(dead_code)]
     pub(crate) fn get_abi_natives_mut(&mut self) -> &mut Vec<NativeAbiFn> {
         &mut self.abi_natives
+    }
+
+    /// Parallel names for [`Self::abi_natives`]; filled by [`crate::vm::native_loader::try_load_native_module`].
+    pub(crate) fn get_abi_native_export_names_mut(&mut self) -> &mut Vec<String> {
+        &mut self.abi_native_export_names
+    }
+
+    /// Export name for `Value::NativeFunction(i)` when `i >= builtin_natives_count` (ABI slot `i - builtin_natives_count`).
+    pub fn abi_export_name_for_native_index(&self, native_index: usize) -> Option<&str> {
+        let b = self.builtin_natives_count();
+        if native_index < b {
+            return None;
+        }
+        let off = native_index - b;
+        self.abi_native_export_names.get(off).map(|s| s.as_str())
     }
 
     /// Зарезервировано для будущего API (другие крейты, тесты).
@@ -800,6 +1039,14 @@ impl Vm {
                 }
                 VMStatus::FrameEnded => {
                     break;
+                }
+                VMStatus::GeneratorYield(_)
+                | VMStatus::GeneratorYieldAwait(_, _)
+                | VMStatus::GeneratorDone(_) => {
+                    return Err(LangError::runtime_error(
+                        "internal: generator opcode in call_function_by_index".to_string(),
+                        0,
+                    ));
                 }
             }
         }

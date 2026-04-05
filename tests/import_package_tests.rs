@@ -192,6 +192,41 @@ get_config_env("prod")
         assert_string_result(Ok(value), "prod");
     }
 
+    #[test]
+    fn test_main_absolute_import_from_nested_module_core_database_imports_core_config_prod() {
+        let base = fixtures_dir();
+        let source = r#"
+        from core.config import get_settings, load_settings
+        from core.database import get_load_config_env
+
+        fn main(env) {
+
+            load_settings(env)
+
+            settings = get_settings()
+
+            s_env = get_load_config_env(env)
+            
+            return s_env == settings.env
+
+        }
+
+        fn __main__(env: "dev" | "prod") {
+            return main(env)
+        }
+        "#;
+        // Pass argv=["prod"] so load_env infers settings/prod.env when model_config.env_file is empty
+        let result = run_with_vm_with_args_and_lib(
+            source,
+            Some(vec!["prod".to_string()]),
+            None,
+            Some(base.as_path()),
+            None,
+        );
+        let (value, _) = result.expect("run should succeed");
+        assert_bool_result(Ok(value), true);
+    }
+
     // ========== Пакет nested: __lib__.dc импортирует из sub.dc ==========
 
     #[test]
@@ -376,6 +411,44 @@ get_config_env("prod")
         }
     }
 
+    /// Same as test_private_fields_with_model_config but with core.database import (reproduces main.dc).
+    #[test]
+    fn test_private_fields_with_core_database_import() {
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sandbox").join("web_api");
+        if !base.join("core").join("config").join("__lib__.dc").exists() {
+            return;
+        }
+        if !base.join("core").join("database").join("engine.dc").exists() {
+            return;
+        }
+        if !base.join("settings").join("dev.env").exists() {
+            return;
+        }
+        let prev = std::env::current_dir().ok();
+        let _ = std::env::set_current_dir(&base);
+        let source = r#"
+            from core.config import get_settings, load_settings
+            from core.database import create_engine
+
+            fn main(env) {
+                load_settings(env)
+                return get_settings().secret.get_code()
+            }
+            fn __main__(env: "dev" | "prod" = "dev") {
+                return main(env)
+            }
+        "#;
+        let result = run_with_vm_with_args_and_lib(source, Some(vec!["dev".to_string()]), None, Some(base.as_path()), None);
+        if let Some(ref p) = prev {
+            let _ = std::env::set_current_dir(p);
+        }
+        let (value, _) = result.expect("run should succeed");
+        match &value {
+            Value::String(s) => assert!(!s.is_empty(), "get_code() should return non-empty string"),
+            v => panic!("expected String from get_settings().secret.get_code(), got {:?}", v),
+        }
+    }
+
     /// Проверка: находит ли find_nearest_lib __lib__.dc при base_path = sandbox/web_api.
     /// Если да — в VM при запуске main.dc сначала мержится lib, что меняет start_idx при импорте core.config.
     #[test]
@@ -406,6 +479,8 @@ get_config_env("prod")
         }
         let source = r#"
         from core.config import get_settings, load_settings
+        from core.database import create_engine
+
         fn main(env) {
             load_settings(env)
             return get_settings().env

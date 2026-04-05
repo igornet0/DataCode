@@ -224,9 +224,41 @@ fn compile_join_method(
     }
 }
 
+/// Named arg matches the plugin export's param list (from preloaded `native_call_descriptor`).
+fn is_kwarg_name_for_export(ctx: &CompilationContext, export_key: &str, name: &str) -> bool {
+    ctx.native_call_param_registry
+        .and_then(|r| r.get(export_key))
+        .map(|params| params.iter().any(|p| p == name))
+        .unwrap_or(false)
+}
+
+/// Heuristic: plugin/module method path vs builtin (e.g. `String.split` vs `dataset.split`) when the
+/// plugin registered `__method__` → export_key for this method name.
+fn ambiguous_plugin_method_use_module_path(
+    ctx: &CompilationContext,
+    args: &[Arg],
+    export_key: &str,
+) -> bool {
+    if args.is_empty() {
+        return true;
+    }
+    if args.len() >= 2 {
+        return true;
+    }
+    if args.iter().any(|a| {
+        matches!(a, Arg::Named { name, .. } if is_kwarg_name_for_export(ctx, export_key, name.as_str()))
+    }) {
+        return true;
+    }
+    if let Arg::Positional(expr) = &args[0] {
+        return matches!(expr, Expr::Literal { value: Value::Number(_), .. });
+    }
+    false
+}
+
 fn compile_generic_method(
     ctx: &mut CompilationContext,
-    object: &Expr,
+    _object: &Expr,
     method: &str,
     args: &[Arg],
     line: usize,
@@ -236,137 +268,45 @@ fn compile_generic_method(
     ctx.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), line);
     
     // Проверяем, является ли это методом объекта (например, axis.imshow)
-    // или функцией модуля (например, ml.load_mnist)
-    // ml.add/sum/... are module functions (no receiver); cluster.add/array.sum need receiver.
-    let is_ml_receiver = matches!(object, Expr::Variable { name, .. } if name == "ml");
     let is_axis_method = matches!(method, "imshow" | "set_title" | "axis");
-    let is_nn_method = matches!(method, "device" | "get_device" | "save" | "train" | "train_sh");
-    let is_layer_method = matches!(method, "freeze" | "unfreeze");
-    let is_string_method = matches!(method, "lower" | "upper" | "isupper" | "islower" | "trim" | "split" | "join" | "contains");
-    // ml.sum/mean are module functions (no receiver); array.sum/average need receiver.
-    let is_array_method = if is_ml_receiver {
-        matches!(method, "push" | "pop" | "unique" | "reverse" | "sort" | "average" | "count" | "any" | "all")
-    } else {
-        matches!(method, "push" | "pop" | "unique" | "reverse" | "sort" | "sum" | "average" | "count" | "any" | "all")
-    };
-    let is_db_receiver_method = if is_ml_receiver {
-        matches!(method, "get" | "names" | "connect" | "execute" | "query" | "run")
-    } else {
-        matches!(method, "add" | "get" | "names" | "connect" | "execute" | "query" | "run")
-    };
-    
-    if is_db_receiver_method {
-        compile_db_receiver_method(ctx, method, args, temp_object_slot, line)
-    } else if is_nn_method {
-        compile_nn_method(ctx, method, args, temp_object_slot, line)
-    } else if is_axis_method {
-        compile_axis_method(ctx, method, args, temp_object_slot, line)
-    } else if is_layer_method {
-        compile_layer_method(ctx, method, args, temp_object_slot, line)
-    } else if is_string_method {
-        compile_string_method(ctx, method, args, temp_object_slot, line)
-    } else if is_array_method {
-        compile_array_method(ctx, method, args, temp_object_slot, line)
-    } else {
-        compile_module_method(ctx, method, args, temp_object_slot, line)
-    }
-}
+    let is_string_method = matches!(
+        method,
+        "lower" | "upper" | "isupper" | "islower" | "trim" | "join" | "contains" | "split"
+    );
 
-fn compile_nn_method(
-    ctx: &mut CompilationContext,
-    method: &str,
-    args: &[Arg],
-    temp_object_slot: usize,
-    line: usize,
-) -> Result<(), LangError> {
-    // Для методов device, get_device и save на NeuralNetwork, вызываем соответствующие нативные функции
-    // Загружаем объект первым
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    
-    // Определяем имя функции в ml модуле
-    let function_name = match method {
-        "device" => "nn_set_device",
-        "get_device" => "nn_get_device",
-        "save" => "nn_save",
-        "train" => "nn_train",
-        "train_sh" => "nn_train_sh",
-        _ => {
-            return Err(LangError::ParseError {
-                message: format!("Unknown NeuralNetwork method: {}", method),
-                line,
-                file: None,
-            });
-        }
-    };
-    
-    // Определяем фактическое количество аргументов для Call инструкции
-    let actual_arg_count = if method == "get_device" {
-        if !args.is_empty() {
-            return Err(LangError::ParseError {
-                message: "get_device() takes no arguments".to_string(),
-                line,
-                file: None,
-            });
-        }
-        0
-    } else if method == "train" {
-        // Разрешаем именованные аргументы для train метода
-        let resolved_args = args::resolve_function_args("nn_train", args, None, line, ctx.source_name)?;
-        // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
-        for arg in resolved_args.iter().skip(1) {
-            match arg {
-                Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-                Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
+    if is_axis_method {
+        return compile_axis_method(ctx, method, args, temp_object_slot, line);
+    }
+
+    if let Some(reg) = ctx.native_call_param_registry {
+        if let Some(export_key) = reg.export_for_method(method) {
+            if ambiguous_plugin_method_use_module_path(ctx, args, export_key) {
+                let param_owned = reg.get(export_key).map(|s| s.to_vec());
+                let param_refs: Vec<&str> = param_owned
+                    .as_ref()
+                    .map(|v| v.iter().map(|s| s.as_str()).collect())
+                    .unwrap_or_default();
+                let override_native = if param_refs.is_empty() {
+                    None
+                } else {
+                    Some(param_refs.as_slice())
+                };
+                return compile_module_method(
+                    ctx,
+                    method,
+                    args,
+                    temp_object_slot,
+                    line,
+                    override_native,
+                );
             }
         }
-        // Всего аргументов на стеке: 1 receiver + (resolved_args.len() - 1). Call(arity) принимает arity = это число; мы передаём actual_arg_count+1 в Call, значит actual_arg_count = resolved_args.len() - 1.
-        resolved_args.len() - 1
-    } else if method == "train_sh" {
-        // Разрешаем именованные аргументы для train_sh метода
-        let resolved_args = args::resolve_function_args("nn_train_sh", args, None, line, ctx.source_name)?;
-        // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
-        for arg in resolved_args.iter().skip(1) {
-            match arg {
-                Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-                Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-            }
-        }
-        resolved_args.len() - 1
+    }
+
+    if is_string_method {
+        compile_string_method(ctx, method, args, temp_object_slot, line)
     } else {
-        // Для device и save компилируем аргументы
-        if args.len() != 1 {
-            return Err(LangError::ParseError {
-                message: format!("{}() takes exactly 1 argument", method),
-                line,
-                file: None,
-            });
-        }
-        for arg in args {
-            match arg {
-                Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-                Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-            }
-        }
-        args.len()
-    };
-    
-    // Загружаем функцию из ml модуля
-    if let Some(&ml_index) = ctx.scope.globals.get("ml") {
-        ctx.chunk.write_with_line(OpCode::LoadGlobal(ml_index), line);
-        let method_name_index = ctx.chunk.add_constant(Value::String(function_name.to_string()));
-        ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
-        ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-        ctx.chunk.write_with_line(OpCode::Call(actual_arg_count + 1), line);
-        Ok(())
-    } else {
-        Err(LangError::ParseError {
-            message: "ml module not found".to_string(),
-            line,
-            file: None,
-        })
+        compile_module_method(ctx, method, args, temp_object_slot, line, None)
     }
 }
 
@@ -414,32 +354,6 @@ fn compile_axis_method(
     Ok(())
 }
 
-/// Database engine/cluster methods (add, get, names, connect, execute, query, run) need receiver as first arg.
-/// Stack before Call: [receiver, arg1, ..., method_fn]. VM pops (arity+1) and passes (receiver, arg1, ...) to native.
-fn compile_db_receiver_method(
-    ctx: &mut CompilationContext,
-    method: &str,
-    args: &[Arg],
-    temp_object_slot: usize,
-    line: usize,
-) -> Result<(), LangError> {
-    // Push receiver first, then args, then receiver again for GetArrayElement, then get method; Call(1 + n).
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    for arg in args {
-        match arg {
-            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-        }
-    }
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
-    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
-    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-    ctx.chunk.write_with_line(OpCode::Call(1 + args.len()), line);
-    Ok(())
-}
-
 /// То же, но аргументы уже сохранены в слоты arg_slots (чтобы receiver не перезаписывал переменную-аргумент).
 fn compile_db_receiver_method_with_arg_slots(
     ctx: &mut CompilationContext,
@@ -457,32 +371,6 @@ fn compile_db_receiver_method_with_arg_slots(
     ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
     ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
     ctx.chunk.write_with_line(OpCode::Call(1 + arg_slots.len()), line);
-    Ok(())
-}
-
-fn compile_array_method(
-    ctx: &mut CompilationContext,
-    method: &str,
-    args: &[Arg],
-    temp_object_slot: usize,
-    line: usize,
-) -> Result<(), LangError> {
-    // Array methods (push, pop, unique, reverse, sort, sum, average, count, any, all) expect (array, ...args).
-    // Call(arity) pops function then arity args; after reverse, args[0] = first pushed.
-    // Push receiver first, then method args, then get method; stack: [receiver, arg1, ..., method_fn], Call(1 + n).
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    for arg in args {
-        match arg {
-            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-        }
-    }
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
-    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
-    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-    ctx.chunk.write_with_line(OpCode::Call(1 + args.len()), line);
     Ok(())
 }
 
@@ -545,46 +433,24 @@ fn compile_string_method(
     Ok(())
 }
 
-fn compile_layer_method(
-    ctx: &mut CompilationContext,
-    method: &str,
-    args: &[Arg],
-    temp_object_slot: usize,
-    line: usize,
-) -> Result<(), LangError> {
-    // Для методов Layer (freeze, unfreeze) компилируем аргументы сразу
-    // Эти методы не принимают аргументов, кроме самого layer
-    if !args.is_empty() {
-        return Err(LangError::ParseError {
-            message: format!("layer.{}() takes no arguments", method),
-            line,
-            file: None,
-        });
-    }
-    
-    // Загружаем объект первым
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    
-    // Получаем свойство объекта по имени метода
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
-    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
-    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-    
-    // При вызове Call(1): pop 1 раз, reverse -> функция получает [object] в правильном порядке
-    ctx.chunk.write_with_line(OpCode::Call(1), line);
-    Ok(())
-}
-
 fn compile_module_method(
     ctx: &mut CompilationContext,
     method: &str,
     args: &[Arg],
     temp_object_slot: usize,
     line: usize,
+    override_native_param_names: Option<&[&str]>,
 ) -> Result<(), LangError> {
     // Generic method call (module functions or class instance methods): pass receiver as first arg so method receives (self, arg_1, ...).
-    let resolved_args = match args::resolve_function_args(method, args, None, line, ctx.source_name) {
+    let resolved_args = match args::resolve_function_args(
+        method,
+        args,
+        None,
+        line,
+        ctx.source_name,
+        None,
+        override_native_param_names,
+    ) {
         Ok(resolved) => resolved,
         Err(e) => {
             // Проверяем, является ли это ошибкой "not supported"

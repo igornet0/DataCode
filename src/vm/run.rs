@@ -3,7 +3,7 @@
 
 use crate::bytecode::Chunk;
 use crate::common::{error::LangError, value::Value, value_store::{ValueId, NULL_VALUE_ID}};
-use crate::vm::context_guards::{ClearScriptArgvGuard, MlContextGuard, PlotContextGuard, RunContextGuard};
+use crate::vm::context_guards::{ClearScriptArgvGuard, PlotContextGuard, RunContextGuard};
 use crate::vm::frame::CallFrame;
 use crate::vm::store_convert::{load_value, tagged_to_value_id};
 use crate::vm::types::VMStatus;
@@ -48,14 +48,6 @@ pub fn execute_run(
     let _run_guard = RunContextGuard(base_path_ptr);
     let _script_argv_guard = ClearScriptArgvGuard(argv_value_id_to_use.is_some());
     crate::vm::file_import::set_base_path(vm.get_base_path());
-
-    if let Some(ctx) = vm.take_ml_context() {
-        crate::ml::MlContext::set_current(ctx);
-    } else {
-        let _ = crate::ml::MlContext::take_current();
-    }
-    let ml_ctx_ptr = vm.get_ml_context_mut_ptr();
-    let _ml_guard = MlContextGuard(ml_ctx_ptr);
 
     let plot_ctx = vm.take_plot_context().unwrap_or_else(crate::plot::PlotContext::new);
     crate::plot::PlotContext::set_current(plot_ctx);
@@ -112,6 +104,14 @@ pub fn execute_run(
                 return Ok(load_value(id, vm.value_store(), vm.heavy_store()));
             }
             VMStatus::FrameEnded => break,
+            VMStatus::GeneratorYield(_)
+            | VMStatus::GeneratorYieldAwait(_, _)
+            | VMStatus::GeneratorDone(_) => {
+                return Err(crate::common::error::LangError::runtime_error(
+                    "internal: generator opcode in main script".to_string(),
+                    0,
+                ));
+            }
         }
     }
 

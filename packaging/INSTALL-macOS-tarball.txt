@@ -1,0 +1,18 @@
+DataCode — установка (macOS, архив .tar.gz, без DMG)
+====================================================
+
+1) Распакуйте архив.
+
+2) Установка в /usr/local/bin:
+     chmod +x install.sh
+     ./install.sh
+
+   Либо вручную:
+     chmod +x datacode
+     sudo mv datacode /usr/local/bin/
+
+3) Новый терминал, проверка:
+     datacode --version
+     datacode путь/к/скрипту.dc
+
+Образ .dmg с приложением DataCode.app см. на сайте проекта — там же инструкция для ярлыка в /Applications.

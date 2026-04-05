@@ -44,7 +44,13 @@ Detailed description of all data types supported by the language:
 
 ---
 
-### 3. [User-Defined Functions with Type Annotations](./user_functions.md)
+### 3. [String Formatting (Interpolation)](./string_format.md)
+
+String interpolation: embedding expressions `${expr}`, "name=value" output (`${x=}`), number formatting (`${n:.2f}`, `${n=:.0f}`), escaping `\${`.
+
+---
+
+### 4. [User-Defined Functions with Type Annotations](./user_functions.md)
 
 Complete guide to creating functions with type annotations:
 
@@ -61,7 +67,15 @@ Complete guide to creating functions with type annotations:
 
 ---
 
-### 4. [Working with Classes](./classes.md)
+### 4a. [Stream functions (generators)](./stream_functions.md)
+
+Friendly guide to **`stream fn`**: `return` / `ireturn` / `ereturn`, **`for`** iteration, **`.next()`**, **`.send()`**, **`.final()`**, **`.live`**, and two-way patterns.
+
+**📚 Example script:** [`examples/en/05-functions/stream_functions.dc`](../../examples/en/05-functions/stream_functions.dc)
+
+---
+
+### 5. [Working with Classes](./classes.md)
 
 Declaration, fields, constructors, methods, inheritance, this/super, and visibility (private, protected, public):
 
@@ -78,7 +92,7 @@ Declaration, fields, constructors, methods, inheritance, this/super, and visibil
 
 ---
 
-### 5. [Working with Tables](./table_create_function.md)
+### 6. [Working with Tables](./table_create_function.md)
 
 Creating and working with tables in DataCode:
 
@@ -93,7 +107,7 @@ Creating and working with tables in DataCode:
 
 ---
 
-### 6. [WebSocket Server](./websocket_server.md)
+### 7. [WebSocket Server](./websocket_server.md)
 
 Remote execution of DataCode code via WebSocket:
 
@@ -108,7 +122,7 @@ Remote execution of DataCode code via WebSocket:
 
 ---
 
-### 7. [JOIN Specification](./join_specification.md)
+### 8. [JOIN Specification](./join_specification.md)
 
 Table join operations:
 
@@ -123,7 +137,7 @@ Table join operations:
 
 ---
 
-### 8. [ML Module](./ml/ml_module.md)
+### 9. [ML Module](./ml/ml_module.md)
 
 Machine learning module for DataCode:
 
@@ -144,7 +158,7 @@ Machine learning module for DataCode:
 
 ---
 
-### 9. [Plot Module - Charts and Visualization](./plot/README.md)
+### 10. [Plot Module - Charts and Visualization](./plot/README.md)
 
 Complete description of the `plot` module for working with images and creating charts:
 
@@ -159,7 +173,7 @@ Complete description of the `plot` module for working with images and creating c
 
 ---
 
-### 10. [settings_env Module](./settings_env/README.md)
+### 11. [settings_env Module](./settings_env/README.md)
 
 Loading environment variables from .env files, type coercion, prefix filtering, configuration, and Settings subclasses with Field descriptors:
 
@@ -173,13 +187,24 @@ Loading environment variables from .env files, type coercion, prefix filtering, 
 
 ---
 
-### 11. [uuid Module](./uuid/README.md)
+### 12. [uuid Module](./uuid/README.md)
 
 UUID generation (v4, v7), parse/to_string, bytes, deterministic (v3/v5), metadata. See the [uuid README](./uuid/README.md) for details and examples.
 
 ---
 
-### 12. [Modules and Imports](./modules_and_imports.md)(./modules_and_imports.md)
+### 13. [system Module](./system-lib/README.md)
+
+Built-in **`system`** module: OS, architecture, environment, DataCode version, paths and venv, package registry, hardware, time, networking, processes, files, logging, and permission policy (sandbox).
+
+- **Namespaces** — `env`, `runtime`, `hardware`, `time`, `permissions`, `log`, `net`, `process`, `fs`
+- **Security** — not an ABI `.so`; sensitive calls depend on `PermissionPolicy`
+
+**📚 Docs:** [system (EN)](./system-lib/README.md), [system (RU)](../ru/system-lib/README.md)
+
+---
+
+### 14. [Modules and Imports](./modules_and_imports.md)
 
 How to import and use modules in DataCode:
 
@@ -187,7 +212,7 @@ How to import and use modules in DataCode:
 - **Base path** — Set from the script directory when run from CLI; local modules resolve relative to it
 - **Single-file module** — `<name>.dc`; **package** — `<name>/__lib__.dc` (preferred over a file)
 - **Dotted names** — `core.config` for nested packages (each segment = package or file)
-- **Built-in modules** — `ml`, `plot`, `settings_env`, `uuid`, `database`
+- **Built-in modules** — `ml`, `plot`, `settings_env`, `uuid`, `system`, `database`
 - **Exports** — Top-level globals (variables, functions, classes) of a .dc module
 
 **📚 Usage examples:**
@@ -196,7 +221,7 @@ How to import and use modules in DataCode:
 
 ---
 
-### 13. [Text Rendering in Plot Module](./text_rendering.md)
+### 15. [Text Rendering in Plot Module](./text_rendering.md)
 
 Detailed description of the text rendering system in the plot module:
 
@@ -214,7 +239,7 @@ Detailed description of the text rendering system in the plot module:
 
 ---
 
-### 14. [Core / Internals (for kernel developers)](./internals/README.md)
+### 16. [Core / Internals (for kernel developers)](./internals/README.md)
 
 VM and runtime implementation details:
 
@@ -250,6 +275,7 @@ Get familiar with the type system:
 Master creating and using functions:
 - **Documentation:** [`examples/en/05-functions/README.md`](../../examples/en/05-functions/README.md)
 - **Type Annotations:** [`docs/en/user_functions.md`](./user_functions.md) - User-defined functions with type annotations
+- **Stream functions (generators):** [`docs/en/stream_functions.md`](./stream_functions.md)
 - **Examples:** [`examples/en/05-functions/`](../../examples/en/05-functions/)
 
 ### 5. Loops
@@ -323,6 +349,7 @@ docs/
     ├── builtin_functions.md     # Built-in functions
     ├── data_types.md            # Data types
     ├── user_functions.md        # User-defined functions with type annotations
+    ├── stream_functions.md      # Stream functions (generators)
     ├── classes.md               # Working with classes
     ├── table_create_function.md # Working with tables
     ├── websocket_server.md      # WebSocket server
@@ -335,6 +362,8 @@ docs/
     │   └── README.md            # settings_env module - environment variables
     ├── uuid/                    # uuid module documentation
     │   └── README.md            # uuid module - UUID generation
+    ├── system-lib/              # Built-in system module
+    │   └── README.md            # OS, runtime, sandbox
     ├── ml/                      # ML module documentation
     │   ├── training_flow.md     # Neural network training flow
     │   └── model_save_format.md # Model save format

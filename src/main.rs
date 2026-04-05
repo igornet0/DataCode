@@ -49,6 +49,26 @@ fn execute_file(config: cli::FileExecutionConfig) {
     use std::path::Path;
     use data_code::dpm::{resolve_env_and_packages, find_project_root, load_manifest, lock_file_name, datacode_version_satisfies};
 
+    let native_lib_resolved: Option<PathBuf> = config.native_lib.as_ref().map(|s| {
+        let p = Path::new(s);
+        let p = if p.is_absolute() {
+            p.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .ok()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join(p)
+        };
+        fs::canonicalize(&p).unwrap_or(p)
+    });
+    if let Some(ref p) = native_lib_resolved {
+        if !p.is_file() {
+            eprintln!("Ошибка: --lib: файл не найден: {}", p.display());
+            std::process::exit(1);
+        }
+    }
+    let _native_lib_guard = data_code::vm::file_import::push_native_lib_override(native_lib_resolved);
+
     // Определяем путь к файлу
     let file_path = Path::new(&config.filename);
 

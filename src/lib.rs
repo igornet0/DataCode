@@ -6,6 +6,7 @@ static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 pub mod abi;
 pub mod common;
+pub mod dcmodule;
 pub mod dpm;
 pub mod lexer;
 pub mod parser;
@@ -19,8 +20,6 @@ pub mod infra;
 pub mod websocket;
 #[path = "lib/sqlite_export/mod.rs"]
 pub mod sqlite_export;
-#[path = "lib/ml/mod.rs"]
-pub mod ml;
 #[path = "lib/plot/mod.rs"]
 pub mod plot;
 #[path = "lib/settings_env/mod.rs"]
@@ -29,11 +28,89 @@ pub mod settings_env;
 pub mod uuid;
 #[path = "lib/database_engine/mod.rs"]
 pub mod database_engine;
+#[path = "lib/system/mod.rs"]
+pub mod system;
 
 // Публичный API для запуска интерпретатора
 pub use common::{error::LangError, value::Value};
+pub use vm::PermissionPolicy;
 pub use bytecode::Chunk;
 pub use vm::Vm;
+
+use std::cell::RefCell;
+use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
+
+/// Preload native [`operator_descriptor`](vm::native_loader::merge_operator_descriptor_from_native_module_object)
+/// for every imported module name found in the token stream (any dylib), then build the parse-time registry.
+pub(crate) fn preload_operator_registry_for_parse(
+    tokens: &[lexer::Token],
+    base_path: Option<&std::path::Path>,
+) -> Result<std::sync::Arc<vm::operator_registry::OperatorRegistry>, LangError> {
+    use std::sync::Arc;
+    use vm::import_scan::collect_imported_module_names_from_tokens;
+    use vm::module_object::BUILTIN_END;
+    use vm::native_loader::{merge_operator_descriptor_from_native_module_object, try_load_native_module};
+    use vm::operator_registry::OperatorRegistry;
+    let mut reg = OperatorRegistry::with_builtins();
+    for module_name in collect_imported_module_names_from_tokens(tokens) {
+        let mut abi = Vec::new();
+        let mut libs = Vec::new();
+        match try_load_native_module(&module_name, base_path, BUILTIN_END, &mut abi, &mut libs, None) {
+            Ok((module_obj, _)) => {
+                merge_operator_descriptor_from_native_module_object(
+                    &module_obj,
+                    BUILTIN_END,
+                    &abi,
+                    &mut reg,
+                    &module_name,
+                )?;
+            }
+            Err(_) => {
+                // Not a native dylib (e.g. only a .dc package) — no operator_descriptor.
+            }
+        }
+    }
+    Ok(Arc::new(reg))
+}
+
+/// Preload [`crate::vm::native_call_registry::NativeCallParamRegistry`] from `native_call_descriptor` on each imported native dylib.
+pub(crate) fn preload_native_call_registry_for_parse(
+    tokens: &[lexer::Token],
+    base_path: Option<&std::path::Path>,
+) -> Result<std::sync::Arc<vm::native_call_registry::NativeCallParamRegistry>, LangError> {
+    use std::sync::Arc;
+    use vm::import_scan::collect_imported_module_names_from_tokens;
+    use vm::module_object::BUILTIN_END;
+    use vm::native_call_registry::NativeCallParamRegistry;
+    use vm::native_loader::{merge_native_call_descriptor_from_native_module_object, try_load_native_module};
+    let mut reg = NativeCallParamRegistry::new();
+    for module_name in collect_imported_module_names_from_tokens(tokens) {
+        let mut abi = Vec::new();
+        let mut libs = Vec::new();
+        match try_load_native_module(&module_name, base_path, BUILTIN_END, &mut abi, &mut libs, None) {
+            Ok((module_obj, _)) => {
+                merge_native_call_descriptor_from_native_module_object(
+                    &module_obj,
+                    BUILTIN_END,
+                    &abi,
+                    &mut reg,
+                    &module_name,
+                )?;
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(Arc::new(reg))
+}
+
+/// Stable module UID from module path. Same path always yields same uid across VMs.
+pub(crate) fn module_uid(path: &str) -> u64 {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut h);
+    h.finish()
+}
 
 pub fn run(source: &str) -> Result<Value, LangError> {
     run_with_existing_vm(source, None)
@@ -51,22 +128,26 @@ pub fn run_with_existing_vm(source: &str, existing_vm: Option<&mut Vm>) -> Resul
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize()?;
 
-    // 2. Парсинг
-    let mut parser = Parser::new(tokens);
-    let ast = parser.parse()?;
+    // 2. Парсинг (operator preload from token stream — any `import` of a native dylib)
+    let operator_registry = preload_operator_registry_for_parse(&tokens, None)?;
+    let native_call_registry = preload_native_call_registry_for_parse(&tokens, None)?;
+    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, operator_registry.clone());
+    let mut ast = parser.parse()?;
+    crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
 
     // 3. Семантический анализ
     let mut resolver = Resolver::new();
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new();
+    let mut compiler = Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
     let mut chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
 
     // 5. Выполнение на VM (VM всегда имеет владельца; при отсутствии existing_vm используем локальный VM, без Box::leak)
     let mut local_vm = Vm::new();
     let vm: &mut Vm = existing_vm.unwrap_or(&mut local_vm);
+    vm.set_operator_registry_snapshot(Some(operator_registry));
 
     vm.register_native_globals();
     // Main chunk first, preserving indices (75, 76, …) so bytecode LoadGlobal matches VM slots.
@@ -121,17 +202,22 @@ fn run_with_vm_into_vm(source: &str, vm: &mut Vm) -> Result<(Value, Vm), LangErr
     let tokens = lexer.tokenize()?;
 
     // 2. Парсинг
-    let mut parser = Parser::new(tokens);
-    let ast = parser.parse()?;
+    let operator_registry = preload_operator_registry_for_parse(&tokens, None)?;
+    let native_call_registry = preload_native_call_registry_for_parse(&tokens, None)?;
+    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, operator_registry.clone());
+    let mut ast = parser.parse()?;
+    crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
 
     // 3. Семантический анализ
     let mut resolver = Resolver::new();
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new();
+    let mut compiler = Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
+
+    vm.set_operator_registry_snapshot(Some(operator_registry));
 
     // 5. Добавляем функции в существующий VM
     vm.add_functions(functions);
@@ -229,7 +315,8 @@ pub fn get_main_entry_params(source: &str) -> Option<Vec<(String, Option<Value>)
     use parser::ast::Stmt;
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize().ok()?;
-    let mut parser = Parser::new(tokens);
+    let operator_registry = preload_operator_registry_for_parse(&tokens, None).ok()?;
+    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, operator_registry);
     let ast = parser.parse().ok()?;
     for stmt in &ast {
         if let Stmt::Function { name, params, .. } = stmt {
@@ -253,79 +340,93 @@ pub fn get_main_entry_params(source: &str) -> Option<Vec<(String, Option<Value>)
 }
 
 /// Remap function indices in an export map (e.g. from __lib__ or imported module) so they refer to caller VM's function table.
-pub(crate) fn remap_function_indices_in_exports(exports: &mut std::collections::HashMap<String, Value>, start_idx: usize) {
-    fn remap_value(v: &mut Value, start_idx: usize) {
+pub(crate) fn remap_function_indices_in_exports(
+    exports: &mut std::collections::HashMap<String, Value>,
+    start_idx: usize,
+    root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+) {
+    let mut seen = HashSet::new();
+    fn remap_value(
+        v: &mut Value,
+        start_idx: usize,
+        root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+        seen: &mut HashSet<*const ()>,
+    ) {
         match v {
             Value::Function(i) => *i = start_idx + *i,
             Value::Object(rc) => {
-                for (_, inner) in rc.borrow_mut().iter_mut() {
-                    remap_value(inner, start_idx);
+                if root_rc.is_some_and(|r| Rc::ptr_eq(rc, r)) {
+                    return;
                 }
+                let ptr = Rc::as_ptr(rc) as *const ();
+                if seen.contains(&ptr) {
+                    return;
+                }
+                seen.insert(ptr);
+                for (_, inner) in rc.borrow_mut().iter_mut() {
+                    remap_value(inner, start_idx, root_rc, seen);
+                }
+                seen.remove(&ptr);
             }
             _ => {}
         }
     }
     for v in exports.values_mut() {
-        remap_value(v, start_idx);
+        remap_value(v, start_idx, root_rc, &mut seen);
     }
 }
 
-/// Replace Value::Function(local_index) with Value::ModuleFunction { module_id, local_index } in an export map.
-/// Used by executor after merging a module so namespace is valid across cache hits.
+/// Replace Value::Function(local_index) with Value::ModuleFunction { module_uid, local_index } in an export map.
+/// Uses stable module_uid per namespace so shared cached objects work across VMs.
+/// submodule_keys: keys in exports that are submodules (e.g. {"config", "dev_config", "prod_config"} for core.config).
 pub(crate) fn replace_function_with_module_function_in_exports(
     exports: &mut std::collections::HashMap<String, Value>,
-    module_id: usize,
+    module_name: &str,
+    submodule_keys: &std::collections::HashSet<String>,
+    root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
 ) {
-    fn replace_value(v: &mut Value, module_id: usize) {
+    let mut seen = HashSet::new();
+    fn replace_value(
+        v: &mut Value,
+        module_path: &str,
+        root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+        seen: &mut HashSet<*const ()>,
+    ) {
         match v {
             Value::Function(local_index) => {
                 *v = Value::ModuleFunction {
-                    module_id,
+                    module_uid: module_uid(module_path),
                     local_index: *local_index,
                 };
             }
             Value::Object(rc) => {
-                for (_, inner) in rc.borrow_mut().iter_mut() {
-                    replace_value(inner, module_id);
+                if root_rc.is_some_and(|r| Rc::ptr_eq(rc, r)) {
+                    return;
                 }
+                let ptr = Rc::as_ptr(rc) as *const ();
+                if seen.contains(&ptr) {
+                    return;
+                }
+                seen.insert(ptr);
+                for (_, inner) in rc.borrow_mut().iter_mut() {
+                    replace_value(inner, module_path, root_rc, seen);
+                }
+                seen.remove(&ptr);
             }
             _ => {}
         }
     }
-    for v in exports.values_mut() {
-        replace_value(v, module_id);
+    for (k, v) in exports.iter_mut() {
+        let path = if submodule_keys.contains(k) {
+            format!("{}.{}", module_name, k)
+        } else {
+            module_name.to_string()
+        };
+        replace_value(v, &path, root_rc, &mut seen);
     }
 }
 
-/// Remap ModuleFunction { module_id, local_index } in an export map so submodule IDs refer to caller VM's registry.
-/// Used after replace_function_with_module_function_in_exports when the loaded module had submodules (e.g. dev_config);
-/// class objects from submodules carry ModuleFunction(old_id, local_index) valid in the loaded VM; this rewrites
-/// old_id to new_id so get_module_function_index resolves in the caller.
-pub(crate) fn remap_module_function_ids_in_exports(
-    exports: &mut std::collections::HashMap<String, Value>,
-    old_to_new: &std::collections::HashMap<usize, usize>,
-) {
-    fn remap_value(v: &mut Value, old_to_new: &std::collections::HashMap<usize, usize>) {
-        match v {
-            Value::ModuleFunction { module_id, local_index: _ } => {
-                if let Some(&new_id) = old_to_new.get(module_id) {
-                    *module_id = new_id;
-                }
-            }
-            Value::Object(rc) => {
-                for (_, inner) in rc.borrow_mut().iter_mut() {
-                    remap_value(inner, old_to_new);
-                }
-            }
-            _ => {}
-        }
-    }
-    for v in exports.values_mut() {
-        remap_value(v, old_to_new);
-    }
-}
-
-const BUILTIN_NATIVE_COUNT: usize = 75;
+const BUILTIN_NATIVE_COUNT: usize = crate::vm::globals::BUILTIN_GLOBAL_COUNT;
 
 /// Remap Value::Function(local_i) in chunk constants of merged module functions to global indices.
 /// After extending VM's function array with a module's functions, instances created by that module's
@@ -353,22 +454,38 @@ pub(crate) fn remap_function_constants_in_chunks(
 pub(crate) fn remap_native_indices_in_exports(
     exports: &mut std::collections::HashMap<String, Value>,
     native_start: usize,
+    root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
 ) {
-    fn remap_value(v: &mut Value, native_start: usize) {
+    let mut seen = HashSet::new();
+    fn remap_value(
+        v: &mut Value,
+        native_start: usize,
+        root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+        seen: &mut HashSet<*const ()>,
+    ) {
         match v {
             Value::NativeFunction(i) if *i >= BUILTIN_NATIVE_COUNT => {
                 *i = native_start + (*i - BUILTIN_NATIVE_COUNT);
             }
             Value::Object(rc) => {
-                for (_, inner) in rc.borrow_mut().iter_mut() {
-                    remap_value(inner, native_start);
+                if root_rc.is_some_and(|r| Rc::ptr_eq(rc, r)) {
+                    return;
                 }
+                let ptr = Rc::as_ptr(rc) as *const ();
+                if seen.contains(&ptr) {
+                    return;
+                }
+                seen.insert(ptr);
+                for (_, inner) in rc.borrow_mut().iter_mut() {
+                    remap_value(inner, native_start, root_rc, seen);
+                }
+                seen.remove(&ptr);
             }
             _ => {}
         }
     }
     for v in exports.values_mut() {
-        remap_value(v, native_start);
+        remap_value(v, native_start, root_rc, &mut seen);
     }
 }
 
@@ -412,8 +529,15 @@ fn run_with_vm_internal_with_args(
     // Парсинг до выбора lib, чтобы при отсутствии __lib__.dc в директории искать папки по импортам (from X import ...)
     let mut lexer = Lexer::new_with_source_name(source, source_name_str.as_deref());
     let tokens = lexer.tokenize()?;
-    let mut parser = Parser::new_with_source_name(tokens, source_name_str.as_deref());
-    let ast = parser.parse()?;
+    let operator_registry = preload_operator_registry_for_parse(&tokens, base_for_lib.as_deref())?;
+    let native_call_registry = preload_native_call_registry_for_parse(&tokens, base_for_lib.as_deref())?;
+    let mut parser = Parser::new_with_source_name_and_registry(
+        tokens,
+        source_name_str.as_deref(),
+        operator_registry.clone(),
+    );
+    let mut ast = parser.parse()?;
+    crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
 
     // Определяем путь к __lib__.dc
     // Если lib_path указан, это означает, что мы хотим загрузить __lib__.dc для основного файла
@@ -496,7 +620,10 @@ fn run_with_vm_internal_with_args(
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new_with_source_name(source_name_str.as_deref());
+    let mut compiler = Compiler::new_with_source_and_native_registry(
+        source_name_str.as_deref(),
+        Some(native_call_registry),
+    );
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
     // Отладка: главный chunk должен содержать "Config" в global_names (from config import Config)
@@ -505,6 +632,7 @@ fn run_with_vm_internal_with_args(
 
     // 5. Выполнение на VM
     let mut vm = Vm::new();
+    vm.set_operator_registry_snapshot(Some(operator_registry));
     // Сразу задаём base_path и project_root в VM, чтобы импорты и load_env разрешались детерминированно
     let base = explicit_base_path.clone().or_else(file_import::get_base_path);
     vm.set_base_path(base.clone());
@@ -519,7 +647,7 @@ fn run_with_vm_internal_with_args(
     for f in &functions {
         vm.ensure_globals_from_chunk(&f.chunk);
     }
-    // Регистрируем встроенные модули (ml, plot, settings_env, uuid) — они заполняют слоты по имени
+    // Регистрируем встроенные модули (plot, settings_env, uuid) — они заполняют слоты по имени
     vm.register_all_builtin_modules()?;
     
     // Module isolation: register __lib__.dc as a module (no merge). Main must "from __lib__ import X" to use lib exports.
@@ -529,7 +657,7 @@ fn run_with_vm_internal_with_args(
         let lib_fn_count = lib_vm.get_functions().len();
         remap_function_constants_in_chunks(vm.get_functions_mut(), start_idx, lib_fn_count);
         let mut exports = crate::vm::file_import::export_globals_from_vm(&mut lib_vm);
-        remap_function_indices_in_exports(&mut exports, start_idx);
+        remap_function_indices_in_exports(&mut exports, start_idx, None);
         let lib_module_value = Value::Object(Rc::new(RefCell::new(exports)));
         {
             use crate::vm::module_object::ModuleObject;
@@ -747,15 +875,18 @@ pub fn compile(source: &str) -> Result<(Chunk, Vec<bytecode::Function>), LangErr
     let tokens = lexer.tokenize()?;
 
     // 2. Парсинг
-    let mut parser = Parser::new(tokens);
-    let ast = parser.parse()?;
+    let operator_registry = preload_operator_registry_for_parse(&tokens, None)?;
+    let native_call_registry = preload_native_call_registry_for_parse(&tokens, None)?;
+    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, operator_registry);
+    let mut ast = parser.parse()?;
+    crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
 
     // 3. Семантический анализ
     let mut resolver = Resolver::new();
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new();
+    let mut compiler = Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
 
@@ -775,15 +906,18 @@ pub fn run_debug(source: &str) -> Result<Value, LangError> {
     let tokens = lexer.tokenize()?;
 
     // 2. Парсинг
-    let mut parser = Parser::new(tokens);
-    let ast = parser.parse()?;
+    let operator_registry = preload_operator_registry_for_parse(&tokens, None)?;
+    let native_call_registry = preload_native_call_registry_for_parse(&tokens, None)?;
+    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, operator_registry.clone());
+    let mut ast = parser.parse()?;
+    crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
 
     // 3. Семантический анализ
     let mut resolver = Resolver::new();
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new();
+    let mut compiler = Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
 
@@ -795,6 +929,7 @@ pub fn run_debug(source: &str) -> Result<Value, LangError> {
 
     // 5. Выполнение на VM
     let mut vm = Vm::new();
+    vm.set_operator_registry_snapshot(Some(operator_registry));
     vm.set_functions(functions, None, None);
     vm.register_native_globals();
     let result = vm.run(&chunk, None)?;

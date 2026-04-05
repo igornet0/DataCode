@@ -1,10 +1,10 @@
 // Heavy value storage for Stage 1 ValueStore migration.
-// Holds Value variants that are "heavy" (Table, Tensor, Image, etc.) so that
+// Holds Value variants that are "heavy" (Table, Image, etc.) so that
 // stack/globals/slots only hold ValueId; one place to materialize Value at native boundaries.
 
 use crate::common::value::Value;
 
-/// Stores heavy Value variants (Table, Tensor, Image, etc.); indexed by ValueCell::Heavy(usize).
+/// Stores heavy Value variants (Table, Image, etc.); indexed by ValueCell::Heavy(usize).
 #[derive(Debug, Default)]
 pub struct HeavyStore {
     cells: Vec<Value>,

@@ -9,5 +9,5 @@ cls DevSettings(ConfigApp) {
         **DevAppBaseConfig
         )
 
-    debug: bool = Field(default=True)
+    debug: bool = Field(default=true)
 }

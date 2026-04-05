@@ -1,6 +1,6 @@
 /// Константное сворачивание (constant folding) - вычисление константных выражений во время компиляции
 
-use crate::parser::ast::Expr;
+use crate::parser::ast::{BinaryOpKind, Expr};
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use crate::lexer::TokenKind;
@@ -21,6 +21,10 @@ pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
             let right_val = evaluate_constant_expr(right)?;
             
             if let (Some(l), Some(r)) = (left_val, right_val) {
+                let op = match op {
+                    BinaryOpKind::Builtin(t) => t,
+                    BinaryOpKind::Plugin { .. } => return Ok(None),
+                };
                 match op {
                     TokenKind::Plus => {
                         match (l, r) {

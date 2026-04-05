@@ -6,15 +6,108 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use crate::common::table::Table;
-use crate::ml::tensor::Tensor;
-use crate::ml::graph::Graph;
-use crate::ml::model::{LinearRegression, NeuralNetwork};
-use crate::ml::optimizer::{SGD, Momentum, NAG, Adagrad, RMSprop, Adam, AdamW};
-use crate::ml::dataset::Dataset;
-use crate::ml::layer::{Sequential, LayerId};
+use crate::common::value_store::ValueId;
+use crate::common::TaggedValue;
 use crate::plot::{Image, Figure, Axis, PlotWindowHandle};
 use crate::database_engine::cluster::DatabaseCluster;
 use crate::database_engine::engine::DatabaseEngine;
+
+/// Backing for [`Value::ArrayView`]: store cell or shared heap vec (zero-copy slice / chunk).
+#[derive(Debug, Clone)]
+pub enum ArrayViewSource {
+    /// `base_id` refers to [`crate::common::value_store::ValueCell::Array`] in the VM store.
+    Store { base_id: ValueId },
+    /// Same `Rc` as [`Value::Array`] after materialization from store.
+    Heap(Rc<RefCell<Vec<Value>>>),
+}
+
+/// Dense byte payload (e.g. `read_file_bin`): one `Vec<u8>` shared by slice views, no per-byte `Value::Number`.
+#[derive(Debug, Clone)]
+pub struct ByteBuffer {
+    pub bytes: Rc<Vec<u8>>,
+    pub offset: usize,
+    pub len: usize,
+}
+
+impl ByteBuffer {
+    pub fn from_vec(v: Vec<u8>) -> Self {
+        let len = v.len();
+        Self {
+            bytes: Rc::new(v),
+            offset: 0,
+            len,
+        }
+    }
+
+    pub fn slice_range(&self, start: usize, end: usize) -> Option<Self> {
+        if start > end || end > self.len {
+            return None;
+        }
+        Some(Self {
+            bytes: Rc::clone(&self.bytes),
+            offset: self.offset + start,
+            len: end - start,
+        })
+    }
+}
+
+/// Contiguous view `[offset .. offset + length)` into a backing array.
+#[derive(Debug, Clone)]
+pub struct ArrayViewData {
+    pub source: ArrayViewSource,
+    pub offset: usize,
+    pub length: usize,
+}
+
+impl PartialEq for ArrayViewData {
+    fn eq(&self, other: &Self) -> bool {
+        self.offset == other.offset
+            && self.length == other.length
+            && match (&self.source, &other.source) {
+                (ArrayViewSource::Store { base_id: a }, ArrayViewSource::Store { base_id: b }) => a == b,
+                (ArrayViewSource::Heap(ra), ArrayViewSource::Heap(rb)) => Rc::ptr_eq(ra, rb),
+                _ => false,
+            }
+    }
+}
+
+/// Состояние `stream fn` между yield (сохраняется между вызовами `next` / шагами `for`).
+#[derive(Debug)]
+pub struct GeneratorState {
+    pub fn_index: usize,
+    pub ip: usize,
+    pub slots: Vec<TaggedValue>,
+    pub finished: bool,
+    /// Установлено только при завершении через `ereturn expr` (не входит в поток yield).
+    pub final_value: Option<Value>,
+    /// Первый шаг: аргументы вызова до инициализации слотов.
+    pub pending_args: Option<Vec<Value>>,
+    /// После `YieldAwaitInput` без полученного `.send()` / до следующего `.next()` (который подставляет `null`): нужен ввод.
+    pub waiting_for_input: bool,
+    /// Значение из холодного `send(v)` до первого yield-await (подставляется после первого yield).
+    pub pending_first_send: Option<Value>,
+    /// Первый yield при холодном `send(v)` — возвращается из `send()` при паузе на следующем yield или при `ereturn`.
+    pub cold_send_first_yield: Option<Value>,
+    /// После `send()` на yield-await: следующий yield (например `return x*2`) отдаётся следующему `.next()`, не `send()`.
+    pub pending_deferred_yield: Option<Value>,
+}
+
+impl Clone for GeneratorState {
+    fn clone(&self) -> Self {
+        Self {
+            fn_index: self.fn_index,
+            ip: self.ip,
+            slots: self.slots.clone(),
+            finished: self.finished,
+            final_value: self.final_value.clone(),
+            pending_args: self.pending_args.clone(),
+            waiting_for_input: self.waiting_for_input,
+            pending_first_send: self.pending_first_send.clone(),
+            cold_send_first_yield: self.cold_send_first_yield.clone(),
+            pending_deferred_yield: self.pending_deferred_yield.clone(),
+        }
+    }
+}
 
 pub enum Value {
     Number(f64),
@@ -24,7 +117,8 @@ pub enum Value {
     Tuple(Rc<RefCell<Vec<Value>>>),
     Function(usize), // Индекс функции в массиве функций (main chunk или legacy)
     /// Функция из импортированного модуля: разрешается в момент Call через module_registry.
-    ModuleFunction { module_id: usize, local_index: usize },
+    /// module_uid = hash(module_path), stable across VMs so shared cached objects work.
+    ModuleFunction { module_uid: u64, local_index: usize },
     NativeFunction(usize), // Индекс нативной функции
     Path(PathBuf), // Путь к файлу или директории
     Uuid(u64, u64), // 128-bit UUID (hi, lo), value-type, ABI-friendly
@@ -34,20 +128,8 @@ pub enum Value {
         table: Rc<RefCell<Table>>,
         column_name: String,
     },
-    Tensor(Rc<RefCell<Tensor>>),
-    Graph(Rc<RefCell<Graph>>),
-    LinearRegression(Rc<RefCell<LinearRegression>>),
-    SGD(Rc<RefCell<SGD>>),
-    Momentum(Rc<RefCell<Momentum>>),
-    NAG(Rc<RefCell<NAG>>),
-    Adagrad(Rc<RefCell<Adagrad>>),
-    RMSprop(Rc<RefCell<RMSprop>>),
-    Adam(Rc<RefCell<Adam>>),
-    AdamW(Rc<RefCell<AdamW>>),
-    Dataset(Rc<RefCell<Dataset>>),
-    NeuralNetwork(Rc<RefCell<NeuralNetwork>>),
-    Sequential(Rc<RefCell<Sequential>>),
-    Layer(LayerId),
+    /// Opaque plugin-owned object (`tag` + `id`); semantics defined by the plugin (e.g. dylib).
+    PluginOpaque { tag: u8, id: u64 },
     Window(PlotWindowHandle), // Runtime only holds WindowId - Window lives in GUI thread
     Image(Rc<RefCell<Image>>),
     Figure(Rc<RefCell<Figure>>),
@@ -55,8 +137,126 @@ pub enum Value {
     DatabaseEngine(Rc<RefCell<DatabaseEngine>>),
     DatabaseCluster(Rc<RefCell<DatabaseCluster>>),
     Enumerate { data: Rc<RefCell<Vec<Value>>>, start: i64 }, // enum(iterable): lazy (idx, element) wrapper
+    /// Zero-copy view; see [`ArrayViewData`].
+    ArrayView(ArrayViewData),
+    /// Raw bytes from a file or similar; slice with `ByteBuffer::slice_range` / VM slice ops.
+    ByteBuffer(ByteBuffer),
+    /// Lazy functional pipeline (`map` / `filter`); single-pass iteration, no intermediate array.
+    Iterable(Rc<RefCell<IterableInner>>),
+    /// Результат вызова `stream fn`: ленивый генератор с фиксированным состоянием.
+    Generator(Rc<RefCell<GeneratorState>>),
     Null,
     Ellipsis, // ... (e.g. Field(...) for required field)
+}
+
+/// Callback reference for lazy iterators (avoids storing full [`Value`] in [`IterableInner`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallableSlot {
+    UserFunction(usize),
+    NativeFunction(usize),
+}
+
+/// Backing for lazy [`IterableInner::Chunks`] (yield one row at a time in `for` / `next`).
+#[derive(Debug, Clone)]
+pub enum ChunkSource {
+    Array(Rc<RefCell<Vec<Value>>>),
+    ArrayView(ArrayViewData),
+    Bytes(ByteBuffer),
+}
+
+/// Lazy iterator graph: arrays, views, `map`, `filter` (stacked via shared [`Rc`]).
+#[derive(Debug)]
+pub enum IterableInner {
+    Array {
+        array: Rc<RefCell<Vec<Value>>>,
+        index: usize,
+    },
+    ArrayView {
+        view: ArrayViewData,
+        index: usize,
+    },
+    Map {
+        source: Rc<RefCell<IterableInner>>,
+        func: CallableSlot,
+        fn_arity: u8,
+        index: usize,
+    },
+    Filter {
+        source: Rc<RefCell<IterableInner>>,
+        pred: CallableSlot,
+        fn_arity: u8,
+        index: usize,
+    },
+    /// `enum(...)` / `for` over `Value::Enumerate`: yields `(index, element)` tuples like `get_enumerate`.
+    Enumerate {
+        data: Rc<RefCell<Vec<Value>>>,
+        start: i64,
+        index: usize,
+    },
+    /// `array.chunk(n)` / `view.chunk(n)`: yields each chunk as an owned array without building all chunks upfront.
+    Chunks {
+        source: ChunkSource,
+        chunk_size: usize,
+        chunk_index: usize,
+    },
+    /// `stream fn` / [`Value::Generator`]: один проход через [`crate::vm::generator::run_generator_next`].
+    StreamGenerator {
+        state: Rc<RefCell<GeneratorState>>,
+    },
+}
+
+impl Clone for IterableInner {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Array { array, .. } => Self::Array {
+                array: array.clone(),
+                index: 0,
+            },
+            Self::ArrayView { view, .. } => Self::ArrayView {
+                view: view.clone(),
+                index: 0,
+            },
+            Self::Map {
+                source,
+                func,
+                fn_arity,
+                ..
+            } => Self::Map {
+                source: Rc::new(RefCell::new(source.borrow().clone())),
+                func: func.clone(),
+                fn_arity: *fn_arity,
+                index: 0,
+            },
+            Self::Filter {
+                source,
+                pred,
+                fn_arity,
+                ..
+            } => Self::Filter {
+                source: Rc::new(RefCell::new(source.borrow().clone())),
+                pred: pred.clone(),
+                fn_arity: *fn_arity,
+                index: 0,
+            },
+            Self::Enumerate { data, start, .. } => Self::Enumerate {
+                data: data.clone(),
+                start: *start,
+                index: 0,
+            },
+            Self::Chunks {
+                source,
+                chunk_size,
+                ..
+            } => Self::Chunks {
+                source: source.clone(),
+                chunk_size: *chunk_size,
+                chunk_index: 0,
+            },
+            Self::StreamGenerator { state } => Self::StreamGenerator {
+                state: Rc::clone(state),
+            },
+        }
+    }
 }
 
 impl std::fmt::Debug for Value {
@@ -85,27 +285,18 @@ impl std::fmt::Debug for Value {
                     Value::Array(arr) => f.debug_tuple("Array").field(&arr.borrow()).finish(),
                     Value::Tuple(tup) => f.debug_tuple("Tuple").field(&tup.borrow()).finish(),
                     Value::Function(i) => f.debug_tuple("Function").field(i).finish(),
-                    Value::ModuleFunction { module_id, local_index } => f.debug_struct("ModuleFunction").field("module_id", module_id).field("local_index", local_index).finish(),
+                    Value::ModuleFunction { module_uid, local_index } => f.debug_struct("ModuleFunction").field("module_uid", module_uid).field("local_index", local_index).finish(),
                     Value::NativeFunction(i) => f.debug_tuple("NativeFunction").field(i).finish(),
                     Value::Path(p) => f.debug_tuple("Path").field(p).finish(),
                     Value::Uuid(hi, lo) => f.debug_tuple("Uuid").field(hi).field(lo).finish(),
                     Value::Table(t) => f.debug_tuple("Table").field(&t.borrow()).finish(),
                     Value::Object(_) => unreachable!(),
                     Value::ColumnReference { table, column_name } => f.debug_struct("ColumnReference").field("table", table).field("column_name", column_name).finish(),
-                    Value::Tensor(t) => f.debug_tuple("Tensor").field(&t.borrow()).finish(),
-                    Value::Graph(g) => f.debug_tuple("Graph").field(&g.borrow()).finish(),
-                    Value::LinearRegression(lr) => f.debug_tuple("LinearRegression").field(&lr.borrow()).finish(),
-                    Value::SGD(s) => f.debug_tuple("SGD").field(&s.borrow()).finish(),
-                    Value::Momentum(m) => f.debug_tuple("Momentum").field(&m.borrow()).finish(),
-                    Value::NAG(n) => f.debug_tuple("NAG").field(&n.borrow()).finish(),
-                    Value::Adagrad(a) => f.debug_tuple("Adagrad").field(&a.borrow()).finish(),
-                    Value::RMSprop(r) => f.debug_tuple("RMSprop").field(&r.borrow()).finish(),
-                    Value::Adam(a) => f.debug_tuple("Adam").field(&a.borrow()).finish(),
-                    Value::AdamW(a) => f.debug_tuple("AdamW").field(&a.borrow()).finish(),
-                    Value::Dataset(d) => f.debug_tuple("Dataset").field(&d.borrow()).finish(),
-                    Value::NeuralNetwork(n) => f.debug_tuple("NeuralNetwork").field(&n.borrow()).finish(),
-                    Value::Sequential(s) => f.debug_tuple("Sequential").field(&s.borrow()).finish(),
-                    Value::Layer(id) => f.debug_tuple("Layer").field(id).finish(),
+                    Value::PluginOpaque { tag, id } => f
+                        .debug_struct("PluginOpaque")
+                        .field("tag", tag)
+                        .field("id", id)
+                        .finish(),
                     Value::Window(h) => f.debug_tuple("Window").field(h).finish(),
                     Value::Image(img) => f.debug_tuple("Image").field(&img.borrow()).finish(),
                     Value::Figure(fig) => f.debug_tuple("Figure").field(&fig.borrow()).finish(),
@@ -113,6 +304,17 @@ impl std::fmt::Debug for Value {
                     Value::DatabaseEngine(e) => f.debug_tuple("DatabaseEngine").field(&e.borrow()).finish(),
                     Value::DatabaseCluster(c) => f.debug_tuple("DatabaseCluster").field(&c.borrow()).finish(),
                     Value::Enumerate { data, start } => f.debug_struct("Enumerate").field("data", &data.borrow()).field("start", start).finish(),
+                    Value::ArrayView(av) => f
+                        .debug_struct("ArrayView")
+                        .field("offset", &av.offset)
+                        .field("length", &av.length)
+                        .finish_non_exhaustive(),
+                    Value::Iterable(_) => write!(f, "Iterable(<lazy>)"),
+                    Value::Generator(g) => f.debug_tuple("Generator").field(&Rc::as_ptr(g)).finish(),
+                    Value::ByteBuffer(b) => f
+                        .debug_struct("ByteBuffer")
+                        .field("len", &b.len)
+                        .finish_non_exhaustive(),
                     Value::Null => write!(f, "Null"),
                     Value::Ellipsis => write!(f, "Ellipsis"),
                 }
@@ -128,9 +330,10 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => *a.borrow() == *b.borrow(),
+            (Value::ArrayView(a), Value::ArrayView(b)) => a == b,
             (Value::Tuple(a), Value::Tuple(b)) => *a.borrow() == *b.borrow(),
             (Value::Function(a), Value::Function(b)) => a == b,
-            (Value::ModuleFunction { module_id: a_id, local_index: a_li }, Value::ModuleFunction { module_id: b_id, local_index: b_li }) => a_id == b_id && a_li == b_li,
+            (Value::ModuleFunction { module_uid: a_uid, local_index: a_li }, Value::ModuleFunction { module_uid: b_uid, local_index: b_li }) => a_uid == b_uid && a_li == b_li,
             (Value::NativeFunction(a), Value::NativeFunction(b)) => a == b,
             (Value::Path(a), Value::Path(b)) => a == b,
             (Value::Uuid(hi_a, lo_a), Value::Uuid(hi_b, lo_b)) => hi_a == hi_b && lo_a == lo_b,
@@ -152,20 +355,9 @@ impl PartialEq for Value {
             (Value::ColumnReference { table: a, column_name: col_a }, Value::ColumnReference { table: b, column_name: col_b }) => {
                 Rc::ptr_eq(a, b) && col_a == col_b
             },
-            (Value::Tensor(a), Value::Tensor(b)) => *a.borrow() == *b.borrow(),
-            (Value::Graph(a), Value::Graph(b)) => Rc::ptr_eq(a, b),
-            (Value::LinearRegression(a), Value::LinearRegression(b)) => Rc::ptr_eq(a, b),
-            (Value::SGD(a), Value::SGD(b)) => Rc::ptr_eq(a, b),
-            (Value::Momentum(a), Value::Momentum(b)) => Rc::ptr_eq(a, b),
-            (Value::NAG(a), Value::NAG(b)) => Rc::ptr_eq(a, b),
-            (Value::Adagrad(a), Value::Adagrad(b)) => Rc::ptr_eq(a, b),
-            (Value::RMSprop(a), Value::RMSprop(b)) => Rc::ptr_eq(a, b),
-            (Value::Adam(a), Value::Adam(b)) => Rc::ptr_eq(a, b),
-            (Value::AdamW(a), Value::AdamW(b)) => Rc::ptr_eq(a, b),
-            (Value::Dataset(a), Value::Dataset(b)) => Rc::ptr_eq(a, b),
-            (Value::NeuralNetwork(a), Value::NeuralNetwork(b)) => Rc::ptr_eq(a, b),
-            (Value::Sequential(a), Value::Sequential(b)) => Rc::ptr_eq(a, b),
-            (Value::Layer(a), Value::Layer(b)) => a == b,
+            (Value::PluginOpaque { tag: ta, id: ia }, Value::PluginOpaque { tag: tb, id: ib }) => {
+                ta == tb && ia == ib
+            }
             (Value::Window(a), Value::Window(b)) => a.id == b.id,
             (Value::Image(a), Value::Image(b)) => Rc::ptr_eq(a, b),
             (Value::Figure(a), Value::Figure(b)) => Rc::ptr_eq(a, b),
@@ -173,6 +365,13 @@ impl PartialEq for Value {
             (Value::DatabaseEngine(a), Value::DatabaseEngine(b)) => Rc::ptr_eq(a, b),
             (Value::DatabaseCluster(a), Value::DatabaseCluster(b)) => Rc::ptr_eq(a, b),
             (Value::Enumerate { data: a, start: sa }, Value::Enumerate { data: b, start: sb }) => Rc::ptr_eq(a, b) && sa == sb,
+            (Value::Iterable(a), Value::Iterable(b)) => Rc::ptr_eq(a, b),
+            (Value::Generator(a), Value::Generator(b)) => Rc::ptr_eq(a, b),
+            (Value::ByteBuffer(a), Value::ByteBuffer(b)) => {
+                a.len == b.len
+                    && a.bytes.as_ptr() == b.bytes.as_ptr()
+                    && a.offset == b.offset
+            }
             (Value::Null, Value::Null) => true,
             (Value::Ellipsis, Value::Ellipsis) => true,
             _ => false,
@@ -194,6 +393,7 @@ impl Value {
             Value::Number(n) => *n != 0.0,
             Value::String(s) => !s.is_empty(),  // Пустая строка = false
             Value::Array(arr) => !arr.borrow().is_empty(),
+            Value::ArrayView(av) => av.length > 0,
             Value::Tuple(tuple) => !tuple.borrow().is_empty(),
             Value::Path(p) => !p.as_os_str().is_empty(),  // Путь не пустой = true
             Value::Uuid(_, _) => true,  // UUID всегда truthy
@@ -206,19 +406,7 @@ impl Value {
                     false
                 }
             },
-            Value::Tensor(tensor) => !tensor.borrow().data.is_empty(),
-            Value::Graph(graph) => !graph.borrow().nodes.is_empty(),
-            Value::LinearRegression(_) => true,
-            Value::SGD(_) => true,
-            Value::Momentum(_) => true,
-            Value::NAG(_) => true,
-            Value::Adagrad(_) => true,
-            Value::RMSprop(_) => true,
-            Value::AdamW(_) => true,
-            Value::Dataset(dataset) => dataset.borrow().batch_size() > 0,
-            Value::NeuralNetwork(_) => true,
-            Value::Sequential(_) => true,
-            Value::Layer(_) => true,
+            Value::PluginOpaque { .. } => true,
             Value::Window(_) => true,
             Value::Image(_) => true,
             Value::Figure(_) => true,
@@ -226,6 +414,8 @@ impl Value {
             Value::DatabaseEngine(_) => true,
             Value::DatabaseCluster(c) => !c.borrow().connections.is_empty(),
             Value::Enumerate { data, .. } => !data.borrow().is_empty(),
+            Value::Iterable(_) => true,
+            Value::ByteBuffer(b) => b.len > 0,
             Value::Ellipsis => true,
             _ => true,
         }
@@ -246,6 +436,12 @@ impl Value {
                 let arr_ref = arr.borrow();
                 let elements: Vec<String> = arr_ref.iter().map(|v| v.to_string()).collect();
                 format!("[{}]", elements.join(", "))
+            }
+            Value::ArrayView(av) => {
+                format!("<array view len={}>", av.length)
+            }
+            Value::ByteBuffer(b) => {
+                format!("<bytes len={}>", b.len)
             }
             Value::Tuple(tuple) => {
                 let tuple_ref = tuple.borrow();
@@ -319,72 +515,8 @@ impl Value {
                     .collect();
                 format!("{{{}}}", pairs.join(", "))
             }
-            Value::Tensor(tensor) => {
-                let t = tensor.borrow();
-                // Label-like tensor: scalar [1], one-hot [C], or logits [C] — show class index
-                if t.shape.len() == 1 && t.shape[0] >= 1 && t.shape[0] <= 1000 {
-                    let data = t.data();
-                    if data.len() == 1 {
-                        return (data[0] as i64).to_string();
-                    }
-                    if let Ok(indices) = t.max_idx() {
-                        if indices.len() == 1 {
-                            return indices[0].to_string();
-                        }
-                    }
-                }
-                format!("<tensor: shape={:?}, size={}>", t.shape, t.data.len())
-            }
-            Value::Graph(graph) => {
-                let g = graph.borrow();
-                format!("<graph: {} nodes, {} inputs>", g.nodes.len(), g.input_nodes.len())
-            }
-            Value::LinearRegression(lr) => {
-                let model = lr.borrow();
-                format!("<linear_regression: weights={:?}, bias={:?}>", 
-                    model.get_weights().shape, model.get_bias().shape)
-            }
-            Value::SGD(sgd) => {
-                let opt = sgd.borrow();
-                format!("<sgd: lr={}>", opt.lr)
-            }
-            Value::Momentum(momentum) => {
-                let opt = momentum.borrow();
-                format!("<momentum: lr={}, beta={}>", opt.learning_rate, opt.beta)
-            }
-            Value::NAG(nag) => {
-                let opt = nag.borrow();
-                format!("<nag: lr={}, beta={}>", opt.learning_rate, opt.beta)
-            }
-            Value::Adagrad(adagrad) => {
-                let opt = adagrad.borrow();
-                format!("<adagrad: lr={}, epsilon={}>", opt.learning_rate, opt.epsilon)
-            }
-            Value::RMSprop(rmsprop) => {
-                let opt = rmsprop.borrow();
-                format!("<rmsprop: lr={}, gamma={}, epsilon={}>", opt.learning_rate, opt.gamma, opt.epsilon)
-            }
-            Value::Adam(adam) => {
-                let opt = adam.borrow();
-                format!("<adam: lr={}, beta1={}, beta2={}>", opt.lr, opt.beta1, opt.beta2)
-            }
-            Value::AdamW(adamw) => {
-                let opt = adamw.borrow();
-                format!("<adamw: lr={}, beta1={}, beta2={}, weight_decay={}>", opt.learning_rate, opt.beta1, opt.beta2, opt.weight_decay)
-            }
-            Value::Dataset(dataset) => {
-                let d = dataset.borrow();
-                format!("<dataset: batch_size={}, features={}, targets={}>", 
-                    d.batch_size(), d.num_features(), d.num_targets())
-            }
-            Value::NeuralNetwork(_) => {
-                format!("<neural_network>")
-            }
-            Value::Sequential(_) => {
-                format!("<sequential>")
-            }
-            Value::Layer(id) => {
-                format!("<layer: id={}>", id)
+            Value::PluginOpaque { tag, id } => {
+                format!("<plugin_opaque tag={} id={}>", tag, id)
             }
             Value::Window(handle) => {
                 format!("<window: id={:?}>", handle.id)
@@ -404,6 +536,21 @@ impl Value {
                 format!("<axis>")
             }
             Value::Enumerate { .. } => "<enumerate>".to_string(),
+            Value::Iterable(rc) => {
+                let ptr = Rc::as_ptr(rc);
+                let kind = match &*rc.borrow() {
+                    IterableInner::Map { .. } => "map",
+                    IterableInner::Filter { .. } => "filter",
+                    IterableInner::Enumerate { .. } => "enumerate",
+                    IterableInner::Chunks { .. } => "chunk",
+                    IterableInner::Array { .. } | IterableInner::ArrayView { .. } => "iterable",
+                    IterableInner::StreamGenerator { .. } => "stream_generator",
+                };
+                format!("<{} object at {:p}>", kind, ptr)
+            }
+            Value::Generator(g) => {
+                format!("<generator at {:p}>", Rc::as_ptr(g))
+            }
             Value::DatabaseEngine(engine) => {
                 let e = engine.borrow();
                 format!("<database_engine: {}>", e.url)
@@ -461,7 +608,7 @@ impl Hash for Value {
             }
             // Для остальных типов не реализуем Hash - они не могут быть ключами кэша
             _ => {
-                panic!("Cannot hash complex types (Array, Tuple, Table, Object, Function, Path)");
+                panic!("Cannot hash complex types (Array, Tuple, Table, Object, Function, Path, Iterable)");
             }
         }
     }
@@ -488,7 +635,7 @@ impl Clone for Value {
                 Value::Tuple(Rc::new(RefCell::new(cloned_vec)))
             },
             Value::Function(idx) => Value::Function(*idx),
-            Value::ModuleFunction { module_id, local_index } => Value::ModuleFunction { module_id: *module_id, local_index: *local_index },
+            Value::ModuleFunction { module_uid, local_index } => Value::ModuleFunction { module_uid: *module_uid, local_index: *local_index },
             Value::NativeFunction(idx) => Value::NativeFunction(*idx),
             Value::Path(p) => Value::Path(p.clone()),
             Value::Uuid(hi, lo) => Value::Uuid(*hi, *lo),
@@ -507,54 +654,10 @@ impl Clone for Value {
                 // Клонируем Rc (shallow copy), чтобы изменения сохранялись
                 Value::Object(map_rc.clone())
             },
-            Value::Tensor(tensor) => {
-                // Создаем новый Rc с глубокой копией тензора
-                Value::Tensor(Rc::new(RefCell::new(tensor.borrow().clone())))
+            Value::PluginOpaque { tag, id } => Value::PluginOpaque {
+                tag: *tag,
+                id: *id,
             },
-            Value::Graph(graph) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::Graph(graph.clone())
-            },
-            Value::LinearRegression(lr) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::LinearRegression(lr.clone())
-            },
-            Value::SGD(sgd) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::SGD(sgd.clone())
-            },
-            Value::Momentum(momentum) => {
-                Value::Momentum(momentum.clone())
-            },
-            Value::NAG(nag) => {
-                Value::NAG(nag.clone())
-            },
-            Value::Adagrad(adagrad) => {
-                Value::Adagrad(adagrad.clone())
-            },
-            Value::RMSprop(rmsprop) => {
-                Value::RMSprop(rmsprop.clone())
-            },
-            Value::Adam(adam) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::Adam(adam.clone())
-            },
-            Value::AdamW(adamw) => {
-                Value::AdamW(adamw.clone())
-            },
-            Value::Dataset(dataset) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::Dataset(dataset.clone())
-            },
-            Value::NeuralNetwork(nn) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::NeuralNetwork(nn.clone())
-            },
-            Value::Sequential(seq) => {
-                // Клонируем Rc (shallow copy), чтобы изменения сохранялись
-                Value::Sequential(seq.clone())
-            },
-            Value::Layer(id) => Value::Layer(*id),
             Value::Window(handle) => {
                 // WindowHandle is Copy, so just copy it
                 Value::Window(*handle)
@@ -574,6 +677,11 @@ impl Clone for Value {
             Value::DatabaseEngine(engine) => Value::DatabaseEngine(engine.clone()),
             Value::DatabaseCluster(cluster) => Value::DatabaseCluster(cluster.clone()),
             Value::Enumerate { data, start } => Value::Enumerate { data: data.clone(), start: *start },
+            Value::ArrayView(av) => Value::ArrayView(av.clone()),
+            // Share iterator state (Rc) — deep clone would reset IterableInner indices and break for-in / iterable_next.
+            Value::Iterable(rc) => Value::Iterable(Rc::clone(rc)),
+            Value::Generator(rc) => Value::Generator(Rc::clone(rc)),
+            Value::ByteBuffer(b) => Value::ByteBuffer(b.clone()),
             Value::Null => Value::Null,
             Value::Ellipsis => Value::Ellipsis,
         }

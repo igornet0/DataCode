@@ -1,6 +1,8 @@
 // GUI event loop and window management
 
-use crate::plot::{GuiCommand, system, natives, WindowState, RenderContent};
+use crate::plot::{GuiCommand, system, WindowState, RenderContent};
+#[cfg(target_os = "macos")]
+use crate::plot::natives;
 use crate::plot::window::Window as PlotWindow;
 use crate::plot::window::ImageViewState;
 use winit::event_loop::EventLoopBuilder;

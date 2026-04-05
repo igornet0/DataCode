@@ -6,7 +6,8 @@ use std::collections::HashMap;
 
 use crate::common::{error::LangError, value::Value, value_store::{ValueCell, ValueId, ValueStore}};
 use crate::vm::store_convert::tagged_to_value_id;
-use crate::vm::vm::VM_CALL_CONTEXT;
+use crate::vm::native_loader::call_abi_native;
+use crate::vm::vm::{Vm, VM_CALL_CONTEXT};
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
@@ -15,6 +16,33 @@ use crate::vm::store_convert::{load_value, store_value};
 use crate::vm::types::VMStatus;
 
 use super::helpers::pop_to_value_id;
+
+/// Opaque length: delegates to the loaded plugin's `native_plugin_call(opaque, "len")` if exported.
+/// No host knowledge of plugin tags or `dataset_len` — plugins implement `"len"` for types they own.
+pub(crate) fn plugin_opaque_len_via_plugin_call(opaque: &Value) -> Option<Value> {
+    if !matches!(opaque, Value::PluginOpaque { .. }) {
+        return None;
+    }
+    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow())?;
+    unsafe {
+        let vm = &*vm_ptr;
+        let native_idx = vm.plugin_call_native?;
+        let builtin_count = vm.builtin_natives_count();
+        let abi = vm.get_abi_natives();
+        if native_idx < builtin_count || native_idx >= builtin_count + abi.len() {
+            return None;
+        }
+        let v = call_abi_native(
+            abi[native_idx - builtin_count],
+            &[opaque.clone(), Value::String("len".to_string())],
+            Some((vm.value_store(), vm.heavy_store())),
+        );
+        if crate::vm::native_loader::take_last_abi_error().is_some() {
+            return None;
+        }
+        Some(v)
+    }
+}
 
 pub fn op_make_array(
     count: usize,
@@ -224,6 +252,7 @@ pub fn op_get_array_length(
     exception_handlers: &mut Vec<ExceptionHandler>,
     value_store: &mut ValueStore,
     heavy_store: &mut HeavyStore,
+    _vm_ptr: *mut Vm,
 ) -> Result<VMStatus, LangError> {
     let array_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
     if let Some(ValueCell::Array(ref arr)) = value_store.get(array_id) {
@@ -231,10 +260,18 @@ pub fn op_get_array_length(
         stack::push_id(stack, result_id);
         return Ok(VMStatus::Continue);
     }
+    if let Some(ValueCell::ArrayView { length, .. }) = value_store.get(array_id) {
+        let result_id = value_store.allocate(ValueCell::Number(*length as f64));
+        stack::push_id(stack, result_id);
+        return Ok(VMStatus::Continue);
+    }
     let array = load_value(array_id, value_store, heavy_store);
     match array {
         Value::Array(arr) => {
             stack::push_id(stack, store_value(Value::Number(arr.borrow().len() as f64), value_store, heavy_store));
+        }
+        Value::ArrayView(av) => {
+            stack::push_id(stack, store_value(Value::Number(av.length as f64), value_store, heavy_store));
         }
         Value::ColumnReference { table, column_name } => {
             let t = table.borrow();
@@ -252,12 +289,18 @@ pub fn op_get_array_length(
                 }
             }
         }
-        Value::Dataset(dataset) => {
-            let batch_size = dataset.borrow().batch_size();
-            stack::push_id(stack, store_value(Value::Number(batch_size as f64), value_store, heavy_store));
+        Value::PluginOpaque { .. } => {
+            if let Some(v) = plugin_opaque_len_via_plugin_call(&array) {
+                stack::push_id(stack, store_value(v, value_store, heavy_store));
+            } else {
+                stack::push_id(stack, store_value(Value::Null, value_store, heavy_store));
+            }
         }
         Value::Enumerate { data, .. } => {
             stack::push_id(stack, store_value(Value::Number(data.borrow().len() as f64), value_store, heavy_store));
+        }
+        Value::ByteBuffer(b) => {
+            stack::push_id(stack, store_value(Value::Number(b.len as f64), value_store, heavy_store));
         }
         Value::Tuple(tuple) => {
             stack::push_id(stack, store_value(Value::Number(tuple.borrow().len() as f64), value_store, heavy_store));

@@ -61,6 +61,7 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     // Функции для работы с таблицами
     register(globals, "table");
     register(globals, "read_file");
+    register(globals, "read_file_bin");
     register(globals, "table_info");
     register(globals, "table_head");
     register(globals, "table_tail");
@@ -90,6 +91,18 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "primary_key");
     register(globals, "enum");
     register(globals, "Table");
+    register(globals, "array_with_capacity");
+    register(globals, "map");
+    register(globals, "filter");
+    register(globals, "reduce");
+
+    // Built-in module globals (plot, uuid, debug, …) so `uuid.foo()` / `debug.operators()` resolve without `import`.
+    // Order matches `crate::vm::modules::BUILTIN_MODULE_NAMES` (deterministic indices for chunk/linker).
+    for name in crate::vm::modules::BUILTIN_MODULE_NAMES {
+        if !globals.contains_key(*name) {
+            register(globals, name);
+        }
+    }
 }
 
 fn register(globals: &mut std::collections::HashMap<String, usize>, name: &str) {
@@ -141,6 +154,10 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "show_table" => Some(vec!["table".to_string()]),
         "now" => Some(vec![]),
         "getcwd" => Some(vec![]),
+        "array_with_capacity" => Some(vec!["n".to_string()]),
+        "map" => Some(vec!["collection".to_string(), "fn".to_string()]),
+        "filter" => Some(vec!["collection".to_string(), "predicate".to_string()]),
+        "reduce" => Some(vec!["collection".to_string(), "fn".to_string(), "initial".to_string()]),
         
         // Функции с двумя параметрами
         "range" => Some(vec!["start".to_string(), "end".to_string(), "step".to_string()]),
@@ -156,6 +173,7 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         // Функции с опциональными параметрами
         "table" => Some(vec!["data".to_string(), "headers".to_string()]),
         "read_file" => Some(vec!["path".to_string(), "header_row".to_string(), "sheet_name".to_string(), "header".to_string()]),
+        "read_file_bin" => Some(vec!["path".to_string()]),
         "table_head" => Some(vec!["table".to_string(), "n".to_string()]),
         "table_tail" => Some(vec!["table".to_string(), "n".to_string()]),
         "table_select" => Some(vec!["table".to_string(), "cols".to_string()]),
@@ -198,46 +216,18 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "inner_join" | "left_join" | "right_join" | "full_join" | "semi_join" | "anti_join" | "zip_join" | "asof_join" | "join_on" | "apply_join" => {
             Some(vec!["left".to_string(), "right".to_string(), "on".to_string(), "type".to_string(), "suffixes".to_string()])
         },
-        
+
         // Module methods
         "show" => Some(vec!["image".to_string(), "title".to_string()]),
         "line" => Some(vec![
             "x".to_string(),
             "y".to_string(),
             "show_points".to_string(),
+            "point_size".to_string(),
+            "line_width".to_string(),
             "color".to_string(),
         ]),
         
-        // ML functions
-        "nn_train" => Some(vec![
-            "nn".to_string(),  // Model object (first parameter, added separately for method calls)
-            "x".to_string(),
-            "y".to_string(),
-            "epochs".to_string(),
-            "batch_size".to_string(),
-            "learning_rate".to_string(),
-            "loss".to_string(),
-            "optimizer".to_string(),
-            "x_val".to_string(),
-            "y_val".to_string(),
-        ]),
-        "nn_train_sh" => Some(vec![
-            "nn".to_string(),  // Model object (first parameter, added separately for method calls)
-            "x".to_string(),
-            "y".to_string(),
-            "epochs".to_string(),
-            "batch_size".to_string(),
-            "learning_rate".to_string(),
-            "loss".to_string(),
-            "optimizer".to_string(),
-            "monitor".to_string(),
-            "patience".to_string(),
-            "min_delta".to_string(),
-            "restore_best".to_string(),
-            "x_val".to_string(),
-            "y_val".to_string(),
-        ]),
-
         // settings_env.Config(...) / Settings.config(...) — config dict for load_env
         "Config" | "config" => Some(vec![
             "env_prefix".to_string(),

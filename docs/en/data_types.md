@@ -59,6 +59,8 @@ This document describes all data types supported by the DataCode programming lan
   global empty = ''
   ```
 
+Strings support **interpolation**: embedding expressions with `${expr}`, "name=value" output (`${x=}`), and number formatting (`${n:.2f}`). See [String Formatting (Interpolation)](./string_format.md) for details.
+
 **📚 Examples:** [`examples/en/01-basics/strings.dc`](../../examples/en/01-basics/strings.dc)
 
 ### Bool (Boolean)

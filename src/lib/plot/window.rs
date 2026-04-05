@@ -65,6 +65,11 @@ impl Window {
         let size = self.window_handle.inner_size();
         (size.width, size.height)
     }
+
+    /// Get scale factor for DPI-aware rendering (e.g. 2.0 on Retina)
+    pub fn scale_factor(&self) -> f32 {
+        self.window_handle.scale_factor() as f32
+    }
     
     /// Update window size (called on resize event)
     pub fn update_size(&mut self) {

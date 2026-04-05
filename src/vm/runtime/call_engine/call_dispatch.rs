@@ -15,7 +15,6 @@ use crate::vm::heavy_store::HeavyStore;
 use crate::vm::host::HostEntry;
 use crate::vm::types::{ExplicitRelation, ExplicitPrimaryKey};
 use crate::vm::interpreter::helpers::pop_to_value_id;
-
 /// Execute CallWithUnpack(unpack_arity): kwargs object unpacking into function call.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_call_with_unpack(
@@ -64,8 +63,8 @@ pub fn execute_call_with_unpack(
     let callee_val = load_value(callee_id, value_store, heavy_store);
     let (_function_index, function) = match &callee_val {
         Value::Function(i) if *i < functions.len() => (*i, functions[*i].clone()),
-        Value::ModuleFunction { module_id, local_index } => {
-            match unsafe { (*vm_ptr).get_module_function_index(*module_id, *local_index) } {
+        Value::ModuleFunction { module_uid, local_index } => {
+            match unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) } {
                 Some(real_idx) if real_idx < functions.len() => (real_idx, functions[real_idx].clone()),
                 _ => {
                     let error = ExceptionHandler::runtime_error(
@@ -193,8 +192,8 @@ pub fn execute_call(
                     Some(ValueCell::Function(i)) if *i < functions.len() => {
                         function_index_opt = Some(*i);
                     }
-                    Some(ValueCell::ModuleFunction { module_id, local_index }) => {
-                        if let Some(real_idx) = unsafe { (*vm_ptr).get_module_function_index(*module_id, *local_index) } {
+                    Some(ValueCell::ModuleFunction { module_uid, local_index }) => {
+                        if let Some(real_idx) = unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) } {
                             function_index_opt = Some(real_idx);
                         } else {
                             frame.call_cache_is_user_function = false;
@@ -267,18 +266,18 @@ pub fn execute_call(
                         debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to constructor '{}'", class_name, constructor_name);
                         constructing_class_opt = Some(function_value.clone());
                         Value::Function(*constructor_fn_idx)
-                    } else if let Some(Value::ModuleFunction { module_id, local_index }) = constructor_value.as_ref() {
+                    } else if let Some(Value::ModuleFunction { module_uid, local_index }) = constructor_value.as_ref() {
                         debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to module constructor '{}'", class_name, constructor_name);
                         constructing_class_opt = Some(function_value.clone());
-                        Value::ModuleFunction { module_id: *module_id, local_index: *local_index }
+                        Value::ModuleFunction { module_uid: *module_uid, local_index: *local_index }
                     } else if let Some(Value::Function(constructor_fn_idx)) = method_new {
                         debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to constructor from class key '{}'", class_name, format!("new_{}", arity));
                         constructing_class_opt = Some(function_value.clone());
                         Value::Function(constructor_fn_idx)
-                    } else if let Some(Value::ModuleFunction { module_id, local_index }) = method_new {
+                    } else if let Some(Value::ModuleFunction { module_uid, local_index }) = method_new {
                         debug_println!("[DEBUG executor OpCode::Call] Class object '{}' resolved to module constructor from class key '{}'", class_name, format!("new_{}", arity));
                         constructing_class_opt = Some(function_value.clone());
-                        Value::ModuleFunction { module_id, local_index }
+                        Value::ModuleFunction { module_uid, local_index }
                     } else {
                         function_value
                     }
@@ -296,8 +295,8 @@ pub fn execute_call(
                 let fr = frames.last_mut().unwrap();
                 fr.call_cache_ip = Some(current_ip);
                 fr.call_cache_is_user_function = true;
-            } else if let Value::ModuleFunction { module_id, local_index } = &ac {
-                if let Some(real_idx) = unsafe { (*vm_ptr).get_module_function_index(*module_id, *local_index) } {
+            } else if let Value::ModuleFunction { module_uid, local_index } = &ac {
+                if let Some(real_idx) = unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) } {
                     function_index_opt = Some(real_idx);
                 }
                 let fr = frames.last_mut().unwrap();
@@ -381,8 +380,8 @@ pub fn execute_call(
                 Some(ValueCell::Function(i)) => {
                     if *i < functions.len() { Some(*i) } else { function_index_opt }
                 }
-                Some(ValueCell::ModuleFunction { module_id, local_index }) => {
-                    unsafe { (*vm_ptr).get_module_function_index(*module_id, *local_index) }.or(function_index_opt)
+                Some(ValueCell::ModuleFunction { module_uid, local_index }) => {
+                    unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) }.or(function_index_opt)
                 }
                 _ => function_index_opt,
             }
@@ -463,8 +462,8 @@ pub fn execute_call(
                 drop(modules);
                 found.and_then(|exp| match &exp {
                     Value::Function(i) if *i < functions.len() => Some(*i),
-                    Value::ModuleFunction { module_id, local_index } => {
-                        unsafe { (*vm_ptr).get_module_function_index(*module_id, *local_index) }
+                    Value::ModuleFunction { module_uid, local_index } => {
+                        unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) }
                     }
                     _ => None,
                 })
@@ -474,23 +473,90 @@ pub fn execute_call(
             match by_name.or_else(|| from_module) {
                 Some(idx) => idx,
                 None => {
+                    // Runtime fallback (Variant B): Object may be module/namespace; if previous LoadGlobal
+                    // was for a name that exists as callable in the object (e.g. engine from database_engine),
+                    // use it. Fixes name collision when submodule "engine" shadows imported engine().
+                    let load_global_name = frames.last().and_then(|f| {
+                        let prev_ip = current_ip.saturating_sub(1);
+                        f.function.chunk.code.get(prev_ip).and_then(|op| {
+                            if let crate::bytecode::OpCode::LoadGlobal(idx) = op {
+                                f.function.chunk.global_names.get(idx).cloned()
+                            } else {
+                                None
+                            }
+                        })
+                    });
+                    let fallback_ok = if let (Some(name), Value::Object(ref obj_rc)) = (load_global_name.as_ref(), &actual_callee) {
+                        let obj = obj_rc.borrow();
+                        // Namespace call: prefer `__call__` (plugin-defined default), then `namespace[name]`
+                        // (e.g. `from engine import engine` → key `engine`). `__call__` first avoids a wrong
+                        // same-named member shadowing the intended constructor (e.g. ml `dataset` namespace).
+                        let is_callable = |v: &Value| {
+                            matches!(
+                                v,
+                                Value::NativeFunction(_)
+                                    | Value::Function(_)
+                                    | Value::ModuleFunction { .. }
+                            )
+                        };
+                        let v_opt = obj
+                            .get("__call__")
+                            .cloned()
+                            .filter(|v| is_callable(v))
+                            .or_else(|| obj.get(name).cloned().filter(|v| is_callable(v)));
+                        drop(obj);
+                        if let Some(v) = v_opt {
+                            if matches!(&v, Value::NativeFunction(_) | Value::Function(_) | Value::ModuleFunction { .. }) {
+                                debug_println!(
+                                    "[DEBUG Call dispatch] Object fallback: resolved '{}' from namespace to callable",
+                                    name,
+                                );
+                                actual_callee = v;
+                                true
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if fallback_ok {
+                        0 // dummy; match actual_callee will dispatch to NativeFunction/closure
+                    } else {
+                    if crate::common::debug::is_debug_enabled() {
+                        let has_class = class_name.is_some();
+                        debug_println!(
+                            "[DEBUG Call dispatch] Object callee: has __class_name={}, LoadGlobal name={:?}, frame={}",
+                            has_class,
+                            load_global_name,
+                            frames.last().map(|f| f.function.name.as_str()).unwrap_or("?"),
+                        );
+                    }
+                    let hint = load_global_name.as_deref().unwrap_or("?");
                     let error = ExceptionHandler::runtime_error(
                         &frames,
-                        "Can only call functions".to_string(),
+                        format!("Can only call functions (got Object when calling '{}')", hint),
                         line,
                     );
                     match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                         Ok(()) => return Ok(VMStatus::Continue),
                         Err(e) => return Err(e),
                     }
+                    }
                 }
             }
+        } else if matches!(&actual_callee, Value::PluginOpaque { .. }) {
+            // Callable opaque values dispatch via `native_plugin_call` in the loaded plugin.
+            0
         } else {
-            let error = ExceptionHandler::runtime_error(
-                &frames,
-                "Can only call functions".to_string(),
-                line,
-            );
+            let msg = if matches!(&actual_callee, Value::Null) {
+                "Cannot call null — the callee may be missing (e.g. wrong or absent method on a module object)".to_string()
+            } else {
+                "Can only call functions".to_string()
+            };
+            let error = ExceptionHandler::runtime_error(&frames, msg, line);
             match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
@@ -536,12 +602,26 @@ pub fn execute_call(
                 explicit_global_names,
                 vm_ptr,
             ),
-            Value::Layer(layer_id) => {
-                // Layers can be called as functions: layer(input_tensor) -> output_tensor
-                if arity != 1 {
+            Value::PluginOpaque { .. } => {
+                let Some(native_idx) = (unsafe { (*vm_ptr).plugin_call_native }) else {
                     let error = ExceptionHandler::runtime_error(
-                &frames,
-                        format!("Layer call expects 1 argument (input tensor), got {}", arity),
+                        &frames,
+                        "Plugin opaque call requires a native module that exports native_plugin_call".to_string(),
+                        line,
+                    );
+                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                        Ok(()) => {
+                            stack::push_id(stack, NULL_VALUE_ID);
+                            return Ok(VMStatus::Continue);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                };
+                let builtin_count = natives.len();
+                if native_idx < builtin_count || native_idx >= builtin_count + abi_natives.len() {
+                    let error = ExceptionHandler::runtime_error(
+                        &frames,
+                        "native_plugin_call index is invalid (reload native module)".to_string(),
                         line,
                     );
                     match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
@@ -552,21 +632,15 @@ pub fn execute_call(
                         Err(e) => return Err(e),
                     }
                 }
-                
-                let input_value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
-                let input_value = load_value(input_value_id, value_store, heavy_store);
-                use crate::ml::natives;
-                let args = vec![Value::Layer(layer_id), input_value];
-                let result = natives::native_layer_call(&args);
-                stack::push_id(stack, store_value(result, value_store, heavy_store));
-                return Ok(VMStatus::Continue);
-            }
-            Value::NeuralNetwork(_) | Value::LinearRegression(_) => {
-                // Models can be called as functions: model(input_tensor) -> output_tensor
-                if arity != 1 {
+                let frame = frames.last().unwrap();
+                let available_args = stack.len().saturating_sub(frame.stack_start);
+                if available_args < arity {
                     let error = ExceptionHandler::runtime_error(
-                &frames,
-                        format!("Model call expects 1 argument (input tensor), got {}", arity),
+                        &frames,
+                        format!(
+                            "Not enough arguments for plugin opaque call: expected {} but got {}",
+                            arity, available_args
+                        ),
                         line,
                     );
                     match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
@@ -577,12 +651,29 @@ pub fn execute_call(
                         Err(e) => return Err(e),
                     }
                 }
-                
-                let input_value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
-                let input_value = load_value(input_value_id, value_store, heavy_store);
-                use crate::ml::natives;
-                let args = vec![actual_callee.clone(), input_value];
-                let result = natives::native_nn_forward(&args);
+                let mut call_args: Vec<Value> = Vec::with_capacity(arity);
+                for _ in 0..arity {
+                    let vid = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+                    call_args.push(load_value(vid, value_store, heavy_store));
+                }
+                call_args.reverse();
+                let mut args = Vec::with_capacity(1 + call_args.len());
+                args.push(actual_callee.clone());
+                args.extend(call_args);
+                let result = crate::vm::native_loader::call_abi_native(
+                    abi_natives[native_idx - builtin_count],
+                    &args,
+                    Some((value_store, heavy_store)),
+                );
+                if let Some(abi_err) = crate::vm::native_loader::take_last_abi_error() {
+                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, abi_err, value_store, heavy_store) {
+                        Ok(()) => {
+                            stack::push_id(stack, NULL_VALUE_ID);
+                            return Ok(VMStatus::Continue);
+                        }
+                        Err(e) => return Err(e),
+                    }
+                }
                 stack::push_id(stack, store_value(result, value_store, heavy_store));
                 return Ok(VMStatus::Continue);
             }

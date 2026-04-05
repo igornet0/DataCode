@@ -6,11 +6,17 @@ pub enum TokenKind {
     Let,
     Global,
     Fn,
+    /// `stream` — модификатор перед `fn` для генераторов (`stream fn`).
+    Stream,
     If,
     Else,
     While,
     For,
     Return,
+    /// `ereturn` — досрочное завершение stream fn (не yield).
+    Ereturn,
+    /// `ireturn` / `ireturn expr` — yield через `.next()` (только в `stream fn`).
+    Ireturn,
     Break,
     Continue,
     True,
@@ -64,6 +70,7 @@ pub enum TokenKind {
     Ellipsis, // ...
     Colon,    // :
     Arrow,    // ->
+    FatArrow, // =>
     Pipe,     // |
 
     // Ключевые слова для циклов

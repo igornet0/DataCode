@@ -60,6 +60,20 @@ datacode examples/en/05-functions/nested_functions.dc
 datacode examples/en/05-functions/typed_functions.dc
 ```
 
+### 5. `stream_functions.dc` - Stream functions (generators)
+**Description**: Demonstrates `stream fn` — generators with `return` (yield), `ireturn`, `ereturn`, and the `.next()`, `.send()`, `.final()`, and `.live` API.
+
+**What you'll learn**:
+- Linear yields consumed with `for x in gen`
+- `ereturn expr` — final value from `.final()` after iteration
+- Two-way flow: `ireturn`, assignment from `return expr`, and `.send(value)` vs `.next()`
+- Manual stepping with `while gen.live` and `.next()`
+
+**Run**:
+```bash
+datacode examples/en/05-functions/stream_functions.dc
+```
+
 ## 🎯 Concepts Covered
 
 ### Function Declaration
@@ -102,6 +116,11 @@ fn process(value: str | int) -> str {
 - Runtime type checking ensures arguments match expected types
 - TypeError is raised when types don't match
 - Union types allow flexibility while maintaining type safety
+
+### Stream functions (`stream fn`)
+- `return expr` yields to `for` / `.next()`
+- `ireturn expr` yields through `.next()` / `.send()`; pair with `x = return expr` for values sent back
+- `ereturn expr` ends the generator; use `.final()` to read the expression value
 
 ## 🔗 Navigation
 

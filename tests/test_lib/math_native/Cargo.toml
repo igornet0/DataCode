@@ -1,0 +1,14 @@
+[package]
+name = "math_native"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+name = "math_native"
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[dependencies]
+datacode_abi = { path = "../../../datacode_sdk/datacode_abi" }
+datacode_sdk = { path = "../../../datacode_sdk" }

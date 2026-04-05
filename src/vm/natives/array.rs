@@ -1,9 +1,40 @@
 // Array manipulation native functions
 
-use crate::common::value::Value;
+use crate::common::value::{ChunkSource, IterableInner, Value};
+use crate::vm::native_loader::{call_abi_native, clear_last_abi_error, take_last_abi_error};
+use crate::vm::vm::VM_CALL_CONTEXT;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashSet;
+
+/// `sum` / `average` on plugin tensors: delegate to `ml` via `native_plugin_call(_, "sum"|"mean")`.
+fn plugin_opaque_sum_or_mean_via_abi(arg: &Value, op: &str) -> Option<Value> {
+    let Value::PluginOpaque { .. } = arg else {
+        return None;
+    };
+    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow())?;
+    unsafe {
+        let vm = &*vm_ptr;
+        let native_idx = vm.plugin_call_native?;
+        let builtin_count = vm.builtin_natives_count();
+        let abi = vm.get_abi_natives();
+        if native_idx < builtin_count || native_idx >= builtin_count + abi.len() {
+            return None;
+        }
+        let args = [arg.clone(), Value::String(op.to_string())];
+        clear_last_abi_error();
+        let v = call_abi_native(
+            abi[native_idx - builtin_count],
+            &args,
+            Some((vm.value_store(), vm.heavy_store())),
+        );
+        if take_last_abi_error().is_some() {
+            return None;
+        }
+        Some(v)
+    }
+}
+
 
 /// Returns an empty array with pre-allocated capacity to avoid reallocations when using push() in a loop.
 pub fn native_array_with_capacity(args: &[Value]) -> Value {
@@ -67,6 +98,45 @@ pub fn native_pop(args: &[Value]) -> Value {
     
     // Возвращаем последний элемент (удаленный элемент)
     arr_ref.pop().unwrap_or(Value::Null)
+}
+
+/// Splits an array into consecutive chunks of length `n` (positive integer). Last chunk may be shorter.
+/// Returns a lazy [`Value::Iterable`] that yields each chunk as an owned [`Value::Array`] one at a time
+/// (no upfront allocation for the outer list of all chunks). Indexing and `len()` are supported.
+pub fn native_chunk(args: &[Value]) -> Value {
+    if args.len() < 2 {
+        return Value::Null;
+    }
+    let size = match &args[1] {
+        Value::Number(n) => {
+            if n.fract() != 0.0 || *n <= 0.0 {
+                return Value::Null;
+            }
+            if *n > usize::MAX as f64 {
+                return Value::Null;
+            }
+            *n as usize
+        }
+        _ => return Value::Null,
+    };
+    match &args[0] {
+        Value::Array(arr) => Value::Iterable(Rc::new(RefCell::new(IterableInner::Chunks {
+            source: ChunkSource::Array(Rc::clone(arr)),
+            chunk_size: size,
+            chunk_index: 0,
+        }))),
+        Value::ArrayView(av) => Value::Iterable(Rc::new(RefCell::new(IterableInner::Chunks {
+            source: ChunkSource::ArrayView(av.clone()),
+            chunk_size: size,
+            chunk_index: 0,
+        }))),
+        Value::ByteBuffer(bb) => Value::Iterable(Rc::new(RefCell::new(IterableInner::Chunks {
+            source: ChunkSource::Bytes(bb.clone()),
+            chunk_size: size,
+            chunk_index: 0,
+        }))),
+        _ => Value::Null,
+    }
 }
 
 pub fn native_unique(args: &[Value]) -> Value {
@@ -160,9 +230,13 @@ pub fn native_sum(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Number(0.0);
     }
-    if let Value::Tensor(tensor) = &args[0] {
-        let tensor_ref = tensor.borrow();
-        return Value::Number(tensor_ref.sum() as f64);
+    if args.len() == 1 {
+        if let Some(v) = plugin_opaque_sum_or_mean_via_abi(&args[0], "sum") {
+            return v;
+        }
+        if matches!(&args[0], Value::PluginOpaque { .. }) {
+            return Value::Number(0.0);
+        }
     }
     let (mut sum, mut has_numbers) = (0.0, false);
     match &args[0] {
@@ -196,9 +270,13 @@ pub fn native_average(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Number(0.0);
     }
-    if let Value::Tensor(tensor) = &args[0] {
-        let tensor_ref = tensor.borrow();
-        return Value::Number(tensor_ref.mean() as f64);
+    if args.len() == 1 {
+        if let Some(v) = plugin_opaque_sum_or_mean_via_abi(&args[0], "mean") {
+            return v;
+        }
+        if matches!(&args[0], Value::PluginOpaque { .. }) {
+            return Value::Number(0.0);
+        }
     }
     let (mut sum, mut count) = (0.0, 0);
     match &args[0] {
@@ -233,13 +311,6 @@ pub fn native_count(args: &[Value]) -> Value {
         return Value::Number(0.0);
     }
     
-    // Check if first argument is a tensor
-    if let Value::Tensor(tensor) = &args[0] {
-        let tensor_ref = tensor.borrow();
-        let count = tensor_ref.total_size();
-        return Value::Number(count as f64);
-    }
-    
     // Handle array and column reference (lazy: no materialization)
     match &args[0] {
         Value::Array(arr) => Value::Number(arr.borrow().len() as f64),
@@ -258,26 +329,6 @@ pub fn native_count(args: &[Value]) -> Value {
 pub fn native_any(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Bool(false);
-    }
-    
-    // Check if first argument is a tensor
-    if let Value::Tensor(tensor) = &args[0] {
-        let tensor_ref = tensor.borrow();
-        match tensor_ref.to_cpu() {
-            Ok(cpu_tensor) => {
-                if cpu_tensor.data.is_empty() {
-                    return Value::Bool(false);
-                }
-                // Check if there's at least one non-zero element
-                for &val in cpu_tensor.data.iter() {
-                    if val != 0.0 {
-                        return Value::Bool(true);
-                    }
-                }
-                return Value::Bool(false);
-            }
-            Err(_) => return Value::Bool(false),
-        }
     }
     
     // Handle array (original behavior)
@@ -306,26 +357,6 @@ pub fn native_any(args: &[Value]) -> Value {
 pub fn native_all(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Bool(false);
-    }
-    
-    // Check if first argument is a tensor
-    if let Value::Tensor(tensor) = &args[0] {
-        let tensor_ref = tensor.borrow();
-        match tensor_ref.to_cpu() {
-            Ok(cpu_tensor) => {
-                if cpu_tensor.data.is_empty() {
-                    return Value::Bool(false);
-                }
-                // Check if all elements are non-zero
-                for &val in cpu_tensor.data.iter() {
-                    if val == 0.0 {
-                        return Value::Bool(false);
-                    }
-                }
-                return Value::Bool(true);
-            }
-            Err(_) => return Value::Bool(false),
-        }
     }
     
     // Handle array (original behavior)

@@ -1,0 +1,107 @@
+# Arrays: creation, globals, methods, and aggregates
+# Covers array(), array_with_capacity(), push/pop, unique, reverse, sort,
+# sum, average, count, len, min/max, any, all, map/filter/reduce, arr.chunk(n).
+
+print("=== Arrays in DataCode ===")
+print()
+
+# --- array() and literals ---
+print("--- array() and literals ---")
+let a1 = array(1, 2, 3)
+let a2 = [10, 20, 30]
+print("array(1, 2, 3) =", a1)
+print("[10, 20, 30] =", a2)
+print()
+
+# --- array_with_capacity + push in a loop ---
+print("--- array_with_capacity + push ---")
+let buf = array_with_capacity(5)
+for i in range(5) {
+    buf = push(buf, i * 10)
+}
+print("after loop:", buf)
+print()
+
+# --- global push vs method push ---
+print("--- push(arr, x) vs arr.push(x) ---")
+let u = [1]
+push(u, 2)
+u.push(3)
+print("u:", u)
+print()
+
+# --- pop until empty ---
+print("--- pop ---")
+let stack = [1, 2, 3]
+print("pop(stack) =", pop(stack), " remaining:", stack)
+print("pop(stack) =", pop(stack), " remaining:", stack)
+print("pop(stack) =", pop(stack), " remaining:", stack)
+print("pop([]) =", pop([]))
+print()
+
+# --- unique, reverse, sort ---
+print("--- unique, reverse, sort ---")
+let dup = [1, 2, 2, 3, 1]
+print("unique:", unique(dup))
+let rev = [1, 2, 3]
+reverse(rev)
+print("after reverse:", rev)
+let messy = [3, 1, 2]
+sort(messy)
+print("after sort (string order):", messy)
+print()
+
+# --- sum, average, count, len ---
+print("--- sum, average, count, len ---")
+let nums = [1, 2, 3, 4]
+print("sum:", sum(nums))
+print("average:", average(nums))
+print("count:", count(nums))
+print("len:", len(nums))
+print()
+
+# --- min, max (variadic numbers or one array of numbers) ---
+print("--- min, max ---")
+print("min(1, 2, 3, 4):", min(1, 2, 3, 4))
+print("max(1, 2, 3, 4):", max(1, 2, 3, 4))
+print("min(nums):", min(nums))
+print("max(nums):", max(nums))
+print("min([]):", min([]))
+print()
+
+# --- any, all (empty: any false, all false) ---
+print("--- any, all ---")
+print("any([false, false, true]):", any([false, false, true]))
+print("all([true, true, true]):", all([true, true, true]))
+print("all([true, false, true]):", all([true, false, true]))
+print("any([]):", any([]))
+print("all([]):", all([]))
+print()
+
+# --- map, filter, reduce ---
+print("--- map, filter, reduce ---")
+print("map double:", map([1, 2, 3], fn(x) => x * 2))
+print("map str:", map([1, 2, 3], str))
+print("filter >2:", filter([1, 2, 3, 4], fn(x) => x > 2))
+let r1 = [1, 2, 3, 4, 5]
+let piped = reduce(
+    map(
+        filter(r1, fn(x) => x % 2 == 0),
+        fn(x) => x * x
+    ),
+    fn(acc, x) => acc + x,
+    0
+)
+print("sum of squares of evens 1..5:", piped)
+print("reduce empty with initial:", reduce([], fn(a, x) => a + x, 99))
+print()
+
+# --- chunk: method only (no global chunk) ---
+print("--- arr.chunk(n) ---")
+let row = [1, 2, 3, 4, 5, 6, 7]
+let parts = row.chunk(3)
+print("parts:", parts)
+print("len(parts):", len(parts))
+for ch in parts {
+    print("  chunk len:", len(ch), " values:", ch)
+}

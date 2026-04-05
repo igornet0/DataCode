@@ -20,7 +20,7 @@ cls DatabaseConfig(Settings) {
 cls ConfigApp(Settings) {
 
     env: str = Field(...)
-    debug: bool = Field(default=True)
+    debug: bool = Field(default=true)
     
     secret: Security = Field(default_factory=Security)
     db: DatabaseConfig = Field(default_factory=DatabaseConfig)

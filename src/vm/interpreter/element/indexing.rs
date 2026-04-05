@@ -1,5 +1,4 @@
-//! GetArrayElement for Path, ColumnReference, String, Dataset, Figure, Tensor,
-//! NeuralNetwork, Layer, Axis, DatabaseEngine, DatabaseCluster, NativeFunction(str).
+//! GetArrayElement for Path, ColumnReference, String, Figure, Axis, DatabaseEngine, DatabaseCluster, NativeFunction(str).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -300,7 +299,7 @@ pub fn get_native_str(
     }
     let error = ExceptionHandler::runtime_error(
         &frames,
-        "Expected array, tuple, column reference, table, object, path, dataset, tensor, neural network, database engine, or database cluster for GetArrayElement".to_string(),
+        "Expected array, tuple, column reference, table, object, path, database engine, or database cluster for GetArrayElement".to_string(),
         line,
     );
     match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {

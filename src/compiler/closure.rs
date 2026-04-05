@@ -1,6 +1,6 @@
 /// Работа с замыканиями: поиск захваченных переменных
 
-use crate::parser::ast::{Expr, InterpolatedSegment, Stmt, UnpackPattern};
+use crate::parser::ast::{Expr, IndexExpr, InterpolatedSegment, Stmt, UnpackPattern};
 
 /// Собирает имена переменных из паттерна распаковки
 pub fn collect_unpack_pattern_variables(pattern: &[UnpackPattern], vars: &mut std::collections::HashSet<String>) {
@@ -85,7 +85,17 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
         }
         Expr::ArrayIndex { array, index, .. } => {
             vars.extend(find_used_variables_in_expr(array));
-            vars.extend(find_used_variables_in_expr(index));
+            vars.extend(find_used_variables_in_index_expr(index));
+        }
+        Expr::AssignArray { array, index, value, .. } => {
+            vars.extend(find_used_variables_in_expr(array));
+            vars.extend(find_used_variables_in_index_expr(index));
+            vars.extend(find_used_variables_in_expr(value));
+        }
+        Expr::AssignArrayOp { array, index, value, .. } => {
+            vars.extend(find_used_variables_in_expr(array));
+            vars.extend(find_used_variables_in_index_expr(index));
+            vars.extend(find_used_variables_in_expr(value));
         }
         Expr::TableFilter { table, value, .. } => {
             vars.extend(find_used_variables_in_expr(table));
@@ -113,12 +123,62 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
         }
         Expr::InterpolatedString { segments, .. } => {
             for seg in segments {
-                if let InterpolatedSegment::Expr(e) = seg {
+                if let InterpolatedSegment::Expr { expr: e, .. } = seg {
                     vars.extend(find_used_variables_in_expr(e));
                 }
             }
         }
+        Expr::CallValue { callee, args, .. } => {
+            vars.extend(find_used_variables_in_expr(callee));
+            for arg in args {
+                match arg {
+                    crate::parser::ast::Arg::Positional(expr) => {
+                        vars.extend(find_used_variables_in_expr(expr));
+                    }
+                    crate::parser::ast::Arg::Named { value, .. } => {
+                        vars.extend(find_used_variables_in_expr(value));
+                    }
+                    crate::parser::ast::Arg::UnpackObject(expr) => {
+                        vars.extend(find_used_variables_in_expr(expr));
+                    }
+                }
+            }
+        }
+        Expr::Lambda { params, body, .. } => {
+            for p in params {
+                if let Some(ref d) = p.default_value {
+                    vars.extend(find_used_variables_in_expr(d));
+                }
+            }
+            let mut inner = find_used_variables_in_expr(body);
+            for p in params {
+                inner.remove(&p.name);
+            }
+            vars.extend(inner);
+        }
+        Expr::ExprReturn { value, .. } | Expr::Ireturn { value, .. } => {
+            if let Some(e) = value {
+                vars.extend(find_used_variables_in_expr(e));
+            }
+        }
         _ => {}
+    }
+    vars
+}
+
+fn find_used_variables_in_index_expr(index: &IndexExpr) -> std::collections::HashSet<String> {
+    let mut vars = std::collections::HashSet::new();
+    match index {
+        IndexExpr::Scalar(e) => {
+            vars.extend(find_used_variables_in_expr(e));
+        }
+        IndexExpr::Slice { start, stop, step, .. } => {
+            for o in [start, stop, step] {
+                if let Some(e) = o {
+                    vars.extend(find_used_variables_in_expr(e));
+                }
+            }
+        }
     }
     vars
 }
@@ -159,12 +219,12 @@ pub fn find_used_variables_in_stmt(stmt: &Stmt) -> std::collections::HashSet<Str
                 vars.extend(find_used_variables_in_stmt(stmt));
             }
         }
-        Stmt::Function { body, .. } => {
+        Stmt::Function { body, .. } | Stmt::StreamFunction { body, .. } => {
             for stmt in body {
                 vars.extend(find_used_variables_in_stmt(stmt));
             }
         }
-        Stmt::Return { value, .. } => {
+        Stmt::Return { value, .. } | Stmt::EReturn { value, .. } => {
             if let Some(expr) = value {
                 vars.extend(find_used_variables_in_expr(expr));
             }
@@ -264,7 +324,7 @@ pub fn find_locally_declared_variables(body: &[Stmt]) -> std::collections::HashS
                 // Рекурсивно проверяем тело while
                 declared_vars.extend(find_locally_declared_variables(body));
             }
-            Stmt::Function { body, .. } => {
+            Stmt::Function { body, .. } | Stmt::StreamFunction { body, .. } => {
                 // Рекурсивно проверяем тело вложенной функции
                 declared_vars.extend(find_locally_declared_variables(body));
             }
@@ -345,4 +405,36 @@ pub fn find_captured_variables(
     captured
 }
 
+/// Захват для лямбды: тело — выражение, параметры с опциональными default.
+pub fn find_captured_variables_lambda(
+    body: &Expr,
+    params: &[crate::parser::ast::Param],
+    parent_locals: &[std::collections::HashMap<String, usize>],
+    current_scope_locals: &std::collections::HashMap<String, usize>,
+) -> Vec<String> {
+    let mut used_vars = find_used_variables_in_expr(body);
+    for p in params {
+        if let Some(ref d) = p.default_value {
+            used_vars.extend(find_used_variables_in_expr(d));
+        }
+    }
+
+    let param_set: std::collections::HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+    used_vars.retain(|v| !param_set.contains(v));
+
+    let locally_declared: std::collections::HashSet<String> = std::collections::HashSet::new();
+    used_vars.retain(|v| !locally_declared.contains(v));
+
+    let mut captured = Vec::new();
+    for var_name in &used_vars {
+        let found_in_current_scope = current_scope_locals.contains_key(var_name);
+        if !found_in_current_scope {
+            let found_in_parent = parent_locals.iter().any(|scope| scope.contains_key(var_name));
+            if found_in_parent {
+                captured.push(var_name.clone());
+            }
+        }
+    }
+    captured
+}
 

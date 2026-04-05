@@ -9,15 +9,27 @@ pub mod init_wizard;
 pub mod install;
 pub mod lock;
 pub mod manifest;
+pub mod registry;
+pub mod dcmodule;
+pub mod setup;
 
 pub use config::{virtualenvs_in_project, set_virtualenvs_in_project, config_file_path};
-pub use env::{env_root, package_paths, packages_dir};
+pub use registry::{
+    fetch_registry_index, registry_cache_path, registry_index_url, resolve_package_source,
+    resolve_registry_package, RegistryIndex, RegistryPackage,
+};
+pub use env::{env_base_from_manifest, env_root, package_paths, packages_dir, ENV_DPM_ENV_BASE};
 pub use add_database::run_add_database;
 pub use init_database::run_init_database;
 pub use lock::{load_lock, write_lock, lock_file_name, DpmLock, LockPackage};
-pub use manifest::{find_project_root, load_manifest, project_name_for_env, datacode_version_satisfies, DpmManifest};
+pub use manifest::{
+    clear_manifest_env_base, env_base_value_for_storage, find_project_root, load_manifest,
+    project_name_for_env, datacode_version_satisfies, set_manifest_env_base, DpmManifest,
+};
 pub use init_wizard::run_init_wizard;
 pub use install::install_package;
+pub use dcmodule::{expected_dcmodule_path, path_in_packages_directory};
+pub use setup::{run_setup_for_package, run_setup_if_present, ENV_DPM_SETUP_AUTO};
 
 use std::path::Path;
 

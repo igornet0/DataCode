@@ -501,3 +501,79 @@ pub fn native_list_files(args: &[Value]) -> Value {
     }
 }
 
+
+/// Reads a file as raw bytes. Path rules match `read_file` (local + `lib://` SMB).
+pub fn native_read_file_bin(args: &[Value]) -> Value {
+    if args.is_empty() {
+        return Value::Null;
+    }
+
+    let file_path = match &args[0] {
+        Value::Path(p) => p.clone(),
+        Value::String(s) => PathBuf::from(s),
+        _ => return Value::Null,
+    };
+
+    let file_path_str = file_path.to_string_lossy().to_string();
+
+    if file_path_str.starts_with("lib://") {
+        let path_without_prefix = &file_path_str[6..];
+        let parts: Vec<&str> = path_without_prefix.splitn(2, '/').collect();
+
+        if parts.is_empty() {
+            return Value::Null;
+        }
+
+        let share_name = parts[0];
+        let file_path_on_share = if parts.len() > 1 { parts[1] } else { "" };
+
+        if let Some(smb_manager) = crate::vm::file_ops::get_smb_manager() {
+            let read_result = {
+                let guard = smb_manager.lock().unwrap();
+                guard.read_file(share_name, file_path_on_share)
+            };
+            match read_result {
+                Ok(content) => Value::ByteBuffer(crate::common::value::ByteBuffer::from_vec(content)),
+                Err(_) => Value::Null,
+            }
+        } else {
+            Value::Null
+        }
+    } else {
+        let resolved_path = match resolve_path_in_session(&file_path) {
+            Ok(p) => p,
+            Err(err_msg) => {
+                use crate::websocket::set_native_error;
+                set_native_error(format!("Path resolution error: {}", err_msg));
+                return Value::Null;
+            }
+        };
+
+        if !resolved_path.exists() {
+            use crate::websocket::set_native_error;
+            set_native_error(format!(
+                "File does not exist: {}",
+                format_path_for_error(&resolved_path)
+            ));
+            return Value::Null;
+        }
+
+        if !resolved_path.is_file() {
+            use crate::websocket::set_native_error;
+            set_native_error(format!(
+                "Path is not a file: {}",
+                format_path_for_error(&resolved_path)
+            ));
+            return Value::Null;
+        }
+
+        match fs::read(&resolved_path) {
+            Ok(content) => Value::ByteBuffer(crate::common::value::ByteBuffer::from_vec(content)),
+            Err(e) => {
+                use crate::websocket::set_native_error;
+                set_native_error(format!("Error reading file: {}", e));
+                Value::Null
+            }
+        }
+    }
+}

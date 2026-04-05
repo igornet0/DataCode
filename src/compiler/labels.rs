@@ -57,11 +57,12 @@ impl LabelManager {
     pub fn instruction_size(opcode: &OpCode) -> usize {
         match opcode {
             // Jump инструкции с относительными смещениями
-            OpCode::Jump8(_) | OpCode::JumpIfFalse8(_) => 2,  // 1 байт opcode + 1 байт смещение
-            OpCode::Jump16(_) | OpCode::JumpIfFalse16(_) => 3, // 1 байт opcode + 2 байта смещение
-            OpCode::Jump32(_) | OpCode::JumpIfFalse32(_) => 5, // 1 байт opcode + 4 байта смещение
+            OpCode::Jump8(_) | OpCode::JumpIfFalse8(_) => 1, // Chunk: one OpCode slot (offset embedded in variant)
+            OpCode::Jump16(_) | OpCode::JumpIfFalse16(_) => 1,
+            OpCode::Jump32(_) | OpCode::JumpIfFalse32(_) => 1,
             OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_) => 2, // Временно считаем как Jump8 до финализации
             OpCode::ForRange(_, _, _, _, _) | OpCode::ForRangeNext(_) | OpCode::PopForRange => 1,
+            OpCode::CoerceForInIterable(_) | OpCode::ForIterableNext(_) => 1,
             
             // Инструкции с параметрами
             OpCode::Constant(_) => 2,  // 1 байт opcode + 1 байт индекс константы (usize может быть больше, но упрощаем)

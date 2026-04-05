@@ -1,0 +1,104 @@
+# Integration: stream fn generators — linear yields, for-in, if + ereturn.
+# Semantics: `ereturn expr` evaluates expr; value is final (`.final()`), not yielded via `.next()`.
+
+stream fn three() {
+    return 1
+    return 2
+    return 3
+}
+
+sum_linear = 0
+for x in three() {
+    sum_linear = sum_linear + x
+}
+print("sum_linear", sum_linear)
+
+stream fn with_ereturn(use_short: bool) {
+    if use_short {
+        return 10
+        ereturn 999
+    }
+    return 20
+}
+
+sum_short = 0
+gen_with_ereturn = with_ereturn(true)
+for y in gen_with_ereturn {
+    sum_short = sum_short + y
+}
+print("sum_short", sum_short)
+print("gen_with_ereturn.final(): ", gen_with_ereturn.final())
+print("----")
+
+sum_long = 0
+gen_with_ereturn = with_ereturn(false)
+for z in gen_with_ereturn {
+    sum_long = sum_long + z
+}
+print("sum_long", sum_long)
+print("gen_with_ereturn.final(): ", gen_with_ereturn.final())
+print("----")
+
+# `ireturn` — yield через `.next()`. Для двустороннего канала: `x = return expr`.
+stream fn input_arg(n: int) {
+    x = ireturn 40
+    print("${x=}")
+    ereturn x * n
+}
+
+gen = input_arg(20)
+t = gen.send(10)
+res = gen.final()
+print("${t=}") # 40
+print("${res=}") # 10 * 20 = 200
+print("----")
+
+gen = input_arg(20)
+t = gen.next()
+res = gen.final()
+print("${t=}") # 40
+print("${res=}")# 40 * 20 = 800
+print("----")
+
+
+stream fn next_gen_test(n: int) {
+    x = ireturn 40
+    d = return 50
+    ereturn (x + d) * n
+}
+
+gen = next_gen_test(10)
+i = 0
+while gen.live {
+    res = gen.next()
+    print(i, ":", res)
+    print("-"*5)
+    i += 1
+}
+fin = gen.final()
+print("${fin=}")
+print("----")
+
+stream fn next_gen_test_not_ereturn(n: int) {
+    x = ireturn 40
+    d = return 50
+    return (x + d) * n
+}
+
+gen = next_gen_test_not_ereturn(10)
+i = 0
+while gen.live {
+    res = gen.next()
+    print(i, ":", res)
+    print("str(res)=${str(res)}")
+    print("${typeof(res)=}")
+    print("res:${res}")
+    print("-"*5)
+    i += 1
+}
+fin = gen.final()
+print("str(fin)=${str(fin)}")
+print("${typeof(fin)=}")
+print("1 fin: ${fin}")
+print("2 fin:", fin)
+print("----")

@@ -836,6 +836,7 @@ cargo run examples/ru/09-создание\ модели\ данных/05-table-j
 - **[docs/ru/data_types.md](docs/ru/data_types.md)** - Подробное описание типов данных
 - **[docs/ru/table_create_function.md](docs/ru/table_create_function.md)** - Работа с таблицами
 - **[docs/ru/websocket_server.md](docs/ru/websocket_server.md)** - WebSocket сервер для удаленного выполнения
+- **[docs/ru/system-lib/README.md](docs/ru/system-lib/README.md)** — встроенный модуль `system` (ОС, рантайм, sandbox); [English](docs/en/system-lib/README.md)
 - **HTTP сервер (datacode-server)** — маршрутизация `@route("METHOD", "/path")`, Request/Response, примеры в [sandbox/web_api](sandbox/web_api), Nginx: [packaging/nginx](packaging/nginx)
 
 ---

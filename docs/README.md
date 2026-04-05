@@ -49,6 +49,11 @@
 
 **Примеры:** [`examples/ru/05-функции/типизированные_функции.dc`](../../examples/ru/05-функции/типизированные_функции.dc)
 
+#### [Потоковые функции (генераторы)](./ru/stream_functions.md) · [English](./en/stream_functions.md)
+`stream fn`, yield через `return` / `ireturn`, завершение через `ereturn`, API `.next()`, `.send()`, `.final()`, `.live`.
+
+**Примеры:** [`examples/ru/05-функции/потоковые_функции.dc`](../../examples/ru/05-функции/потоковые_функции.dc), [`examples/en/05-functions/stream_functions.dc`](../../examples/en/05-functions/stream_functions.dc)
+
 #### [Работа с таблицами](./ru/table_create_function.md)
 Создание и работа с таблицами в DataCode:
 - Функции `table()` и `table_create()`
@@ -90,6 +95,9 @@
 Генерация уникальных идентификаторов (UUID): v4, v7, детерминированные v3/v5, разбор строк, работа с байтами, метаданные.
 
 **Примеры:** [`examples/ru/13-uuid/`](../../examples/ru/13-uuid/), [`examples/en/13-uuid/`](../../examples/en/13-uuid/)
+
+#### [Модуль system](./ru/system-lib/README.md)
+Встроенный модуль `system`: ОС, рантайм, пути, железо, сеть, процессы, ФС, логирование, политика прав. [English](./en/system-lib/README.md).
 
 #### [Модули и импорты](./ru/modules_and_imports.md)
 Импорт и использование модулей: синтаксис `import` / `from`, модуль-файл и пакет (`__lib__.dc`), составные имена (`core.config`), базовый путь, встроенные модули.
@@ -140,6 +148,7 @@ docs/
     │   ├── builtin_functions.md     # Встроенные функции
     │   ├── data_types.md            # Типы данных
     │   ├── user_functions.md        # Пользовательские функции с аннотациями типов
+    │   ├── stream_functions.md      # Потоковые функции (генераторы)
     │   ├── table_create_function.md # Работа с таблицами
 │   ├── websocket_server.md      # WebSocket сервер
 │   ├── join_specification.md    # Спецификация JOIN
@@ -150,6 +159,8 @@ docs/
 │   │   └── README.md            # Модуль settings_env - переменные окружения
 │   ├── uuid/                    # Документация модуля uuid
 │   │   └── README.md            # Модуль uuid - генерация UUID
+│   ├── system-lib/              # Встроенный модуль system
+│   │   └── README.md            # ОС, рантайм, sandbox
 │   └── ml/                      # Документация ML модуля
 │       ├── training_flow.md     # Схема обучения нейронной сети
 │       └── model_save_format.md  # Формат сохранения моделей
@@ -158,6 +169,7 @@ docs/
     ├── builtin_functions.md     # Built-in functions
     ├── data_types.md            # Data types
     ├── user_functions.md        # User-defined functions with type annotations
+    ├── stream_functions.md      # Stream functions (generators)
     ├── table_create_function.md # Working with tables
     ├── websocket_server.md      # WebSocket server
     ├── join_specification.md    # JOIN specification
@@ -168,6 +180,8 @@ docs/
     │   └── README.md            # settings_env module - environment variables
     ├── uuid/                    # uuid module documentation
     │   └── README.md            # uuid module - UUID generation
+    ├── system-lib/              # Built-in system module
+    │   └── README.md            # OS, runtime, sandbox
     └── ml/                      # ML module documentation
         ├── training_flow.md     # Neural network training flow
         └── model_save_format.md  # Model save format

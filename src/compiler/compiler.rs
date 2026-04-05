@@ -16,6 +16,7 @@ use crate::compiler::stmt;
 use crate::compiler::unpack;
 use crate::compiler::closure;
 use crate::compiler::args;
+use std::sync::Arc;
 
 pub struct Compiler {
     chunk: Chunk,
@@ -54,14 +55,29 @@ pub struct Compiler {
     class_required_keys_value: std::collections::HashMap<String, Value>,
     /// Source file path for error messages.
     source_name: Option<String>,
+    /// Preloaded `native_call_descriptor` rows (import ml / etc.).
+    native_call_param_registry: Option<Arc<crate::vm::native_call_registry::NativeCallParamRegistry>>,
 }
 
 impl Compiler {
     pub fn new() -> Self {
-        Self::new_with_source_name(None)
+        Self::new_with_source_and_native_registry(None, None)
+    }
+
+    pub fn new_with_native_call_registry(
+        registry: Option<Arc<crate::vm::native_call_registry::NativeCallParamRegistry>>,
+    ) -> Self {
+        Self::new_with_source_and_native_registry(None, registry)
     }
 
     pub fn new_with_source_name(source_name: Option<&str>) -> Self {
+        Self::new_with_source_and_native_registry(source_name, None)
+    }
+
+    pub fn new_with_source_and_native_registry(
+        source_name: Option<&str>,
+        native_call_param_registry: Option<Arc<crate::vm::native_call_registry::NativeCallParamRegistry>>,
+    ) -> Self {
         let mut compiler = Self {
             chunk: Chunk::new(),
             functions: Vec::new(),
@@ -86,6 +102,7 @@ impl Compiler {
             class_nested_specs_value: std::collections::HashMap::new(),
             class_required_keys_value: std::collections::HashMap::new(),
             source_name: source_name.map(String::from),
+            native_call_param_registry,
         };
         compiler.register_natives();
         compiler
@@ -105,7 +122,10 @@ impl Compiler {
         // (same name always gets same index regardless of source order, e.g. get_settings vs load_settings).
         let mut top_level_fn_names: Vec<String> = statements
             .iter()
-            .filter_map(|s| if let Stmt::Function { name, .. } = s { Some(name.clone()) } else { None })
+            .filter_map(|s| match s {
+                Stmt::Function { name, .. } | Stmt::StreamFunction { name, .. } => Some(name.clone()),
+                _ => None,
+            })
             .collect();
         top_level_fn_names.sort();
         for name in &top_level_fn_names {
@@ -295,17 +315,21 @@ impl Compiler {
     fn collect_all_functions(&mut self, statements: &[Stmt]) -> Result<(), LangError> {
         for stmt in statements {
             match stmt {
-                Stmt::Function { name, params, return_type, body, is_cached, route, .. } => {
+                Stmt::Function { name, params, return_type, body, is_cached, route, .. }
+                | Stmt::StreamFunction { name, params, return_type, body, is_cached, route, .. } => {
                     // Объявляем функцию с правильной сигнатурой сразу
                     let arity = params.len();
                     let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                     let param_types: Vec<Option<Vec<crate::parser::ast::TypePart>>> = params.iter().map(|p| p.type_annotation.clone()).collect();
                     
-                    let mut function = if *is_cached {
+                    let mut function = if *is_cached && !matches!(stmt, Stmt::StreamFunction { .. }) {
                         Function::with_cache(name.clone(), arity)
                     } else {
                         Function::new(name.clone(), arity)
                     };
+                    if matches!(stmt, Stmt::StreamFunction { .. }) {
+                        function.is_stream = true;
+                    }
                     
                     // Устанавливаем имена и типы параметров сразу
                     function.param_names = param_names;
@@ -397,7 +421,7 @@ impl Compiler {
         stmt::compile_stmt(&mut ctx, stmt, pop_value)
     }
 
-    fn create_context(&mut self) -> crate::compiler::context::CompilationContext {
+    fn create_context(&mut self) -> crate::compiler::context::CompilationContext<'_> {
         crate::compiler::context::CompilationContext {
             chunk: &mut self.chunk,
             scope: &mut self.scope,
@@ -426,6 +450,7 @@ impl Compiler {
             in_constructor: false,
             constructor_this_slot: None,
             source_name: self.source_name.as_deref(),
+            native_call_param_registry: self.native_call_param_registry.as_deref(),
         }
     }
 
@@ -437,7 +462,7 @@ impl Compiler {
             Stmt::Import { import_stmt, line } => {
                 match import_stmt {
                     ImportStmt::Modules(modules) => {
-                        // import ml, plot
+                        // import plot
                         for module in modules {
                             // Import statements are handled at runtime by the VM
                             // We compile them as a special opcode that the VM will handle
@@ -455,7 +480,7 @@ impl Compiler {
                         }
                     }
                     ImportStmt::From { module, items } => {
-                        // from ml import load_mnist, *
+                        // from plot import plot, *
                         // Создаем массив элементов импорта в константах
                         use std::rc::Rc;
                         use std::cell::RefCell;
@@ -1087,6 +1112,12 @@ impl Compiler {
                 // Обрабатывается в compile_stmt_with_pop через stmt::compile_stmt
                 unreachable!("Class statement should be handled by stmt::compile_stmt")
             }
+            Stmt::StreamFunction { .. } => {
+                unreachable!("StreamFunction should be handled by stmt::compile_stmt")
+            }
+            Stmt::EReturn { .. } => {
+                unreachable!("EReturn should be handled by stmt::compile_stmt")
+            }
         }
         Ok(())
     }
@@ -1099,8 +1130,17 @@ impl Compiler {
         args: &[Arg],
         function_info: Option<(usize, &Function)>,
         line: usize,
+        override_native_param_names: Option<&[&str]>,
     ) -> Result<Vec<Arg>, LangError> {
-        args::resolve_function_args(function_name, args, function_info, line, self.source_name.as_deref())
+        args::resolve_function_args(
+            function_name,
+            args,
+            function_info,
+            line,
+            self.source_name.as_deref(),
+            None,
+            override_native_param_names,
+        )
     }
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), LangError> {
@@ -1419,6 +1459,10 @@ impl Compiler {
                     self.chunk.write_with_line(OpCode::LoadLocal(index), *line);
                 }
             }
+            Expr::AssignArray { .. } | Expr::AssignArrayOp { .. } => {
+                let mut ctx = self.create_context();
+                expr::compile_expr(&mut ctx, expr)?;
+            }
             Expr::Variable { name, line } => {
                 // Определяем, глобальная или локальная переменная
                 if let Some(local_index) = self.resolve_local(name) {
@@ -1459,40 +1503,57 @@ impl Compiler {
                 }
             }
             Expr::Binary { left, op, right, line } => {
+                use crate::parser::ast::BinaryOpKind;
                 self.current_line = *line;
-                // Специальная обработка логических операторов
-                if *op == TokenKind::EqualEqual {
-                    self.compile_expr(left)?;
-                    self.compile_expr(right)?;
-                    self.chunk.write_with_line(OpCode::Equal, *line);
-                } else if *op == TokenKind::BangEqual {
-                    self.compile_expr(left)?;
-                    self.compile_expr(right)?;
-                    self.chunk.write_with_line(OpCode::NotEqual, *line);
-                } else {
-                    self.compile_expr(left)?;
-                    self.compile_expr(right)?;
-                    match op {
-                        TokenKind::Plus => self.chunk.write_with_line(OpCode::Add, *line),
-                        TokenKind::Minus => self.chunk.write_with_line(OpCode::Sub, *line),
-                        TokenKind::Star => self.chunk.write_with_line(OpCode::Mul, *line),
-                        TokenKind::StarStar => self.chunk.write_with_line(OpCode::Pow, *line),
-                        TokenKind::Slash => self.chunk.write_with_line(OpCode::Div, *line),
-                        TokenKind::SlashSlash => self.chunk.write_with_line(OpCode::IntDiv, *line),
-                        TokenKind::Percent => self.chunk.write_with_line(OpCode::Mod, *line),
-                        TokenKind::Greater => self.chunk.write_with_line(OpCode::Greater, *line),
-                        TokenKind::Less => self.chunk.write_with_line(OpCode::Less, *line),
-                        TokenKind::GreaterEqual => self.chunk.write_with_line(OpCode::GreaterEqual, *line),
-                        TokenKind::LessEqual => self.chunk.write_with_line(OpCode::LessEqual, *line),
-                        TokenKind::In => self.chunk.write_with_line(OpCode::In, *line),
-                        TokenKind::Or => self.chunk.write_with_line(OpCode::Or, *line),
-                        TokenKind::And => self.chunk.write_with_line(OpCode::And, *line),
-                        _ => {
-                            return Err(LangError::ParseError {
-                                message: format!("Unknown binary operator: {:?}", op),
-                                line: *line,
-                                file: None,
-                            });
+                match op {
+                    BinaryOpKind::Plugin { name, .. } => {
+                        self.compile_expr(left)?;
+                        self.compile_expr(right)?;
+                        let idx = self.chunk.add_constant(Value::String(name.clone()));
+                        self.chunk.write_with_line(OpCode::BinaryOp(idx), *line);
+                    }
+                    BinaryOpKind::Builtin(TokenKind::EqualEqual) => {
+                        self.compile_expr(left)?;
+                        self.compile_expr(right)?;
+                        self.chunk.write_with_line(OpCode::Equal, *line);
+                    }
+                    BinaryOpKind::Builtin(TokenKind::BangEqual) => {
+                        self.compile_expr(left)?;
+                        self.compile_expr(right)?;
+                        self.chunk.write_with_line(OpCode::NotEqual, *line);
+                    }
+                    BinaryOpKind::Builtin(tok) => {
+                        self.compile_expr(left)?;
+                        self.compile_expr(right)?;
+                        match tok {
+                            TokenKind::Plus => self.chunk.write_with_line(OpCode::Add, *line),
+                            TokenKind::Minus => self.chunk.write_with_line(OpCode::Sub, *line),
+                            TokenKind::Star => self.chunk.write_with_line(OpCode::Mul, *line),
+                            TokenKind::StarStar => self.chunk.write_with_line(OpCode::Pow, *line),
+                            TokenKind::Slash => self.chunk.write_with_line(OpCode::Div, *line),
+                            TokenKind::SlashSlash => self.chunk.write_with_line(OpCode::IntDiv, *line),
+                            TokenKind::Percent => self.chunk.write_with_line(OpCode::Mod, *line),
+                            TokenKind::Greater => self.chunk.write_with_line(OpCode::Greater, *line),
+                            TokenKind::Less => self.chunk.write_with_line(OpCode::Less, *line),
+                            TokenKind::GreaterEqual => self.chunk.write_with_line(OpCode::GreaterEqual, *line),
+                            TokenKind::LessEqual => self.chunk.write_with_line(OpCode::LessEqual, *line),
+                            TokenKind::In => self.chunk.write_with_line(OpCode::In, *line),
+                            TokenKind::Or => self.chunk.write_with_line(OpCode::Or, *line),
+                            TokenKind::And => self.chunk.write_with_line(OpCode::And, *line),
+                            TokenKind::EqualEqual | TokenKind::BangEqual => {
+                                return Err(LangError::ParseError {
+                                    message: "internal: eq handled above".to_string(),
+                                    line: *line,
+                                    file: None,
+                                });
+                            }
+                            _ => {
+                                return Err(LangError::ParseError {
+                                    message: format!("Unknown binary operator: {:?}", tok),
+                                    line: *line,
+                                    file: None,
+                                });
+                            }
                         }
                     }
                 }
@@ -1508,7 +1569,7 @@ impl Compiler {
                 };
                 
                 // Разрешаем аргументы: именованные -> позиционные, применяем значения по умолчанию
-                let resolved_args = self.resolve_function_args(name, args, function_info, *line)?;
+                let resolved_args = self.resolve_function_args(name, args, function_info, *line, None)?;
                 
                 // Специальная обработка для isinstance: преобразуем идентификаторы типов в строки
                 let processed_args = if name == "isinstance" && resolved_args.len() >= 2 {
@@ -1531,9 +1592,9 @@ impl Compiler {
                     resolved_args
                 };
                 
-                // Специальная обработка для функций, которые модифицируют первый аргумент in-place
-                let in_place_functions = vec!["push", "reverse", "sort"];
-                let should_assign_back = in_place_functions.contains(&name.as_str()) 
+                // See compiler/expr/call.rs: push must not assign back (alias + update_cell); reverse/sort may.
+                let in_place_assign_back = vec!["reverse", "sort"];
+                let should_assign_back = in_place_assign_back.contains(&name.as_str())
                     && !processed_args.is_empty()
                     && matches!(&processed_args[0], Arg::Positional(Expr::Variable { .. }));
                 
@@ -1686,13 +1747,9 @@ impl Compiler {
                     self.chunk.write_with_line(OpCode::MakeObjectDynamic, *line);
                 }
             }
-            Expr::ArrayIndex { array, index, line } => {
-                // Компилируем выражение массива (оно должно быть на стеке первым)
-                self.compile_expr(array)?;
-                // Компилируем индексное выражение
-                self.compile_expr(index)?;
-                // Получаем элемент массива по индексу
-                self.chunk.write_with_line(OpCode::GetArrayElement, *line);
+            Expr::ArrayIndex { .. } => {
+                let mut ctx = self.create_context();
+                expr::compile_expr(&mut ctx, expr)?;
             }
             Expr::TableFilter { .. } => {
                 let mut ctx = self.create_context();
@@ -1895,118 +1952,12 @@ impl Compiler {
                     self.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
                     
                     // Проверяем, является ли это методом объекта (например, axis.imshow)
-                    // или функцией модуля (например, ml.load_mnist)
                     // Методы объектов (Axis) нуждаются в объекте как первом аргументе,
-                    // а функции модулей (ml, plot) - нет
+                    // а функции модулей (plot) - нет
                     // Определяем это по имени метода
                     let is_axis_method = matches!(method.as_str(), "imshow" | "set_title" | "axis");
-                    let is_nn_method = matches!(method.as_str(), "device" | "get_device" | "save" | "train" | "train_sh");
-                    let is_layer_method = matches!(method.as_str(), "freeze" | "unfreeze");
                     
-                    if is_nn_method {
-                        // Для методов device, get_device и save на NeuralNetwork, вызываем соответствующие нативные функции
-                        // Загружаем объект первым
-                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
-                        
-                        // Определяем имя функции в ml модуле
-                        let function_name = if method == "device" {
-                            "nn_set_device"
-                        } else if method == "get_device" {
-                            "nn_get_device"
-                        } else if method == "save" {
-                            "nn_save"
-                        } else if method == "train" {
-                            "nn_train"
-                        } else if method == "train_sh" {
-                            "nn_train_sh"
-                        } else {
-                            return Err(LangError::ParseError {
-                                message: format!("Unknown NeuralNetwork method: {}", method),
-                                line: *line,
-                                file: None,
-                            });
-                        };
-                        
-                        // Определяем фактическое количество аргументов для Call инструкции
-                        let actual_arg_count = if method == "get_device" {
-                            if !args.is_empty() {
-                                return Err(LangError::ParseError {
-                                    message: "get_device() takes no arguments".to_string(),
-                                    line: *line,
-                                    file: None,
-                                });
-                            }
-                            0
-                        } else if method == "train" {
-                            // Разрешаем именованные аргументы для train метода
-                            let resolved_args = match self.resolve_function_args("nn_train", args, None, *line) {
-                                Ok(resolved) => resolved,
-                                Err(e) => return Err(e),
-                            };
-                            // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
-                            for arg in resolved_args.iter().skip(1) {
-                                match arg {
-                                    Arg::Positional(expr) => self.compile_expr(expr)?,
-                                    Arg::Named { value, .. } => self.compile_expr(value)?,
-                                    Arg::UnpackObject(expr) => self.compile_expr(expr)?,
-                                }
-                            }
-                            // Всего аргументов: 1 receiver + (len-1); Call(arity) ожидает arity = это число, т.е. actual_arg_count + 1 = len, значит actual_arg_count = len - 1
-                            resolved_args.len() - 1
-                        } else if method == "train_sh" {
-                            // Разрешаем именованные аргументы для train_sh метода
-                            let resolved_args = match self.resolve_function_args("nn_train_sh", args, None, *line) {
-                                Ok(resolved) => resolved,
-                                Err(e) => return Err(e),
-                            };
-                            // Пропускаем первый аргумент (nn): объект уже на стеке через LoadLocal(temp_object_slot)
-                            for arg in resolved_args.iter().skip(1) {
-                                match arg {
-                                    Arg::Positional(expr) => self.compile_expr(expr)?,
-                                    Arg::Named { value, .. } => self.compile_expr(value)?,
-                                    Arg::UnpackObject(expr) => self.compile_expr(expr)?,
-                                }
-                            }
-                            resolved_args.len() - 1
-                        } else {
-                            // Для device и save компилируем аргументы
-                            // device(device_string) или save(path_string)
-                            if args.len() != 1 {
-                                return Err(LangError::ParseError {
-                                    message: format!("{}() takes exactly 1 argument", method),
-                                    line: *line,
-                                    file: None,
-                                });
-                            }
-                            for arg in args {
-                                match arg {
-                                    Arg::Positional(expr) => self.compile_expr(expr)?,
-                                    Arg::Named { value, .. } => self.compile_expr(value)?,
-                                    Arg::UnpackObject(expr) => self.compile_expr(expr)?,
-                                }
-                            }
-                            args.len()
-                        };
-                        
-                        // Теперь на стеке: [object, arg_1] (для device/save), [object, arg_1, arg_2, ...] (для train) или [object] (для get_device)
-                        
-                        // Загружаем функцию из ml модуля
-                        if let Some(&ml_index) = self.scope.globals.get("ml") {
-                            self.chunk.write_with_line(OpCode::LoadGlobal(ml_index), *line);
-                            let method_name_index = self.chunk.add_constant(Value::String(function_name.to_string()));
-                            self.chunk.write_with_line(OpCode::Constant(method_name_index), *line);
-                            self.chunk.write_with_line(OpCode::GetArrayElement, *line);
-                            // Теперь на стеке: [object, arg_1, ..., NativeFunction]
-                            // При вызове Call: pop N раз, reverse -> функция получает [object, arg_1, ...] в правильном порядке
-                            self.chunk.write_with_line(OpCode::Call(actual_arg_count + 1), *line);
-                        } else {
-                            return Err(LangError::ParseError {
-                                message: "ml module not found".to_string(),
-                                line: *line,
-                                file: None,
-                            });
-                        }
-                    } else if is_axis_method {
+                    if is_axis_method {
                         // Для методов Axis компилируем аргументы сразу (они не поддерживают именованные аргументы через разрешение)
                         for arg in args {
                             match arg {
@@ -2048,35 +1999,9 @@ impl Compiler {
                         
                         // Вызываем метод
                         self.chunk.write_with_line(OpCode::Call(args.len() + 1), *line);
-                    } else if is_layer_method {
-                        // Для методов Layer (freeze, unfreeze) компилируем аргументы сразу
-                        // Эти методы не принимают аргументов, кроме самого layer
-                        if !args.is_empty() {
-                            return Err(LangError::ParseError {
-                                message: format!("layer.{}() takes no arguments", method),
-                                line: *line,
-                                file: None,
-                            });
-                        }
-                        
-                        // Загружаем объект первым
-                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
-                        // Теперь на стеке: [object]
-                        
-                        // Получаем свойство объекта по имени метода
-                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
-                        // Теперь на стеке: [object, object]
-                        
-                        let method_name_index = self.chunk.add_constant(Value::String(method.clone()));
-                        self.chunk.write_with_line(OpCode::Constant(method_name_index), *line);
-                        self.chunk.write_with_line(OpCode::GetArrayElement, *line);
-                        // Теперь на стеке: [object, NativeFunction]
-                        
-                        // При вызове Call(1): pop 1 раз, reverse -> функция получает [object] в правильном порядке
-                        self.chunk.write_with_line(OpCode::Call(1), *line);
                     } else {
                             // Default method call: receiver + args, then get method; Call(1 + n) so method receives (self, arg_1, ...).
-                            let resolved_args = match self.resolve_function_args(method, args, None, *line) {
+                            let resolved_args = match self.resolve_function_args(method, args, None, *line, None) {
                                 Ok(resolved) => {
                                     resolved
                                 }
@@ -2135,7 +2060,7 @@ impl Compiler {
                             let idx = self.chunk.add_constant(Value::String(s.clone()));
                             self.chunk.write_with_line(OpCode::Constant(idx), *line);
                         }
-                        InterpolatedSegment::Expr(e) => {
+                        InterpolatedSegment::Expr { expr: e, .. } => {
                             self.compile_expr(e)?;
                         }
                     }
@@ -2143,6 +2068,10 @@ impl Compiler {
                         self.chunk.write_with_line(OpCode::Add, *line);
                     }
                 }
+            }
+            Expr::Lambda { .. } | Expr::CallValue { .. } | Expr::ExprReturn { .. } | Expr::Ireturn { .. } => {
+                let mut ctx = self.create_context();
+                expr::compile_expr(&mut ctx, expr)?;
             }
         }
         Ok(())

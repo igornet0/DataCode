@@ -135,4 +135,29 @@ impl CallFrame {
             self.slots.push(TaggedValue::null());
         }
     }
+
+    /// Сброс inline-кэшей опкодов (Add/Mul/LoadLocal/…), когда слот меняют без StoreLocal
+    /// (например [`OpCode::YieldAwaitInput`]).
+    pub fn invalidate_inline_caches(&mut self) {
+        self.add_cache_ip = None;
+        self.add_cache_both_number = false;
+        self.sub_cache_ip = None;
+        self.sub_cache_both_number = false;
+        self.mul_cache_ip = None;
+        self.mul_cache_both_number = false;
+        self.div_cache_ip = None;
+        self.div_cache_both_number = false;
+        self.intdiv_cache_ip = None;
+        self.intdiv_cache_both_number = false;
+        self.mod_cache_ip = None;
+        self.mod_cache_both_number = false;
+        self.get_array_element_cache_ip = None;
+        self.get_array_element_cache_array_number = false;
+        self.get_array_element_cache_object_string = false;
+        self.call_cache_ip = None;
+        self.call_cache_is_user_function = false;
+        self.load_local_cache_ip = None;
+        self.load_local_cache_slot = None;
+        self.load_local_cache_tagged = None;
+    }
 }

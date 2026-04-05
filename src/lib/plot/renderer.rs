@@ -67,11 +67,12 @@ impl Renderer {
         let expected_width = window_size.width;
         let expected_height = window_size.height;
         
-        // Check current buffer size
-        let buffer = self.surface.buffer_mut()?;
-        let current_width = buffer.width().get();
-        let current_height = buffer.height().get();
-        
+        // Check current buffer size (scoped so buffer is dropped before we may replace self.surface)
+        let (current_width, current_height) = {
+            let buffer = self.surface.buffer_mut()?;
+            (buffer.width().get(), buffer.height().get())
+        };
+
         // If buffer size doesn't match window size, we need to recreate surface
         // softbuffer doesn't automatically resize the buffer, so we recreate the surface
         if current_width != expected_width || current_height != expected_height {
@@ -98,7 +99,8 @@ impl Renderer {
     /// Calculate adaptive margins based on window size
     /// Returns (left, right, top, bottom) margins
     /// Uses percentage of window size with minimum values for small windows
-    fn calculate_adaptive_margins(scale_factor: f32, buffer_width: u32, buffer_height: u32) -> (u32, u32, u32, u32) {
+    /// Public for use in window_events (hover/click detection)
+    pub fn calculate_adaptive_margins(scale_factor: f32, buffer_width: u32, buffer_height: u32) -> (u32, u32, u32, u32) {
         // Calculate margins as percentage of window size, with minimum values
         // Left margin: 12% of width, minimum 150px (for y-axis labels)
         let left_margin = ((buffer_width as f32 * 0.12).max(150.0) * scale_factor).min(buffer_width as f32 * 0.25) as u32;
@@ -1431,24 +1433,22 @@ impl Renderer {
             let cursor_x_usize = cursor_x as usize;
             let cursor_y_usize = cursor_y as usize;
             
-            // Check if cursor is within plot area
-            if cursor_x_usize >= plot_x_usize && cursor_x_usize < plot_x_usize + plot_width_usize &&
-               cursor_y_usize >= plot_y_usize && cursor_y_usize < plot_y_usize + plot_height_usize {
-                
-                // Convert screen coordinates to data coordinates
-                let screen_x_rel = (cursor_x_usize - plot_x_usize) as f64;
-                let screen_y_rel = (cursor_y_usize - plot_y_usize) as f64;
-                
-                let normalized_x = screen_x_rel / plot_width_usize as f64;
-                let normalized_y = 1.0 - (screen_y_rel / plot_height_usize as f64); // Flip y-axis
-                
-                let data_x = x_min_plot + normalized_x * x_range_plot;
-                let data_y = y_min_plot + normalized_y * y_range_plot;
-                
-                Some((data_x, data_y))
-            } else {
-                None
-            }
+            // Show x, y for cursor anywhere in window - clamp to plot bounds when outside plot area
+            let (clamped_x, clamped_y) = (
+                cursor_x_usize.clamp(plot_x_usize, plot_x_usize + plot_width_usize.saturating_sub(1)),
+                cursor_y_usize.clamp(plot_y_usize, plot_y_usize + plot_height_usize.saturating_sub(1)),
+            );
+            
+            let screen_x_rel = (clamped_x - plot_x_usize) as f64;
+            let screen_y_rel = (clamped_y - plot_y_usize) as f64;
+            
+            let normalized_x = screen_x_rel / plot_width_usize.max(1) as f64;
+            let normalized_y = 1.0 - (screen_y_rel / plot_height_usize.max(1) as f64); // Flip y-axis
+            
+            let data_x = x_min_plot + normalized_x * x_range_plot;
+            let data_y = y_min_plot + normalized_y * y_range_plot;
+            
+            Some((data_x, data_y))
         } else {
             None
         };

@@ -1,4 +1,7 @@
-//! Install packages (git clone) into env root
+//! Install packages (git clone) into env root.
+//!
+//! Native bundles: a registry or manual step may place `<packages>/<name>/<name>.dcmodule`
+//! (see [`crate::dpm::expected_dcmodule_path`]) next to the clone; the VM loads it like a loose dylib.
 
 use std::path::Path;
 use std::process::Command;

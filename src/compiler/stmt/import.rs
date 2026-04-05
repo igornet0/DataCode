@@ -10,7 +10,6 @@ pub fn compile_import(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), L
     if let Stmt::Import { import_stmt, line } = stmt {
         match import_stmt {
             ImportStmt::Modules(modules) => {
-                // import ml, plot
                 for module in modules {
                     // Import statements are handled at runtime by the VM
                     // We compile them as a special opcode that the VM will handle
@@ -27,7 +26,6 @@ pub fn compile_import(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), L
                 }
             }
             ImportStmt::From { module, items } => {
-                // from ml import load_mnist, *
                 // Создаем массив элементов импорта в константах
                 use std::rc::Rc;
                 use std::cell::RefCell;

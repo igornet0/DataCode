@@ -3,16 +3,16 @@
 use crate::debug_println;
 use crate::bytecode::OpCode;
 use crate::common::{error::LangError, value::Value, value_store::NULL_VALUE_ID, TaggedValue};
-use crate::vm::types::VMStatus;
+use crate::vm::types::{PendingGeneratorSend, VMStatus};
 use crate::vm::frame::CallFrame;
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::exception;
-use crate::vm::interpreter::{arithmetic, comparison, control_flow, element_ops, memory, object, stack_ops};
+use crate::vm::interpreter::{arithmetic, comparison, control_flow, element_ops, for_iterable, memory, object, stack_ops};
 use crate::vm::runtime::call_engine;
 use crate::vm::module_system::import_handler;
 use crate::vm::stack;
 use crate::vm::global_slot::GlobalSlot;
-use crate::vm::store_convert::{load_value, tagged_to_value_id, slot_to_value};
+use crate::vm::store_convert::{load_value, store_value, tagged_to_value_id, slot_to_value};
 
 // Re-export for backward compatibility (call_engine, import_handler, memory use executor::global_index_by_name)
 pub(crate) use crate::vm::global_utils::{global_index_by_name, global_indices_by_name};
@@ -134,9 +134,16 @@ pub fn execute_instruction(
         }
 
         OpCode::Add => return arithmetic::op_add(current_ip, stack, frames, exception_handlers, value_store, heavy_store),
+        OpCode::FormatInterp(index) => return stack_ops::op_format_interp(index, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::RegAdd(rd, r1, r2) => return arithmetic::op_reg_add(rd, r1, r2, frames),
         OpCode::Sub => return arithmetic::op_sub(current_ip, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::Mul => return arithmetic::op_mul(current_ip, stack, frames, exception_handlers, value_store, heavy_store),
+        OpCode::MatMul => {
+            return arithmetic::op_matmul(current_ip, stack, frames, exception_handlers, value_store, heavy_store)
+        }
+        OpCode::BinaryOp(idx) => {
+            return arithmetic::op_binary_op(idx, current_ip, stack, frames, exception_handlers, value_store, heavy_store)
+        }
         OpCode::Div => return arithmetic::op_div(current_ip, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::IntDiv => return arithmetic::op_int_div(current_ip, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::Mod => return arithmetic::op_mod(current_ip, stack, frames, exception_handlers, value_store, heavy_store),
@@ -165,6 +172,28 @@ pub fn execute_instruction(
         OpCode::ForRange(var_slot, start_const, end_const, step_const, end_offset) => return control_flow::op_for_range(var_slot, start_const, end_const, step_const, end_offset, frames, value_store),
         OpCode::ForRangeNext(back_offset) => return control_flow::op_for_range_next(back_offset, frames),
         OpCode::PopForRange => return control_flow::op_pop_for_range(frames),
+        OpCode::CoerceForInIterable(iter_local) => {
+            return for_iterable::op_coerce_for_in_iterable(
+                iter_local,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            );
+        }
+        OpCode::ForIterableNext(iter_local) => {
+            return for_iterable::op_for_iterable_next(
+                iter_local,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            );
+        }
         OpCode::CallWithUnpack(unpack_arity) => {
             return call_engine::execute_call_with_unpack(
                 unpack_arity, line, stack, frames, functions,
@@ -230,6 +259,102 @@ pub fn execute_instruction(
                 return Ok(VMStatus::Return(return_value_id));
             }
         }
+        OpCode::Yield(_next_st) => {
+            let frame = frames.last().unwrap();
+            if !frame.function.is_stream {
+                return Err(LangError::runtime_error(
+                    "Yield is only valid in stream fn".to_string(),
+                    line,
+                ));
+            }
+            let vm = unsafe { &mut *vm_ptr };
+            if vm.pending_generator_send.is_some() {
+                vm.pending_generator_send = None;
+                return Err(LangError::runtime_error(
+                    "generator.send() is not valid when the generator is not at a yield-await point (use .next())"
+                        .to_string(),
+                    line,
+                ));
+            }
+            let yield_value_id = if stack.len() > frame.stack_start {
+                let tv = stack.pop().unwrap_or(TaggedValue::null());
+                tagged_to_value_id(tv, value_store)
+            } else {
+                NULL_VALUE_ID
+            };
+            return Ok(VMStatus::GeneratorYield(yield_value_id));
+        }
+        OpCode::YieldAwaitInput(_st, assign_slot) => {
+            let frame = frames.last_mut().unwrap();
+            if !frame.function.is_stream {
+                return Err(LangError::runtime_error(
+                    "YieldAwaitInput is only valid in stream fn".to_string(),
+                    line,
+                ));
+            }
+            let yield_value_id = if stack.len() > frame.stack_start {
+                let tv = stack.pop().unwrap_or(TaggedValue::null());
+                tagged_to_value_id(tv, value_store)
+            } else {
+                NULL_VALUE_ID
+            };
+            let vm = unsafe { &mut *vm_ptr };
+            if let Some(pending) = vm.pending_generator_send.take() {
+                if assign_slot >= frame.slots.len() {
+                    frame.slots.resize(assign_slot + 1, TaggedValue::null());
+                }
+                let val = match pending {
+                    PendingGeneratorSend::NextDefaultRhs => {
+                        if yield_value_id != NULL_VALUE_ID {
+                            load_value(yield_value_id, value_store, heavy_store)
+                        } else {
+                            vm.yield_await_resume_value
+                                .take()
+                                .unwrap_or(Value::Null)
+                        }
+                    }
+                    PendingGeneratorSend::Explicit(sent) => {
+                        vm.pending_send_rhs_return = vm.yield_await_resume_value.take();
+                        sent
+                    }
+                };
+                let tid = store_value(val, value_store, heavy_store);
+                frame.slots[assign_slot] = TaggedValue::from_heap(tid);
+                // Bypasses StoreLocal: slot changed — drop opcode inline caches (Add/Mul/LoadLocal/…).
+                frame.invalidate_inline_caches();
+                // Потребитель уже получил yield при первом suspend; подстановка в слот без второго yield.
+                return Ok(VMStatus::Continue);
+            }
+            return Ok(VMStatus::GeneratorYieldAwait(yield_value_id, assign_slot));
+        }
+        OpCode::GeneratorDone => {
+            let frame = frames.last().unwrap();
+            if !frame.function.is_stream {
+                return Err(LangError::runtime_error(
+                    "GeneratorDone is only valid in stream fn".to_string(),
+                    line,
+                ));
+            }
+            frames.pop();
+            return Ok(VMStatus::GeneratorDone(None));
+        }
+        OpCode::GeneratorDoneWithFinal => {
+            let frame = frames.last().unwrap();
+            if !frame.function.is_stream {
+                return Err(LangError::runtime_error(
+                    "GeneratorDoneWithFinal is only valid in stream fn".to_string(),
+                    line,
+                ));
+            }
+            let final_value_id = if stack.len() > frame.stack_start {
+                let tv = stack.pop().unwrap_or(TaggedValue::null());
+                tagged_to_value_id(tv, value_store)
+            } else {
+                NULL_VALUE_ID
+            };
+            frames.pop();
+            return Ok(VMStatus::GeneratorDone(Some(final_value_id)));
+        }
         OpCode::Pop => return stack_ops::op_pop(stack, frames),
         OpCode::Dup => return stack_ops::op_dup(stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::MakeArray(count) => return object::op_make_array(count, stack, frames, exception_handlers, value_store, heavy_store),
@@ -238,10 +363,12 @@ pub fn execute_instruction(
         OpCode::UnpackObject(count_slot) => return object::op_unpack_object(count_slot, line, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::MakeObjectDynamic => return object::op_make_object_dynamic(line, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::MakeArrayDynamic => return object::op_make_array_dynamic(line, stack, frames, exception_handlers, value_store, heavy_store),
-        OpCode::GetArrayLength => return object::op_get_array_length(line, stack, frames, exception_handlers, value_store, heavy_store),
+        OpCode::GetArrayLength => return object::op_get_array_length(line, stack, frames, exception_handlers, value_store, heavy_store, vm_ptr),
         OpCode::TableFilter => return object::op_table_filter(line, stack, frames, exception_handlers, value_store, heavy_store, vm_ptr),
         OpCode::GetArrayElement => return element_ops::op_get_array_element(line, stack, frames, globals, global_names, functions, natives, exception_handlers, value_store, heavy_store, vm_ptr),
+        OpCode::GetArraySlice => return element_ops::op_get_array_slice(line, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::SetArrayElement => return element_ops::op_set_array_element(line, stack, frames, globals, global_names, functions, natives, exception_handlers, value_store, heavy_store),
+        OpCode::SetArraySlice => return element_ops::op_set_array_slice(line, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::Clone => return object::op_clone(stack, frames, exception_handlers, value_store, heavy_store),
         
         OpCode::BeginTry(handler_index) => return exception::op_begin_try(handler_index, stack, frames, exception_handlers, error_type_table),

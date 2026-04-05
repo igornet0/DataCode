@@ -12,6 +12,8 @@ pub mod property;
 pub mod method_call;
 pub mod this;
 pub mod super_expr;
+pub mod lambda;
+pub mod call_value;
 
 use crate::parser::ast::Expr;
 use crate::common::error::LangError;
@@ -38,12 +40,18 @@ pub fn compile_expr(
             Ok(())
         }
         Expr::Variable { .. } => variable::compile_variable(ctx, expr),
-        Expr::Assign { .. } | Expr::AssignOp { .. } | Expr::UnpackAssign { .. } => {
+        Expr::Assign { .. }
+        | Expr::AssignOp { .. }
+        | Expr::AssignArray { .. }
+        | Expr::AssignArrayOp { .. }
+        | Expr::UnpackAssign { .. } => {
             assign::compile_assign(ctx, expr)
         }
         Expr::Unary { .. } => unary::compile_unary(ctx, expr),
         Expr::Binary { .. } => binary::compile_binary(ctx, expr),
         Expr::Call { .. } => call::compile_call(ctx, expr),
+        Expr::CallValue { .. } => call_value::compile_call_value(ctx, expr),
+        Expr::Lambda { .. } => lambda::compile_lambda(ctx, expr),
         Expr::ArrayLiteral { .. } | Expr::TupleLiteral { .. } | Expr::ObjectLiteral { .. } | Expr::ArrayIndex { .. } | Expr::TableFilter { .. } => {
             array::compile_array(ctx, expr)
         }
@@ -54,6 +62,16 @@ pub fn compile_expr(
         Expr::SuperCall { .. } => super_expr::compile_super_call(ctx, expr),
         Expr::SuperMethodCall { .. } => super_expr::compile_super_method_call(ctx, expr),
         Expr::InterpolatedString { .. } => interpolated::compile_interpolated_string(ctx, expr),
+        Expr::ExprReturn { line, .. } => Err(LangError::ParseError {
+            message: "`return` as an expression is only compiled inside stream fn (e.g. x = return ...)".to_string(),
+            line: *line,
+            file: ctx.source_name.map(|s| s.to_string()),
+        }),
+        Expr::Ireturn { line, .. } => Err(LangError::ParseError {
+            message: "`ireturn` is only compiled inside stream fn body".to_string(),
+            line: *line,
+            file: ctx.source_name.map(|s| s.to_string()),
+        }),
     }
 }
 

@@ -1,7 +1,5 @@
 // Image structure for plot module
 
-use crate::ml::tensor::Tensor;
-
 #[derive(Debug, Clone)]
 pub struct Image {
     pub data: Vec<u8>,  // RGBA pixels
@@ -51,14 +49,7 @@ impl Image {
         })
     }
 
-    /// Create image from tensor
-    /// Supports various tensor shapes:
-    /// - 1D tensor [H*W] -> auto-detect dimensions (e.g., 784 -> 28x28 for MNIST)
-    /// - 2D tensor [H, W] -> grayscale image
-    /// - 3D tensor [C, H, W] or [H, W, C] -> RGB/RGBA image
-    pub fn from_tensor(tensor: &Tensor) -> Result<Self, String> {
-        let shape = &tensor.shape;
-        let data = &tensor.data;
+    pub fn from_tensor_shape_data(shape: &[usize], data: &[f32]) -> Result<Self, String> {
 
         if data.is_empty() {
             return Err("Tensor data is empty".to_string());

@@ -16,6 +16,11 @@ pub mod abi_bridge;
 pub mod host;
 pub mod native_loader;
 pub mod native_registry;
+pub mod operator_registry;
+pub mod native_call_registry;
+pub mod import_scan;
+pub mod array_view;
+pub mod iterable;
 
 pub mod natives;
 
@@ -28,15 +33,20 @@ pub mod globals;
 pub mod modules;
 pub mod calls;
 pub mod executor;
+pub mod generator;
 pub mod interpreter;
 pub mod module_system;
 pub mod memory;
 pub mod runtime;
 pub mod profile;
+pub mod permission_policy;
 
 // Re-export core types for backward compatibility (crate::vm::frame, crate::vm::stack)
 pub use core::{frame, stack};
 
 pub use vm::Vm;
+pub use operator_registry::{Associativity, OperatorInfo, OperatorRegistry, SharedOperatorRegistry};
+pub use native_call_registry::{NativeCallParamRegistry, SharedNativeCallParamRegistry};
 pub use types::{ExplicitRelation, ExplicitPrimaryKey, ModuleInfo};
+pub use permission_policy::PermissionPolicy;
 

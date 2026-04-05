@@ -1,0 +1,77 @@
+# Потоковые функции (генераторы): `stream fn`
+# Показывает `return` (yield), `ireturn`, `ereturn`, `.next()`, `.send()`, `.final()`, `.live`.
+#
+# Кратко о семантике:
+# - `return expr` — отдать значение потребителю (например, в цикле `for x in gen`).
+# - `ireturn expr` — yield через `.next()` / `.send()`; для двустороннего канала — `x = return expr`.
+# - `ereturn expr` — завершить генератор; `expr` — значение `.final()` (не идёт в `.next()`).
+
+# --- Линейные yield: обход через `for` ---
+stream fn count_three() {
+    return 1
+    return 2
+    return 3
+}
+
+sum_linear = 0
+for x in count_three() {
+    sum_linear = sum_linear + x
+}
+print("sum_linear", sum_linear)
+
+# --- `ereturn`: итог после цикла (`.final()`), не элемент `for` ---
+stream fn with_final_flag(use_short: bool) {
+    if use_short {
+        return 10
+        ereturn 999
+    }
+    return 20
+}
+
+gen = with_final_flag(true)
+sum_short = 0
+for y in gen {
+    sum_short = sum_short + y
+}
+print("sum_short", sum_short)
+print("gen.final()", gen.final())
+print("----")
+
+# --- Двусторонний канал: `ireturn`, затем `x = return expr`, затем `ereturn` ---
+stream fn input_scaled(n: int) {
+    x = ireturn 40
+    print("внутри stream, x =", x)
+    ereturn x * n
+}
+
+# `.send(v)` подставляет значение в ожидающий `return`; первое возобновление отдаёт `ireturn`.
+gen = input_scaled(20)
+t = gen.send(10)
+res = gen.final()
+print("после send: yield", t, "final", res)
+print("----")
+
+# `.next()` без `.send`: для `return` подставляется значение с yield (как send(None) в Python).
+gen = input_scaled(20)
+t = gen.next()
+res = gen.final()
+print("после next: yield", t, "final", res)
+print("----")
+
+# --- Ручной обход: `.next()` / `.live` / `.final()` ---
+stream fn paired_yield(n: int) {
+    x = ireturn 40
+    d = return 50
+    ereturn (x + d) * n
+}
+
+gen = paired_yield(10)
+i = 0
+while gen.live {
+    r = gen.next()
+    print(i, ":", r)
+    print("-" * 5)
+    i += 1
+}
+fin = gen.final()
+print("fin =", fin)

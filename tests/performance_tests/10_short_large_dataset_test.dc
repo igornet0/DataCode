@@ -1,5 +1,5 @@
 # Large Dataset Processing Performance Test
-# This test creates and processes a large dataset to identify bottlenecks
+# Stress: 10k rows + table(). Historical slowness was O(n²) push (see LARGE_DATASET_10K_LOG.md); fixed via push fast path in native_call.rs.
 
 print("=== LARGE DATASET PROCESSING PERFORMANCE TEST ===")
 print("Creating large dataset with 10,000 rows...")

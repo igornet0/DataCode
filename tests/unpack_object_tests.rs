@@ -26,7 +26,7 @@ mod tests {
     }
 
     /// Получить объект как HashMap (только простые ключи без __meta и т.д.).
-    fn object_map(v: &Value) -> Option<std::cell::Ref<HashMap<String, Value>>> {
+    fn object_map(v: &Value) -> Option<std::cell::Ref<'_, HashMap<String, Value>>> {
         match v {
             Value::Object(rc) => Some(rc.borrow()),
             _ => None,

@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 /// Builtin indices 0..BUILTIN_END are in VM.builtins; module globals start at BUILTIN_END.
-pub const BUILTIN_END: usize = 75;
+pub const BUILTIN_END: usize = crate::vm::globals::BUILTIN_GLOBAL_COUNT;
 
 /// Per-module namespace: globals (slot indices >= BUILTIN_END) and their names.
 /// When loaded from a .dc file, namespace holds the export map (name -> Value) for "from X import a" lookup.

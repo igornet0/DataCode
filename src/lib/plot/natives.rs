@@ -3,6 +3,8 @@
 use crate::common::value::Value;
 use crate::plot::{Image, Window, Figure, GuiCommand, system, PlotContext, PlotWindowHandle};
 use crate::plot::command::{ChartData as CommandChartData, ChartType as CommandChartType, FigureData, AxisData};
+use crate::vm::native_loader::call_abi_native;
+use crate::vm::vm::VM_CALL_CONTEXT;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -701,7 +703,7 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         return Value::Null;
     }
 
-    // Extract image (from path or tensor)
+    // Extract image (from path)
     let image = match &args[0] {
         Value::String(_) | Value::Path(_) => {
             // Load from path
@@ -711,13 +713,8 @@ pub fn native_plot_show(args: &[Value]) -> Value {
                 _ => return Value::Null,
             }
         }
-        Value::Tensor(tensor_ref) => {
-            // Convert tensor to image
-            let tensor = tensor_ref.borrow();
-            match Image::from_tensor(&tensor) {
-                Ok(img) => Rc::new(RefCell::new(img)),
-                Err(_) => return Value::Null,
-            }
+        Value::PluginOpaque { .. } => {
+            return Value::Null;
         }
         _ => return Value::Null,
     };
@@ -830,7 +827,7 @@ pub fn native_plot_show_grid(args: &[Value]) -> Value {
         (dim, dim)
     };
 
-    // Convert all images/tensors to Image objects
+    // Convert all images to Image objects
     let mut images = Vec::new();
     let mut titles = Vec::new();
     
@@ -844,14 +841,7 @@ pub fn native_plot_show_grid(args: &[Value]) -> Value {
                     _ => continue, // Skip invalid images
                 }
             }
-            Value::Tensor(tensor_ref) => {
-                // Convert tensor to image
-                let tensor = tensor_ref.borrow();
-                match Image::from_tensor(&tensor) {
-                    Ok(img) => Rc::new(RefCell::new(img)),
-                    Err(_) => continue, // Skip invalid tensors
-                }
-            }
+            Value::PluginOpaque { .. } => continue,
             Value::Image(img) => img.clone(),
             _ => continue, // Skip invalid values
         };
@@ -991,6 +981,82 @@ pub fn native_plot_subplots(args: &[Value]) -> Value {
     Value::Figure(figure_rc)
 }
 
+/// ML tensor (`PluginOpaque` tag 0) → plot `Image` via `native_plugin_call(_, "shape")` / `"data"`.
+fn plugin_tensor_to_plot_image(tensor: &Value) -> Option<Rc<RefCell<Image>>> {
+    let Value::PluginOpaque { tag, .. } = tensor else {
+        return None;
+    };
+    if *tag != 0 {
+        return None;
+    }
+    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow())?;
+    unsafe {
+        let vm = &*vm_ptr;
+        let native_idx = vm.plugin_call_native?;
+        let builtin_count = vm.builtin_natives_count();
+        let abi_natives = vm.get_abi_natives();
+        if native_idx < builtin_count || native_idx >= builtin_count + abi_natives.len() {
+            return None;
+        }
+        let abi_fn = abi_natives[native_idx - builtin_count];
+
+        let shape_val = call_abi_native(
+            abi_fn,
+            &[tensor.clone(), Value::String("shape".to_string())],
+            Some((vm.value_store(), vm.heavy_store())),
+        );
+        if crate::vm::native_loader::take_last_abi_error().is_some() {
+            return None;
+        }
+        let data_val = call_abi_native(
+            abi_fn,
+            &[tensor.clone(), Value::String("data".to_string())],
+            Some((vm.value_store(), vm.heavy_store())),
+        );
+        if crate::vm::native_loader::take_last_abi_error().is_some() {
+            return None;
+        }
+        let shape = value_array_to_usize(&shape_val)?;
+        let data = value_array_to_f32(&data_val)?;
+        let img = Image::from_tensor_shape_data(&shape, &data).ok()?;
+        Some(Rc::new(RefCell::new(img)))
+    }
+}
+
+fn value_array_to_usize(v: &Value) -> Option<Vec<usize>> {
+    match v {
+        Value::Array(arr) => {
+            let r = arr.borrow();
+            let mut out = Vec::with_capacity(r.len());
+            for x in r.iter() {
+                match x {
+                    Value::Number(n) if *n >= 0.0 && n.fract() == 0.0 => out.push(*n as usize),
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+fn value_array_to_f32(v: &Value) -> Option<Vec<f32>> {
+    match v {
+        Value::Array(arr) => {
+            let r = arr.borrow();
+            let mut out = Vec::with_capacity(r.len());
+            for x in r.iter() {
+                match x {
+                    Value::Number(n) => out.push(*n as f32),
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
 /// Display image in axis
 /// axis.imshow(image) -> Null
 /// axis.imshow(image, cmap='gray') -> Null
@@ -1019,21 +1085,11 @@ pub fn native_axis_imshow(args: &[Value]) -> Value {
         },
     };
 
-    // Extract image (from tensor or Image)
-    // Find tensor/image in args (skip the axis we already found)
+    // Extract image (from Image)
+    // Find image in args (skip the axis we already found)
     let image = args.iter().find_map(|arg| {
         match arg {
-            Value::Tensor(tensor_ref) => {
-                let tensor = tensor_ref.borrow();
-                match Image::from_tensor(&tensor) {
-                    Ok(img) => {
-                        Some(Rc::new(RefCell::new(img)))
-                    },
-                    Err(_e) => {
-                        None
-                    },
-                }
-            }
+            Value::PluginOpaque { tag, .. } if *tag == 0 => plugin_tensor_to_plot_image(arg),
             Value::Image(img) => {
                 Some(img.clone())
             }
@@ -1411,13 +1467,23 @@ fn parse_color(color_str: &str) -> u32 {
 /// plot.line(x, y, point_size=5, line_width=2) -> Null
 /// plot.line(x, y, color="blue") -> Null
 /// plot.line(x, y, color="#a434eb") -> Null
+/// Note: When called as plot.line(x, y, ...), args[0] is the receiver (plot object), so x=args[1], y=args[2].
 pub fn native_plot_line(args: &[Value]) -> Value {
-    if args.len() < 2 {
+    // When called as plot.line(x, y, ...), args[0] is receiver (plot object), args[1]=x, args[2]=y.
+    let offset = if args.len() >= 3 && matches!(&args[0], Value::Object(_)) {
+        1
+    } else {
+        0
+    };
+    if args.len() < offset + 2 {
         return Value::Null;
     }
 
-    // Extract x array - use index-based access to guarantee element order matches array indices
-    let x_array = match &args[0] {
+    let x_arg = &args[offset];
+    let y_arg = &args[offset + 1];
+
+    // Extract x array
+    let x_array = match x_arg {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let len = arr_ref.len();
@@ -1433,8 +1499,8 @@ pub fn native_plot_line(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    // Extract y array - use index-based access to guarantee element order matches array indices
-    let y_array = match &args[1] {
+    // Extract y array
+    let y_array = match y_arg {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let len = arr_ref.len();
@@ -1467,8 +1533,8 @@ pub fn native_plot_line(args: &[Value]) -> Value {
     let mut color = 0xFF00BFFF; // Default: blue (Deep sky blue)
 
     // Handle positional arguments first (for backward compatibility)
-    if args.len() >= 3 {
-        match &args[2] {
+    if args.len() >= offset + 3 {
+        match &args[offset + 2] {
             Value::Bool(b) => {
                 // Positional boolean argument: show_points
                 show_points = *b;
@@ -1481,7 +1547,7 @@ pub fn native_plot_line(args: &[Value]) -> Value {
         }
     }
 
-    // Extract named parameters from all Object arguments
+    // Extract named parameters from all Object arguments (skip first two arrays for positional)
     // Named arguments can appear anywhere after the first two positional arguments
     // They can be in separate Object arguments or combined in one Object
     // Also check all arguments (not just skip(2)) in case named args come before positional
@@ -1512,10 +1578,7 @@ pub fn native_plot_line(args: &[Value]) -> Value {
     
     // Handle case where color is passed as a positional string argument after positional args
     // This happens when color="blue" is compiled as a positional argument
-    // Check if there's a string argument after positional args that looks like a color
-    if args.len() >= 4 {
-        // Check arguments after the first 3 (x, y, show_points/point_size)
-        for arg in args.iter().skip(3) {
+    for arg in args.iter() {
             if let Value::String(s) = arg {
                 // Check if this string looks like a color (named color or hex)
                 let s_lower = s.to_lowercase();
@@ -1528,7 +1591,6 @@ pub fn native_plot_line(args: &[Value]) -> Value {
                     break; // Use first valid color string found
                 }
             }
-        }
     }
 
     // Add line data to plot state
@@ -1544,13 +1606,15 @@ pub fn native_plot_line(args: &[Value]) -> Value {
 /// plot.bar(x, y, color="blue") -> Null
 /// plot.bar(x, y, color="#a434eb") -> Null
 /// x can be array of strings (categories) or numbers (will be converted to strings)
+/// Note: When called as plot.bar(x, y, ...), args[0] is the receiver (plot object), so x=args[1], y=args[2].
 pub fn native_plot_bar(args: &[Value]) -> Value {
-    if args.len() < 2 {
+    let offset = if args.len() >= 3 && matches!(&args[0], Value::Object(_)) { 1 } else { 0 };
+    if args.len() < offset + 2 {
         return Value::Null;
     }
 
     // Extract x array (can be strings or numbers)
-    let x_labels = match &args[0] {
+    let x_labels = match &args[offset] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut labels = Vec::new();
@@ -1574,7 +1638,7 @@ pub fn native_plot_bar(args: &[Value]) -> Value {
     };
 
     // Extract y array (must be numbers)
-    let y_array = match &args[1] {
+    let y_array = match &args[offset + 1] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut y_data = Vec::new();
@@ -1613,8 +1677,8 @@ pub fn native_plot_bar(args: &[Value]) -> Value {
     }
     
     // Handle case where color is passed as a positional string argument
-    if args.len() >= 3 {
-        for arg in args.iter().skip(2) {
+    if args.len() >= offset + 3 {
+        for arg in args.iter().skip(offset + 2) {
             if let Value::String(s) = arg {
                 let s_lower = s.to_lowercase();
                 let is_named_color = matches!(s_lower.as_str(), "blue" | "green" | "red" | "black" | "white");
@@ -1642,13 +1706,15 @@ pub fn native_plot_bar(args: &[Value]) -> Value {
 /// plot.pie(x, y, color="blue") -> Null
 /// plot.pie(x, y, color="#a434eb") -> Null
 /// x can be array of strings (categories) or numbers (will be converted to strings)
+/// Note: When called as plot.pie(x, y, ...), args[0] is the receiver (plot object), so x=args[1], y=args[2].
 pub fn native_plot_pie(args: &[Value]) -> Value {
-    if args.len() < 2 {
+    let offset = if args.len() >= 3 && matches!(&args[0], Value::Object(_)) { 1 } else { 0 };
+    if args.len() < offset + 2 {
         return Value::Null;
     }
 
     // Extract x array (can be strings or numbers)
-    let x_labels = match &args[0] {
+    let x_labels = match &args[offset] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut labels = Vec::new();
@@ -1672,7 +1738,7 @@ pub fn native_plot_pie(args: &[Value]) -> Value {
     };
 
     // Extract y array (must be numbers)
-    let y_array = match &args[1] {
+    let y_array = match &args[offset + 1] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut y_data = Vec::new();
@@ -1711,8 +1777,8 @@ pub fn native_plot_pie(args: &[Value]) -> Value {
     }
     
     // Handle case where color is passed as a positional string argument
-    if args.len() >= 3 {
-        for arg in args.iter().skip(2) {
+    if args.len() >= offset + 3 {
+        for arg in args.iter().skip(offset + 2) {
             if let Value::String(s) = arg {
                 let s_lower = s.to_lowercase();
                 let is_named_color = matches!(s_lower.as_str(), "blue" | "green" | "red" | "black" | "white");
@@ -1740,13 +1806,15 @@ pub fn native_plot_pie(args: &[Value]) -> Value {
 /// plot.heatmap(data, min=0, max=100) -> Null
 /// plot.heatmap(data, palette="red") -> Null
 /// data must be a 2D array (array of arrays of numbers)
+/// Note: When called as plot.heatmap(data, ...), args[0] is the receiver (plot object), so data=args[1].
 pub fn native_plot_heatmap(args: &[Value]) -> Value {
-    if args.is_empty() {
+    let offset = if args.len() >= 2 && matches!(&args[0], Value::Object(_)) { 1 } else { 0 };
+    if args.len() <= offset {
         return Value::Null;
     }
 
     // Extract data array (must be 2D array)
-    let heatmap_data = match &args[0] {
+    let heatmap_data = match &args[offset] {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut data = Vec::new();
@@ -1836,8 +1904,8 @@ pub fn native_plot_heatmap(args: &[Value]) -> Value {
     }
     
     // Handle case where parameters are passed as positional arguments
-    if args.len() >= 2 {
-        for arg in args.iter().skip(1) {
+    if args.len() >= offset + 2 {
+        for arg in args.iter().skip(offset + 1) {
             if let Value::Number(n) = arg {
                 // If min is not set, use this as min; otherwise use as max
                 if min_val.is_none() {

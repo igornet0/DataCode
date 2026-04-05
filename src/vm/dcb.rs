@@ -15,7 +15,7 @@ use std::sync::Arc;
 pub const DCB_MAGIC: [u8; 4] = [0x44, 0x43, 0x42, 0x01]; // "DCB" + format version 1
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Bump when compiler/bytecode semantics change so old .dcb are rejected (e.g. constructor names in chunk.global_names for merge; class object now includes methods for GetArrayElement fallback).
-pub const DCB_FORMAT_VERSION: &str = "10";
+pub const DCB_FORMAT_VERSION: &str = "15";
 
 /// Metadata stored at the start of a .dcb file for freshness checks.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -86,6 +86,8 @@ pub enum SerOpCode {
     Add,
     Sub,
     Mul,
+    MatMul,
+    BinaryOp(usize),
     Div,
     IntDiv,
     Mod,
@@ -106,6 +108,8 @@ pub enum SerOpCode {
     ForRange(usize, usize, usize, usize, i32),
     ForRangeNext(i32),
     PopForRange,
+    CoerceForInIterable(usize),
+    ForIterableNext(usize),
     Jump8(i8),
     Jump16(i16),
     Jump32(i32),
@@ -119,7 +123,9 @@ pub enum SerOpCode {
     MakeArrayDynamic,
     GetArrayLength,
     GetArrayElement,
+    GetArraySlice,
     SetArrayElement,
+    SetArraySlice,
     TableFilter,
     Clone,
     MakeTuple(usize),
@@ -134,9 +140,14 @@ pub enum SerOpCode {
     PopExceptionHandler,
     Pop,
     Dup,
+    FormatInterp(usize),
     Import(usize),
     ImportFrom(usize, usize),
     RegAdd(u8, u8, u8),
+    Yield(i32),
+    YieldAwaitInput(i32, usize),
+    GeneratorDone,
+    GeneratorDoneWithFinal,
 }
 
 impl From<&OpCode> for SerOpCode {
@@ -150,6 +161,8 @@ impl From<&OpCode> for SerOpCode {
             OpCode::Add => SerOpCode::Add,
             OpCode::Sub => SerOpCode::Sub,
             OpCode::Mul => SerOpCode::Mul,
+            OpCode::MatMul => SerOpCode::MatMul,
+            OpCode::BinaryOp(a) => SerOpCode::BinaryOp(*a),
             OpCode::Div => SerOpCode::Div,
             OpCode::IntDiv => SerOpCode::IntDiv,
             OpCode::Mod => SerOpCode::Mod,
@@ -170,6 +183,8 @@ impl From<&OpCode> for SerOpCode {
             OpCode::ForRange(a, b, c, d, e) => SerOpCode::ForRange(*a, *b, *c, *d, *e),
             OpCode::ForRangeNext(a) => SerOpCode::ForRangeNext(*a),
             OpCode::PopForRange => SerOpCode::PopForRange,
+            OpCode::CoerceForInIterable(a) => SerOpCode::CoerceForInIterable(*a),
+            OpCode::ForIterableNext(a) => SerOpCode::ForIterableNext(*a),
             OpCode::Jump8(a) => SerOpCode::Jump8(*a),
             OpCode::Jump16(a) => SerOpCode::Jump16(*a),
             OpCode::Jump32(a) => SerOpCode::Jump32(*a),
@@ -183,7 +198,9 @@ impl From<&OpCode> for SerOpCode {
             OpCode::MakeArrayDynamic => SerOpCode::MakeArrayDynamic,
             OpCode::GetArrayLength => SerOpCode::GetArrayLength,
             OpCode::GetArrayElement => SerOpCode::GetArrayElement,
+            OpCode::GetArraySlice => SerOpCode::GetArraySlice,
             OpCode::SetArrayElement => SerOpCode::SetArrayElement,
+            OpCode::SetArraySlice => SerOpCode::SetArraySlice,
             OpCode::TableFilter => SerOpCode::TableFilter,
             OpCode::Clone => SerOpCode::Clone,
             OpCode::MakeTuple(a) => SerOpCode::MakeTuple(*a),
@@ -198,9 +215,14 @@ impl From<&OpCode> for SerOpCode {
             OpCode::PopExceptionHandler => SerOpCode::PopExceptionHandler,
             OpCode::Pop => SerOpCode::Pop,
             OpCode::Dup => SerOpCode::Dup,
+            OpCode::FormatInterp(a) => SerOpCode::FormatInterp(*a),
             OpCode::Import(a) => SerOpCode::Import(*a),
             OpCode::ImportFrom(a, b) => SerOpCode::ImportFrom(*a, *b),
             OpCode::RegAdd(a, b, c) => SerOpCode::RegAdd(*a, *b, *c),
+            OpCode::Yield(s) => SerOpCode::Yield(*s),
+            OpCode::YieldAwaitInput(a, b) => SerOpCode::YieldAwaitInput(*a, *b),
+            OpCode::GeneratorDone => SerOpCode::GeneratorDone,
+            OpCode::GeneratorDoneWithFinal => SerOpCode::GeneratorDoneWithFinal,
         }
     }
 }
@@ -216,6 +238,8 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::Add => OpCode::Add,
             SerOpCode::Sub => OpCode::Sub,
             SerOpCode::Mul => OpCode::Mul,
+            SerOpCode::MatMul => OpCode::MatMul,
+            SerOpCode::BinaryOp(a) => OpCode::BinaryOp(a),
             SerOpCode::Div => OpCode::Div,
             SerOpCode::IntDiv => OpCode::IntDiv,
             SerOpCode::Mod => OpCode::Mod,
@@ -236,6 +260,8 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::ForRange(a, b, c, d, e) => OpCode::ForRange(a, b, c, d, e),
             SerOpCode::ForRangeNext(a) => OpCode::ForRangeNext(a),
             SerOpCode::PopForRange => OpCode::PopForRange,
+            SerOpCode::CoerceForInIterable(a) => OpCode::CoerceForInIterable(a),
+            SerOpCode::ForIterableNext(a) => OpCode::ForIterableNext(a),
             SerOpCode::Jump8(a) => OpCode::Jump8(a),
             SerOpCode::Jump16(a) => OpCode::Jump16(a),
             SerOpCode::Jump32(a) => OpCode::Jump32(a),
@@ -249,7 +275,9 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::MakeArrayDynamic => OpCode::MakeArrayDynamic,
             SerOpCode::GetArrayLength => OpCode::GetArrayLength,
             SerOpCode::GetArrayElement => OpCode::GetArrayElement,
+            SerOpCode::GetArraySlice => OpCode::GetArraySlice,
             SerOpCode::SetArrayElement => OpCode::SetArrayElement,
+            SerOpCode::SetArraySlice => OpCode::SetArraySlice,
             SerOpCode::TableFilter => OpCode::TableFilter,
             SerOpCode::Clone => OpCode::Clone,
             SerOpCode::MakeTuple(a) => OpCode::MakeTuple(a),
@@ -264,9 +292,14 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::PopExceptionHandler => OpCode::PopExceptionHandler,
             SerOpCode::Pop => OpCode::Pop,
             SerOpCode::Dup => OpCode::Dup,
+            SerOpCode::FormatInterp(a) => OpCode::FormatInterp(a),
             SerOpCode::Import(a) => OpCode::Import(a),
             SerOpCode::ImportFrom(a, b) => OpCode::ImportFrom(a, b),
             SerOpCode::RegAdd(a, b, c) => OpCode::RegAdd(a, b, c),
+            SerOpCode::Yield(s) => OpCode::Yield(s),
+            SerOpCode::YieldAwaitInput(a, b) => OpCode::YieldAwaitInput(a, b),
+            SerOpCode::GeneratorDone => OpCode::GeneratorDone,
+            SerOpCode::GeneratorDoneWithFinal => OpCode::GeneratorDoneWithFinal,
         }
     }
 }
@@ -313,6 +346,8 @@ pub struct SerFunction {
     pub default_values: Vec<Option<DcbConstant>>,
     pub captured_vars: Vec<SerCapturedVar>,
     pub is_cached: bool,
+    #[serde(default)]
+    pub is_stream: bool,
     pub route_method: Option<String>,
     pub route_path: Option<String>,
 }
@@ -395,6 +430,7 @@ fn function_to_ser(f: &Function) -> Result<SerFunction, String> {
             })
             .collect(),
         is_cached: f.is_cached,
+        is_stream: f.is_stream,
         route_method: f.route_method.clone(),
         route_path: f.route_path.clone(),
     })
@@ -424,6 +460,7 @@ fn ser_to_function(ser: &SerFunction) -> Function {
         })
         .collect();
     f.is_cached = ser.is_cached;
+    f.is_stream = ser.is_stream;
     f.route_method = ser.route_method.clone();
     f.route_path = ser.route_path.clone();
     f.cache = None;

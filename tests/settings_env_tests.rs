@@ -974,12 +974,12 @@ cfg
         }
     }
 
-    /// Local .dc module (from config import Config) loads when run with base_path; without base_path run() would fail with "Module 'config' not found".
+    /// Local .dc module (from config import ConfigApp) loads when run with base_path; without base_path run() would fail with "Module 'config' not found".
     #[test]
     fn test_local_config_module_with_base_path() {
         let base = fixtures_dir().join("config_run");
         let source = r#"
-from config import Config
+from config import ConfigApp
 1
 "#;
         let result = run_with_base_path(source, base.as_path());

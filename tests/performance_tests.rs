@@ -37,6 +37,7 @@ mod tests {
     }
 
     /// Large dataset (10k rows): stress arena and store; verifies no OOM and completion.
+    /// Background: `LARGE_DATASET_10K_LOG.md` (historical O(n²) `push` fixed via `native_call` fast path).
     #[test]
     fn test_large_dataset_10k() {
         let source = include_str!("performance_tests/10_short_large_dataset_test.dc");

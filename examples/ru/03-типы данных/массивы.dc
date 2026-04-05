@@ -1,0 +1,146 @@
+# Массивы: создание, глобальные функции, методы и агрегаты
+# array(), array_with_capacity(), push/pop, unique, reverse, sort,
+# sum, average, count, len, min/max, any, all, map/filter/reduce, arr.chunk(n)
+
+print("=== Массивы в DataCode ===")
+print()
+
+# --- array() и литералы ---
+print("--- array() и литералы ---")
+a1 = array(1, 2, 3)
+a2 = [10, 20, 30]
+print("array(1, 2, 3) =", a1)
+print("[10, 20, 30] =", a2)
+print()
+
+# --- array_with_capacity + push в цикле ---
+print("--- array_with_capacity + push ---")
+buf = array_with_capacity(5)
+for i in range(6) {
+    buf = push(buf, i * 10)
+}
+print("после цикла:", buf)
+print()
+
+# --- глобальный push vs метод push ---
+print("--- push(arr, x) и arr.push(x) ---")
+u = [1]
+push(u, 2)
+u.push(3)
+print("u:", u)
+print()
+
+# --- pop до пустого ---
+print("--- pop ---")
+stack = [1, 2, 3]
+print("pop(stack) =", pop(stack), " осталось:", stack)
+print("pop(stack) =", pop(stack), " осталось:", stack)
+print("pop(stack) =", pop(stack), " осталось:", stack)
+print("pop([]) =", pop([]))
+print()
+
+# --- unique, reverse, sort ---
+print("--- unique, reverse, sort ---")
+dup = [1, 2, 2, 3, 1]
+print("${dup=}")
+print("unique:", unique(dup))
+rev = [1, 2, 3]
+reverse(rev)
+print("после reverse:", rev)
+messy = [3, 1, 2]
+sort(messy)
+print("после sort (по строковому представлению):", messy)
+print()
+
+# --- sum, average, count, len ---
+print("--- sum, average, count, len ---")
+nums = [1, 2, 3, 4]
+print("sum:", sum(nums))
+print("average:", average(nums))
+print("count:", count(nums))
+print("len:", len(nums))
+print()
+
+# --- min, max (несколько чисел или один массив чисел) ---
+print("--- min, max ---")
+print("min(1, 2, 3, 4):", min(1, 2, 3, 4))
+print("max(1, 2, 3, 4):", max(1, 2, 3, 4))
+print("min(nums):", min(nums))
+print("max(nums):", max(nums))
+print("min([]):", min([]))
+print()
+
+# --- any, all (пустой массив: any false, all false) ---
+print("--- any, all ---")
+print("any([false, false, true]):", any([false, false, true]))
+print("all([true, true, true]):", all([true, true, true]))
+print("all([true, false, true]):", all([true, false, true]))
+print("any([]):", any([]))
+print("all([]):", all([]))
+print()
+
+# --- map, filter, reduce ---
+print("--- map, filter, reduce ---")
+print("map x2:", array(map([1, 2, 3], fn(x) => x * 2)))
+print("map str:", array(map([1, 2, 3], str)), " typeof: ", typeof(array(map([1, 2, 3], str))[0]))
+print("filter >2:", array(filter([1, 2, 3, 4], fn(x) => x > 2)))
+
+print("map([1, 2, 3], fn(x) => x * 2)")
+for x in map([1, 2, 3], fn(x) => x * 2) {
+    print("${x=}")
+}
+print()
+print("filter([1, 2, 3, 4], fn(x) => x > 2)")
+for x in filter([1, 2, 3, 4], fn(x) => x > 2) {
+    print("${x=}")
+}
+print()
+
+map_r = map([1, 2, 3], fn(x) => x * 2)
+print("map([1, 2, 3], fn(x) => x * 2)")
+for x in map_r {
+    print("${x=}")
+}
+print()
+filter_r = filter([1, 2, 3, 4], fn(x) => x > 2)
+print("filter([1, 2, 3, 4], fn(x) => x > 2)")
+for x in filter_r {
+    print("${x=}")
+}
+print()
+print("""reduce(
+    map(
+        filter(r1, fn(x) => x % 2 == 0),
+        fn(x) => x * x
+    ),
+    fn(acc, x) => acc + x,
+    0
+)""")
+r1 = [1, 2, 3, 4, 5]
+piped = reduce(
+    map(
+        filter(r1, fn(x) => x % 2 == 0),
+        fn(x) => x * x
+    ),
+    fn(acc, x) => acc + x,
+    0
+)
+print("сумма квадратов чётных 1..5:", piped)
+print("reduce пустого с initial:", reduce([], fn(a, x) => a + x, 99))
+print()
+
+# --- chunk: только метод (глобала chunk нет) ---
+print("--- arr.chunk(n) ---")
+row = [1, 2, 3, 4, 5, 6, 7]
+parts = row.chunk(3)
+print("parts:", parts)
+print("len(parts):", len(parts))
+for ch in parts {
+    print("  длина куска:", len(ch), " значения:", ch)
+}
+print()
+
+print("--- isinstance(array, type) ---")
+print("isinstance(array, array): ",isinstance([1, 2, 3, 4, 5, 6, 7], array))
+print("isinstance(array, int): ",isinstance([1, 2, 3, 4, 5, 6, 7], int))
+print("isinstance(array[0], int): ",isinstance([1, 2, 3, 4, 5, 6, 7][0], int))

@@ -1,7 +1,7 @@
 // Conversion between Value and ValueId for Stage 1 ValueStore migration.
 // Used at native-call boundaries: materialize Value from ValueId for natives, store Value result back as ValueId.
 
-use crate::common::value::Value;
+use crate::common::value::{ArrayViewData, ArrayViewSource, Value};
 use crate::common::value_store::{ValueCell, ValueId, ValueStore, NULL_VALUE_ID};
 use crate::common::TaggedValue;
 use std::cell::RefCell;
@@ -35,6 +35,17 @@ pub fn store_value(
             }
             store.allocate(ValueCell::Array(slots))
         }
+        Value::ArrayView(av) => match av.source {
+            ArrayViewSource::Store { base_id } => store.allocate(ValueCell::ArrayView {
+                base_id,
+                offset: av.offset,
+                length: av.length,
+            }),
+            ArrayViewSource::Heap(_) => {
+                let idx = heap.push(Value::ArrayView(av));
+                store.allocate(ValueCell::Heavy(idx))
+            }
+        },
         Value::Tuple(rc) => {
             let arr: Vec<ValueId> = rc
                 .borrow()
@@ -44,7 +55,7 @@ pub fn store_value(
             store.allocate(ValueCell::Tuple(arr))
         }
         Value::Function(i) => store.allocate(ValueCell::Function(i)),
-        Value::ModuleFunction { module_id, local_index } => store.allocate(ValueCell::ModuleFunction { module_id: module_id, local_index: local_index }),
+        Value::ModuleFunction { module_uid, local_index } => store.allocate(ValueCell::ModuleFunction { module_uid, local_index }),
         Value::NativeFunction(i) => store.allocate(ValueCell::NativeFunction(i)),
         Value::Path(p) => store.allocate(ValueCell::Path(p)),
         Value::Uuid(hi, lo) => store.allocate(ValueCell::Uuid(hi, lo)),
@@ -77,59 +88,7 @@ pub fn store_value(
                 column_name,
             })
         }
-        Value::Tensor(rc) => {
-            let idx = heap.push(Value::Tensor(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Graph(rc) => {
-            let idx = heap.push(Value::Graph(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::LinearRegression(rc) => {
-            let idx = heap.push(Value::LinearRegression(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::SGD(rc) => {
-            let idx = heap.push(Value::SGD(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Momentum(rc) => {
-            let idx = heap.push(Value::Momentum(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::NAG(rc) => {
-            let idx = heap.push(Value::NAG(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Adagrad(rc) => {
-            let idx = heap.push(Value::Adagrad(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::RMSprop(rc) => {
-            let idx = heap.push(Value::RMSprop(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Adam(rc) => {
-            let idx = heap.push(Value::Adam(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::AdamW(rc) => {
-            let idx = heap.push(Value::AdamW(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Dataset(rc) => {
-            let idx = heap.push(Value::Dataset(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::NeuralNetwork(rc) => {
-            let idx = heap.push(Value::NeuralNetwork(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Sequential(rc) => {
-            let idx = heap.push(Value::Sequential(rc));
-            store.allocate(ValueCell::Heavy(idx))
-        }
-        Value::Layer(id) => store.allocate(ValueCell::Layer(id)),
+        Value::PluginOpaque { tag, id } => store.allocate(ValueCell::PluginOpaque { tag, id }),
         Value::Window(h) => store.allocate(ValueCell::Window(h)),
         Value::Image(rc) => {
             let idx = heap.push(Value::Image(rc));
@@ -154,6 +113,18 @@ pub fn store_value(
         Value::Enumerate { data, start } => {
             let data_id = store_value(Value::Array(data), store, heap);
             store.allocate(ValueCell::Enumerate { data_id, start })
+        }
+        Value::Iterable(rc) => {
+            let idx = heap.push(Value::Iterable(rc.clone()));
+            store.allocate(ValueCell::Heavy(idx))
+        }
+        Value::Generator(rc) => {
+            let idx = heap.push(Value::Generator(rc.clone()));
+            store.allocate(ValueCell::Heavy(idx))
+        }
+        Value::ByteBuffer(b) => {
+            let idx = heap.push(Value::ByteBuffer(b));
+            store.allocate(ValueCell::Heavy(idx))
         }
         Value::Ellipsis => store.allocate(ValueCell::Ellipsis),
     }
@@ -232,6 +203,15 @@ pub fn load_value(
                 .collect();
             Value::Array(Rc::new(RefCell::new(arr)))
         }
+        ValueCell::ArrayView {
+            base_id,
+            offset,
+            length,
+        } => Value::ArrayView(ArrayViewData {
+            source: ArrayViewSource::Store { base_id: *base_id },
+            offset: *offset,
+            length: *length,
+        }),
         ValueCell::Tuple(ids) => {
             let arr: Vec<Value> = ids
                 .iter()
@@ -247,7 +227,7 @@ pub fn load_value(
             Value::Object(Rc::new(RefCell::new(hm)))
         }
         ValueCell::Function(i) => Value::Function(*i),
-        ValueCell::ModuleFunction { module_id, local_index } => Value::ModuleFunction { module_id: *module_id, local_index: *local_index },
+        ValueCell::ModuleFunction { module_uid, local_index } => Value::ModuleFunction { module_uid: *module_uid, local_index: *local_index },
         ValueCell::NativeFunction(i) => Value::NativeFunction(*i),
         ValueCell::Path(p) => Value::Path(p.clone()),
         ValueCell::Uuid(hi, lo) => Value::Uuid(*hi, *lo),
@@ -266,7 +246,10 @@ pub fn load_value(
                 Value::Null
             }
         }
-        ValueCell::Layer(id) => Value::Layer(*id),
+        ValueCell::PluginOpaque { tag, id } => Value::PluginOpaque {
+            tag: *tag,
+            id: *id,
+        },
         ValueCell::Window(h) => Value::Window(*h),
         ValueCell::Enumerate { data_id, start } => {
             let data_val = load_value(*data_id, store, heap);
@@ -384,7 +367,7 @@ pub fn store_value_arena(
             store.allocate_arena(ValueCell::Tuple(arr))
         }
         Value::Function(i) => store.allocate_arena(ValueCell::Function(i)),
-        Value::ModuleFunction { module_id, local_index } => store.allocate_arena(ValueCell::ModuleFunction { module_id: module_id, local_index: local_index }),
+        Value::ModuleFunction { module_uid, local_index } => store.allocate_arena(ValueCell::ModuleFunction { module_uid, local_index }),
         Value::NativeFunction(i) => store.allocate_arena(ValueCell::NativeFunction(i)),
         Value::Path(p) => store.allocate_arena(ValueCell::Path(p)),
         Value::Uuid(hi, lo) => store.allocate_arena(ValueCell::Uuid(hi, lo)),
@@ -420,59 +403,7 @@ pub fn store_value_arena(
                 column_name,
             })
         }
-        Value::Tensor(rc) => {
-            let idx = heap.push(Value::Tensor(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Graph(rc) => {
-            let idx = heap.push(Value::Graph(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::LinearRegression(rc) => {
-            let idx = heap.push(Value::LinearRegression(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::SGD(rc) => {
-            let idx = heap.push(Value::SGD(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Momentum(rc) => {
-            let idx = heap.push(Value::Momentum(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::NAG(rc) => {
-            let idx = heap.push(Value::NAG(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Adagrad(rc) => {
-            let idx = heap.push(Value::Adagrad(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::RMSprop(rc) => {
-            let idx = heap.push(Value::RMSprop(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Adam(rc) => {
-            let idx = heap.push(Value::Adam(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::AdamW(rc) => {
-            let idx = heap.push(Value::AdamW(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Dataset(rc) => {
-            let idx = heap.push(Value::Dataset(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::NeuralNetwork(rc) => {
-            let idx = heap.push(Value::NeuralNetwork(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Sequential(rc) => {
-            let idx = heap.push(Value::Sequential(rc));
-            store.allocate_arena(ValueCell::Heavy(idx))
-        }
-        Value::Layer(id) => store.allocate_arena(ValueCell::Layer(id)),
+        Value::PluginOpaque { tag, id } => store.allocate_arena(ValueCell::PluginOpaque { tag, id }),
         Value::Window(h) => store.allocate_arena(ValueCell::Window(h)),
         Value::Image(rc) => {
             let idx = heap.push(Value::Image(rc));
@@ -498,6 +429,29 @@ pub fn store_value_arena(
             let data_id = store_value_arena(Value::Array(data), store, heap);
             store.allocate_arena(ValueCell::Enumerate { data_id, start })
         }
+        Value::Iterable(rc) => {
+            let idx = heap.push(Value::Iterable(rc.clone()));
+            store.allocate_arena(ValueCell::Heavy(idx))
+        }
+        Value::Generator(rc) => {
+            let idx = heap.push(Value::Generator(rc.clone()));
+            store.allocate_arena(ValueCell::Heavy(idx))
+        }
+        Value::ByteBuffer(b) => {
+            let idx = heap.push(Value::ByteBuffer(b));
+            store.allocate_arena(ValueCell::Heavy(idx))
+        }
+        Value::ArrayView(av) => match av.source {
+            ArrayViewSource::Store { base_id } => store.allocate_arena(ValueCell::ArrayView {
+                base_id,
+                offset: av.offset,
+                length: av.length,
+            }),
+            ArrayViewSource::Heap(_) => {
+                let idx = heap.push(Value::ArrayView(av));
+                store.allocate_arena(ValueCell::Heavy(idx))
+            }
+        },
         Value::Ellipsis => store.allocate_arena(ValueCell::Ellipsis),
     }
 }

@@ -118,6 +118,10 @@ pub fn store_value(
             let idx = heap.push(Value::Iterable(rc.clone()));
             store.allocate(ValueCell::Heavy(idx))
         }
+        Value::Generator(rc) => {
+            let idx = heap.push(Value::Generator(rc.clone()));
+            store.allocate(ValueCell::Heavy(idx))
+        }
         Value::ByteBuffer(b) => {
             let idx = heap.push(Value::ByteBuffer(b));
             store.allocate(ValueCell::Heavy(idx))
@@ -427,6 +431,10 @@ pub fn store_value_arena(
         }
         Value::Iterable(rc) => {
             let idx = heap.push(Value::Iterable(rc.clone()));
+            store.allocate_arena(ValueCell::Heavy(idx))
+        }
+        Value::Generator(rc) => {
+            let idx = heap.push(Value::Generator(rc.clone()));
             store.allocate_arena(ValueCell::Heavy(idx))
         }
         Value::ByteBuffer(b) => {

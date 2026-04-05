@@ -125,6 +125,7 @@ pub fn op_get_array_element(
         Value::ArrayView(_) => "ArrayView",
         Value::Enumerate { .. } => "Enumerate",
         Value::Iterable(_) => "Iterable",
+        Value::Generator(_) => "Generator",
         Value::Object(_) => "Object",
         Value::Table(_) => "Table",
         Value::Path(_) => "Path",
@@ -209,6 +210,58 @@ pub fn op_get_array_element(
             let error = ExceptionHandler::runtime_error(
                 &frames,
                 "ByteBuffer index out of range or invalid".to_string(),
+                line,
+            );
+            return match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
+                Ok(()) => Ok(VMStatus::Continue),
+                Err(e) => Err(e),
+            };
+        }
+        Value::Generator(rc) => {
+            if let Value::String(key) = &index_value {
+                if key.as_str() == "live" {
+                    let live = !rc.borrow().finished;
+                    stack::push_id(
+                        stack,
+                        store_value(Value::Bool(live), value_store, heavy_store),
+                    );
+                    return Ok(VMStatus::Continue);
+                }
+                if key.as_str() == "final" {
+                    const GENERATOR_FINAL_NATIVE_INDEX: usize = 81;
+                    stack::push_id(
+                        stack,
+                        store_value(Value::NativeFunction(GENERATOR_FINAL_NATIVE_INDEX), value_store, heavy_store),
+                    );
+                    return Ok(VMStatus::Continue);
+                }
+                if key.as_str() == "next" {
+                    const GENERATOR_NEXT_NATIVE_INDEX: usize = 82;
+                    stack::push_id(
+                        stack,
+                        store_value(Value::NativeFunction(GENERATOR_NEXT_NATIVE_INDEX), value_store, heavy_store),
+                    );
+                    return Ok(VMStatus::Continue);
+                }
+                if key.as_str() == "send" {
+                    const GENERATOR_SEND_NATIVE_INDEX: usize = 83;
+                    stack::push_id(
+                        stack,
+                        store_value(Value::NativeFunction(GENERATOR_SEND_NATIVE_INDEX), value_store, heavy_store),
+                    );
+                    return Ok(VMStatus::Continue);
+                }
+            }
+            let error = ExceptionHandler::runtime_error(
+                &frames,
+                "Generator supports .live, .final(), .next(), .send() (string keys)".to_string(),
                 line,
             );
             return match ExceptionHandler::handle_exception(

@@ -122,7 +122,10 @@ impl Compiler {
         // (same name always gets same index regardless of source order, e.g. get_settings vs load_settings).
         let mut top_level_fn_names: Vec<String> = statements
             .iter()
-            .filter_map(|s| if let Stmt::Function { name, .. } = s { Some(name.clone()) } else { None })
+            .filter_map(|s| match s {
+                Stmt::Function { name, .. } | Stmt::StreamFunction { name, .. } => Some(name.clone()),
+                _ => None,
+            })
             .collect();
         top_level_fn_names.sort();
         for name in &top_level_fn_names {
@@ -312,17 +315,21 @@ impl Compiler {
     fn collect_all_functions(&mut self, statements: &[Stmt]) -> Result<(), LangError> {
         for stmt in statements {
             match stmt {
-                Stmt::Function { name, params, return_type, body, is_cached, route, .. } => {
+                Stmt::Function { name, params, return_type, body, is_cached, route, .. }
+                | Stmt::StreamFunction { name, params, return_type, body, is_cached, route, .. } => {
                     // Объявляем функцию с правильной сигнатурой сразу
                     let arity = params.len();
                     let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                     let param_types: Vec<Option<Vec<crate::parser::ast::TypePart>>> = params.iter().map(|p| p.type_annotation.clone()).collect();
                     
-                    let mut function = if *is_cached {
+                    let mut function = if *is_cached && !matches!(stmt, Stmt::StreamFunction { .. }) {
                         Function::with_cache(name.clone(), arity)
                     } else {
                         Function::new(name.clone(), arity)
                     };
+                    if matches!(stmt, Stmt::StreamFunction { .. }) {
+                        function.is_stream = true;
+                    }
                     
                     // Устанавливаем имена и типы параметров сразу
                     function.param_names = param_names;
@@ -1104,6 +1111,12 @@ impl Compiler {
             Stmt::Class { .. } => {
                 // Обрабатывается в compile_stmt_with_pop через stmt::compile_stmt
                 unreachable!("Class statement should be handled by stmt::compile_stmt")
+            }
+            Stmt::StreamFunction { .. } => {
+                unreachable!("StreamFunction should be handled by stmt::compile_stmt")
+            }
+            Stmt::EReturn { .. } => {
+                unreachable!("EReturn should be handled by stmt::compile_stmt")
             }
         }
         Ok(())
@@ -2056,7 +2069,7 @@ impl Compiler {
                     }
                 }
             }
-            Expr::Lambda { .. } | Expr::CallValue { .. } => {
+            Expr::Lambda { .. } | Expr::CallValue { .. } | Expr::ExprReturn { .. } | Expr::Ireturn { .. } => {
                 let mut ctx = self.create_context();
                 expr::compile_expr(&mut ctx, expr)?;
             }

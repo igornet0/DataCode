@@ -33,6 +33,7 @@ pub mod globals;
 pub mod modules;
 pub mod calls;
 pub mod executor;
+pub mod generator;
 pub mod interpreter;
 pub mod module_system;
 pub mod memory;

@@ -67,6 +67,14 @@
 
 ---
 
+### 4a. [Потоковые функции (генераторы)](./stream_functions.md)
+
+Практическое руководство по **`stream fn`**: `return` / `ireturn` / `ereturn`, цикл **`for`**, **`.next()`**, **`.send()`**, **`.final()`**, **`.live`**, двусторонний обмен.
+
+**📚 Пример:** [`examples/ru/05-функции/потоковые_функции.dc`](../../examples/ru/05-функции/потоковые_функции.dc)
+
+---
+
 ### 5. [Работа с классами](./classes.md)
 
 Объявление, поля, конструкторы, методы, наследование, this/super и видимость (private, protected, public):
@@ -276,6 +284,7 @@
 Освойте создание и использование функций:
 - **Документация:** [`examples/ru/05-функции/README.md`](../../examples/ru/05-функции/README.md)
 - **Аннотации типов:** [`docs/ru/user_functions.md`](./user_functions.md) - Пользовательские функции с аннотациями типов
+- **Потоковые функции (генераторы):** [`docs/ru/stream_functions.md`](./stream_functions.md)
 - **Примеры:** [`examples/ru/05-функции/`](../../examples/ru/05-функции/)
 
 ### 5. Циклы
@@ -336,6 +345,7 @@ docs/
     ├── builtin_functions.md     # Встроенные функции
     ├── data_types.md            # Типы данных
     ├── user_functions.md        # Пользовательские функции с аннотациями типов
+    ├── stream_functions.md      # Потоковые функции (генераторы)
     ├── classes.md               # Работа с классами
     ├── table_create_function.md # Работа с таблицами
     ├── websocket_server.md      # WebSocket сервер

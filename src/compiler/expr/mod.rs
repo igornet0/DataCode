@@ -62,6 +62,16 @@ pub fn compile_expr(
         Expr::SuperCall { .. } => super_expr::compile_super_call(ctx, expr),
         Expr::SuperMethodCall { .. } => super_expr::compile_super_method_call(ctx, expr),
         Expr::InterpolatedString { .. } => interpolated::compile_interpolated_string(ctx, expr),
+        Expr::ExprReturn { line, .. } => Err(LangError::ParseError {
+            message: "`return` as an expression is only compiled inside stream fn (e.g. x = return ...)".to_string(),
+            line: *line,
+            file: ctx.source_name.map(|s| s.to_string()),
+        }),
+        Expr::Ireturn { line, .. } => Err(LangError::ParseError {
+            message: "`ireturn` is only compiled inside stream fn body".to_string(),
+            line: *line,
+            file: ctx.source_name.map(|s| s.to_string()),
+        }),
     }
 }
 

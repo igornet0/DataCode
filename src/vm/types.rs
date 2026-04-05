@@ -1,6 +1,16 @@
 // Types and structures for VM
 
+use crate::common::value::Value;
 use crate::common::value_store::ValueId;
+
+/// Вход для `OpCode::YieldAwaitInput`: от `.next()` / `final()` / `.send(v)`.
+#[derive(Clone, Debug)]
+pub(crate) enum PendingGeneratorSend {
+    /// `.next()` после yield-await: в слот — RHS последнего yield (как `send(None)` в Python).
+    NextDefaultRhs,
+    /// Явное значение из `.send(v)`, в том числе `null`.
+    Explicit(Value),
+}
 
 /// Структура для хранения явной связи между колонками таблиц
 #[derive(Debug, Clone)]
@@ -32,6 +42,12 @@ pub enum VMStatus {
     Continue,           // Продолжить выполнение
     Return(ValueId),    // Возврат из функции (значение в store по id)
     FrameEnded,         // Фрейм завершился без return
+    /// `stream fn`: yield значение; фрейм генератора остаётся на стеке.
+    GeneratorYield(ValueId),
+    /// `stream fn`: yield + ожидание значения из `.send()` (`x = return expr`), пока `pending_generator_send` пуст.
+    GeneratorYieldAwait(ValueId, usize),
+    /// `stream fn`: генератор завершён; `None` — без финального значения, `Some(id)` — `ereturn expr`.
+    GeneratorDone(Option<ValueId>),
 }
 
 // Thread-local storage для хранения контекста VM во время вызова нативных функций

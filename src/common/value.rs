@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use crate::common::table::Table;
 use crate::common::value_store::ValueId;
+use crate::common::TaggedValue;
 use crate::plot::{Image, Figure, Axis, PlotWindowHandle};
 use crate::database_engine::cluster::DatabaseCluster;
 use crate::database_engine::engine::DatabaseEngine;
@@ -70,6 +71,44 @@ impl PartialEq for ArrayViewData {
     }
 }
 
+/// Состояние `stream fn` между yield (сохраняется между вызовами `next` / шагами `for`).
+#[derive(Debug)]
+pub struct GeneratorState {
+    pub fn_index: usize,
+    pub ip: usize,
+    pub slots: Vec<TaggedValue>,
+    pub finished: bool,
+    /// Установлено только при завершении через `ereturn expr` (не входит в поток yield).
+    pub final_value: Option<Value>,
+    /// Первый шаг: аргументы вызова до инициализации слотов.
+    pub pending_args: Option<Vec<Value>>,
+    /// После `YieldAwaitInput` без полученного `.send()` / до следующего `.next()` (который подставляет `null`): нужен ввод.
+    pub waiting_for_input: bool,
+    /// Значение из холодного `send(v)` до первого yield-await (подставляется после первого yield).
+    pub pending_first_send: Option<Value>,
+    /// Первый yield при холодном `send(v)` — возвращается из `send()` при паузе на следующем yield или при `ereturn`.
+    pub cold_send_first_yield: Option<Value>,
+    /// После `send()` на yield-await: следующий yield (например `return x*2`) отдаётся следующему `.next()`, не `send()`.
+    pub pending_deferred_yield: Option<Value>,
+}
+
+impl Clone for GeneratorState {
+    fn clone(&self) -> Self {
+        Self {
+            fn_index: self.fn_index,
+            ip: self.ip,
+            slots: self.slots.clone(),
+            finished: self.finished,
+            final_value: self.final_value.clone(),
+            pending_args: self.pending_args.clone(),
+            waiting_for_input: self.waiting_for_input,
+            pending_first_send: self.pending_first_send.clone(),
+            cold_send_first_yield: self.cold_send_first_yield.clone(),
+            pending_deferred_yield: self.pending_deferred_yield.clone(),
+        }
+    }
+}
+
 pub enum Value {
     Number(f64),
     Bool(bool),
@@ -104,6 +143,8 @@ pub enum Value {
     ByteBuffer(ByteBuffer),
     /// Lazy functional pipeline (`map` / `filter`); single-pass iteration, no intermediate array.
     Iterable(Rc<RefCell<IterableInner>>),
+    /// Результат вызова `stream fn`: ленивый генератор с фиксированным состоянием.
+    Generator(Rc<RefCell<GeneratorState>>),
     Null,
     Ellipsis, // ... (e.g. Field(...) for required field)
 }
@@ -158,6 +199,10 @@ pub enum IterableInner {
         chunk_size: usize,
         chunk_index: usize,
     },
+    /// `stream fn` / [`Value::Generator`]: один проход через [`crate::vm::generator::run_generator_next`].
+    StreamGenerator {
+        state: Rc<RefCell<GeneratorState>>,
+    },
 }
 
 impl Clone for IterableInner {
@@ -206,6 +251,9 @@ impl Clone for IterableInner {
                 source: source.clone(),
                 chunk_size: *chunk_size,
                 chunk_index: 0,
+            },
+            Self::StreamGenerator { state } => Self::StreamGenerator {
+                state: Rc::clone(state),
             },
         }
     }
@@ -262,6 +310,7 @@ impl std::fmt::Debug for Value {
                         .field("length", &av.length)
                         .finish_non_exhaustive(),
                     Value::Iterable(_) => write!(f, "Iterable(<lazy>)"),
+                    Value::Generator(g) => f.debug_tuple("Generator").field(&Rc::as_ptr(g)).finish(),
                     Value::ByteBuffer(b) => f
                         .debug_struct("ByteBuffer")
                         .field("len", &b.len)
@@ -317,6 +366,7 @@ impl PartialEq for Value {
             (Value::DatabaseCluster(a), Value::DatabaseCluster(b)) => Rc::ptr_eq(a, b),
             (Value::Enumerate { data: a, start: sa }, Value::Enumerate { data: b, start: sb }) => Rc::ptr_eq(a, b) && sa == sb,
             (Value::Iterable(a), Value::Iterable(b)) => Rc::ptr_eq(a, b),
+            (Value::Generator(a), Value::Generator(b)) => Rc::ptr_eq(a, b),
             (Value::ByteBuffer(a), Value::ByteBuffer(b)) => {
                 a.len == b.len
                     && a.bytes.as_ptr() == b.bytes.as_ptr()
@@ -494,8 +544,12 @@ impl Value {
                     IterableInner::Enumerate { .. } => "enumerate",
                     IterableInner::Chunks { .. } => "chunk",
                     IterableInner::Array { .. } | IterableInner::ArrayView { .. } => "iterable",
+                    IterableInner::StreamGenerator { .. } => "stream_generator",
                 };
                 format!("<{} object at {:p}>", kind, ptr)
+            }
+            Value::Generator(g) => {
+                format!("<generator at {:p}>", Rc::as_ptr(g))
             }
             Value::DatabaseEngine(engine) => {
                 let e = engine.borrow();
@@ -626,6 +680,7 @@ impl Clone for Value {
             Value::ArrayView(av) => Value::ArrayView(av.clone()),
             // Share iterator state (Rc) — deep clone would reset IterableInner indices and break for-in / iterable_next.
             Value::Iterable(rc) => Value::Iterable(Rc::clone(rc)),
+            Value::Generator(rc) => Value::Generator(Rc::clone(rc)),
             Value::ByteBuffer(b) => Value::ByteBuffer(b.clone()),
             Value::Null => Value::Null,
             Value::Ellipsis => Value::Ellipsis,

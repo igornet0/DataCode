@@ -3,10 +3,12 @@
 use crate::debug_println;
 use crate::common::{
     error::{ErrorType, LangError},
-    value::Value,
+    value::{GeneratorState, Value},
     value_store::ValueStore,
     TaggedValue,
 };
+use std::cell::RefCell;
+use std::rc::Rc;
 use crate::parser::ast::TypePart;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
@@ -48,6 +50,7 @@ fn check_single_type(value: &Value, type_name: &str) -> bool {
         (Value::DatabaseEngine(_), "database_engine") => true,
         (Value::DatabaseCluster(_), "database_cluster") => true,
         (Value::ColumnReference { .. }, "column") => true,
+        (Value::Generator(_), "generator") => true,
         _ => false,
     }
 }
@@ -98,6 +101,7 @@ pub fn get_type_name_value(value: &Value) -> &'static str {
         Value::DatabaseCluster(_) => "database_cluster",
         Value::ColumnReference { .. } => "column",
         Value::Enumerate { .. } => "enumerate",
+        Value::Generator(_) => "generator",
         Value::Ellipsis => "ellipsis",
     }
 }
@@ -165,6 +169,28 @@ pub fn setup_function_call(
                 ));
             }
         }
+    }
+
+    if function.is_stream {
+        if !function.captured_vars.is_empty() {
+            return Err(LangError::runtime_error(
+                "stream fn with captured variables is not supported yet".to_string(),
+                0,
+            ));
+        }
+        let gen = GeneratorState {
+            fn_index: function_index,
+            ip: 0,
+            slots: Vec::new(),
+            finished: false,
+            final_value: None,
+            pending_args: Some(effective_args.to_vec()),
+            waiting_for_input: false,
+            pending_first_send: None,
+            cold_send_first_yield: None,
+            pending_deferred_yield: None,
+        };
+        return Ok(Some(Value::Generator(Rc::new(RefCell::new(gen)))));
     }
 
     // Проверяем кэш, если функция помечена как кэшируемая

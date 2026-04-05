@@ -39,3 +39,5 @@ model_data.zip
 # will have compiled files and executables
 debug
 target
+dist
+datacode_lib

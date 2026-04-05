@@ -1,0 +1,77 @@
+# Stream functions (generators): `stream fn`
+# Demonstrates `return` (yield), `ireturn`, `ereturn`, `.next()`, `.send()`, `.final()`, `.live`.
+#
+# Semantics (short):
+# - `return expr` — yield a value to the consumer (e.g. `for x in gen`).
+# - `ireturn expr` — yield via `.next()` / `.send()`; use with `x = return expr` for a two-way channel.
+# - `ereturn expr` — finish the generator; `expr` is the value of `.final()` (not yielded by `.next()`).
+
+# --- Linear yields: iterate with `for` ---
+stream fn count_three() {
+    return 1
+    return 2
+    return 3
+}
+
+sum_linear = 0
+for x in count_three() {
+    sum_linear = sum_linear + x
+}
+print("sum_linear", sum_linear)
+
+# --- `ereturn`: final value after the loop (`.final()`), not a `for` element ---
+stream fn with_final_flag(use_short: bool) {
+    if use_short {
+        return 10
+        ereturn 999
+    }
+    return 20
+}
+
+gen = with_final_flag(true)
+sum_short = 0
+for y in gen {
+    sum_short = sum_short + y
+}
+print("sum_short", sum_short)
+print("gen.final()", gen.final())
+print("----")
+
+# --- Two-way channel: `ireturn`, then `x = return expr`, then `ereturn` ---
+stream fn input_scaled(n: int) {
+    x = ireturn 40
+    print("inside stream, x =", x)
+    ereturn x * n
+}
+
+# `.send(v)` supplies the value for the pending `return` slot; first resume yields `ireturn` value.
+gen = input_scaled(20)
+t = gen.send(10)
+res = gen.final()
+print("after send: yielded", t, "final", res)
+print("----")
+
+# `.next()` without `.send`: `return` uses the yielded RHS (like send(None) in Python).
+gen = input_scaled(20)
+t = gen.next()
+res = gen.final()
+print("after next: yielded", t, "final", res)
+print("----")
+
+# --- Manual stepping with `.next()` / `.live` / `.final()` ---
+stream fn paired_yield(n: int) {
+    x = ireturn 40
+    d = return 50
+    ereturn (x + d) * n
+}
+
+gen = paired_yield(10)
+i = 0
+while gen.live {
+    r = gen.next()
+    print(i, ":", r)
+    print("-" * 5)
+    i += 1
+}
+fin = gen.final()
+print("fin =", fin)

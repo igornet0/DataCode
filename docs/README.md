@@ -49,6 +49,11 @@
 
 **Примеры:** [`examples/ru/05-функции/типизированные_функции.dc`](../../examples/ru/05-функции/типизированные_функции.dc)
 
+#### [Потоковые функции (генераторы)](./ru/stream_functions.md) · [English](./en/stream_functions.md)
+`stream fn`, yield через `return` / `ireturn`, завершение через `ereturn`, API `.next()`, `.send()`, `.final()`, `.live`.
+
+**Примеры:** [`examples/ru/05-функции/потоковые_функции.dc`](../../examples/ru/05-функции/потоковые_функции.dc), [`examples/en/05-functions/stream_functions.dc`](../../examples/en/05-functions/stream_functions.dc)
+
 #### [Работа с таблицами](./ru/table_create_function.md)
 Создание и работа с таблицами в DataCode:
 - Функции `table()` и `table_create()`
@@ -143,6 +148,7 @@ docs/
     │   ├── builtin_functions.md     # Встроенные функции
     │   ├── data_types.md            # Типы данных
     │   ├── user_functions.md        # Пользовательские функции с аннотациями типов
+    │   ├── stream_functions.md      # Потоковые функции (генераторы)
     │   ├── table_create_function.md # Работа с таблицами
 │   ├── websocket_server.md      # WebSocket сервер
 │   ├── join_specification.md    # Спецификация JOIN
@@ -163,6 +169,7 @@ docs/
     ├── builtin_functions.md     # Built-in functions
     ├── data_types.md            # Data types
     ├── user_functions.md        # User-defined functions with type annotations
+    ├── stream_functions.md      # Stream functions (generators)
     ├── table_create_function.md # Working with tables
     ├── websocket_server.md      # WebSocket server
     ├── join_specification.md    # JOIN specification

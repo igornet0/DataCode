@@ -81,6 +81,8 @@ impl Parser {
             }
         } else if self.match_token(TokenKind::Cls) {
             self.class_declaration(false)
+        } else if self.check(TokenKind::Stream) && self.check_next(TokenKind::Fn) {
+            self.stream_function_declaration()
         } else if self.check(TokenKind::Fn) {
             // `fn (` — анонимная функция (лямбда); `fn name` — объявление функции
             if self.check_next(TokenKind::LParen) {
@@ -324,6 +326,78 @@ impl Parser {
 
         self.consume(TokenKind::Fn, "Expect 'fn'")?;
         self.function_declaration_body(is_cached, route)
+    }
+
+    /// `stream fn` с теми же декораторами `@cache` / `@route`, что и обычная функция.
+    fn stream_function_declaration(&mut self) -> Result<Stmt, LangError> {
+        let mut is_cached = false;
+        let mut route: Option<(String, String)> = None;
+        while self.match_token(TokenKind::At) {
+            if self.match_token(TokenKind::Cache) {
+                is_cached = true;
+            } else if self.check(TokenKind::Identifier) && self.peek().lexeme == "route" {
+                self.advance();
+                self.consume(TokenKind::LParen, "Expect '(' after @route")?;
+                let method_expr = self.expression()?;
+                let method = Self::expr_to_string(&method_expr).ok_or_else(|| LangError::ParseError {
+                    message: "@route first argument must be a string literal (e.g. \"GET\")".to_string(),
+                    line: self.previous().line,
+                    file: self.source_name.clone(),
+                })?;
+                self.consume(TokenKind::Comma, "Expect ',' in @route(...)")?;
+                let path_expr = self.expression()?;
+                let path = Self::expr_to_string(&path_expr).ok_or_else(|| LangError::ParseError {
+                    message: "@route second argument must be a string literal (e.g. \"/\")".to_string(),
+                    line: self.previous().line,
+                    file: self.source_name.clone(),
+                })?;
+                self.consume(TokenKind::RParen, "Expect ')' after @route(...)")?;
+                route = Some((method, path));
+            } else {
+                let dec_name = if self.check(TokenKind::Identifier) {
+                    self.peek().lexeme.clone()
+                } else {
+                    "".to_string()
+                };
+                return Err(LangError::ParseError {
+                    message: format!("Expect 'cache' or 'route(...)' after '@', got '{}'", dec_name),
+                    line: self.peek().line,
+                    file: self.source_name.clone(),
+                });
+            }
+        }
+
+        self.consume(TokenKind::Stream, "Expect 'stream'")?;
+        self.consume(TokenKind::Fn, "Expect 'fn' after 'stream'")?;
+        self.stream_function_declaration_body(is_cached, route)
+    }
+
+    /// Parse stream function name, params, return type and body. Caller must have consumed `stream` and `fn`.
+    fn stream_function_declaration_body(&mut self, is_cached: bool, route: Option<(String, String)>) -> Result<Stmt, LangError> {
+        let fn_line = self.previous().line;
+        let name = self.consume(TokenKind::Identifier, "Expect function name")?.lexeme.clone();
+        self.consume(TokenKind::LParen, "Expect '(' after function name")?;
+        let params = self.parse_parameter_list_until_rparen()?;
+
+        let return_type = if self.match_token(TokenKind::Arrow) {
+            Some(self.parse_type_name()?)
+        } else {
+            None
+        };
+
+        self.consume(TokenKind::LBrace, "Expect '{' before function body")?;
+
+        let body = self.block()?;
+
+        Ok(Stmt::StreamFunction {
+            name,
+            params,
+            return_type,
+            body,
+            is_cached,
+            route,
+            line: fn_line,
+        })
     }
 
     /// Parse function name, params, return type and body. Caller must have consumed 'fn' so previous() is 'fn'.
@@ -848,6 +922,8 @@ impl Parser {
             self.while_statement()
         } else if self.match_token(TokenKind::For) {
             self.for_statement()
+        } else if self.match_token(TokenKind::Ereturn) {
+            self.ereturn_statement()
         } else if self.match_token(TokenKind::Return) {
             self.return_statement()
         } else if self.match_token(TokenKind::Break) {
@@ -1088,6 +1164,17 @@ impl Parser {
         // Семиколон опционален для return
         self.match_token(TokenKind::Semicolon);
         Ok(Stmt::Return { value, line: return_line })
+    }
+
+    fn ereturn_statement(&mut self) -> Result<Stmt, LangError> {
+        let line = self.previous().line;
+        let value = if !self.check(TokenKind::Semicolon) && !self.check(TokenKind::RBrace) {
+            Some(self.expression()?)
+        } else {
+            None
+        };
+        self.match_token(TokenKind::Semicolon);
+        Ok(Stmt::EReturn { value, line })
     }
 
     fn break_statement(&mut self) -> Result<Stmt, LangError> {
@@ -2127,6 +2214,36 @@ impl Parser {
         if self.match_token(TokenKind::Ellipsis) {
             let line = self.previous().line;
             return Ok(Expr::Ellipsis { line });
+        }
+        if self.match_token(TokenKind::Return) {
+            let line = self.previous().line;
+            let value = if !self.check(TokenKind::Semicolon)
+                && !self.check(TokenKind::RBrace)
+                && !self.check(TokenKind::RParen)
+                && !self.check(TokenKind::Comma)
+                && !(self.check(TokenKind::Return) && self.peek().line > line)
+            {
+                Some(Box::new(self.expression()?))
+            } else {
+                None
+            };
+            return Ok(Expr::ExprReturn { value, line });
+        }
+        if self.match_token(TokenKind::Ireturn) {
+            let line = self.previous().line;
+            // Иначе `x = ireturn` и на следующей строке `return …` сливаются в `ireturn return …`
+            // (пробелы/переводы строк между токенами игнорируются).
+            let value = if !self.check(TokenKind::Semicolon)
+                && !self.check(TokenKind::RBrace)
+                && !self.check(TokenKind::RParen)
+                && !self.check(TokenKind::Comma)
+                && !(self.check(TokenKind::Return) && self.peek().line > line)
+            {
+                Some(Box::new(self.expression()?))
+            } else {
+                None
+            };
+            return Ok(Expr::Ireturn { value, line });
         }
         if self.match_token(TokenKind::Fn) {
             return self.parse_lambda_after_fn();

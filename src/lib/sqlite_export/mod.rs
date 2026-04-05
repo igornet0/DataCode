@@ -926,6 +926,7 @@ fn get_value_type_name(value: &Value) -> &str {
         Value::DatabaseCluster(_) => "DatabaseCluster",
         Value::Enumerate { .. } => "Enumerate",
         Value::Iterable(_) => "Iterable",
+        Value::Generator(_) => "Generator",
         Value::Ellipsis => "Ellipsis",
     }
 }

@@ -14,6 +14,8 @@ pub struct Resolver {
 enum FunctionType {
     None,
     Function,
+    /// `stream fn` — `return` это yield, допустим `ereturn`.
+    Stream,
 }
 
 impl Resolver {
@@ -64,6 +66,16 @@ impl Resolver {
                 }
                 self.resolve_function(params, body, FunctionType::Function)?;
             }
+            Stmt::StreamFunction { name, params, body, .. } => {
+                self.declare(name);
+                self.define(name);
+                for param in params {
+                    if let Some(ref default_expr) = param.default_value {
+                        self.resolve_expr(default_expr)?;
+                    }
+                }
+                self.resolve_function(params, body, FunctionType::Stream)?;
+            }
             Stmt::If { condition, then_branch, else_branch, .. } => {
                 self.resolve_expr(condition)?;
                 self.resolve_stmt_block(then_branch)?;
@@ -79,6 +91,18 @@ impl Resolver {
                 if self.current_function == FunctionType::None {
                     return Err(LangError::SemanticError {
                         message: "Cannot return from top-level code".to_string(),
+                        line: *line,
+                        file: self.source_name.clone(),
+                    });
+                }
+                if let Some(expr) = value {
+                    self.resolve_expr(expr)?;
+                }
+            }
+            Stmt::EReturn { value, line } => {
+                if self.current_function != FunctionType::Stream {
+                    return Err(LangError::SemanticError {
+                        message: "'ereturn' is only allowed inside a stream fn".to_string(),
                         line: *line,
                         file: self.source_name.clone(),
                     });
@@ -370,6 +394,30 @@ impl Resolver {
                 }
             }
             Expr::Ellipsis { .. } => {}
+            Expr::ExprReturn { value, line } => {
+                if self.current_function != FunctionType::Stream {
+                    return Err(LangError::SemanticError {
+                        message: "'return' as an expression is only allowed inside a stream fn body".to_string(),
+                        line: *line,
+                        file: self.source_name.clone(),
+                    });
+                }
+                if let Some(e) = value {
+                    self.resolve_expr(e)?;
+                }
+            }
+            Expr::Ireturn { value, line } => {
+                if self.current_function != FunctionType::Stream {
+                    return Err(LangError::SemanticError {
+                        message: "'ireturn' is only allowed inside a stream fn body".to_string(),
+                        line: *line,
+                        file: self.source_name.clone(),
+                    });
+                }
+                if let Some(e) = value {
+                    self.resolve_expr(e)?;
+                }
+            }
             Expr::InterpolatedString { segments, .. } => {
                 use crate::parser::ast::InterpolatedSegment;
                 for seg in segments {

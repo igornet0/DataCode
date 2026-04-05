@@ -4,7 +4,7 @@
 use std::sync::Arc;
 use crate::vm::host::{HostEntry, FnWrapper};
 use crate::vm::natives;
-use crate::vm::natives::basic::ArrayHostFunction;
+use crate::vm::natives::basic::{ArrayHostFunction, NativeGeneratorNext, NativeGeneratorSend};
 use crate::vm::natives::higher_order::{FilterHostFunction, MapHostFunction, ReduceHostFunction};
 
 /// ValueError::new_1 native index (must match VM's VALUE_ERROR_NATIVE_INDEX).
@@ -98,4 +98,7 @@ pub fn register_builtin_natives(natives: &mut Vec<HostEntry>) {
     }
     natives.push(HostEntry::Builtin(value_error)); // 79 - ValueError::new_1 for raise ValueError("...")
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(natives::native_chunk)))); // 80 - array.chunk(n)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(natives::native_generator_final)))); // 81 - generator.final()
+    natives.push(HostEntry::Builtin(Arc::new(NativeGeneratorNext))); // 82 - generator.next()
+    natives.push(HostEntry::Builtin(Arc::new(NativeGeneratorSend))); // 83 - generator.send()
 }

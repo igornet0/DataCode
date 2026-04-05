@@ -278,6 +278,22 @@ impl Chunk {
                 output.push_str("RETURN\n");
                 offset + 1
             }
+            OpCode::Yield(st) => {
+                output.push_str(&format!("YIELD {}\n", st));
+                offset + 1
+            }
+            OpCode::YieldAwaitInput(st, slot) => {
+                output.push_str(&format!("YIELD_AWAIT_INPUT {} slot={}\n", st, slot));
+                offset + 1
+            }
+            OpCode::GeneratorDone => {
+                output.push_str("GENERATOR_DONE\n");
+                offset + 1
+            }
+            OpCode::GeneratorDoneWithFinal => {
+                output.push_str("GENERATOR_DONE_WITH_FINAL\n");
+                offset + 1
+            }
             OpCode::MakeTuple(count) => {
                 output.push_str(&format!("MAKE_TUPLE {}\n", count));
                 offset + 1

@@ -72,6 +72,14 @@ pub enum OpCode {
     Call(usize),         // Вызов функции с количеством аргументов
     CallWithUnpack(usize), // Вызов: один аргумент — объект для распаковки в kwargs; ключи должны совпадать с именами параметров
     Return,              // Возврат из функции
+    /// `stream fn`: снять значение с вершины стека как yield; резюм с IP после инструкции. `i32` — номер состояния (отладка).
+    Yield(i32),
+    /// `stream fn`: `x = return expr` — yield значения expr; затем ждать `.send()` и записать в локальный слот `usize`.
+    YieldAwaitInput(i32, usize),
+    /// `stream fn`: завершить генератор (`ereturn` без expr / неявный конец).
+    GeneratorDone,
+    /// `stream fn`: `ereturn expr` — снять значение со стека как финальное (не yield), завершить.
+    GeneratorDoneWithFinal,
 
     // Массивы
     MakeArray(usize), // Создать массив из N элементов со стека (compile-time размер)
@@ -164,6 +172,10 @@ impl OpCode {
             OpCode::Call(_) => "Call",
             OpCode::CallWithUnpack(_) => "CallWithUnpack",
             OpCode::Return => "Return",
+            OpCode::Yield(_) => "Yield",
+            OpCode::YieldAwaitInput(_, _) => "YieldAwaitInput",
+            OpCode::GeneratorDone => "GeneratorDone",
+            OpCode::GeneratorDoneWithFinal => "GeneratorDoneWithFinal",
             OpCode::MakeArray(_) => "MakeArray",
             OpCode::MakeArrayDynamic => "MakeArrayDynamic",
             OpCode::GetArrayLength => "GetArrayLength",

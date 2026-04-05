@@ -67,6 +67,14 @@ Complete guide to creating functions with type annotations:
 
 ---
 
+### 4a. [Stream functions (generators)](./stream_functions.md)
+
+Friendly guide to **`stream fn`**: `return` / `ireturn` / `ereturn`, **`for`** iteration, **`.next()`**, **`.send()`**, **`.final()`**, **`.live`**, and two-way patterns.
+
+**📚 Example script:** [`examples/en/05-functions/stream_functions.dc`](../../examples/en/05-functions/stream_functions.dc)
+
+---
+
 ### 5. [Working with Classes](./classes.md)
 
 Declaration, fields, constructors, methods, inheritance, this/super, and visibility (private, protected, public):
@@ -267,6 +275,7 @@ Get familiar with the type system:
 Master creating and using functions:
 - **Documentation:** [`examples/en/05-functions/README.md`](../../examples/en/05-functions/README.md)
 - **Type Annotations:** [`docs/en/user_functions.md`](./user_functions.md) - User-defined functions with type annotations
+- **Stream functions (generators):** [`docs/en/stream_functions.md`](./stream_functions.md)
 - **Examples:** [`examples/en/05-functions/`](../../examples/en/05-functions/)
 
 ### 5. Loops
@@ -340,6 +349,7 @@ docs/
     ├── builtin_functions.md     # Built-in functions
     ├── data_types.md            # Data types
     ├── user_functions.md        # User-defined functions with type annotations
+    ├── stream_functions.md      # Stream functions (generators)
     ├── classes.md               # Working with classes
     ├── table_create_function.md # Working with tables
     ├── websocket_server.md      # WebSocket server

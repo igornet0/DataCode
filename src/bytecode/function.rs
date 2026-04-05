@@ -125,6 +125,8 @@ pub struct Function {
     pub route_path: Option<String>,
     /// Module this function belongs to (e.g. "core.config", "__main__"). None = legacy single global space.
     pub module_name: Option<String>,
+    /// `stream fn` — тело компилируется с yield; вызов возвращает [`crate::common::value::Value::Generator`].
+    pub is_stream: bool,
 }
 
 impl Function {
@@ -143,6 +145,7 @@ impl Function {
             route_method: None,
             route_path: None,
             module_name: None,
+            is_stream: false,
         }
     }
 
@@ -161,6 +164,7 @@ impl Function {
             route_method: None,
             route_path: None,
             module_name: None,
+            is_stream: false,
         }
     }
 }
@@ -181,6 +185,7 @@ impl Clone for Function {
             route_method: self.route_method.clone(),
             route_path: self.route_path.clone(),
             module_name: self.module_name.clone(),
+            is_stream: self.is_stream,
         }
     }
 }

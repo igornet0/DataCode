@@ -196,8 +196,9 @@ pub fn execute_native_call(
         }
     }
 
-    // Fast path for int(x), float(x), str(x), typeof(x)
-    if arity == 1 {
+    // Fast path for int(x), float(x), str(x), typeof(x) — indices 3,4,6,8 only.
+    // Do not use bare `arity == 1`: print is index 0 and would fall through to push+general path (double handling, SIGSEGV).
+    if arity == 1 && matches!(native_index, 3 | 4 | 6 | 8) {
         let frame = frames.last().unwrap();
         let available = stack.len().saturating_sub(frame.stack_start);
         if available >= 1 {
@@ -339,7 +340,9 @@ pub fn execute_native_call(
     }
     if !is_db_engine_method {
         let frame = frames.last().unwrap();
-        let available_args = stack.len() - frame.stack_start;
+        // Must match saturating_sub elsewhere: if stack.len() < stack_start (bug or imbalance),
+        // raw subtraction wraps and we may pop past the frame — corrupting the stack (SIGSEGV).
+        let available_args = stack.len().saturating_sub(frame.stack_start);
         if available_args < arity {
             let error = ExceptionHandler::runtime_error(
                 &frames,

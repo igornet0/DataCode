@@ -104,6 +104,14 @@ pub fn execute_run(
                 return Ok(load_value(id, vm.value_store(), vm.heavy_store()));
             }
             VMStatus::FrameEnded => break,
+            VMStatus::GeneratorYield(_)
+            | VMStatus::GeneratorYieldAwait(_, _)
+            | VMStatus::GeneratorDone(_) => {
+                return Err(crate::common::error::LangError::runtime_error(
+                    "internal: generator opcode in main script".to_string(),
+                    0,
+                ));
+            }
         }
     }
 

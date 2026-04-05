@@ -138,6 +138,12 @@ pub struct Vm {
     permission_policy: PermissionPolicy,
     /// Parse-time operator table snapshot (for `debug.operators()`); set by hosts that preload [`crate::vm::operator_registry::OperatorRegistry`].
     pub(crate) operator_registry_snapshot: Option<Arc<crate::vm::operator_registry::OperatorRegistry>>,
+    /// Перед шагом VM: потребляет [`OpCode::YieldAwaitInput`].
+    pub(crate) pending_generator_send: Option<crate::vm::types::PendingGeneratorSend>,
+    /// RHS последнего `YieldAwaitInput` (пока слот не заполнен). Нужен при повторном входе в opcode: стек уже пуст.
+    pub(crate) yield_await_resume_value: Option<Value>,
+    /// Перед `Explicit`: RHS yield-await — возвращается из `send()`, сам следующий `Yield` идёт в `pending_deferred_yield`.
+    pub(crate) pending_send_rhs_return: Option<Value>,
 }
 
 /// Preallocated capacities for hot-path Vecs to reduce resize in loop-heavy runs.
@@ -214,6 +220,9 @@ impl Vm {
             is_root: true,
             permission_policy: PermissionPolicy::default(),
             operator_registry_snapshot: None,
+            pending_generator_send: None,
+            yield_await_resume_value: None,
+            pending_send_rhs_return: None,
         };
         vm.register_natives();
         vm
@@ -267,6 +276,9 @@ impl Vm {
             is_root: false,
             permission_policy: parent.permission_policy,
             operator_registry_snapshot: parent.operator_registry_snapshot.clone(),
+            pending_generator_send: None,
+            yield_await_resume_value: None,
+            pending_send_rhs_return: None,
         };
         vm.register_natives();
         vm
@@ -440,6 +452,27 @@ impl Vm {
     pub(crate) fn push_frame(&mut self, frame: CallFrame) {
         self.frames.push(frame);
     }
+
+    pub(crate) fn frame_len(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// Снять фреймы выше `len` (после шага генератора не должно оставаться лишнего фрейма stream fn).
+    pub(crate) fn truncate_frames_to(&mut self, len: usize) {
+        if self.frames.len() > len {
+            self.frames.truncate(len);
+        }
+    }
+
+    pub(crate) fn stack_len(&self) -> usize {
+        self.stack.len()
+    }
+
+    /// Снять верхний фрейм после yield в stream fn (состояние копируется в [`GeneratorState`]).
+    pub(crate) fn pop_last_frame_for_generator(&mut self) -> Option<CallFrame> {
+        self.frames.pop()
+    }
+
     pub(crate) fn stack_is_empty(&self) -> bool {
         self.stack.is_empty()
     }
@@ -1006,6 +1039,14 @@ impl Vm {
                 }
                 VMStatus::FrameEnded => {
                     break;
+                }
+                VMStatus::GeneratorYield(_)
+                | VMStatus::GeneratorYieldAwait(_, _)
+                | VMStatus::GeneratorDone(_) => {
+                    return Err(LangError::runtime_error(
+                        "internal: generator opcode in call_function_by_index".to_string(),
+                        0,
+                    ));
                 }
             }
         }

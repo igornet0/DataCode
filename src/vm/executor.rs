@@ -3,7 +3,7 @@
 use crate::debug_println;
 use crate::bytecode::OpCode;
 use crate::common::{error::LangError, value::Value, value_store::NULL_VALUE_ID, TaggedValue};
-use crate::vm::types::VMStatus;
+use crate::vm::types::{PendingGeneratorSend, VMStatus};
 use crate::vm::frame::CallFrame;
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::exception;
@@ -12,7 +12,7 @@ use crate::vm::runtime::call_engine;
 use crate::vm::module_system::import_handler;
 use crate::vm::stack;
 use crate::vm::global_slot::GlobalSlot;
-use crate::vm::store_convert::{load_value, tagged_to_value_id, slot_to_value};
+use crate::vm::store_convert::{load_value, store_value, tagged_to_value_id, slot_to_value};
 
 // Re-export for backward compatibility (call_engine, import_handler, memory use executor::global_index_by_name)
 pub(crate) use crate::vm::global_utils::{global_index_by_name, global_indices_by_name};
@@ -258,6 +258,102 @@ pub fn execute_instruction(
             } else {
                 return Ok(VMStatus::Return(return_value_id));
             }
+        }
+        OpCode::Yield(_next_st) => {
+            let frame = frames.last().unwrap();
+            if !frame.function.is_stream {
+                return Err(LangError::runtime_error(
+                    "Yield is only valid in stream fn".to_string(),
+                    line,
+                ));
+            }
+            let vm = unsafe { &mut *vm_ptr };
+            if vm.pending_generator_send.is_some() {
+                vm.pending_generator_send = None;
+                return Err(LangError::runtime_error(
+                    "generator.send() is not valid when the generator is not at a yield-await point (use .next())"
+                        .to_string(),
+                    line,
+                ));
+            }
+            let yield_value_id = if stack.len() > frame.stack_start {
+                let tv = stack.pop().unwrap_or(TaggedValue::null());
+                tagged_to_value_id(tv, value_store)
+            } else {
+                NULL_VALUE_ID
+            };
+            return Ok(VMStatus::GeneratorYield(yield_value_id));
+        }
+        OpCode::YieldAwaitInput(_st, assign_slot) => {
+            let frame = frames.last_mut().unwrap();
+            if !frame.function.is_stream {
+                return Err(LangError::runtime_error(
+                    "YieldAwaitInput is only valid in stream fn".to_string(),
+                    line,
+                ));
+            }
+            let yield_value_id = if stack.len() > frame.stack_start {
+                let tv = stack.pop().unwrap_or(TaggedValue::null());
+                tagged_to_value_id(tv, value_store)
+            } else {
+                NULL_VALUE_ID
+            };
+            let vm = unsafe { &mut *vm_ptr };
+            if let Some(pending) = vm.pending_generator_send.take() {
+                if assign_slot >= frame.slots.len() {
+                    frame.slots.resize(assign_slot + 1, TaggedValue::null());
+                }
+                let val = match pending {
+                    PendingGeneratorSend::NextDefaultRhs => {
+                        if yield_value_id != NULL_VALUE_ID {
+                            load_value(yield_value_id, value_store, heavy_store)
+                        } else {
+                            vm.yield_await_resume_value
+                                .take()
+                                .unwrap_or(Value::Null)
+                        }
+                    }
+                    PendingGeneratorSend::Explicit(sent) => {
+                        vm.pending_send_rhs_return = vm.yield_await_resume_value.take();
+                        sent
+                    }
+                };
+                let tid = store_value(val, value_store, heavy_store);
+                frame.slots[assign_slot] = TaggedValue::from_heap(tid);
+                // Bypasses StoreLocal: slot changed — drop opcode inline caches (Add/Mul/LoadLocal/…).
+                frame.invalidate_inline_caches();
+                // Потребитель уже получил yield при первом suspend; подстановка в слот без второго yield.
+                return Ok(VMStatus::Continue);
+            }
+            return Ok(VMStatus::GeneratorYieldAwait(yield_value_id, assign_slot));
+        }
+        OpCode::GeneratorDone => {
+            let frame = frames.last().unwrap();
+            if !frame.function.is_stream {
+                return Err(LangError::runtime_error(
+                    "GeneratorDone is only valid in stream fn".to_string(),
+                    line,
+                ));
+            }
+            frames.pop();
+            return Ok(VMStatus::GeneratorDone(None));
+        }
+        OpCode::GeneratorDoneWithFinal => {
+            let frame = frames.last().unwrap();
+            if !frame.function.is_stream {
+                return Err(LangError::runtime_error(
+                    "GeneratorDoneWithFinal is only valid in stream fn".to_string(),
+                    line,
+                ));
+            }
+            let final_value_id = if stack.len() > frame.stack_start {
+                let tv = stack.pop().unwrap_or(TaggedValue::null());
+                tagged_to_value_id(tv, value_store)
+            } else {
+                NULL_VALUE_ID
+            };
+            frames.pop();
+            return Ok(VMStatus::GeneratorDone(Some(final_value_id)));
         }
         OpCode::Pop => return stack_ops::op_pop(stack, frames),
         OpCode::Dup => return stack_ops::op_dup(stack, frames, exception_handlers, value_store, heavy_store),

@@ -7,6 +7,7 @@ use crate::common::value_store::ValueStore;
 use crate::vm::array_view::{materialize_array_view, subview, view_get_element};
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::natives::utils::call_user_function;
+use crate::vm::generator::run_generator_next;
 use crate::vm::vm::Vm;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -47,9 +48,14 @@ pub fn coerce_to_iterable_value(v: Value) -> Result<Value, LangError> {
                 index: 0,
             },
         )))),
+        Value::Generator(g) => Ok(Value::Iterable(Rc::new(RefCell::new(
+            IterableInner::StreamGenerator {
+                state: Rc::clone(&g),
+            },
+        )))),
         _ => Err(runtime(
             0,
-            "for-in / iterable: expected array, array view, tuple, enumerate, or iterable",
+            "for-in / iterable: expected array, array view, tuple, enumerate, iterable, or generator",
         )),
     }
 }
@@ -114,6 +120,7 @@ pub fn iterable_materialize_capacity_hint(inner: &IterableInner) -> Option<usize
             chunk_size,
             ..
         } => Some(chunk_source_count(source, *chunk_size)),
+        IterableInner::StreamGenerator { .. } => None,
     }
 }
 
@@ -296,6 +303,9 @@ pub fn iterable_next(inner: &mut IterableInner, vm: &mut Vm) -> Result<Option<Va
             *chunk_index += 1;
             Ok(Some(v))
         }
+        IterableInner::StreamGenerator { state } => {
+            run_generator_next(vm, &mut state.borrow_mut())
+        }
     }
 }
 
@@ -309,6 +319,12 @@ pub fn materialize_iterables_in_value(
     heap: &HeavyStore,
 ) -> Result<Value, LangError> {
     match v {
+        Value::Generator(g) => {
+            let rc = Rc::new(RefCell::new(IterableInner::StreamGenerator {
+                state: Rc::clone(g),
+            }));
+            materialize_iterables_in_value(vm, &Value::Iterable(rc), store, heap)
+        }
         Value::Iterable(rc) => {
             let mut inner = rc.borrow().clone();
             let mut out: Vec<Value> = Vec::new();

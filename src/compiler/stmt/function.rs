@@ -8,6 +8,7 @@ use crate::compiler::context::CompilationContext;
 use crate::compiler::constant_fold;
 use crate::compiler::closure;
 use crate::compiler::stmt;
+use crate::compiler::stream_fn;
 
 pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), LangError> {
     if let Stmt::Function { name, params, return_type, body, is_cached, route, line } = stmt {
@@ -224,3 +225,163 @@ pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
     }
 }
 
+pub fn compile_stream_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), LangError> {
+    if let Stmt::StreamFunction {
+        name,
+        params,
+        return_type,
+        body,
+        is_cached,
+        route,
+        line,
+    } = stmt
+    {
+        if *is_cached {
+            return Err(LangError::ParseError {
+                message: "@cache is not supported on stream fn".to_string(),
+                line: *line,
+                file: None,
+            });
+        }
+        *ctx.current_line = *line;
+
+        let function_index = ctx
+            .function_names
+            .iter()
+            .position(|n| n == name)
+            .ok_or_else(|| LangError::ParseError {
+                message: format!("Stream function '{}' not found in forward declarations", name),
+                line: *line,
+                file: None,
+            })?;
+
+        let mut function = ctx.functions[function_index].clone();
+        function.arity = params.len();
+        function.is_cached = false;
+        function.is_stream = true;
+        if let Some((ref method, ref path)) = route {
+            function.route_method = Some(method.clone());
+            function.route_path = Some(path.clone());
+        }
+
+        let mut param_names = Vec::new();
+        let mut param_types = Vec::new();
+        let mut default_values = Vec::new();
+
+        for param in params.iter() {
+            param_names.push(param.name.clone());
+            param_types.push(param.type_annotation.clone());
+
+            if let Some(ref default_expr) = param.default_value {
+                match constant_fold::evaluate_constant_expr(default_expr) {
+                    Ok(Some(constant_value)) => {
+                        default_values.push(Some(constant_value));
+                    }
+                    Ok(None) => {
+                        return Err(LangError::ParseError {
+                            message: format!(
+                                "Default value for parameter '{}' must be a constant expression",
+                                param.name
+                            ),
+                            line: default_expr.line(),
+                            file: None,
+                        });
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            } else {
+                default_values.push(None);
+            }
+        }
+
+        function.param_names = param_names.clone();
+        function.param_types = param_types;
+        function.return_type = return_type.clone();
+        function.default_values = default_values;
+
+        ctx.functions[function_index] = function.clone();
+
+        let parent_locals_snapshot: Vec<std::collections::HashMap<String, usize>> =
+            ctx.scope.locals.iter().map(|scope| scope.clone()).collect();
+
+        let function_chunk_clone = function.chunk.clone();
+        let saved_chunk = std::mem::replace(&mut *ctx.chunk, function_chunk_clone);
+        let saved_exception_handlers = ctx.exception_handlers.clone();
+        let saved_error_type_table = ctx.error_type_table.clone();
+        let saved_function = ctx.current_function;
+        let saved_local_count = ctx.scope.local_count;
+
+        let saved_label_counter = ctx.labels.label_counter;
+        let saved_labels = ctx.labels.labels.clone();
+        let saved_pending_jumps = ctx.labels.pending_jumps.clone();
+        ctx.labels.label_counter = 0;
+        ctx.labels.labels.clear();
+        ctx.labels.pending_jumps.clear();
+
+        ctx.current_function = Some(function_index);
+        ctx.scope.local_count = 0;
+        ctx.exception_handlers.clear();
+        ctx.error_type_table.clear();
+
+        ctx.scope.begin_scope();
+
+        let current_scope = ctx.scope.locals.last().cloned().unwrap_or_default();
+        let captured_vars = closure::find_captured_variables(
+            body,
+            &parent_locals_snapshot,
+            &param_names,
+            &current_scope,
+        );
+        if !captured_vars.is_empty() {
+            return Err(LangError::ParseError {
+                message: "stream fn with captured variables is not supported yet".to_string(),
+                line: *line,
+                file: None,
+            });
+        }
+
+        for param in params {
+            ctx.scope.declare_local(&param.name);
+        }
+
+        stream_fn::compile_stream_body(ctx, body, *line)?;
+
+        ctx.scope.end_scope();
+
+        ctx.labels.stabilize_layout(&mut *ctx.chunk, *line)?;
+        ctx.labels.finalize_jumps(&mut *ctx.chunk, *line)?;
+
+        let function_chunk = std::mem::replace(&mut *ctx.chunk, saved_chunk);
+        function.chunk = function_chunk;
+        function.captured_vars = Vec::new();
+        ctx.functions[function_index] = function.clone();
+
+        *ctx.exception_handlers = saved_exception_handlers;
+        *ctx.error_type_table = saved_error_type_table;
+        ctx.current_function = saved_function;
+        ctx.scope.local_count = saved_local_count;
+
+        ctx.labels.label_counter = saved_label_counter;
+        ctx.labels.labels = saved_labels;
+        ctx.labels.pending_jumps = saved_pending_jumps;
+
+        let global_index = *ctx.scope.globals.get(name).unwrap();
+        ctx.chunk.global_names.insert(global_index, name.clone());
+
+        if name != "__main__" {
+            let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
+            ctx.chunk.write_with_line(OpCode::Constant(constant_index), *line);
+            ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+        }
+
+        Ok(())
+    } else {
+        Err(LangError::ParseError {
+            message: "Expected StreamFunction statement".to_string(),
+            line: stmt.line(),
+            file: None,
+        })
+    }
+}

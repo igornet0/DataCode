@@ -15,7 +15,7 @@ use std::sync::Arc;
 pub const DCB_MAGIC: [u8; 4] = [0x44, 0x43, 0x42, 0x01]; // "DCB" + format version 1
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Bump when compiler/bytecode semantics change so old .dcb are rejected (e.g. constructor names in chunk.global_names for merge; class object now includes methods for GetArrayElement fallback).
-pub const DCB_FORMAT_VERSION: &str = "12";
+pub const DCB_FORMAT_VERSION: &str = "15";
 
 /// Metadata stored at the start of a .dcb file for freshness checks.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -144,6 +144,10 @@ pub enum SerOpCode {
     Import(usize),
     ImportFrom(usize, usize),
     RegAdd(u8, u8, u8),
+    Yield(i32),
+    YieldAwaitInput(i32, usize),
+    GeneratorDone,
+    GeneratorDoneWithFinal,
 }
 
 impl From<&OpCode> for SerOpCode {
@@ -215,6 +219,10 @@ impl From<&OpCode> for SerOpCode {
             OpCode::Import(a) => SerOpCode::Import(*a),
             OpCode::ImportFrom(a, b) => SerOpCode::ImportFrom(*a, *b),
             OpCode::RegAdd(a, b, c) => SerOpCode::RegAdd(*a, *b, *c),
+            OpCode::Yield(s) => SerOpCode::Yield(*s),
+            OpCode::YieldAwaitInput(a, b) => SerOpCode::YieldAwaitInput(*a, *b),
+            OpCode::GeneratorDone => SerOpCode::GeneratorDone,
+            OpCode::GeneratorDoneWithFinal => SerOpCode::GeneratorDoneWithFinal,
         }
     }
 }
@@ -288,6 +296,10 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::Import(a) => OpCode::Import(a),
             SerOpCode::ImportFrom(a, b) => OpCode::ImportFrom(a, b),
             SerOpCode::RegAdd(a, b, c) => OpCode::RegAdd(a, b, c),
+            SerOpCode::Yield(s) => OpCode::Yield(s),
+            SerOpCode::YieldAwaitInput(a, b) => OpCode::YieldAwaitInput(a, b),
+            SerOpCode::GeneratorDone => OpCode::GeneratorDone,
+            SerOpCode::GeneratorDoneWithFinal => OpCode::GeneratorDoneWithFinal,
         }
     }
 }
@@ -334,6 +346,8 @@ pub struct SerFunction {
     pub default_values: Vec<Option<DcbConstant>>,
     pub captured_vars: Vec<SerCapturedVar>,
     pub is_cached: bool,
+    #[serde(default)]
+    pub is_stream: bool,
     pub route_method: Option<String>,
     pub route_path: Option<String>,
 }
@@ -416,6 +430,7 @@ fn function_to_ser(f: &Function) -> Result<SerFunction, String> {
             })
             .collect(),
         is_cached: f.is_cached,
+        is_stream: f.is_stream,
         route_method: f.route_method.clone(),
         route_path: f.route_path.clone(),
     })
@@ -445,6 +460,7 @@ fn ser_to_function(ser: &SerFunction) -> Function {
         })
         .collect();
     f.is_cached = ser.is_cached;
+    f.is_stream = ser.is_stream;
     f.route_method = ser.route_method.clone();
     f.route_path = ser.route_path.clone();
     f.cache = None;

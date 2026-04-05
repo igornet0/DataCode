@@ -245,6 +245,16 @@ pub enum Expr {
     Ellipsis {
         line: usize,
     },
+    /// Выражение `return expr` в позиции RHS (только в `stream fn`): `x = return 10` — yield-await (`YieldAwaitInput`).
+    ExprReturn {
+        value: Option<Box<Expr>>,
+        line: usize,
+    },
+    /// `ireturn` / `ireturn expr` — то же lowering, что `return` в RHS (yield-await).
+    Ireturn {
+        value: Option<Box<Expr>>,
+        line: usize,
+    },
     /// String interpolation: "Hello ${name}" → segments of literals and expressions
     InterpolatedString {
         segments: Vec<InterpolatedSegment>,
@@ -306,6 +316,8 @@ impl Expr {
             Expr::SuperCall { line, .. } => *line,
             Expr::SuperMethodCall { line, .. } => *line,
             Expr::Ellipsis { line, .. } => *line,
+            Expr::ExprReturn { line, .. } => *line,
+            Expr::Ireturn { line, .. } => *line,
             Expr::InterpolatedString { line, .. } => *line,
         }
     }
@@ -350,7 +362,22 @@ pub enum Stmt {
         route: Option<(String, String)>,
         line: usize,
     },
+    /// Генератор: `stream fn name(...) { ... }` — `return` даёт yield, `ereturn` завершает.
+    StreamFunction {
+        name: String,
+        params: Vec<Param>,
+        return_type: Option<Vec<TypePart>>,
+        body: Vec<Stmt>,
+        is_cached: bool,
+        route: Option<(String, String)>,
+        line: usize,
+    },
     Return {
+        value: Option<Expr>,
+        line: usize,
+    },
+    /// Завершение генератора без yield (`ereturn` / `ereturn expr`).
+    EReturn {
         value: Option<Expr>,
         line: usize,
     },
@@ -400,7 +427,9 @@ impl Stmt {
             Stmt::While { line, .. } => *line,
             Stmt::For { line, .. } => *line,
             Stmt::Function { line, .. } => *line,
+            Stmt::StreamFunction { line, .. } => *line,
             Stmt::Return { line, .. } => *line,
+            Stmt::EReturn { line, .. } => *line,
             Stmt::Break { line, .. } => *line,
             Stmt::Continue { line, .. } => *line,
             Stmt::Try { line, .. } => *line,

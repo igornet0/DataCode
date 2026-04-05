@@ -9,6 +9,7 @@ pub mod unpack;
 pub mod constant_fold;
 pub mod context;
 pub mod expr;
+pub mod stream_fn;
 pub mod stmt;
 pub mod variable;
 

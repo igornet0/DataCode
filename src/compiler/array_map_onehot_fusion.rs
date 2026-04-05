@@ -240,6 +240,11 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
                 }
             }
         }
+        Expr::ExprReturn { value, .. } | Expr::Ireturn { value, .. } => {
+            if let Some(e) = value {
+                walk_expr(e, f);
+            }
+        }
     }
 }
 
@@ -275,12 +280,12 @@ fn walk_stmt(stmt: &Stmt, f: &mut impl FnMut(&Expr)) {
                 walk_stmt(s, f);
             }
         }
-        Stmt::Function { body, .. } => {
+        Stmt::Function { body, .. } | Stmt::StreamFunction { body, .. } => {
             for s in body {
                 walk_stmt(s, f);
             }
         }
-        Stmt::Return { value, .. } => {
+        Stmt::Return { value, .. } | Stmt::EReturn { value, .. } => {
             if let Some(e) = value {
                 walk_expr(e, f);
             }

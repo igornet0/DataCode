@@ -43,7 +43,13 @@ pub fn compile_stmt(
         Stmt::While { .. } => while_stmt::compile_while(ctx, stmt),
         Stmt::For { .. } => for_stmt::compile_for(ctx, stmt),
         Stmt::Function { .. } => function::compile_function(ctx, stmt),
+        Stmt::StreamFunction { .. } => function::compile_stream_function(ctx, stmt),
         Stmt::Return { .. } => return_stmt::compile_return(ctx, stmt),
+        Stmt::EReturn { .. } => Err(LangError::ParseError {
+            message: "'ereturn' may only appear inside a stream fn body".to_string(),
+            line: stmt.line(),
+            file: None,
+        }),
         Stmt::Break { .. } => break_continue::compile_break(ctx, stmt),
         Stmt::Continue { .. } => break_continue::compile_continue(ctx, stmt),
         Stmt::Throw { .. } => throw::compile_throw(ctx, stmt),

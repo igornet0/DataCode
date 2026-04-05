@@ -4,6 +4,7 @@ This document describes how to create user-defined functions with type annotatio
 
 **📚 Usage examples:**
 - Typed functions: [`examples/en/05-functions/typed_functions.dc`](../../examples/en/05-functions/typed_functions.dc)
+- Stream functions (generators): [`examples/en/05-functions/stream_functions.dc`](../../examples/en/05-functions/stream_functions.dc) · [Guide](./stream_functions.md)
 - Simple functions: [`examples/en/05-functions/simple_functions.dc`](../../examples/en/05-functions/simple_functions.dc)
 - Recursion: [`examples/en/05-functions/recursion.dc`](../../examples/en/05-functions/recursion.dc)
 
@@ -503,6 +504,7 @@ Type annotations are **optional** - you can use them when you want type safety, 
 
 ## Related Documentation
 
+- [Stream functions (generators)](./stream_functions.md) - `stream fn`, `.next()`, `.send()`, `ereturn`, `.final()`
 - [Built-in Functions](./builtin_functions.md) - Type conversion and checking functions
 - [Data Types](./data_types.md) - Complete type system documentation
 - [Function Examples](../../examples/en/05-functions/) - Practical examples

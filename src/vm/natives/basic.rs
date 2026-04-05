@@ -508,6 +508,7 @@ pub fn native_typeof(args: &[Value]) -> Value {
         Value::DatabaseEngine(_) => "database_engine",
         Value::DatabaseCluster(_) => "database_cluster",
         Value::Enumerate { .. } => "enumerate",
+        Value::Generator(_) => "generator",
         Value::Ellipsis => "ellipsis",
     };
     Value::String(type_name.to_string())
@@ -681,10 +682,124 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
         Value::DatabaseCluster(_) => type_name_lower == "database_cluster",
         Value::Enumerate { .. } => type_name_lower == "enumerate",
         Value::Iterable(_) => type_name_lower == "iterable",
+        Value::Generator(_) => type_name_lower == "generator",
         Value::Ellipsis => type_name_lower == "ellipsis",
     };
     
     Value::Bool(matches)
+}
+
+/// `gen.final()` — финальное значение после `ereturn expr` (не из потока yield).
+/// Если генератор ждёт ввод после `ireturn` / `x = return` (yield-await), дожимает с подстановкой RHS yield в слот.
+pub fn native_generator_final(args: &[Value]) -> Value {
+    // Clone Rc before any nested native runs: `execute_native_call` clears `native_args_buffer` at entry,
+    // which drops the Value in the buffer while this function still holds `args` pointing into it (UAF / SIGSEGV).
+    let rc = match args.first() {
+        Some(Value::Generator(rc)) => rc.clone(),
+        _ => return Value::Null,
+    };
+    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow());
+    if let Some(vm_ptr) = vm_ptr {
+        unsafe {
+            let vm = &mut *vm_ptr;
+            loop {
+                let g = rc.borrow_mut();
+                if g.finished {
+                    break;
+                }
+                if !g.waiting_for_input {
+                    break;
+                }
+                drop(g);
+                let res = {
+                    let mut g = rc.borrow_mut();
+                    crate::vm::generator::run_generator_resume(
+                        vm,
+                        &mut *g,
+                        crate::vm::generator::GeneratorResumeMode::NextFinalDrain,
+                        false,
+                    )
+                };
+                match res {
+                    Ok(Some(_)) => {}
+                    Ok(None) => break,
+                    Err(_) => return Value::Null,
+                }
+            }
+        }
+    }
+    let g = rc.borrow();
+    if !g.finished {
+        return Value::Null;
+    }
+    g.final_value.clone().unwrap_or(Value::Null)
+}
+
+/// `gen.next()` — следующий yield (без двустороннего канала).
+pub struct NativeGeneratorNext;
+impl HostFunction for NativeGeneratorNext {
+    fn call(&self, args: &[Value]) -> Result<Value, LangError> {
+        let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow()).ok_or_else(|| {
+            LangError::runtime_error("generator.next() requires an active VM".to_string(), 0)
+        })?;
+        let rc = match args.first() {
+            Some(Value::Generator(g)) => g.clone(),
+            _ => {
+                return Err(LangError::runtime_error(
+                    "generator.next() expects a generator".to_string(),
+                    0,
+                ));
+            }
+        };
+        let mut gen = rc.borrow_mut();
+        unsafe {
+            let vm = &mut *vm_ptr;
+            match crate::vm::generator::run_generator_resume(
+                vm,
+                &mut *gen,
+                crate::vm::generator::GeneratorResumeMode::Next,
+                false,
+            ) {
+                Ok(Some(v)) => Ok(v),
+                Ok(None) => Ok(Value::Null),
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+/// `gen.send(v)` — значение в `x = return expr`.
+pub struct NativeGeneratorSend;
+impl HostFunction for NativeGeneratorSend {
+    fn call(&self, args: &[Value]) -> Result<Value, LangError> {
+        let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow()).ok_or_else(|| {
+            LangError::runtime_error("generator.send() requires an active VM".to_string(), 0)
+        })?;
+        let rc = match args.first() {
+            Some(Value::Generator(g)) => g.clone(),
+            _ => {
+                return Err(LangError::runtime_error(
+                    "generator.send() expects a generator as first argument".to_string(),
+                    0,
+                ));
+            }
+        };
+        let v = args.get(1).cloned().unwrap_or(Value::Null);
+        let mut gen = rc.borrow_mut();
+        unsafe {
+            let vm = &mut *vm_ptr;
+            match crate::vm::generator::run_generator_resume(
+                vm,
+                &mut *gen,
+                crate::vm::generator::GeneratorResumeMode::Send(v),
+                false,
+            ) {
+                Ok(Some(v)) => Ok(v),
+                Ok(None) => Ok(Value::Null),
+                Err(e) => Err(e),
+            }
+        }
+    }
 }
 
 /// Built-in Table class constructor. Called as Table() or Table(path) when used as superclass.

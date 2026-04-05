@@ -156,6 +156,11 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
             }
             vars.extend(inner);
         }
+        Expr::ExprReturn { value, .. } | Expr::Ireturn { value, .. } => {
+            if let Some(e) = value {
+                vars.extend(find_used_variables_in_expr(e));
+            }
+        }
         _ => {}
     }
     vars
@@ -214,12 +219,12 @@ pub fn find_used_variables_in_stmt(stmt: &Stmt) -> std::collections::HashSet<Str
                 vars.extend(find_used_variables_in_stmt(stmt));
             }
         }
-        Stmt::Function { body, .. } => {
+        Stmt::Function { body, .. } | Stmt::StreamFunction { body, .. } => {
             for stmt in body {
                 vars.extend(find_used_variables_in_stmt(stmt));
             }
         }
-        Stmt::Return { value, .. } => {
+        Stmt::Return { value, .. } | Stmt::EReturn { value, .. } => {
             if let Some(expr) = value {
                 vars.extend(find_used_variables_in_expr(expr));
             }
@@ -319,7 +324,7 @@ pub fn find_locally_declared_variables(body: &[Stmt]) -> std::collections::HashS
                 // Рекурсивно проверяем тело while
                 declared_vars.extend(find_locally_declared_variables(body));
             }
-            Stmt::Function { body, .. } => {
+            Stmt::Function { body, .. } | Stmt::StreamFunction { body, .. } => {
                 // Рекурсивно проверяем тело вложенной функции
                 declared_vars.extend(find_locally_declared_variables(body));
             }

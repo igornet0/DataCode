@@ -312,6 +312,11 @@ pub extern "C" fn datacode_module_entry() -> *const AbiModuleDescriptor {
                 classes_len: 0,
                 globals: std::ptr::null(),
                 globals_len: 0,
+                native_param_metas: std::ptr::null(),
+                native_param_metas_len: 0,
+                plugin_hooks: std::ptr::null(),
+                opaque_types: std::ptr::null(),
+                opaque_types_len: 0,
             });
             MODULE_PTR = Box::into_raw(desc);
         });

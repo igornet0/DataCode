@@ -34,6 +34,8 @@ pub use error::DatacodeError;
 pub use vm_context::{VmContext, NativeAbiFn};
 pub use module::{
     AbiClassDescriptor, AbiExport, AbiExportTable, AbiGlobalDescriptor, AbiModuleDescriptor,
+    AbiModuleDescriptorV4, AbiNativeParamMeta, AbiOpaqueTypeDescriptor, AbiPluginHooksDescriptor,
+    ABI_NATIVE_PARAM_META_SUPPORTS_NAMED_ARGS,
     DatacodeModule, DatacodeModuleEntryFn, DatacodeModuleFn, DatacodeModuleLegacy,
     DATACODE_MODULE_ENTRY_SYMBOL, DATACODE_MODULE_SYMBOL,
 };

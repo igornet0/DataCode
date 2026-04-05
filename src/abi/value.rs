@@ -34,4 +34,9 @@ pub enum Value {
         rows: usize,
         cols: usize,
     },
+    /// Сырые байты (например `read_file_bin`); указатель валиден на время вызова натива.
+    Bytes {
+        ptr: *const u8,
+        len: usize,
+    },
 }

@@ -1,4 +1,5 @@
 pub mod compiler;
+pub mod array_map_onehot_fusion;
 pub mod natives;
 pub mod scope;
 pub mod labels;

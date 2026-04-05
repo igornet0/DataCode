@@ -1,0 +1,14 @@
+# Test 11 (ML plugin): compare dataset.concat(other=...) vs dataset.push_data(features=..., targets=...)
+# Load the ml native module (DPM packages/ml or equivalent), then run a small benchmark, e.g.:
+#
+#   from ml import dataset
+#   import system
+#   ds0 = dataset([[1,2],[3,4]], [[0],[1]])
+#   t0 = system.time.monotonic_ms()
+#   ds0.concat(other = dataset([[5,6]], [[2]]))
+#   print(system.time.monotonic_ms() - t0)
+#
+# Both code paths end in Tensor::concat_axis0 (full buffer copy per merge); see
+# datacode_lib/ML-Datacode-lib/src/nn/dataset.rs (concat_in_place, push_tensor_rows).
+
+print("Test 11: see comments in this file; requires ML dylib + from ml import dataset.")

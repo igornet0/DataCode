@@ -17,6 +17,10 @@ pub enum OpCode {
     Add,
     Sub,
     Mul,
+    /// **Deprecated for new emits:** use [`BinaryOp`] with logical name `"matmul"`. Kept for stable [`crate::vm::dcb::SerOpCode`] / `.dcb` compatibility.
+    MatMul,
+    /// User-registered or plugin infix op: constant pool index → logical op name (e.g. `"matmul"`).
+    BinaryOp(usize),
     Div,
     IntDiv, // Целочисленное деление (//)
     Mod, // Модуло (%)
@@ -50,6 +54,12 @@ pub enum OpCode {
     /// Снять одно состояние с for_range_stack (при break из for i in range(...))
     PopForRange,
 
+    /// `for x in ...`: заменить значение в локале на [`Value::Iterable`] через [`crate::vm::iterable::prepare_for_in_iterable`].
+    CoerceForInIterable(usize),
+    /// Следующий элемент ленивого итератора: локал с `Value::Iterable`. Кладёт на стек сначала элемент, затем `true`;
+    /// при исчерпании — только `false`. Следующая инструкция обычно `JumpIfFalse` → выход из цикла.
+    ForIterableNext(usize),
+
     // Финальные инструкции с относительными смещениями
     Jump8(i8),          // Безусловный переход с 8-битным смещением [-128, +127]
     Jump16(i16),        // Безусловный переход с 16-битным смещением [-32768, +32767]
@@ -68,7 +78,11 @@ pub enum OpCode {
     MakeArrayDynamic, // Создать массив из N элементов со стека (runtime размер: N на стеке, затем N элементов)
     GetArrayLength,   // Получить длину массива
     GetArrayElement,  // Получить элемент массива по индексу (индекс и массив на стеке)
+    /// Срез: на стеке снизу массив, затем start, stop, step (Null = пропуск); вершина = step.
+    GetArraySlice,
     SetArrayElement,  // Установить элемент массива/объекта по индексу (значение, индекс, массив/объект на стеке)
+    /// Присваивание срезу: value, start, stop, step (Null), container (вершина).
+    SetArraySlice,
     TableFilter,      // Фильтр таблицы: stack [table, column, op, value] → отфильтрованная таблица
     Clone,            // Глубокое клонирование значения на стеке (для массивов и таблиц)
     
@@ -117,6 +131,8 @@ impl OpCode {
             OpCode::Add => "Add",
             OpCode::Sub => "Sub",
             OpCode::Mul => "Mul",
+            OpCode::MatMul => "MatMul",
+            OpCode::BinaryOp(_) => "BinaryOp",
             OpCode::Div => "Div",
             OpCode::IntDiv => "IntDiv",
             OpCode::Mod => "Mod",
@@ -137,6 +153,8 @@ impl OpCode {
             OpCode::ForRange(_, _, _, _, _) => "ForRange",
             OpCode::ForRangeNext(_) => "ForRangeNext",
             OpCode::PopForRange => "PopForRange",
+            OpCode::CoerceForInIterable(_) => "CoerceForInIterable",
+            OpCode::ForIterableNext(_) => "ForIterableNext",
             OpCode::Jump8(_) => "Jump8",
             OpCode::Jump16(_) => "Jump16",
             OpCode::Jump32(_) => "Jump32",
@@ -150,7 +168,9 @@ impl OpCode {
             OpCode::MakeArrayDynamic => "MakeArrayDynamic",
             OpCode::GetArrayLength => "GetArrayLength",
             OpCode::GetArrayElement => "GetArrayElement",
+            OpCode::GetArraySlice => "GetArraySlice",
             OpCode::SetArrayElement => "SetArrayElement",
+            OpCode::SetArraySlice => "SetArraySlice",
             OpCode::TableFilter => "TableFilter",
             OpCode::Clone => "Clone",
             OpCode::MakeTuple(_) => "MakeTuple",

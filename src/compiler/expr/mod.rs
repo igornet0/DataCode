@@ -12,6 +12,8 @@ pub mod property;
 pub mod method_call;
 pub mod this;
 pub mod super_expr;
+pub mod lambda;
+pub mod call_value;
 
 use crate::parser::ast::Expr;
 use crate::common::error::LangError;
@@ -38,12 +40,18 @@ pub fn compile_expr(
             Ok(())
         }
         Expr::Variable { .. } => variable::compile_variable(ctx, expr),
-        Expr::Assign { .. } | Expr::AssignOp { .. } | Expr::UnpackAssign { .. } => {
+        Expr::Assign { .. }
+        | Expr::AssignOp { .. }
+        | Expr::AssignArray { .. }
+        | Expr::AssignArrayOp { .. }
+        | Expr::UnpackAssign { .. } => {
             assign::compile_assign(ctx, expr)
         }
         Expr::Unary { .. } => unary::compile_unary(ctx, expr),
         Expr::Binary { .. } => binary::compile_binary(ctx, expr),
         Expr::Call { .. } => call::compile_call(ctx, expr),
+        Expr::CallValue { .. } => call_value::compile_call_value(ctx, expr),
+        Expr::Lambda { .. } => lambda::compile_lambda(ctx, expr),
         Expr::ArrayLiteral { .. } | Expr::TupleLiteral { .. } | Expr::ObjectLiteral { .. } | Expr::ArrayIndex { .. } | Expr::TableFilter { .. } => {
             array::compile_array(ctx, expr)
         }

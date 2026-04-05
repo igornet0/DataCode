@@ -1,6 +1,6 @@
 // Разрешение переменных и подготовка к компиляции
 
-use crate::parser::ast::{Expr, Stmt, Param, Arg, UnpackPattern};
+use crate::parser::ast::{Expr, IndexExpr, Stmt, Param, Arg, UnpackPattern};
 use crate::common::error::LangError;
 use crate::semantic::scope::Scope;
 
@@ -234,6 +234,36 @@ impl Resolver {
                     }
                 }
             }
+            Expr::CallValue { callee, args, .. } => {
+                self.resolve_expr(callee)?;
+                for arg in args {
+                    match arg {
+                        Arg::Positional(expr) => {
+                            self.resolve_expr(expr)?;
+                        }
+                        Arg::Named { value, .. } => {
+                            self.resolve_expr(value)?;
+                        }
+                        Arg::UnpackObject(expr) => {
+                            self.resolve_expr(expr)?;
+                        }
+                    }
+                }
+            }
+            Expr::Lambda { params, body, .. } => {
+                for param in params {
+                    if let Some(ref default_expr) = param.default_value {
+                        self.resolve_expr(default_expr)?;
+                    }
+                }
+                self.begin_scope();
+                for param in params {
+                    self.declare(&param.name);
+                    self.define(&param.name);
+                }
+                self.resolve_expr(body)?;
+                self.end_scope();
+            }
             Expr::Unary { right, .. } => {
                 self.resolve_expr(right)?;
             }
@@ -267,7 +297,17 @@ impl Resolver {
             }
             Expr::ArrayIndex { array, index, .. } => {
                 self.resolve_expr(array)?;
-                self.resolve_expr(index)?;
+                self.resolve_index_expr(index)?;
+            }
+            Expr::AssignArray { array, index, value, .. } => {
+                self.resolve_expr(array)?;
+                self.resolve_index_expr(index)?;
+                self.resolve_expr(value)?;
+            }
+            Expr::AssignArrayOp { array, index, value, .. } => {
+                self.resolve_expr(array)?;
+                self.resolve_index_expr(index)?;
+                self.resolve_expr(value)?;
             }
             Expr::TableFilter { table, value, .. } => {
                 self.resolve_expr(table)?;
@@ -340,6 +380,24 @@ impl Resolver {
             }
         }
         Ok(())
+    }
+
+    fn resolve_index_expr(&mut self, index: &IndexExpr) -> Result<(), LangError> {
+        match index {
+            IndexExpr::Scalar(e) => self.resolve_expr(e),
+            IndexExpr::Slice { start, stop, step, .. } => {
+                if let Some(e) = start {
+                    self.resolve_expr(e)?;
+                }
+                if let Some(e) = stop {
+                    self.resolve_expr(e)?;
+                }
+                if let Some(e) = step {
+                    self.resolve_expr(e)?;
+                }
+                Ok(())
+            }
+        }
     }
 
     fn resolve_function(

@@ -108,7 +108,7 @@ mod tests {
     }
 
     #[test]
-    fn test_multiline_comment_basic() {
+    fn test_triple_quoted_string_basic() {
         let source = r#"let x = 10
 """
 This is a multiline comment
@@ -121,6 +121,7 @@ let y = 20"#;
             TokenKind::Identifier,
             TokenKind::Equal,
             TokenKind::Number,
+            TokenKind::String,
             TokenKind::Let,
             TokenKind::Identifier,
             TokenKind::Equal,
@@ -129,7 +130,7 @@ let y = 20"#;
     }
 
     #[test]
-    fn test_multiline_comment_in_function() {
+    fn test_triple_quoted_string_in_function() {
         let source = r#"fn test() {
     """
     Function documentation
@@ -143,6 +144,7 @@ let y = 20"#;
             TokenKind::LParen,
             TokenKind::RParen,
             TokenKind::LBrace,
+            TokenKind::String,
             TokenKind::Return,
             TokenKind::Number,
             TokenKind::RBrace,
@@ -150,7 +152,7 @@ let y = 20"#;
     }
 
     #[test]
-    fn test_multiline_comment_with_quotes_inside() {
+    fn test_triple_quoted_string_with_quotes_inside() {
         let source = r#"let x = 10
 """
 This comment has "quotes" inside
@@ -163,6 +165,7 @@ let y = 20"#;
             TokenKind::Identifier,
             TokenKind::Equal,
             TokenKind::Number,
+            TokenKind::String,
             TokenKind::Let,
             TokenKind::Identifier,
             TokenKind::Equal,
@@ -171,7 +174,7 @@ let y = 20"#;
     }
 
     #[test]
-    fn test_unterminated_multiline_comment() {
+    fn test_unterminated_triple_quoted_string() {
         let source = r#"let x = 10
 """
 This comment is not closed
@@ -180,12 +183,12 @@ let y = 20"#;
         let result = lexer.tokenize();
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert!(format!("{:?}", err).contains("Unterminated multiline comment"));
+        assert!(format!("{:?}", err).contains("Unterminated triple-quoted string"));
     }
 
     #[test]
-    fn test_string_vs_multiline_comment() {
-        // Обычная строка не должна интерпретироваться как комментарий
+    fn test_string_vs_triple_quoted() {
+        // Обычная строка — один токен String, не тройные кавычки
         let source = r#"let s = "hello""#;
         let tokens = tokenize(source);
         assert_eq!(tokens, vec![

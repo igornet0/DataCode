@@ -42,6 +42,69 @@ use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
+/// Preload native [`operator_descriptor`](vm::native_loader::merge_operator_descriptor_from_native_module_object)
+/// for every imported module name found in the token stream (any dylib), then build the parse-time registry.
+pub(crate) fn preload_operator_registry_for_parse(
+    tokens: &[lexer::Token],
+    base_path: Option<&std::path::Path>,
+) -> Result<std::sync::Arc<vm::operator_registry::OperatorRegistry>, LangError> {
+    use std::sync::Arc;
+    use vm::import_scan::collect_imported_module_names_from_tokens;
+    use vm::module_object::BUILTIN_END;
+    use vm::native_loader::{merge_operator_descriptor_from_native_module_object, try_load_native_module};
+    use vm::operator_registry::OperatorRegistry;
+    let mut reg = OperatorRegistry::with_builtins();
+    for module_name in collect_imported_module_names_from_tokens(tokens) {
+        let mut abi = Vec::new();
+        let mut libs = Vec::new();
+        match try_load_native_module(&module_name, base_path, BUILTIN_END, &mut abi, &mut libs, None) {
+            Ok((module_obj, _)) => {
+                merge_operator_descriptor_from_native_module_object(
+                    &module_obj,
+                    BUILTIN_END,
+                    &abi,
+                    &mut reg,
+                    &module_name,
+                )?;
+            }
+            Err(_) => {
+                // Not a native dylib (e.g. only a .dc package) — no operator_descriptor.
+            }
+        }
+    }
+    Ok(Arc::new(reg))
+}
+
+/// Preload [`crate::vm::native_call_registry::NativeCallParamRegistry`] from `native_call_descriptor` on each imported native dylib.
+pub(crate) fn preload_native_call_registry_for_parse(
+    tokens: &[lexer::Token],
+    base_path: Option<&std::path::Path>,
+) -> Result<std::sync::Arc<vm::native_call_registry::NativeCallParamRegistry>, LangError> {
+    use std::sync::Arc;
+    use vm::import_scan::collect_imported_module_names_from_tokens;
+    use vm::module_object::BUILTIN_END;
+    use vm::native_call_registry::NativeCallParamRegistry;
+    use vm::native_loader::{merge_native_call_descriptor_from_native_module_object, try_load_native_module};
+    let mut reg = NativeCallParamRegistry::new();
+    for module_name in collect_imported_module_names_from_tokens(tokens) {
+        let mut abi = Vec::new();
+        let mut libs = Vec::new();
+        match try_load_native_module(&module_name, base_path, BUILTIN_END, &mut abi, &mut libs, None) {
+            Ok((module_obj, _)) => {
+                merge_native_call_descriptor_from_native_module_object(
+                    &module_obj,
+                    BUILTIN_END,
+                    &abi,
+                    &mut reg,
+                    &module_name,
+                )?;
+            }
+            Err(_) => {}
+        }
+    }
+    Ok(Arc::new(reg))
+}
+
 /// Stable module UID from module path. Same path always yields same uid across VMs.
 pub(crate) fn module_uid(path: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -65,22 +128,26 @@ pub fn run_with_existing_vm(source: &str, existing_vm: Option<&mut Vm>) -> Resul
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize()?;
 
-    // 2. Парсинг
-    let mut parser = Parser::new(tokens);
-    let ast = parser.parse()?;
+    // 2. Парсинг (operator preload from token stream — any `import` of a native dylib)
+    let operator_registry = preload_operator_registry_for_parse(&tokens, None)?;
+    let native_call_registry = preload_native_call_registry_for_parse(&tokens, None)?;
+    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, operator_registry.clone());
+    let mut ast = parser.parse()?;
+    crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
 
     // 3. Семантический анализ
     let mut resolver = Resolver::new();
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new();
+    let mut compiler = Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
     let mut chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
 
     // 5. Выполнение на VM (VM всегда имеет владельца; при отсутствии existing_vm используем локальный VM, без Box::leak)
     let mut local_vm = Vm::new();
     let vm: &mut Vm = existing_vm.unwrap_or(&mut local_vm);
+    vm.set_operator_registry_snapshot(Some(operator_registry));
 
     vm.register_native_globals();
     // Main chunk first, preserving indices (75, 76, …) so bytecode LoadGlobal matches VM slots.
@@ -135,17 +202,22 @@ fn run_with_vm_into_vm(source: &str, vm: &mut Vm) -> Result<(Value, Vm), LangErr
     let tokens = lexer.tokenize()?;
 
     // 2. Парсинг
-    let mut parser = Parser::new(tokens);
-    let ast = parser.parse()?;
+    let operator_registry = preload_operator_registry_for_parse(&tokens, None)?;
+    let native_call_registry = preload_native_call_registry_for_parse(&tokens, None)?;
+    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, operator_registry.clone());
+    let mut ast = parser.parse()?;
+    crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
 
     // 3. Семантический анализ
     let mut resolver = Resolver::new();
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new();
+    let mut compiler = Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
+
+    vm.set_operator_registry_snapshot(Some(operator_registry));
 
     // 5. Добавляем функции в существующий VM
     vm.add_functions(functions);
@@ -243,7 +315,8 @@ pub fn get_main_entry_params(source: &str) -> Option<Vec<(String, Option<Value>)
     use parser::ast::Stmt;
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize().ok()?;
-    let mut parser = Parser::new(tokens);
+    let operator_registry = preload_operator_registry_for_parse(&tokens, None).ok()?;
+    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, operator_registry);
     let ast = parser.parse().ok()?;
     for stmt in &ast {
         if let Stmt::Function { name, params, .. } = stmt {
@@ -353,7 +426,7 @@ pub(crate) fn replace_function_with_module_function_in_exports(
     }
 }
 
-const BUILTIN_NATIVE_COUNT: usize = 75;
+const BUILTIN_NATIVE_COUNT: usize = crate::vm::globals::BUILTIN_GLOBAL_COUNT;
 
 /// Remap Value::Function(local_i) in chunk constants of merged module functions to global indices.
 /// After extending VM's function array with a module's functions, instances created by that module's
@@ -456,8 +529,15 @@ fn run_with_vm_internal_with_args(
     // Парсинг до выбора lib, чтобы при отсутствии __lib__.dc в директории искать папки по импортам (from X import ...)
     let mut lexer = Lexer::new_with_source_name(source, source_name_str.as_deref());
     let tokens = lexer.tokenize()?;
-    let mut parser = Parser::new_with_source_name(tokens, source_name_str.as_deref());
-    let ast = parser.parse()?;
+    let operator_registry = preload_operator_registry_for_parse(&tokens, base_for_lib.as_deref())?;
+    let native_call_registry = preload_native_call_registry_for_parse(&tokens, base_for_lib.as_deref())?;
+    let mut parser = Parser::new_with_source_name_and_registry(
+        tokens,
+        source_name_str.as_deref(),
+        operator_registry.clone(),
+    );
+    let mut ast = parser.parse()?;
+    crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
 
     // Определяем путь к __lib__.dc
     // Если lib_path указан, это означает, что мы хотим загрузить __lib__.dc для основного файла
@@ -540,7 +620,10 @@ fn run_with_vm_internal_with_args(
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new_with_source_name(source_name_str.as_deref());
+    let mut compiler = Compiler::new_with_source_and_native_registry(
+        source_name_str.as_deref(),
+        Some(native_call_registry),
+    );
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
     // Отладка: главный chunk должен содержать "Config" в global_names (from config import Config)
@@ -549,6 +632,7 @@ fn run_with_vm_internal_with_args(
 
     // 5. Выполнение на VM
     let mut vm = Vm::new();
+    vm.set_operator_registry_snapshot(Some(operator_registry));
     // Сразу задаём base_path и project_root в VM, чтобы импорты и load_env разрешались детерминированно
     let base = explicit_base_path.clone().or_else(file_import::get_base_path);
     vm.set_base_path(base.clone());
@@ -791,15 +875,18 @@ pub fn compile(source: &str) -> Result<(Chunk, Vec<bytecode::Function>), LangErr
     let tokens = lexer.tokenize()?;
 
     // 2. Парсинг
-    let mut parser = Parser::new(tokens);
-    let ast = parser.parse()?;
+    let operator_registry = preload_operator_registry_for_parse(&tokens, None)?;
+    let native_call_registry = preload_native_call_registry_for_parse(&tokens, None)?;
+    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, operator_registry);
+    let mut ast = parser.parse()?;
+    crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
 
     // 3. Семантический анализ
     let mut resolver = Resolver::new();
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new();
+    let mut compiler = Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
 
@@ -819,15 +906,18 @@ pub fn run_debug(source: &str) -> Result<Value, LangError> {
     let tokens = lexer.tokenize()?;
 
     // 2. Парсинг
-    let mut parser = Parser::new(tokens);
-    let ast = parser.parse()?;
+    let operator_registry = preload_operator_registry_for_parse(&tokens, None)?;
+    let native_call_registry = preload_native_call_registry_for_parse(&tokens, None)?;
+    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, operator_registry.clone());
+    let mut ast = parser.parse()?;
+    crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
 
     // 3. Семантический анализ
     let mut resolver = Resolver::new();
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new();
+    let mut compiler = Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
 
@@ -839,6 +929,7 @@ pub fn run_debug(source: &str) -> Result<Value, LangError> {
 
     // 5. Выполнение на VM
     let mut vm = Vm::new();
+    vm.set_operator_registry_snapshot(Some(operator_registry));
     vm.set_functions(functions, None, None);
     vm.register_native_globals();
     let result = vm.run(&chunk, None)?;

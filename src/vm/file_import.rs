@@ -6,7 +6,7 @@ use crate::vm::run_context::RunContext;
 use crate::vm::module_cache::{self, CachedModule};
 use std::path::{Path, PathBuf};
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, OnceLock};
 use crate::common::{error::LangError, value::Value};
 use crate::vm::Vm;
 
@@ -31,6 +31,38 @@ thread_local! {
     static BASE_PATH: std::cell::RefCell<Option<PathBuf>> = std::cell::RefCell::new(None);
     static EXECUTING_LIB: std::cell::RefCell<bool> = std::cell::RefCell::new(false);
     static DPM_PACKAGE_PATHS: std::cell::RefCell<Vec<PathBuf>> = std::cell::RefCell::new(Vec::new());
+}
+
+static NATIVE_LIB_OVERRIDE: OnceLock<Mutex<Option<PathBuf>>> = OnceLock::new();
+
+fn native_lib_mutex() -> &'static Mutex<Option<PathBuf>> {
+    NATIVE_LIB_OVERRIDE.get_or_init(|| Mutex::new(None))
+}
+
+/// Явный путь к `lib<name>.dylib` / `.so` / `.dll` из CLI `--lib` (общий для всех потоков, в т.ч. GUI).
+pub fn set_native_lib_override(path: Option<PathBuf>) {
+    if let Ok(mut g) = native_lib_mutex().lock() {
+        *g = path;
+    }
+}
+
+pub fn get_native_lib_override() -> Option<PathBuf> {
+    native_lib_mutex().lock().ok().and_then(|g| g.clone())
+}
+
+/// Сбрасывает override при выходе из `execute_file` (CLI).
+pub struct NativeLibOverrideGuard;
+
+impl Drop for NativeLibOverrideGuard {
+    fn drop(&mut self) {
+        set_native_lib_override(None);
+    }
+}
+
+/// Установить override и вернуть guard, который очистит при drop.
+pub fn push_native_lib_override(path: Option<PathBuf>) -> NativeLibOverrideGuard {
+    set_native_lib_override(path);
+    NativeLibOverrideGuard
 }
 
 /// Устанавливает базовый путь для текущего потока (updates RunContext when set, else legacy thread_local).
@@ -408,14 +440,27 @@ fn compile_module(source: &str, source_name: Option<&Path>) -> Result<(crate::by
     use crate::compiler::Compiler;
 
     let source_name_str = source_name.map(|p| p.to_string_lossy().into_owned());
+    let base_for_native = source_name.and_then(|p| p.parent());
     let mut lexer = Lexer::new_with_source_name(source, source_name_str.as_deref());
     let tokens = lexer.tokenize()?;
-    let mut parser = Parser::new_with_source_name(tokens, source_name_str.as_deref());
-    let ast = parser.parse()?;
+    let operator_registry =
+        crate::preload_operator_registry_for_parse(&tokens, base_for_native)?;
+    let native_call_registry =
+        crate::preload_native_call_registry_for_parse(&tokens, base_for_native)?;
+    let mut parser = Parser::new_with_source_name_and_registry(
+        tokens,
+        source_name_str.as_deref(),
+        operator_registry,
+    );
+    let mut ast = parser.parse()?;
+    crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
     let import_names = import_module_names_from_stmts(&ast);
     let mut resolver = Resolver::new_with_source_name(source_name_str.as_deref());
     resolver.resolve(&ast)?;
-    let mut compiler = Compiler::new_with_source_name(source_name_str.as_deref());
+    let mut compiler = Compiler::new_with_source_and_native_registry(
+        source_name_str.as_deref(),
+        Some(native_call_registry),
+    );
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
     Ok((chunk, functions, import_names))
@@ -450,14 +495,18 @@ fn run_compiled_module(
         vm.get_globals_mut().resize(needed_size, crate::vm::global_slot::default_global_slot());
     }
     vm.register_native_globals();
-    vm.register_all_builtin_modules().map_err(|e| {
-        LangError::runtime_error(format!("Failed to register built-in modules: {}", e), 0)
-    })?;
+    // Must match run_with_existing_vm (lib.rs): preserve chunk indices BEFORE register_all_builtin_modules.
+    // Otherwise builtins (e.g. settings_env) get a new slot at globals.len(), then preserve_indices
+    // adds a second global_names entry at the compiler's index while globals[that_idx] stays a builtin
+    // NativeFunction; global_index_by_name returns min → ImportFrom loads NativeFunction as "module".
     vm.ensure_globals_from_chunk_preserve_indices(chunk);
-    vm.ensure_builtin_globals_high_indices();
     for f in functions {
         vm.ensure_globals_from_chunk(&f.chunk);
     }
+    vm.register_all_builtin_modules().map_err(|e| {
+        LangError::runtime_error(format!("Failed to register built-in modules: {}", e), 0)
+    })?;
+    vm.ensure_builtin_globals_high_indices();
     vm.ensure_exception_constructors();
     vm.set_functions(functions.to_vec(), None, None);
     vm.run(chunk, None)?;

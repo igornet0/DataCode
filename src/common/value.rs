@@ -6,9 +6,69 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use crate::common::table::Table;
+use crate::common::value_store::ValueId;
 use crate::plot::{Image, Figure, Axis, PlotWindowHandle};
 use crate::database_engine::cluster::DatabaseCluster;
 use crate::database_engine::engine::DatabaseEngine;
+
+/// Backing for [`Value::ArrayView`]: store cell or shared heap vec (zero-copy slice / chunk).
+#[derive(Debug, Clone)]
+pub enum ArrayViewSource {
+    /// `base_id` refers to [`crate::common::value_store::ValueCell::Array`] in the VM store.
+    Store { base_id: ValueId },
+    /// Same `Rc` as [`Value::Array`] after materialization from store.
+    Heap(Rc<RefCell<Vec<Value>>>),
+}
+
+/// Dense byte payload (e.g. `read_file_bin`): one `Vec<u8>` shared by slice views, no per-byte `Value::Number`.
+#[derive(Debug, Clone)]
+pub struct ByteBuffer {
+    pub bytes: Rc<Vec<u8>>,
+    pub offset: usize,
+    pub len: usize,
+}
+
+impl ByteBuffer {
+    pub fn from_vec(v: Vec<u8>) -> Self {
+        let len = v.len();
+        Self {
+            bytes: Rc::new(v),
+            offset: 0,
+            len,
+        }
+    }
+
+    pub fn slice_range(&self, start: usize, end: usize) -> Option<Self> {
+        if start > end || end > self.len {
+            return None;
+        }
+        Some(Self {
+            bytes: Rc::clone(&self.bytes),
+            offset: self.offset + start,
+            len: end - start,
+        })
+    }
+}
+
+/// Contiguous view `[offset .. offset + length)` into a backing array.
+#[derive(Debug, Clone)]
+pub struct ArrayViewData {
+    pub source: ArrayViewSource,
+    pub offset: usize,
+    pub length: usize,
+}
+
+impl PartialEq for ArrayViewData {
+    fn eq(&self, other: &Self) -> bool {
+        self.offset == other.offset
+            && self.length == other.length
+            && match (&self.source, &other.source) {
+                (ArrayViewSource::Store { base_id: a }, ArrayViewSource::Store { base_id: b }) => a == b,
+                (ArrayViewSource::Heap(ra), ArrayViewSource::Heap(rb)) => Rc::ptr_eq(ra, rb),
+                _ => false,
+            }
+    }
+}
 
 pub enum Value {
     Number(f64),
@@ -38,8 +98,117 @@ pub enum Value {
     DatabaseEngine(Rc<RefCell<DatabaseEngine>>),
     DatabaseCluster(Rc<RefCell<DatabaseCluster>>),
     Enumerate { data: Rc<RefCell<Vec<Value>>>, start: i64 }, // enum(iterable): lazy (idx, element) wrapper
+    /// Zero-copy view; see [`ArrayViewData`].
+    ArrayView(ArrayViewData),
+    /// Raw bytes from a file or similar; slice with `ByteBuffer::slice_range` / VM slice ops.
+    ByteBuffer(ByteBuffer),
+    /// Lazy functional pipeline (`map` / `filter`); single-pass iteration, no intermediate array.
+    Iterable(Rc<RefCell<IterableInner>>),
     Null,
     Ellipsis, // ... (e.g. Field(...) for required field)
+}
+
+/// Callback reference for lazy iterators (avoids storing full [`Value`] in [`IterableInner`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CallableSlot {
+    UserFunction(usize),
+    NativeFunction(usize),
+}
+
+/// Backing for lazy [`IterableInner::Chunks`] (yield one row at a time in `for` / `next`).
+#[derive(Debug, Clone)]
+pub enum ChunkSource {
+    Array(Rc<RefCell<Vec<Value>>>),
+    ArrayView(ArrayViewData),
+    Bytes(ByteBuffer),
+}
+
+/// Lazy iterator graph: arrays, views, `map`, `filter` (stacked via shared [`Rc`]).
+#[derive(Debug)]
+pub enum IterableInner {
+    Array {
+        array: Rc<RefCell<Vec<Value>>>,
+        index: usize,
+    },
+    ArrayView {
+        view: ArrayViewData,
+        index: usize,
+    },
+    Map {
+        source: Rc<RefCell<IterableInner>>,
+        func: CallableSlot,
+        fn_arity: u8,
+        index: usize,
+    },
+    Filter {
+        source: Rc<RefCell<IterableInner>>,
+        pred: CallableSlot,
+        fn_arity: u8,
+        index: usize,
+    },
+    /// `enum(...)` / `for` over `Value::Enumerate`: yields `(index, element)` tuples like `get_enumerate`.
+    Enumerate {
+        data: Rc<RefCell<Vec<Value>>>,
+        start: i64,
+        index: usize,
+    },
+    /// `array.chunk(n)` / `view.chunk(n)`: yields each chunk as an owned array without building all chunks upfront.
+    Chunks {
+        source: ChunkSource,
+        chunk_size: usize,
+        chunk_index: usize,
+    },
+}
+
+impl Clone for IterableInner {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Array { array, .. } => Self::Array {
+                array: array.clone(),
+                index: 0,
+            },
+            Self::ArrayView { view, .. } => Self::ArrayView {
+                view: view.clone(),
+                index: 0,
+            },
+            Self::Map {
+                source,
+                func,
+                fn_arity,
+                ..
+            } => Self::Map {
+                source: Rc::new(RefCell::new(source.borrow().clone())),
+                func: func.clone(),
+                fn_arity: *fn_arity,
+                index: 0,
+            },
+            Self::Filter {
+                source,
+                pred,
+                fn_arity,
+                ..
+            } => Self::Filter {
+                source: Rc::new(RefCell::new(source.borrow().clone())),
+                pred: pred.clone(),
+                fn_arity: *fn_arity,
+                index: 0,
+            },
+            Self::Enumerate { data, start, .. } => Self::Enumerate {
+                data: data.clone(),
+                start: *start,
+                index: 0,
+            },
+            Self::Chunks {
+                source,
+                chunk_size,
+                ..
+            } => Self::Chunks {
+                source: source.clone(),
+                chunk_size: *chunk_size,
+                chunk_index: 0,
+            },
+        }
+    }
 }
 
 impl std::fmt::Debug for Value {
@@ -87,6 +256,16 @@ impl std::fmt::Debug for Value {
                     Value::DatabaseEngine(e) => f.debug_tuple("DatabaseEngine").field(&e.borrow()).finish(),
                     Value::DatabaseCluster(c) => f.debug_tuple("DatabaseCluster").field(&c.borrow()).finish(),
                     Value::Enumerate { data, start } => f.debug_struct("Enumerate").field("data", &data.borrow()).field("start", start).finish(),
+                    Value::ArrayView(av) => f
+                        .debug_struct("ArrayView")
+                        .field("offset", &av.offset)
+                        .field("length", &av.length)
+                        .finish_non_exhaustive(),
+                    Value::Iterable(_) => write!(f, "Iterable(<lazy>)"),
+                    Value::ByteBuffer(b) => f
+                        .debug_struct("ByteBuffer")
+                        .field("len", &b.len)
+                        .finish_non_exhaustive(),
                     Value::Null => write!(f, "Null"),
                     Value::Ellipsis => write!(f, "Ellipsis"),
                 }
@@ -102,6 +281,7 @@ impl PartialEq for Value {
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => *a.borrow() == *b.borrow(),
+            (Value::ArrayView(a), Value::ArrayView(b)) => a == b,
             (Value::Tuple(a), Value::Tuple(b)) => *a.borrow() == *b.borrow(),
             (Value::Function(a), Value::Function(b)) => a == b,
             (Value::ModuleFunction { module_uid: a_uid, local_index: a_li }, Value::ModuleFunction { module_uid: b_uid, local_index: b_li }) => a_uid == b_uid && a_li == b_li,
@@ -136,6 +316,12 @@ impl PartialEq for Value {
             (Value::DatabaseEngine(a), Value::DatabaseEngine(b)) => Rc::ptr_eq(a, b),
             (Value::DatabaseCluster(a), Value::DatabaseCluster(b)) => Rc::ptr_eq(a, b),
             (Value::Enumerate { data: a, start: sa }, Value::Enumerate { data: b, start: sb }) => Rc::ptr_eq(a, b) && sa == sb,
+            (Value::Iterable(a), Value::Iterable(b)) => Rc::ptr_eq(a, b),
+            (Value::ByteBuffer(a), Value::ByteBuffer(b)) => {
+                a.len == b.len
+                    && a.bytes.as_ptr() == b.bytes.as_ptr()
+                    && a.offset == b.offset
+            }
             (Value::Null, Value::Null) => true,
             (Value::Ellipsis, Value::Ellipsis) => true,
             _ => false,
@@ -157,6 +343,7 @@ impl Value {
             Value::Number(n) => *n != 0.0,
             Value::String(s) => !s.is_empty(),  // Пустая строка = false
             Value::Array(arr) => !arr.borrow().is_empty(),
+            Value::ArrayView(av) => av.length > 0,
             Value::Tuple(tuple) => !tuple.borrow().is_empty(),
             Value::Path(p) => !p.as_os_str().is_empty(),  // Путь не пустой = true
             Value::Uuid(_, _) => true,  // UUID всегда truthy
@@ -177,6 +364,8 @@ impl Value {
             Value::DatabaseEngine(_) => true,
             Value::DatabaseCluster(c) => !c.borrow().connections.is_empty(),
             Value::Enumerate { data, .. } => !data.borrow().is_empty(),
+            Value::Iterable(_) => true,
+            Value::ByteBuffer(b) => b.len > 0,
             Value::Ellipsis => true,
             _ => true,
         }
@@ -197,6 +386,12 @@ impl Value {
                 let arr_ref = arr.borrow();
                 let elements: Vec<String> = arr_ref.iter().map(|v| v.to_string()).collect();
                 format!("[{}]", elements.join(", "))
+            }
+            Value::ArrayView(av) => {
+                format!("<array view len={}>", av.length)
+            }
+            Value::ByteBuffer(b) => {
+                format!("<bytes len={}>", b.len)
             }
             Value::Tuple(tuple) => {
                 let tuple_ref = tuple.borrow();
@@ -291,6 +486,17 @@ impl Value {
                 format!("<axis>")
             }
             Value::Enumerate { .. } => "<enumerate>".to_string(),
+            Value::Iterable(rc) => {
+                let ptr = Rc::as_ptr(rc);
+                let kind = match &*rc.borrow() {
+                    IterableInner::Map { .. } => "map",
+                    IterableInner::Filter { .. } => "filter",
+                    IterableInner::Enumerate { .. } => "enumerate",
+                    IterableInner::Chunks { .. } => "chunk",
+                    IterableInner::Array { .. } | IterableInner::ArrayView { .. } => "iterable",
+                };
+                format!("<{} object at {:p}>", kind, ptr)
+            }
             Value::DatabaseEngine(engine) => {
                 let e = engine.borrow();
                 format!("<database_engine: {}>", e.url)
@@ -348,7 +554,7 @@ impl Hash for Value {
             }
             // Для остальных типов не реализуем Hash - они не могут быть ключами кэша
             _ => {
-                panic!("Cannot hash complex types (Array, Tuple, Table, Object, Function, Path)");
+                panic!("Cannot hash complex types (Array, Tuple, Table, Object, Function, Path, Iterable)");
             }
         }
     }
@@ -417,6 +623,10 @@ impl Clone for Value {
             Value::DatabaseEngine(engine) => Value::DatabaseEngine(engine.clone()),
             Value::DatabaseCluster(cluster) => Value::DatabaseCluster(cluster.clone()),
             Value::Enumerate { data, start } => Value::Enumerate { data: data.clone(), start: *start },
+            Value::ArrayView(av) => Value::ArrayView(av.clone()),
+            // Share iterator state (Rc) — deep clone would reset IterableInner indices and break for-in / iterable_next.
+            Value::Iterable(rc) => Value::Iterable(Rc::clone(rc)),
+            Value::ByteBuffer(b) => Value::ByteBuffer(b.clone()),
             Value::Null => Value::Null,
             Value::Ellipsis => Value::Ellipsis,
         }

@@ -4,6 +4,13 @@ use crate::common::value::Value;
 use crate::lexer::TokenKind;
 use serde::{Deserialize, Serialize};
 
+/// Infix operator: built-in (`TokenKind`) or user-registered plugin (`symbol` + logical `name` for VM).
+#[derive(Debug, Clone, PartialEq)]
+pub enum BinaryOpKind {
+    Builtin(TokenKind),
+    Plugin { symbol: String, name: String },
+}
+
 /// Компонент аннотации типа: имя типа (str, int, …) или строковый литерал ("dev", "prod").
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TypePart {
@@ -138,7 +145,7 @@ pub enum Expr {
     },
     Binary {
         left: Box<Expr>,
-        op: TokenKind,
+        op: BinaryOpKind,
         right: Box<Expr>,
         line: usize,
     },
@@ -150,6 +157,19 @@ pub enum Expr {
     Call {
         name: String,
         args: Vec<Arg>,
+        line: usize,
+    },
+    /// Вызов значения-функции: `(fn(x) => x)(1)` или `f()(2)` когда callee — выражение.
+    CallValue {
+        callee: Box<Expr>,
+        args: Vec<Arg>,
+        line: usize,
+    },
+    /// Анонимная функция: `fn(x, i) => x + i`
+    Lambda {
+        params: Vec<Param>,
+        return_type: Option<Vec<TypePart>>,
+        body: Box<Expr>,
         line: usize,
     },
     ArrayLiteral {
@@ -164,9 +184,25 @@ pub enum Expr {
         elements: Vec<Expr>,
         line: usize,
     },
+    /// Скалярный индекс или срез `start:stop:step` внутри `[]`.
     ArrayIndex {
         array: Box<Expr>,
-        index: Box<Expr>,
+        index: IndexExpr,
+        line: usize,
+    },
+    /// Присваивание в элемент/диапазон массива: `arr[i] = v`, `arr[a:b] = rhs`.
+    AssignArray {
+        array: Box<Expr>,
+        index: IndexExpr,
+        value: Box<Expr>,
+        line: usize,
+    },
+    /// Составное присваивание: `arr[i] += v`, `arr[a:b] += rhs` (rhs применяется поэлементно только для скалярного индекса; для среза — ошибка или не поддерживать).
+    AssignArrayOp {
+        array: Box<Expr>,
+        index: IndexExpr,
+        op: TokenKind,
+        value: Box<Expr>,
         line: usize,
     },
     /// Фильтр таблицы: table["col" op value] → только строки, где col op value
@@ -216,6 +252,18 @@ pub enum Expr {
     },
 }
 
+/// Выражение внутри квадратных скобок: один индекс или срез.
+#[derive(Debug, Clone)]
+pub enum IndexExpr {
+    Scalar(Box<Expr>),
+    Slice {
+        start: Option<Box<Expr>>,
+        stop: Option<Box<Expr>>,
+        step: Option<Box<Expr>>,
+        line: usize,
+    },
+}
+
 /// Сегмент интерполированной строки: литерал или выражение.
 #[derive(Debug, Clone)]
 pub enum InterpolatedSegment {
@@ -242,10 +290,14 @@ impl Expr {
             Expr::Binary { line, .. } => *line,
             Expr::Unary { line, .. } => *line,
             Expr::Call { line, .. } => *line,
+            Expr::CallValue { line, .. } => *line,
+            Expr::Lambda { line, .. } => *line,
             Expr::ArrayLiteral { line, .. } => *line,
             Expr::ObjectLiteral { line, .. } => *line,
             Expr::TupleLiteral { line, .. } => *line,
             Expr::ArrayIndex { line, .. } => *line,
+            Expr::AssignArray { line, .. } => *line,
+            Expr::AssignArrayOp { line, .. } => *line,
             Expr::TableFilter { line, .. } => *line,
             Expr::Property { line, .. } => *line,
             Expr::MethodCall { line, .. } => *line,

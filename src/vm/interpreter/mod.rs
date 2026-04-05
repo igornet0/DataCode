@@ -9,4 +9,5 @@ pub(crate) use element as element_ops;
 pub(crate) mod helpers;
 pub mod memory;
 pub mod object;
+pub mod for_iterable;
 pub mod stack_ops;

@@ -13,6 +13,11 @@ pub fn resolve_function_args(
     function_info: Option<(usize, &crate::bytecode::Function)>,
     line: usize,
     file: Option<&str>,
+    // If `Some`, `function_name` came from `from <module> import ...` (value is the module name).
+    // Enables named-only kwargs on imported plugin namespaces (lexicographic param order).
+    imported_from_module: Option<&str>,
+    // When set, use this list instead of natives::get_native_function_params for named-arg resolution.
+    override_native_param_names: Option<&[&str]>,
 ) -> Result<Vec<Arg>, LangError> {
     let file_owned = file.map(String::from);
     // Если это встроенная функция, проверяем, поддерживает ли она именованные аргументы
@@ -22,7 +27,12 @@ pub fn resolve_function_args(
         
         if has_named {
             // Проверяем, поддерживает ли эта нативная функция именованные аргументы
-            if let Some(param_names) = natives::get_native_function_params(function_name) {
+            let param_names_opt: Option<Vec<String>> = if let Some(override_names) = override_native_param_names {
+                Some(override_names.iter().map(|s| s.to_string()).collect())
+            } else {
+                natives::get_native_function_params(function_name)
+            };
+            if let Some(param_names) = param_names_opt {
                 // Нативная функция поддерживает именованные аргументы
                 // Разрешаем их аналогично пользовательским функциям
                 let mut resolved = vec![None; param_names.len()];
@@ -113,8 +123,33 @@ pub fn resolve_function_args(
                     }
                 }
                 return Ok(final_args);
+            } else if imported_from_module.is_some() {
+                // Импорт из модуля (часто нативный плагин): только именованные аргументы — порядок по имени
+                // параметра (лексикографически), без привязки хоста к конкретному плагину.
+                let only_named = args.iter().all(|a| matches!(a, Arg::Named { .. }));
+                if only_named && !args.is_empty() {
+                    let mut pairs: Vec<(&str, Expr)> = Vec::new();
+                    for arg in args {
+                        if let Arg::Named { name, value } = arg {
+                            pairs.push((name.as_str(), value.clone()));
+                        }
+                    }
+                    pairs.sort_by(|a, b| a.0.cmp(b.0));
+                    let final_args: Vec<Arg> = pairs
+                        .into_iter()
+                        .map(|(_, value)| Arg::Positional(value))
+                        .collect();
+                    return Ok(final_args);
+                }
+                return Err(LangError::ParseError {
+                    message: format!(
+                        "Named arguments are not supported for built-in function '{}'",
+                        function_name
+                    ),
+                    line,
+                    file: file_owned.clone(),
+                });
             } else {
-                // Нативная функция не поддерживает именованные аргументы (например, print, min, max)
                 return Err(LangError::ParseError {
                     message: format!(
                         "Named arguments are not supported for built-in function '{}'",

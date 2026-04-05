@@ -93,6 +93,7 @@ fn try_load_native_module_direct_smoke() {
         BUILTIN_END,
         &mut abi_natives,
         &mut loaded_libs,
+        None,
     );
     assert!(
         r.is_ok(),
@@ -142,6 +143,27 @@ add(2, 3) + mul(2, 5)
     file_import::set_dpm_package_paths(vec![]);
 
     assert_number(result, 15.0);
+}
+
+#[test]
+fn native_math_module_iterable_arg_materializes_to_array() {
+    let _g = DPM_PATHS_TEST_LOCK.lock().expect("lock");
+    build_math_native_cdylib().expect("build math_native cdylib");
+    let copied = copy_dylib_to_packages_layout().expect("copy dylib to packages layout");
+    assert!(copied.is_file());
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let base = tmp.path();
+
+    file_import::set_dpm_package_paths(vec![packages_root()]);
+    let source = r#"
+from math_native import sum_array
+sum_array(map([1, 2, 3], fn(x) => x * 2))
+"#;
+    let result = run_with_base_path(source, base);
+    file_import::set_dpm_package_paths(vec![]);
+
+    assert_number(result, 12.0);
 }
 
 #[test]

@@ -1,62 +1,9 @@
 #!/usr/bin/env bash
 # DataCode Installation Script — installs the `data-code` interpreter only.
-# Optional: copy a prebuilt ML native library (libml) from DATACODE_ML_LIB_DIR into packages/ml.
-# ML-Datacode-lib is not built here; GPU/Metal/CUDA are determined by how libml was built.
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# -----------------------------------------------------------------------------
-# Optional ML native library (cdylib): libml.dylib / libml.so / ml.dll
-#   DATACODE_ML_LIB_DIR     — directory containing the prebuilt library (required to copy)
-#   DATACODE_ML_PACKAGE_DIR — destination directory (default: $SCRIPT_DIR/packages/ml)
-#   DATACODE_ML_LIB_NAME    — filename override (default: platform default below)
-# -----------------------------------------------------------------------------
-
-default_ml_lib_name() {
-    case "$(uname -s 2>/dev/null || echo unknown)" in
-        Darwin) echo "libml.dylib" ;;
-        Linux) echo "libml.so" ;;
-        MINGW*|MSYS*|CYGWIN*) echo "ml.dll" ;;
-        *) echo "libml.so" ;;
-    esac
-}
-
-install_ml_artifact() {
-    local lib_dir="${DATACODE_ML_LIB_DIR:-}"
-    local pkg_dir="${DATACODE_ML_PACKAGE_DIR:-}"
-    local lib_name="${DATACODE_ML_LIB_NAME:-}"
-
-    if [ -z "$lib_dir" ]; then
-        echo ""
-        echo "ℹ️  ML native library: DATACODE_ML_LIB_DIR not set — skipping copy (optional)."
-        echo "   To install a prebuilt libml, set e.g.:"
-        echo "   export DATACODE_ML_LIB_DIR=/path/to/dir/with/libml.dylib"
-        echo "   then re-run this script or: make ml-link"
-        return 0
-    fi
-
-    if [ -z "$pkg_dir" ]; then
-        pkg_dir="$SCRIPT_DIR/packages/ml"
-    fi
-
-    if [ -z "$lib_name" ]; then
-        lib_name="$(default_ml_lib_name)"
-    fi
-
-    local src="$lib_dir/$lib_name"
-    if [ ! -f "$src" ]; then
-        echo "⚠️  ML library not found: $src"
-        echo "   Check DATACODE_ML_LIB_DIR and DATACODE_ML_LIB_NAME."
-        return 0
-    fi
-
-    mkdir -p "$pkg_dir"
-    cp -f "$src" "$pkg_dir/$lib_name"
-    chmod 755 "$pkg_dir/$lib_name" 2>/dev/null || true
-    echo "✅ Copied ML library to $pkg_dir/$lib_name"
-}
 
 # macOS: install icon on the installed datacode binary
 install_icon_to_executable() {
@@ -192,12 +139,6 @@ EOF
     echo "💡 Tip: Install PyObjC for better compatibility: pip3 install pyobjc-framework-Cocoa"
     return 1
 }
-
-# Optional: only copy ML artifact (for make ml-link)
-if [ "${1:-}" = "--ml-artifact-only" ]; then
-    install_ml_artifact
-    exit 0
-fi
 
 echo "🧠 DataCode Installation Script"
 echo "==============================="

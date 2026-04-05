@@ -1,6 +1,6 @@
 /// Компиляция массивов, кортежей и индексации
 
-use crate::parser::ast::Expr;
+use crate::parser::ast::{Expr, IndexExpr};
 use crate::lexer::TokenKind;
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
@@ -77,12 +77,24 @@ pub fn compile_array(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
         }
         Expr::ArrayIndex { array, index, line } => {
             *ctx.current_line = *line;
-            // Компилируем выражение массива (оно должно быть на стеке первым)
             expr::compile_expr(ctx, array)?;
-            // Компилируем индексное выражение
-            expr::compile_expr(ctx, index)?;
-            // Получаем элемент массива по индексу
-            ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
+            match index {
+                IndexExpr::Scalar(e) => {
+                    expr::compile_expr(ctx, e)?;
+                    ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                }
+                IndexExpr::Slice {
+                    start,
+                    stop,
+                    step,
+                    line: sl,
+                } => {
+                    emit_slice_bound(ctx, start.as_ref(), *sl)?;
+                    emit_slice_bound(ctx, stop.as_ref(), *sl)?;
+                    emit_slice_bound(ctx, step.as_ref(), *sl)?;
+                    ctx.chunk.write_with_line(OpCode::GetArraySlice, *sl);
+                }
+            }
             Ok(())
         }
         Expr::TableFilter { table, column, op, value, line } => {
@@ -112,5 +124,19 @@ pub fn compile_array(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
             file: None,
         }),
     }
+}
+
+pub(crate) fn emit_slice_bound(
+    ctx: &mut CompilationContext,
+    bound: Option<&Box<Expr>>,
+    line: usize,
+) -> Result<(), LangError> {
+    if let Some(e) = bound {
+        expr::compile_expr(ctx, e)?;
+    } else {
+        let idx = ctx.chunk.add_constant(Value::Null);
+        ctx.chunk.write_with_line(OpCode::Constant(idx), line);
+    }
+    Ok(())
 }
 

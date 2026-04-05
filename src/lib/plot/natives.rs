@@ -3,6 +3,8 @@
 use crate::common::value::Value;
 use crate::plot::{Image, Window, Figure, GuiCommand, system, PlotContext, PlotWindowHandle};
 use crate::plot::command::{ChartData as CommandChartData, ChartType as CommandChartType, FigureData, AxisData};
+use crate::vm::native_loader::call_abi_native;
+use crate::vm::vm::VM_CALL_CONTEXT;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -701,7 +703,7 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         return Value::Null;
     }
 
-    // Extract image (from path or tensor)
+    // Extract image (from path)
     let image = match &args[0] {
         Value::String(_) | Value::Path(_) => {
             // Load from path
@@ -825,7 +827,7 @@ pub fn native_plot_show_grid(args: &[Value]) -> Value {
         (dim, dim)
     };
 
-    // Convert all images/tensors to Image objects
+    // Convert all images to Image objects
     let mut images = Vec::new();
     let mut titles = Vec::new();
     
@@ -979,6 +981,82 @@ pub fn native_plot_subplots(args: &[Value]) -> Value {
     Value::Figure(figure_rc)
 }
 
+/// ML tensor (`PluginOpaque` tag 0) → plot `Image` via `native_plugin_call(_, "shape")` / `"data"`.
+fn plugin_tensor_to_plot_image(tensor: &Value) -> Option<Rc<RefCell<Image>>> {
+    let Value::PluginOpaque { tag, .. } = tensor else {
+        return None;
+    };
+    if *tag != 0 {
+        return None;
+    }
+    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow())?;
+    unsafe {
+        let vm = &*vm_ptr;
+        let native_idx = vm.plugin_call_native?;
+        let builtin_count = vm.builtin_natives_count();
+        let abi_natives = vm.get_abi_natives();
+        if native_idx < builtin_count || native_idx >= builtin_count + abi_natives.len() {
+            return None;
+        }
+        let abi_fn = abi_natives[native_idx - builtin_count];
+
+        let shape_val = call_abi_native(
+            abi_fn,
+            &[tensor.clone(), Value::String("shape".to_string())],
+            Some((vm.value_store(), vm.heavy_store())),
+        );
+        if crate::vm::native_loader::take_last_abi_error().is_some() {
+            return None;
+        }
+        let data_val = call_abi_native(
+            abi_fn,
+            &[tensor.clone(), Value::String("data".to_string())],
+            Some((vm.value_store(), vm.heavy_store())),
+        );
+        if crate::vm::native_loader::take_last_abi_error().is_some() {
+            return None;
+        }
+        let shape = value_array_to_usize(&shape_val)?;
+        let data = value_array_to_f32(&data_val)?;
+        let img = Image::from_tensor_shape_data(&shape, &data).ok()?;
+        Some(Rc::new(RefCell::new(img)))
+    }
+}
+
+fn value_array_to_usize(v: &Value) -> Option<Vec<usize>> {
+    match v {
+        Value::Array(arr) => {
+            let r = arr.borrow();
+            let mut out = Vec::with_capacity(r.len());
+            for x in r.iter() {
+                match x {
+                    Value::Number(n) if *n >= 0.0 && n.fract() == 0.0 => out.push(*n as usize),
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
+fn value_array_to_f32(v: &Value) -> Option<Vec<f32>> {
+    match v {
+        Value::Array(arr) => {
+            let r = arr.borrow();
+            let mut out = Vec::with_capacity(r.len());
+            for x in r.iter() {
+                match x {
+                    Value::Number(n) => out.push(*n as f32),
+                    _ => return None,
+                }
+            }
+            Some(out)
+        }
+        _ => None,
+    }
+}
+
 /// Display image in axis
 /// axis.imshow(image) -> Null
 /// axis.imshow(image, cmap='gray') -> Null
@@ -1007,11 +1085,11 @@ pub fn native_axis_imshow(args: &[Value]) -> Value {
         },
     };
 
-    // Extract image (from tensor or Image)
-    // Find tensor/image in args (skip the axis we already found)
+    // Extract image (from Image)
+    // Find image in args (skip the axis we already found)
     let image = args.iter().find_map(|arg| {
         match arg {
-            Value::PluginOpaque { .. } => None,
+            Value::PluginOpaque { tag, .. } if *tag == 0 => plugin_tensor_to_plot_image(arg),
             Value::Image(img) => {
                 Some(img.clone())
             }

@@ -7,4 +7,5 @@ pub use value_store::ValueStore;
 pub use tagged_value::TaggedValue;
 pub mod table;
 pub mod debug;
+pub mod array_slice;
 

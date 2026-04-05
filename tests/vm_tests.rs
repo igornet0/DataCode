@@ -1,6 +1,8 @@
 // Тесты для виртуальной машины
 #[cfg(test)]
 mod tests {
+    use data_code::bytecode::OpCode;
+    use data_code::compile;
     use data_code::{run, Value};
 
     // Вспомогательная функция для проверки числового результата
@@ -52,6 +54,33 @@ mod tests {
             add(5, 3)
         "#;
         assert_number_result(source, 8.0);
+    }
+
+    #[test]
+    fn test_lambda_basic() {
+        let source = r#"
+            let f = fn(x, i) => x + i
+            f(1, 2)
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_lambda_closure_capture() {
+        let source = r#"
+            let a = 1
+            let g = fn(x) => x + a
+            g(10)
+        "#;
+        assert_number_result(source, 11.0);
+    }
+
+    #[test]
+    fn test_lambda_immediate_call() {
+        let source = r#"
+            (fn(x) => x * 2)(3)
+        "#;
+        assert_number_result(source, 6.0);
     }
 
     #[test]
@@ -591,6 +620,20 @@ mod tests {
         );
     }
 
+    /// `push(a, x)` must mutate the shared array: `b` aliases `a` (same ValueId), both see new length.
+    /// Regression for native_call fast path (no new ValueId for arg0 that would break alias).
+    #[test]
+    fn test_push_preserves_array_alias_two_variables() {
+        let source = r#"
+            let a = []
+            let b = a
+            push(a, 1)
+            push(a, 2)
+            len(a) * 10 + len(b)
+        "#;
+        assert_number_result(source, 22.0);
+    }
+
     /// Stress: repeated StoreGlobal/LoadGlobal with arrays and tables; then multiple run+reset cycles to exercise arena recycling and Inline→Heap cache.
     #[test]
     fn test_global_arrays_tables_stress_and_arena_recycling() {
@@ -636,6 +679,235 @@ mod tests {
             "value_store bounded after {} reset cycles",
             CYCLES
         );
+    }
+
+    #[test]
+    fn test_array_slice_read_negative_and_copy() {
+        let source = r#"
+            let arr = [10, 20, 30, 40, 50]
+            let a = len(arr[1:4])
+            let b = arr[-1]
+            let c = len(arr[:])
+            a + b + c
+        "#;
+        assert_number_result(source, 58.0);
+    }
+
+    #[test]
+    fn test_array_slice_step_and_reverse() {
+        let source = r#"
+            let a = [1, 2, 3, 4, 5, 6]
+            len(a[::2]) + len(a[1::2]) + len(a[::-1])
+        "#;
+        assert_number_result(source, 12.0);
+    }
+
+    #[test]
+    fn test_array_slice_assign_and_delete() {
+        let source = r#"
+            let arr = [1, 2, 3, 4, 5]
+            arr[1:3] = [20, 30]
+            let x = arr[1]
+            arr[1:4] = []
+            let y = len(arr)
+            x + y
+        "#;
+        assert_number_result(source, 22.0);
+    }
+
+    #[test]
+    fn test_array_subscript_assign_scalar() {
+        let source = r#"
+            let arr = [1, 2, 3]
+            arr[0] = 9
+            arr[0]
+        "#;
+        assert_number_result(source, 9.0);
+    }
+
+    #[test]
+    fn test_array_slice_combined_bounds() {
+        let source = r#"
+            let arr = [0, 1, 2, 3, 4, 5, 6, 7]
+            len(arr[2:6:2]) + len(arr[-6:-1:2])
+        "#;
+        // [2,4] len 2 + [2,4,6] len 3 = 5
+        assert_number_result(source, 5.0);
+    }
+
+    #[test]
+    fn test_array_push_twice_inside_fn_sum_elements() {
+        let source = r#"
+fn f() {
+  let a = []
+  a.push(10)
+  a.push(20)
+  return a[0] + a[1]
+}
+f()
+"#;
+        assert_number_result(source, 30.0);
+    }
+
+    /// Two `let []` inside a function must produce distinct arrays (regression: shared empty array).
+    #[test]
+    fn test_two_empty_array_lets_push_distinct_inside_fn() {
+        let source = r#"
+fn f() {
+  let a = []
+  let b = []
+  a.push(1)
+  b.push(2)
+  return len(a) * 10 + len(b)
+}
+f()
+"#;
+        assert_number_result(source, 11.0);
+    }
+
+    /// Mirrors CIFAR export_data with small row size (5 = 1 label + 4 tail).
+    #[test]
+    fn test_chunk_slice_push_labels_pixels_inside_fn_small_synthetic() {
+        let source = r#"
+fn export_data(data) {
+  let chunks = data.chunk(5)
+  let labels = []
+  let pixels_list = []
+  for chunk in chunks {
+    if len(chunk) != 5 {
+      continue
+    }
+    let label = chunk[0]
+    let pixels = chunk[1:]
+    labels.push(label)
+    pixels_list.push(pixels)
+  }
+  let score = 0
+  if typeof(labels[0]) == "int" {
+    score = score + 1
+  }
+  if typeof(labels[1]) == "int" {
+    score = score + 1
+  }
+  if len(pixels_list[0]) == 4 {
+    score = score + 1
+  }
+  return score
+}
+let data = [1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 20, 21, 22, 23, 24]
+export_data(data)
+"#;
+        assert_number_result(source, 3.0);
+    }
+
+    /// Diagnose push targets: expect len(labels)==3 and len(pixels_list)==3 after 3 chunks.
+    #[test]
+    fn test_chunk_export_lengths_inside_fn() {
+        let source = r#"
+fn export_data(data) {
+  let chunks = data.chunk(5)
+  let labels = []
+  let pixels_list = []
+  for chunk in chunks {
+    if len(chunk) != 5 {
+      continue
+    }
+    let label = chunk[0]
+    let pixels = chunk[1:]
+    labels.push(label)
+    pixels_list.push(pixels)
+  }
+  return len(labels) * 100 + len(pixels_list)
+}
+let data = [1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 20, 21, 22, 23, 24]
+export_data(data)
+"#;
+        assert_number_result(source, 303.0);
+    }
+
+    /// Chunk has `data.chunk(5)` as one `Call(2)` plus two `Call(2)` for the two pushes in the loop body (3 total).
+    #[test]
+    fn test_export_data_chunk_compiles_three_call2_including_chunk() {
+        let source = r#"fn export_data(data) {
+  let chunks = data.chunk(5)
+  let labels = []
+  let pixels_list = []
+  for chunk in chunks {
+    if len(chunk) != 5 {
+      continue
+    }
+    let label = chunk[0]
+    let pixels = chunk[1:]
+    labels.push(label)
+    pixels_list.push(pixels)
+  }
+  return 0
+}"#;
+        let (_chunk, functions) = compile(source).expect("compile");
+        let f = functions
+            .iter()
+            .find(|f| f.name == "export_data")
+            .expect("export_data function");
+        let call2 = f
+            .chunk
+            .code
+            .iter()
+            .filter(|op| matches!(op, OpCode::Call(2)))
+            .count();
+        assert_eq!(call2, 3, "data.chunk(5) is Call(2); loop body has 2× push → 3 total Call(2) in chunk");
+    }
+
+    /// How many for-loop iterations run inside export_data (expect 3 chunks).
+    #[test]
+    fn test_chunk_for_loop_iteration_count_inside_fn() {
+        let source = r#"
+fn export_data(data) {
+  let chunks = data.chunk(5)
+  let n = 0
+  for chunk in chunks {
+    if len(chunk) != 5 {
+      continue
+    }
+    n = n + 1
+  }
+  return n
+}
+let data = [1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 20, 21, 22, 23, 24]
+export_data(data)
+"#;
+        assert_number_result(source, 3.0);
+    }
+
+    /// Same logic as `test_chunk_slice_push_labels_pixels_inside_fn_small_synthetic` at top level (no `fn`).
+    #[test]
+    fn test_chunk_slice_push_labels_pixels_top_level_small_synthetic() {
+        let source = r#"
+let data = [1, 2, 3, 4, 5, 10, 11, 12, 13, 14, 20, 21, 22, 23, 24]
+let chunks = data.chunk(5)
+let labels = []
+let pixels_list = []
+for chunk in chunks {
+  if len(chunk) != 5 {
+    continue
+  }
+  let label = chunk[0]
+  let pixels = chunk[1:]
+  labels.push(label)
+  pixels_list.push(pixels)
+}
+let score = 0
+if typeof(labels[0]) == "int" {
+  score = score + 1
+}
+if typeof(labels[1]) == "int" {
+  score = score + 1
+}
+if len(pixels_list[0]) == 4 {
+  score = score + 1
+}
+score
+"#;
+        assert_number_result(source, 3.0);
     }
 }
 

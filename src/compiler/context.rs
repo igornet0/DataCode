@@ -69,6 +69,8 @@ pub struct CompilationContext<'a> {
     pub constructor_this_slot: Option<usize>,
     /// Source file path for error messages (propagated to chunk.source_name).
     pub source_name: Option<&'a str>,
+    /// Parse-time native export param names (from `native_call_descriptor` preload), e.g. `native_dataset_split`.
+    pub native_call_param_registry: Option<&'a crate::vm::native_call_registry::NativeCallParamRegistry>,
 }
 
 impl<'a> CompilationContext<'a> {

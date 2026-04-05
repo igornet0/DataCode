@@ -75,10 +75,13 @@ impl Chunk {
     pub fn constant_indices_in_bounds(&self) -> bool {
         let len = self.constants.len();
         for op in &self.code {
-            if let OpCode::Constant(index) = op {
-                if *index >= len {
-                    return false;
+            match op {
+                OpCode::Constant(index) | OpCode::BinaryOp(index) => {
+                    if *index >= len {
+                        return false;
+                    }
                 }
+                _ => {}
             }
         }
         true
@@ -143,6 +146,14 @@ impl Chunk {
                 output.push_str("MUL\n");
                 offset + 1
             }
+            OpCode::MatMul => {
+                output.push_str("MAT_MUL\n");
+                offset + 1
+            }
+            OpCode::BinaryOp(idx) => {
+                output.push_str(&format!("BINARY_OP {}\n", idx));
+                offset + 1
+            }
             OpCode::Div => {
                 output.push_str("DIV\n");
                 offset + 1
@@ -205,27 +216,27 @@ impl Chunk {
             }
             OpCode::Jump8(rel_offset) => {
                 output.push_str(&format!("JUMP8 {:+.4}\n", *rel_offset as i32));
-                offset + 2  // 1 байт opcode + 1 байт смещение
+                offset + 1 // Chunk is Vec<OpCode>: offset is inside the variant (not a separate byte).
             }
             OpCode::Jump16(rel_offset) => {
                 output.push_str(&format!("JUMP16 {:+.6}\n", *rel_offset as i32));
-                offset + 3  // 1 байт opcode + 2 байта смещение
+                offset + 1
             }
             OpCode::Jump32(rel_offset) => {
                 output.push_str(&format!("JUMP32 {:+.10}\n", *rel_offset));
-                offset + 5  // 1 байт opcode + 4 байта смещение
+                offset + 1
             }
             OpCode::JumpIfFalse8(rel_offset) => {
                 output.push_str(&format!("JUMP_IF_FALSE8 {:+.4}\n", *rel_offset as i32));
-                offset + 2  // 1 байт opcode + 1 байт смещение
+                offset + 1
             }
             OpCode::JumpIfFalse16(rel_offset) => {
                 output.push_str(&format!("JUMP_IF_FALSE16 {:+.6}\n", *rel_offset as i32));
-                offset + 3  // 1 байт opcode + 2 байта смещение
+                offset + 1
             }
             OpCode::JumpIfFalse32(rel_offset) => {
                 output.push_str(&format!("JUMP_IF_FALSE32 {:+.10}\n", *rel_offset));
-                offset + 5  // 1 байт opcode + 4 байта смещение
+                offset + 1
             }
             OpCode::JumpLabel(label_id) => {
                 output.push_str(&format!("JUMP_LABEL {}\n", label_id));
@@ -245,6 +256,14 @@ impl Chunk {
             }
             OpCode::PopForRange => {
                 output.push_str("POP_FOR_RANGE\n");
+                offset + 1
+            }
+            OpCode::CoerceForInIterable(slot) => {
+                output.push_str(&format!("COERCE_FOR_IN_ITERABLE {}\n", slot));
+                offset + 1
+            }
+            OpCode::ForIterableNext(slot) => {
+                output.push_str(&format!("FOR_ITERABLE_NEXT {}\n", slot));
                 offset + 1
             }
             OpCode::Call(arity) => {
@@ -291,8 +310,16 @@ impl Chunk {
                 output.push_str("GET_ARRAY_ELEMENT\n");
                 offset + 1
             }
+            OpCode::GetArraySlice => {
+                output.push_str("GET_ARRAY_SLICE\n");
+                offset + 1
+            }
             OpCode::SetArrayElement => {
                 output.push_str("SET_ARRAY_ELEMENT\n");
+                offset + 1
+            }
+            OpCode::SetArraySlice => {
+                output.push_str("SET_ARRAY_SLICE\n");
                 offset + 1
             }
             OpCode::TableFilter => {

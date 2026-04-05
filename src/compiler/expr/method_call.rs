@@ -224,9 +224,41 @@ fn compile_join_method(
     }
 }
 
+/// Named arg matches the plugin export's param list (from preloaded `native_call_descriptor`).
+fn is_kwarg_name_for_export(ctx: &CompilationContext, export_key: &str, name: &str) -> bool {
+    ctx.native_call_param_registry
+        .and_then(|r| r.get(export_key))
+        .map(|params| params.iter().any(|p| p == name))
+        .unwrap_or(false)
+}
+
+/// Heuristic: plugin/module method path vs builtin (e.g. `String.split` vs `dataset.split`) when the
+/// plugin registered `__method__` → export_key for this method name.
+fn ambiguous_plugin_method_use_module_path(
+    ctx: &CompilationContext,
+    args: &[Arg],
+    export_key: &str,
+) -> bool {
+    if args.is_empty() {
+        return true;
+    }
+    if args.len() >= 2 {
+        return true;
+    }
+    if args.iter().any(|a| {
+        matches!(a, Arg::Named { name, .. } if is_kwarg_name_for_export(ctx, export_key, name.as_str()))
+    }) {
+        return true;
+    }
+    if let Arg::Positional(expr) = &args[0] {
+        return matches!(expr, Expr::Literal { value: Value::Number(_), .. });
+    }
+    false
+}
+
 fn compile_generic_method(
     ctx: &mut CompilationContext,
-    object: &Expr,
+    _object: &Expr,
     method: &str,
     args: &[Arg],
     line: usize,
@@ -237,37 +269,45 @@ fn compile_generic_method(
     
     // Проверяем, является ли это методом объекта (например, axis.imshow)
     let is_axis_method = matches!(method, "imshow" | "set_title" | "axis");
-    let is_string_method = matches!(method, "lower" | "upper" | "isupper" | "islower" | "trim" | "split" | "join" | "contains");
-    // Tensor methods max_idx/min_idx: GetArrayElement pushes (tensor, native_fn); Call(0) lets native take tensor from stack.
-    // Must NOT use compile_module_method which pushes extra receiver and causes stack leak.
-    let is_tensor_arity0_method = matches!(method, "max_idx" | "min_idx");
-    
-    if is_tensor_arity0_method && args.is_empty() {
-        compile_tensor_arity0_method(ctx, method, temp_object_slot, line)
-    } else if is_axis_method {
-        compile_axis_method(ctx, method, args, temp_object_slot, line)
-    } else if is_string_method {
+    let is_string_method = matches!(
+        method,
+        "lower" | "upper" | "isupper" | "islower" | "trim" | "join" | "contains" | "split"
+    );
+
+    if is_axis_method {
+        return compile_axis_method(ctx, method, args, temp_object_slot, line);
+    }
+
+    if let Some(reg) = ctx.native_call_param_registry {
+        if let Some(export_key) = reg.export_for_method(method) {
+            if ambiguous_plugin_method_use_module_path(ctx, args, export_key) {
+                let param_owned = reg.get(export_key).map(|s| s.to_vec());
+                let param_refs: Vec<&str> = param_owned
+                    .as_ref()
+                    .map(|v| v.iter().map(|s| s.as_str()).collect())
+                    .unwrap_or_default();
+                let override_native = if param_refs.is_empty() {
+                    None
+                } else {
+                    Some(param_refs.as_slice())
+                };
+                return compile_module_method(
+                    ctx,
+                    method,
+                    args,
+                    temp_object_slot,
+                    line,
+                    override_native,
+                );
+            }
+        }
+    }
+
+    if is_string_method {
         compile_string_method(ctx, method, args, temp_object_slot, line)
     } else {
-        compile_module_method(ctx, method, args, temp_object_slot, line)
+        compile_module_method(ctx, method, args, temp_object_slot, line, None)
     }
-}
-
-/// Tensor methods max_idx/min_idx with 0 args.
-/// GetArrayElement(tensor, "max_idx") pushes (tensor, native_fn); Call(0) lets native_max_idx take tensor from stack.
-/// Do NOT push extra receiver — that would leak onto stack and cause E0400 in string concatenation.
-fn compile_tensor_arity0_method(
-    ctx: &mut CompilationContext,
-    method: &str,
-    temp_object_slot: usize,
-    line: usize,
-) -> Result<(), LangError> {
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
-    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
-    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-    ctx.chunk.write_with_line(OpCode::Call(0), line);
-    Ok(())
 }
 
 fn compile_axis_method(
@@ -314,32 +354,6 @@ fn compile_axis_method(
     Ok(())
 }
 
-/// Database engine/cluster methods (add, get, names, connect, execute, query, run) need receiver as first arg.
-/// Stack before Call: [receiver, arg1, ..., method_fn]. VM pops (arity+1) and passes (receiver, arg1, ...) to native.
-fn compile_db_receiver_method(
-    ctx: &mut CompilationContext,
-    method: &str,
-    args: &[Arg],
-    temp_object_slot: usize,
-    line: usize,
-) -> Result<(), LangError> {
-    // Push receiver first, then args, then receiver again for GetArrayElement, then get method; Call(1 + n).
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    for arg in args {
-        match arg {
-            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-        }
-    }
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
-    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
-    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-    ctx.chunk.write_with_line(OpCode::Call(1 + args.len()), line);
-    Ok(())
-}
-
 /// То же, но аргументы уже сохранены в слоты arg_slots (чтобы receiver не перезаписывал переменную-аргумент).
 fn compile_db_receiver_method_with_arg_slots(
     ctx: &mut CompilationContext,
@@ -357,32 +371,6 @@ fn compile_db_receiver_method_with_arg_slots(
     ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
     ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
     ctx.chunk.write_with_line(OpCode::Call(1 + arg_slots.len()), line);
-    Ok(())
-}
-
-fn compile_array_method(
-    ctx: &mut CompilationContext,
-    method: &str,
-    args: &[Arg],
-    temp_object_slot: usize,
-    line: usize,
-) -> Result<(), LangError> {
-    // Array methods (push, pop, unique, reverse, sort, sum, average, count, any, all) expect (array, ...args).
-    // Call(arity) pops function then arity args; after reverse, args[0] = first pushed.
-    // Push receiver first, then method args, then get method; stack: [receiver, arg1, ..., method_fn], Call(1 + n).
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    for arg in args {
-        match arg {
-            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-        }
-    }
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
-    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
-    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-    ctx.chunk.write_with_line(OpCode::Call(1 + args.len()), line);
     Ok(())
 }
 
@@ -451,9 +439,18 @@ fn compile_module_method(
     args: &[Arg],
     temp_object_slot: usize,
     line: usize,
+    override_native_param_names: Option<&[&str]>,
 ) -> Result<(), LangError> {
     // Generic method call (module functions or class instance methods): pass receiver as first arg so method receives (self, arg_1, ...).
-    let resolved_args = match args::resolve_function_args(method, args, None, line, ctx.source_name) {
+    let resolved_args = match args::resolve_function_args(
+        method,
+        args,
+        None,
+        line,
+        ctx.source_name,
+        None,
+        override_native_param_names,
+    ) {
         Ok(resolved) => resolved,
         Err(e) => {
             // Проверяем, является ли это ошибкой "not supported"

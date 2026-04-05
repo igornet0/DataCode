@@ -11,6 +11,8 @@ pub mod join;
 pub mod file;
 pub mod relations;
 pub mod utils;
+pub mod debug;
+pub mod higher_order;
 
 // Re-export all native functions in registration order
 pub use basic::*;
@@ -23,4 +25,5 @@ pub use join::*;
 pub use file::*;
 pub use relations::*;
 pub use utils::*;
+pub use debug::*;
 

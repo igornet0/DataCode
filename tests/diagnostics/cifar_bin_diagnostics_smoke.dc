@@ -1,0 +1,33 @@
+# Fast CI smoke: same bin placeholder @@CIFAR_BIN@@; skips heavy push/export loops.
+
+import system
+
+fn export_data(data) {
+    labels = []
+    pixels_list = []
+    for chunk in data.chunk(3073) {
+        label = chunk[0]
+        pixels = chunk[1:]
+        labels.push(label)
+        pixels_list.push(pixels)
+    }
+    return labels, pixels_list
+}
+
+let bin_path = "@@CIFAR_BIN@@"
+
+let t0 = system.time.monotonic_ms()
+let data = read_file_bin(bin_path)
+let t1 = system.time.monotonic_ms()
+let y, X = export_data(data)
+let t2 = system.time.monotonic_ms()
+print("smoke read_ms=" + str(t1 - t0) + " export_ms=" + str(t2 - t1) + " labels=" + str(len(y)))
+
+# First label must be a numeric byte (0–255), not a pixel slice (array view len 3072).
+if len(y) > 0 {
+    print("smoke typeof(labels[0])=" + str(typeof(y[0])))
+    print("smoke isinstance(labels[0],number)=" + str(isinstance(y[0], "number")))
+}
+
+let ch0 = data.chunk(3073)[0]
+print("smoke len slice=" + str(len(ch0[1:])))

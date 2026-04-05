@@ -907,7 +907,7 @@ fn get_value_type_name(value: &Value) -> &str {
         Value::Number(_) => "Number",
         Value::Bool(_) => "Bool",
         Value::String(_) => "String",
-        Value::Array(_) => "Array",
+        Value::Array(_) | Value::ArrayView(_) | Value::ByteBuffer(_) => "Array",
         Value::Tuple(_) => "Tuple",
         Value::Table(_) => "Table",
         Value::Object(_) => "Object",
@@ -925,6 +925,7 @@ fn get_value_type_name(value: &Value) -> &str {
         Value::DatabaseEngine(_) => "DatabaseEngine",
         Value::DatabaseCluster(_) => "DatabaseCluster",
         Value::Enumerate { .. } => "Enumerate",
+        Value::Iterable(_) => "Iterable",
         Value::Ellipsis => "Ellipsis",
     }
 }

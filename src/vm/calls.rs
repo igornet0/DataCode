@@ -27,7 +27,8 @@ fn check_single_type(value: &Value, type_name: &str) -> bool {
         // Булевы типы
         (Value::Bool(_), "bool" | "boolean") => true,
         // Коллекции
-        (Value::Array(_), "array" | "list") => true,
+        (Value::Array(_) | Value::ArrayView(_) | Value::ByteBuffer(_), "array" | "list") => true,
+        (Value::Iterable(_), "iterable") => true,
         (Value::Tuple(_), "tuple") => true,
         (Value::Object(_), "object" | "dict" | "dictionary") => true,
         (Value::Object(map_rc), "table") => {
@@ -79,7 +80,8 @@ pub fn get_type_name_value(value: &Value) -> &'static str {
         }
         Value::Bool(_) => "bool",
         Value::String(_) => "str",
-        Value::Array(_) => "array",
+        Value::Array(_) | Value::ArrayView(_) | Value::ByteBuffer(_) => "array",
+        Value::Iterable(_) => "iterable",
         Value::Tuple(_) => "tuple",
         Value::Object(_) => "object",
         Value::Table(_) => "table",

@@ -64,6 +64,7 @@ pub enum TokenKind {
     Ellipsis, // ...
     Colon,    // :
     Arrow,    // ->
+    FatArrow, // =>
     Pipe,     // |
 
     // Ключевые слова для циклов

@@ -15,7 +15,7 @@ use std::sync::Arc;
 pub const DCB_MAGIC: [u8; 4] = [0x44, 0x43, 0x42, 0x01]; // "DCB" + format version 1
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Bump when compiler/bytecode semantics change so old .dcb are rejected (e.g. constructor names in chunk.global_names for merge; class object now includes methods for GetArrayElement fallback).
-pub const DCB_FORMAT_VERSION: &str = "10";
+pub const DCB_FORMAT_VERSION: &str = "12";
 
 /// Metadata stored at the start of a .dcb file for freshness checks.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -86,6 +86,8 @@ pub enum SerOpCode {
     Add,
     Sub,
     Mul,
+    MatMul,
+    BinaryOp(usize),
     Div,
     IntDiv,
     Mod,
@@ -106,6 +108,8 @@ pub enum SerOpCode {
     ForRange(usize, usize, usize, usize, i32),
     ForRangeNext(i32),
     PopForRange,
+    CoerceForInIterable(usize),
+    ForIterableNext(usize),
     Jump8(i8),
     Jump16(i16),
     Jump32(i32),
@@ -119,7 +123,9 @@ pub enum SerOpCode {
     MakeArrayDynamic,
     GetArrayLength,
     GetArrayElement,
+    GetArraySlice,
     SetArrayElement,
+    SetArraySlice,
     TableFilter,
     Clone,
     MakeTuple(usize),
@@ -151,6 +157,8 @@ impl From<&OpCode> for SerOpCode {
             OpCode::Add => SerOpCode::Add,
             OpCode::Sub => SerOpCode::Sub,
             OpCode::Mul => SerOpCode::Mul,
+            OpCode::MatMul => SerOpCode::MatMul,
+            OpCode::BinaryOp(a) => SerOpCode::BinaryOp(*a),
             OpCode::Div => SerOpCode::Div,
             OpCode::IntDiv => SerOpCode::IntDiv,
             OpCode::Mod => SerOpCode::Mod,
@@ -171,6 +179,8 @@ impl From<&OpCode> for SerOpCode {
             OpCode::ForRange(a, b, c, d, e) => SerOpCode::ForRange(*a, *b, *c, *d, *e),
             OpCode::ForRangeNext(a) => SerOpCode::ForRangeNext(*a),
             OpCode::PopForRange => SerOpCode::PopForRange,
+            OpCode::CoerceForInIterable(a) => SerOpCode::CoerceForInIterable(*a),
+            OpCode::ForIterableNext(a) => SerOpCode::ForIterableNext(*a),
             OpCode::Jump8(a) => SerOpCode::Jump8(*a),
             OpCode::Jump16(a) => SerOpCode::Jump16(*a),
             OpCode::Jump32(a) => SerOpCode::Jump32(*a),
@@ -184,7 +194,9 @@ impl From<&OpCode> for SerOpCode {
             OpCode::MakeArrayDynamic => SerOpCode::MakeArrayDynamic,
             OpCode::GetArrayLength => SerOpCode::GetArrayLength,
             OpCode::GetArrayElement => SerOpCode::GetArrayElement,
+            OpCode::GetArraySlice => SerOpCode::GetArraySlice,
             OpCode::SetArrayElement => SerOpCode::SetArrayElement,
+            OpCode::SetArraySlice => SerOpCode::SetArraySlice,
             OpCode::TableFilter => SerOpCode::TableFilter,
             OpCode::Clone => SerOpCode::Clone,
             OpCode::MakeTuple(a) => SerOpCode::MakeTuple(*a),
@@ -218,6 +230,8 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::Add => OpCode::Add,
             SerOpCode::Sub => OpCode::Sub,
             SerOpCode::Mul => OpCode::Mul,
+            SerOpCode::MatMul => OpCode::MatMul,
+            SerOpCode::BinaryOp(a) => OpCode::BinaryOp(a),
             SerOpCode::Div => OpCode::Div,
             SerOpCode::IntDiv => OpCode::IntDiv,
             SerOpCode::Mod => OpCode::Mod,
@@ -238,6 +252,8 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::ForRange(a, b, c, d, e) => OpCode::ForRange(a, b, c, d, e),
             SerOpCode::ForRangeNext(a) => OpCode::ForRangeNext(a),
             SerOpCode::PopForRange => OpCode::PopForRange,
+            SerOpCode::CoerceForInIterable(a) => OpCode::CoerceForInIterable(a),
+            SerOpCode::ForIterableNext(a) => OpCode::ForIterableNext(a),
             SerOpCode::Jump8(a) => OpCode::Jump8(a),
             SerOpCode::Jump16(a) => OpCode::Jump16(a),
             SerOpCode::Jump32(a) => OpCode::Jump32(a),
@@ -251,7 +267,9 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::MakeArrayDynamic => OpCode::MakeArrayDynamic,
             SerOpCode::GetArrayLength => OpCode::GetArrayLength,
             SerOpCode::GetArrayElement => OpCode::GetArrayElement,
+            SerOpCode::GetArraySlice => OpCode::GetArraySlice,
             SerOpCode::SetArrayElement => OpCode::SetArrayElement,
+            SerOpCode::SetArraySlice => OpCode::SetArraySlice,
             SerOpCode::TableFilter => OpCode::TableFilter,
             SerOpCode::Clone => OpCode::Clone,
             SerOpCode::MakeTuple(a) => OpCode::MakeTuple(a),

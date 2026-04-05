@@ -1,7 +1,7 @@
 //! Мост между внутренним Value и ABI Value.
 //!
 //! Конвертеры только для типов, представимых в ABI (Number↔Int/Float, Bool,
-//! String↔Str, Null, Array, Object как handle). Сложные типы (Tensor, Figure и т.д.)
+//! String↔Str, Null, Array, Object как handle, ByteBuffer↔Bytes). Сложные типы (Figure и т.д.)
 //! во внешних ABI-модулях не экспонируются.
 
 use std::ffi::{CStr, CString, c_void};
@@ -10,8 +10,56 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 
 use crate::common::table::TableData;
-use crate::common::value::Value;
+use crate::common::value::{ByteBuffer, Value};
+use crate::common::value_store::ValueStore;
 use crate::abi::AbiValue;
+use crate::vm::array_view::materialize_array_view;
+use crate::vm::heavy_store::HeavyStore;
+use crate::vm::store_convert::load_value;
+
+/// Recursively replace [`Value::ArrayView`] with owned [`Value::Array`] and walk [`Value::Array`],
+/// [`Value::Tuple`], and [`Value::Table`] cells so ABI serialization can represent all nested data.
+pub fn materialize_value_for_abi(v: &Value, store: &ValueStore, heap: &HeavyStore) -> Value {
+    match v {
+        Value::ByteBuffer(bb) => Value::ByteBuffer(bb.clone()),
+        Value::ArrayView(av) => {
+            let m = materialize_array_view(av, store, heap);
+            materialize_value_for_abi(&m, store, heap)
+        }
+        Value::Array(rc) => {
+            let b = rc.borrow();
+            let mut out = Vec::with_capacity(b.len());
+            for x in b.iter() {
+                out.push(materialize_value_for_abi(x, store, heap));
+            }
+            Value::Array(Rc::new(RefCell::new(out)))
+        }
+        Value::Tuple(rc) => {
+            let b = rc.borrow();
+            let mut out = Vec::with_capacity(b.len());
+            for x in b.iter() {
+                out.push(materialize_value_for_abi(x, store, heap));
+            }
+            Value::Tuple(Rc::new(RefCell::new(out)))
+        }
+        Value::Table(rc) => {
+            let t = rc.borrow();
+            let mut table = if t.is_view() {
+                t.materialize_with(|id| load_value(id, store, heap))
+            } else {
+                (*t).clone()
+            };
+            drop(t);
+            if let TableData::Owned { ref mut flat, .. } = table.data {
+                for cell in flat.iter_mut() {
+                    *cell = materialize_value_for_abi(cell, store, heap);
+                }
+            }
+            Value::Table(Rc::new(RefCell::new(table)))
+        }
+        _ => v.clone(),
+    }
+}
 
 /// Ошибка конвертации: тип не представим в ABI.
 #[derive(Debug)]
@@ -29,6 +77,8 @@ pub struct AbiBridgeContext {
     object_refs: Vec<Rc<RefCell<HashMap<String, Value>>>>,
     /// Keeps header + cell buffers alive for `AbiValue::Table` for the duration of the call.
     table_buffers: Vec<(Vec<AbiValue>, Vec<AbiValue>)>,
+    /// Keeps `Rc<Vec<u8>>` alive for `AbiValue::Bytes` pointers into `ByteBuffer` storage.
+    byte_keepalive: Vec<Rc<Vec<u8>>>,
 }
 
 impl AbiBridgeContext {
@@ -38,11 +88,12 @@ impl AbiBridgeContext {
             array_buffers: Vec::new(),
             object_refs: Vec::new(),
             table_buffers: Vec::new(),
+            byte_keepalive: Vec::new(),
         }
     }
 
     /// Конвертирует внутреннее Value в ABI Value.
-    /// Непредставимые типы (Function, Tensor, Table, Path и т.д.) возвращают Err.
+    /// Непредставимые типы (Function, Table, Path и т.д.) возвращают Err.
     pub fn value_to_abi(&mut self, v: &Value) -> Result<AbiValue, BridgeError> {
         match v {
             Value::Number(n) => {
@@ -59,6 +110,18 @@ impl AbiBridgeContext {
                 Ok(AbiValue::Str(self.cstrings.last().unwrap().as_ptr()))
             }
             Value::Null => Ok(AbiValue::Null),
+            Value::ByteBuffer(bb) => {
+                let ptr = if bb.len == 0 {
+                    std::ptr::null()
+                } else {
+                    bb.bytes.as_ptr().wrapping_add(bb.offset)
+                };
+                self.byte_keepalive.push(Rc::clone(&bb.bytes));
+                Ok(AbiValue::Bytes {
+                    ptr,
+                    len: bb.len,
+                })
+            }
             Value::Array(rc) => {
                 let arr = rc.borrow();
                 let mut abi_elems = Vec::with_capacity(arr.len());
@@ -78,6 +141,12 @@ impl AbiBridgeContext {
                 tag: *tag,
                 id: *id,
             }),
+            Value::Path(p) => {
+                let s = p.to_string_lossy();
+                let cstr = CString::new(s.as_ref()).map_err(|_| BridgeError::InvalidUtf8)?;
+                self.cstrings.push(cstr);
+                Ok(AbiValue::Str(self.cstrings.last().unwrap().as_ptr()))
+            }
             Value::Table(rc) => {
                 let t = rc.borrow();
                 match &t.data {
@@ -119,7 +188,7 @@ impl AbiBridgeContext {
                 }
             }
             _ => Err(BridgeError::Unrepresentable(
-                "Function, NativeFunction, Path, Figure and other VM-only types are not representable in ABI",
+                "Function, NativeFunction, Figure and other VM-only types are not representable in ABI",
             )),
         }
     }
@@ -169,6 +238,16 @@ impl AbiBridgeContext {
                 Err(BridgeError::InvalidHandle)
             }
             AbiValue::PluginOpaque { tag, id } => Ok(Value::PluginOpaque { tag, id }),
+            AbiValue::Bytes { ptr, len } => {
+                if len == 0 {
+                    return Ok(Value::ByteBuffer(ByteBuffer::from_vec(Vec::new())));
+                }
+                if ptr.is_null() {
+                    return Err(BridgeError::InvalidHandle);
+                }
+                let slice = unsafe { std::slice::from_raw_parts(ptr, len) };
+                Ok(Value::ByteBuffer(ByteBuffer::from_vec(slice.to_vec())))
+            }
             AbiValue::Table { .. } => Err(BridgeError::Unrepresentable(
                 "Table return values are not supported on VM←module ABI path yet",
             )),
@@ -185,9 +264,48 @@ impl Default for AbiBridgeContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::value::{ArrayViewData, ArrayViewSource, ByteBuffer};
+    use crate::common::value_store::ValueStore;
+    use crate::vm::heavy_store::HeavyStore;
     use std::rc::Rc;
     use std::cell::RefCell;
     use std::collections::HashMap;
+
+    #[test]
+    fn materialize_nested_array_view_converts_to_abi() {
+        let store = ValueStore::new();
+        let heap = HeavyStore::new();
+        let inner = Rc::new(RefCell::new(vec![
+            Value::Number(1.0),
+            Value::Number(2.0),
+            Value::Number(3.0),
+        ]));
+        let view = Value::ArrayView(ArrayViewData {
+            source: ArrayViewSource::Heap(Rc::clone(&inner)),
+            offset: 1,
+            length: 2,
+        });
+        let nested = Value::Array(Rc::new(RefCell::new(vec![view])));
+        let mat = materialize_value_for_abi(&nested, &store, &heap);
+        let mut ctx = AbiBridgeContext::new();
+        let abi = ctx.value_to_abi(&mat).expect("ABI after materialize");
+        match abi {
+            AbiValue::Array(ptr, len) => {
+                assert_eq!(len, 1);
+                let sl = unsafe { std::slice::from_raw_parts(ptr, len) };
+                match sl[0] {
+                    AbiValue::Array(p2, n2) => {
+                        assert_eq!(n2, 2);
+                        let inner_sl = unsafe { std::slice::from_raw_parts(p2, n2) };
+                        assert!(matches!(inner_sl[0], AbiValue::Int(2)));
+                        assert!(matches!(inner_sl[1], AbiValue::Int(3)));
+                    }
+                    _ => panic!("expected inner Array"),
+                }
+            }
+            _ => panic!("expected Array"),
+        }
+    }
 
     #[test]
     fn bridge_number_bool_null() {
@@ -219,6 +337,29 @@ mod tests {
         let a = ctx.value_to_abi(&v).unwrap();
         let v2 = ctx.abi_to_value(a).unwrap();
         assert!(matches!((&v, &v2), (Value::Number(x), Value::Number(y)) if x == y));
+    }
+
+    #[test]
+    fn bridge_byte_buffer_roundtrip() {
+        let mut ctx = AbiBridgeContext::new();
+        let v = Value::ByteBuffer(ByteBuffer::from_vec(vec![1u8, 2, 3]));
+        let a = ctx.value_to_abi(&v).unwrap();
+        match a {
+            AbiValue::Bytes { ptr, len } => {
+                assert_eq!(len, 3);
+                let sl = unsafe { std::slice::from_raw_parts(ptr, len) };
+                assert_eq!(sl, &[1, 2, 3]);
+            }
+            _ => panic!("expected Bytes"),
+        }
+        let v2 = ctx.abi_to_value(a).unwrap();
+        match v2 {
+            Value::ByteBuffer(b2) => {
+                assert_eq!(b2.len, 3);
+                assert_eq!(&b2.bytes[b2.offset..b2.offset + b2.len], &[1, 2, 3]);
+            }
+            _ => panic!("expected ByteBuffer"),
+        }
     }
 
     #[test]

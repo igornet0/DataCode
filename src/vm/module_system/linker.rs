@@ -14,7 +14,7 @@ use crate::vm::heavy_store::HeavyStore;
 use crate::vm::store_convert::{load_value, slot_to_value, store_value_arena};
 
 /// ValueError::new_1 native index (must match VM's VALUE_ERROR_NATIVE_INDEX).
-const VALUE_ERROR_NATIVE_INDEX: usize = 75;
+const VALUE_ERROR_NATIVE_INDEX: usize = 79;
 
 /// Добавляет в VM слоты для всех имён из chunk.global_names, которых ещё нет в VM.
 pub fn ensure_globals_from_chunk(
@@ -77,14 +77,14 @@ pub fn ensure_globals_from_chunk_preserve_indices(
     );
 }
 
-/// Fills global slots at index >= 75 whose name is a builtin.
+/// Fills global slots at index >= `BUILTIN_GLOBAL_COUNT` whose name is a builtin.
 pub fn ensure_builtin_globals_high_indices(
     globals: &mut Vec<GlobalSlot>,
     global_names: &std::collections::BTreeMap<usize, String>,
     value_store: &mut ValueStore,
     heavy_store: &crate::vm::heavy_store::HeavyStore,
 ) {
-    const BUILTIN_END: usize = 75;
+    const BUILTIN_END: usize = globals::BUILTIN_GLOBAL_COUNT;
     for (idx, name) in global_names.iter() {
         if *idx < BUILTIN_END {
             continue;
@@ -642,7 +642,7 @@ pub fn merge_module_exports_into_globals_into(
     store: &mut ValueStore,
     heap: &mut HeavyStore,
 ) {
-    const BUILTIN_COUNT: usize = 75;
+    const BUILTIN_COUNT: usize = globals::BUILTIN_GLOBAL_COUNT;
     let obj = match module_object {
         Value::Object(rc) => rc.borrow(),
         _ => return,
@@ -732,7 +732,7 @@ pub fn merge_globals_from_into(
     store: &mut ValueStore,
     heap: &mut HeavyStore,
 ) {
-    const BUILTIN_COUNT: usize = 75;
+    const BUILTIN_COUNT: usize = globals::BUILTIN_GLOBAL_COUNT;
     if other_natives.len() > BUILTIN_COUNT {
         target_natives.extend_from_slice(&other_natives[BUILTIN_COUNT..]);
         debug_println!("[DEBUG merge_globals_from_into] Добавлено нативов из модуля: {}", other_natives.len() - BUILTIN_COUNT);
@@ -924,7 +924,7 @@ pub fn merge_globals_from(
     store: &mut ValueStore,
     heap: &mut HeavyStore,
 ) {
-    const BUILTIN_COUNT: usize = 75;
+    const BUILTIN_COUNT: usize = globals::BUILTIN_GLOBAL_COUNT;
     if other_natives.len() > BUILTIN_COUNT {
         target_natives.extend_from_slice(&other_natives[BUILTIN_COUNT..]);
         debug_println!("[DEBUG merge_globals_from] Добавлено нативов из модуля: {}", other_natives.len() - BUILTIN_COUNT);

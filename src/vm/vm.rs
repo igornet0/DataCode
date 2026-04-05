@@ -1,6 +1,7 @@
 // Виртуальная машина
 
 use crate::abi::NativeAbiFn;
+use crate::vm::native_loader::{PluginHookNames, ResolvedNativeParamMeta};
 use crate::debug_println;
 use crate::bytecode::Chunk;
 use crate::common::{error::LangError, table::Table, value::Value, value_store::{ValueStore, ValueCell, ValueId, NULL_VALUE_ID}, TaggedValue};
@@ -23,6 +24,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 /// Legacy function pointer type for native functions. Host layer uses HostEntry (Builtin/Extended).
 pub type NativeFn = fn(&[Value]) -> Value;
@@ -38,6 +40,19 @@ impl Drop for RestoreArgvIdGuard {
     }
 }
 
+/// Restores [`VM_CALL_CONTEXT`] after [`Vm::step`] (so `operations::try_plugin_opaque_binop` and natives see the VM).
+struct StepVmCallContextGuard {
+    previous: Option<*mut Vm>,
+}
+
+impl Drop for StepVmCallContextGuard {
+    fn drop(&mut self) {
+        VM_CALL_CONTEXT.with(|ctx| {
+            *ctx.borrow_mut() = self.previous;
+        });
+    }
+}
+
 // Thread-local storage для хранения контекста VM во время вызова нативных функций
 // Это позволяет нативным функциям вызывать пользовательские функции
 thread_local! {
@@ -45,7 +60,7 @@ thread_local! {
 }
 
 /// Number of builtin global slots (0..BUILTIN_END). Indices >= this are module globals.
-const BUILTIN_END: usize = 75;
+const BUILTIN_END: usize = crate::vm::globals::BUILTIN_GLOBAL_COUNT;
 
 pub struct Vm {
     /// Stack of TaggedValues (immediates + heap refs; no store lookup for numbers in hot path)
@@ -65,15 +80,27 @@ pub struct Vm {
     explicit_primary_keys: Vec<ExplicitPrimaryKey>,
     loaded_modules: std::collections::HashSet<String>,
     abi_natives: Vec<NativeAbiFn>,
+    /// Parallel to [`Self::abi_natives`]: UTF-8 export name for each ABI native (for `isinstance(x, ctor)` vs plugin `opaque_type_name`).
+    abi_native_export_names: Vec<String>,
+    /// Merged from ABI 1.5+ root descriptors: full export name -> param metadata.
+    abi_export_param_meta: HashMap<String, ResolvedNativeParamMeta>,
     loaded_native_libraries: Vec<Library>,
     base_path: Option<PathBuf>,
     /// Root directory of the project (entry script dir). Never overwritten; used for absolute imports.
     project_root: Option<PathBuf>,
     /// Set when native `ml` module loads: ABI indices for callable opaque values (`import ml` dylib).
     pub(crate) plugin_call_native: Option<usize>,
+    /// Set when native plugin exports `opaque_type_name` for `typeof()` on `PluginOpaque`.
+    pub(crate) plugin_typeof_opaque: Option<usize>,
+    /// `ml.opaque_display` — короткая строка для `print` на `PluginOpaque` (например `<tensor tag=0 id=4>`).
+    pub(crate) plugin_opaque_display: Option<usize>,
+    /// `ml.dataset_len` native index (for `for x in dataset` / `len(dataset)` when dataset is `PluginOpaque`).
+    pub(crate) plugin_dataset_len_native: Option<usize>,
+    /// `ml.opaque_binop` — binary `+ - * @` on two `PluginOpaque` values (libml dispatches by op string).
+    pub(crate) plugin_opaque_binop: Option<usize>,
     plot_context: Option<crate::plot::PlotContext>,
     value_store: ValueStore,
-    /// Heavy values (Table, Tensor, etc.) indexed by ValueCell::Heavy(usize)
+    /// Heavy values (Table, etc.) indexed by ValueCell::Heavy(usize)
     heavy_store: HeavyStore,
     /// Reusable buffer for native call arguments (avoids allocating Vec on every CallNative).
     native_args_buffer: Vec<Value>,
@@ -109,6 +136,8 @@ pub struct Vm {
     is_root: bool,
     /// Policy for the built-in `system` module (`fs`, `process.exec`, `set_env`).
     permission_policy: PermissionPolicy,
+    /// Parse-time operator table snapshot (for `debug.operators()`); set by hosts that preload [`crate::vm::operator_registry::OperatorRegistry`].
+    pub(crate) operator_registry_snapshot: Option<Arc<crate::vm::operator_registry::OperatorRegistry>>,
 }
 
 /// Preallocated capacities for hot-path Vecs to reduce resize in loop-heavy runs.
@@ -155,10 +184,16 @@ impl Vm {
             explicit_primary_keys: Vec::new(),
             loaded_modules: std::collections::HashSet::new(),
             abi_natives: Vec::new(),
+            abi_native_export_names: Vec::new(),
+            abi_export_param_meta: HashMap::new(),
             loaded_native_libraries: Vec::new(),
             base_path: None,
             project_root: None,
             plugin_call_native: None,
+            plugin_typeof_opaque: None,
+            plugin_opaque_display: None,
+            plugin_dataset_len_native: None,
+            plugin_opaque_binop: None,
             plot_context: Some(crate::plot::PlotContext::new()),
             value_store: ValueStore::new(),
             heavy_store: HeavyStore::new(),
@@ -178,6 +213,7 @@ impl Vm {
             module_registry: RefCell::new(HashMap::new()),
             is_root: true,
             permission_policy: PermissionPolicy::default(),
+            operator_registry_snapshot: None,
         };
         vm.register_natives();
         vm
@@ -201,10 +237,16 @@ impl Vm {
             explicit_primary_keys: Vec::new(),
             loaded_modules: std::collections::HashSet::new(),
             abi_natives: Vec::new(),
+            abi_native_export_names: Vec::new(),
+            abi_export_param_meta: parent.abi_export_param_meta.clone(),
             loaded_native_libraries: Vec::new(),
             base_path: None,
             project_root: parent.project_root.clone(),
             plugin_call_native: parent.plugin_call_native,
+            plugin_typeof_opaque: parent.plugin_typeof_opaque,
+            plugin_opaque_display: parent.plugin_opaque_display,
+            plugin_dataset_len_native: parent.plugin_dataset_len_native,
+            plugin_opaque_binop: parent.plugin_opaque_binop,
             plot_context: Some(crate::plot::PlotContext::new()),
             value_store: ValueStore::new(),
             heavy_store: HeavyStore::new(),
@@ -224,9 +266,18 @@ impl Vm {
             module_registry: RefCell::new(HashMap::new()),
             is_root: false,
             permission_policy: parent.permission_policy,
+            operator_registry_snapshot: parent.operator_registry_snapshot.clone(),
         };
         vm.register_natives();
         vm
+    }
+
+    /// Stores the operator registry used for parsing this run (enables `debug.operators()`).
+    pub fn set_operator_registry_snapshot(
+        &mut self,
+        snapshot: Option<Arc<crate::vm::operator_registry::OperatorRegistry>>,
+    ) {
+        self.operator_registry_snapshot = snapshot;
     }
 
     /// Set base path for resolving relative paths (e.g. in settings_env). Used at start of run() to set thread-local.
@@ -309,10 +360,50 @@ impl Vm {
         &mut self,
         _module_name: &str,
         module_object: &std::collections::HashMap<String, Value>,
+        hook_names: Option<&PluginHookNames>,
     ) {
-        if let Some(Value::NativeFunction(i)) = module_object.get("native_plugin_call") {
+        if let Some(Value::NativeFunction(i)) = module_object.get(
+            hook_names
+                .and_then(|h| h.native_plugin_call.as_deref())
+                .unwrap_or("native_plugin_call"),
+        ) {
             self.plugin_call_native = Some(*i);
         }
+        if let Some(Value::NativeFunction(i)) = module_object.get(
+            hook_names
+                .and_then(|h| h.opaque_type_name.as_deref())
+                .unwrap_or("opaque_type_name"),
+        ) {
+            self.plugin_typeof_opaque = Some(*i);
+        }
+        if let Some(Value::NativeFunction(i)) = module_object.get(
+            hook_names
+                .and_then(|h| h.opaque_display.as_deref())
+                .unwrap_or("opaque_display"),
+        ) {
+            self.plugin_opaque_display = Some(*i);
+        }
+        if let Some(Value::NativeFunction(i)) = module_object.get(
+            hook_names
+                .and_then(|h| h.dataset_len.as_deref())
+                .unwrap_or("dataset_len"),
+        ) {
+            self.plugin_dataset_len_native = Some(*i);
+        }
+        if let Some(Value::NativeFunction(i)) = module_object.get(
+            hook_names
+                .and_then(|h| h.opaque_binop.as_deref())
+                .unwrap_or("opaque_binop"),
+        ) {
+            self.plugin_opaque_binop = Some(*i);
+        }
+    }
+
+    pub(crate) fn merge_abi_export_param_meta(
+        &mut self,
+        meta: std::collections::HashMap<String, ResolvedNativeParamMeta>,
+    ) {
+        self.abi_export_param_meta.extend(meta);
     }
 
     pub(crate) fn take_plot_context(&mut self) -> Option<crate::plot::PlotContext> {
@@ -402,7 +493,7 @@ impl Vm {
     }
 
     /// Native index for ValueError::new_1 (constructor used by raise ValueError("...")).
-    pub const VALUE_ERROR_NATIVE_INDEX: usize = 75;
+    pub const VALUE_ERROR_NATIVE_INDEX: usize = 79;
 
     fn register_natives(&mut self) {
         crate::vm::native_registry::register_builtin_natives(&mut self.natives);
@@ -418,9 +509,9 @@ impl Vm {
         crate::vm::module_system::linker::ensure_globals_from_chunk_preserve_indices(&mut self.globals, &mut self.global_names, chunk);
     }
 
-    /// Fills global slots at index >= 75 whose name is a builtin (e.g. "str", "path").
+    /// Fills global slots at index >= `BUILTIN_GLOBAL_COUNT` whose name is a builtin (e.g. "str", "path").
     /// ensure_globals_from_chunk_preserve_indices adds (idx, name) from chunk and only resizes;
-    /// register_native_globals only fills 0..75, so slots at 75+ stay null and LoadGlobal(idx) returns null → "Can only call functions".
+    /// register_native_globals only fills builtin slots, so high-index slots stay null and LoadGlobal(idx) returns null → "Can only call functions".
     pub fn ensure_builtin_globals_high_indices(&mut self) {
         crate::vm::module_system::linker::ensure_builtin_globals_high_indices(
             &mut self.globals,
@@ -561,6 +652,12 @@ impl Vm {
         modules::register_module("uuid", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         modules::register_module("database_engine", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
         modules::register_module("system", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
+        modules::register_module("debug", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
+        // So `import plot` / `ensure_module_loaded` does not call register_module again and shift natives.len(),
+        // which would desync ml native indices (builtin_count) from abi_natives indexing.
+        for name in modules::BUILTIN_MODULE_NAMES {
+            self.loaded_modules.insert((*name).to_string());
+        }
         Ok(())
     }
 
@@ -577,6 +674,14 @@ impl Vm {
     /// Pub(crate) for vm::run::execute_run.
     pub(crate) fn step(&mut self) -> Result<VMStatus, LangError> {
         let vm_ptr = self as *mut Vm;
+        let _vm_call_ctx = {
+            let previous = VM_CALL_CONTEXT.with(|ctx| {
+                let p = *ctx.borrow();
+                *ctx.borrow_mut() = Some(vm_ptr);
+                p
+            });
+            StepVmCallContextGuard { previous }
+        };
         let (instruction, line) = {
             match executor::step(&mut self.frames)? {
                 Some((inst, ln)) => (inst, ln),
@@ -627,7 +732,7 @@ impl Vm {
     pub fn get_modules_mut(&self) -> std::cell::RefMut<'_, HashMap<String, Rc<RefCell<ModuleObject>>>> {
         self.modules.borrow_mut()
     }
-    pub fn get_modules(&self) -> std::cell::Ref<HashMap<String, Rc<RefCell<ModuleObject>>>> {
+    pub fn get_modules(&self) -> std::cell::Ref<'_, HashMap<String, Rc<RefCell<ModuleObject>>>> {
         self.modules.borrow()
     }
 
@@ -724,6 +829,21 @@ impl Vm {
     #[allow(dead_code)]
     pub(crate) fn get_abi_natives_mut(&mut self) -> &mut Vec<NativeAbiFn> {
         &mut self.abi_natives
+    }
+
+    /// Parallel names for [`Self::abi_natives`]; filled by [`crate::vm::native_loader::try_load_native_module`].
+    pub(crate) fn get_abi_native_export_names_mut(&mut self) -> &mut Vec<String> {
+        &mut self.abi_native_export_names
+    }
+
+    /// Export name for `Value::NativeFunction(i)` when `i >= builtin_natives_count` (ABI slot `i - builtin_natives_count`).
+    pub fn abi_export_name_for_native_index(&self, native_index: usize) -> Option<&str> {
+        let b = self.builtin_natives_count();
+        if native_index < b {
+            return None;
+        }
+        let off = native_index - b;
+        self.abi_native_export_names.get(off).map(|s| s.as_str())
     }
 
     /// Зарезервировано для будущего API (другие крейты, тесты).

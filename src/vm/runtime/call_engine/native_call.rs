@@ -151,21 +151,24 @@ pub fn execute_native_call(
         }
     }
 
-    // Fast path for push(arr, item)
+    // push(arr, item): fast path — append one TaggedValue to ValueCell::Array in place (O(1) amortized).
+    // Avoids full load_value(arr) + store_value(result) per call (was O(n) per push → O(n²) for growing array).
+    // Stack after callee pop: ... [arr, item] with item on top → pop item, then arr.
+    // Slow path still handles non-Array cells, ArrayView, etc.
     const PUSH_NATIVE_INDEX: usize = 35;
     if native_index == PUSH_NATIVE_INDEX && arity == 2 {
         let frame = frames.last().unwrap();
         let available = stack.len().saturating_sub(frame.stack_start);
         if available >= 2 {
             let item_tv = stack.pop().unwrap_or(TaggedValue::null());
-            let array_tv = stack.pop().unwrap_or(TaggedValue::null());
-            let array_id = tagged_to_value_id(array_tv, value_store);
-            if let Some(ValueCell::Array(ref mut slots)) = value_store.get_mut(array_id) {
+            let arr_tv = stack.pop().unwrap_or(TaggedValue::null());
+            let arr_id = tagged_to_value_id(arr_tv, value_store);
+            if let Some(ValueCell::Array(slots)) = value_store.get_mut(arr_id) {
                 slots.push(item_tv);
-                stack::push_id(stack, array_id);
+                stack::push_id(stack, arr_id);
                 return Ok(VMStatus::Continue);
             }
-            stack::push_id(stack, array_id);
+            stack::push(stack, arr_tv);
             stack::push(stack, item_tv);
         }
     }
@@ -218,7 +221,7 @@ pub fn execute_native_call(
                     (8, ValueCell::Null) => Some(Value::String("null".to_string())),
                     (8, ValueCell::Array(_)) => Some(Value::String("array".to_string())),
                     (8, ValueCell::Tuple(_)) => Some(Value::String("tuple".to_string())),
-                    (8, ValueCell::Object(_)) => Some(Value::String("object".to_string())),
+                    // Object: must call native_typeof (e.g. __plugin_namespace for native modules / ml.layer).
                     (8, ValueCell::Path(_)) => Some(Value::String("path".to_string())),
                     (8, ValueCell::Function(_)) | (8, ValueCell::NativeFunction(_)) => Some(Value::String("function".to_string())),
                     _ => None,
@@ -297,7 +300,6 @@ pub fn execute_native_call(
         }
     }
 
-    // Database engine methods (tensor max_idx/min_idx use normal native/ABI dispatch when ml is loaded)
     use crate::database_engine::natives as db_natives;
     let is_db_connect = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(db_natives::native_engine_connect as *const ());
     let is_db_execute = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(db_natives::native_engine_execute as *const ());
@@ -539,6 +541,26 @@ pub fn execute_native_call(
         }
     } else {
         let mut abi_args: Vec<Value> = native_args_buffer.clone();
+        let vm = unsafe { &mut *vm_ptr };
+        for v in &mut abi_args {
+            let tmp = v.clone();
+            match crate::vm::iterable::materialize_iterables_in_value(vm, &tmp, value_store, heavy_store) {
+                Ok(x) => *v = x,
+                Err(e) => {
+                    match ExceptionHandler::handle_exception(
+                        stack,
+                        frames,
+                        exception_handlers,
+                        e,
+                        value_store,
+                        heavy_store,
+                    ) {
+                        Ok(()) => return Ok(VMStatus::Continue),
+                        Err(ee) => return Err(ee),
+                    }
+                }
+            }
+        }
         for v in &mut abi_args {
             if let Value::Table(rc) = v {
                 let t = rc.borrow();
@@ -552,6 +574,7 @@ pub fn execute_native_call(
         crate::vm::native_loader::call_abi_native(
             abi_natives[native_index - builtin_count],
             &abi_args,
+            Some((value_store, heavy_store)),
         )
     };
 
@@ -642,6 +665,13 @@ pub fn execute_native_call(
     if let Some(ref ids) = native_arg_ids {
         for (i, &id) in ids.iter().enumerate() {
             if i < native_args_buffer.len() {
+                // native_push(arr, item): only write back the mutated array (arg 0). The pushed `item`
+                // may be Value::Array (e.g. a slice); update_cell_if_mutable(item_id, &array) would
+                // overwrite the ValueStore cell at item_id — which can alias another live array
+                // (e.g. empty pixels_list) and corrupt it. Other natives still get full write-back.
+                if native_index == PUSH_NATIVE_INDEX && arity == 2 && i == 1 {
+                    continue;
+                }
                 update_cell_if_mutable(id, &native_args_buffer[i], value_store, heavy_store);
             }
         }

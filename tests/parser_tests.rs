@@ -3,7 +3,7 @@
 mod tests {
     use data_code::parser::{Parser, Stmt};
     use data_code::lexer::Lexer;
-    use data_code::parser::ast::{Expr, Arg};
+    use data_code::parser::ast::{Expr, Arg, ImportItem, ImportStmt};
 
     fn parse(source: &str) -> Vec<Stmt> {
         let mut lexer = Lexer::new(source);
@@ -174,6 +174,23 @@ mod tests {
     }
 
     #[test]
+    fn test_read_file_bin_call_parse() {
+        let source = r#"let r = read_file_bin(path("x.bin"))"#;
+        let stmts = parse(source);
+        assert_eq!(stmts.len(), 1);
+        if let Stmt::Let { value, .. } = &stmts[0] {
+            if let Expr::Call { name, args, .. } = value {
+                assert_eq!(name, "read_file_bin");
+                assert_eq!(args.len(), 1);
+            } else {
+                panic!("Expected Call expression");
+            }
+        } else {
+            panic!("Expected Let statement");
+        }
+    }
+
+    #[test]
     fn test_named_argument_with_function_call() {
         let source = "let result = read_file(path(\"data.csv\"), header_row=2)";
         let stmts = parse(source);
@@ -240,6 +257,50 @@ mod tests {
             panic!("expected Variable(User), got {:?}", inner_obj);
         };
         assert_eq!(var_name, "User");
+    }
+
+    /// `from m import (` … `)` — многострочный список, комментарии и запятая в конце (как в Python).
+    #[test]
+    fn test_from_import_parenthesized_multiline() {
+        let source = r#"from mymod import (
+# 1
+a, b,
+# 2
+c, b
+)
+let x = 1"#;
+        let stmts = parse(source);
+        assert_eq!(stmts.len(), 2);
+        let Stmt::Import { import_stmt, .. } = &stmts[0] else {
+            panic!("expected Import");
+        };
+        let ImportStmt::From { module, items } = import_stmt else {
+            panic!("expected from-import");
+        };
+        assert_eq!(module, "mymod");
+        assert_eq!(items.len(), 4);
+        assert!(matches!(&items[0], ImportItem::Named(n) if n == "a"));
+        assert!(matches!(&items[1], ImportItem::Named(n) if n == "b"));
+        assert!(matches!(&items[2], ImportItem::Named(n) if n == "c"));
+        assert!(matches!(&items[3], ImportItem::Named(n) if n == "b"));
+    }
+
+    #[test]
+    fn test_from_import_parenthesized_single_line() {
+        let source = "from x import ( foo as f, bar )";
+        let stmts = parse(source);
+        let Stmt::Import { import_stmt, .. } = &stmts[0] else {
+            panic!("expected Import");
+        };
+        let ImportStmt::From { items, .. } = import_stmt else {
+            panic!("expected from-import");
+        };
+        assert_eq!(items.len(), 2);
+        assert!(matches!(
+            &items[0],
+            ImportItem::Aliased { name, alias } if name == "foo" && alias == "f"
+        ));
+        assert!(matches!(&items[1], ImportItem::Named(n) if n == "bar"));
     }
 }
 

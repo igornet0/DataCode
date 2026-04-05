@@ -7,7 +7,7 @@ use crate::vm::types::VMStatus;
 use crate::vm::frame::CallFrame;
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::exception;
-use crate::vm::interpreter::{arithmetic, comparison, control_flow, element_ops, memory, object, stack_ops};
+use crate::vm::interpreter::{arithmetic, comparison, control_flow, element_ops, for_iterable, memory, object, stack_ops};
 use crate::vm::runtime::call_engine;
 use crate::vm::module_system::import_handler;
 use crate::vm::stack;
@@ -138,6 +138,12 @@ pub fn execute_instruction(
         OpCode::RegAdd(rd, r1, r2) => return arithmetic::op_reg_add(rd, r1, r2, frames),
         OpCode::Sub => return arithmetic::op_sub(current_ip, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::Mul => return arithmetic::op_mul(current_ip, stack, frames, exception_handlers, value_store, heavy_store),
+        OpCode::MatMul => {
+            return arithmetic::op_matmul(current_ip, stack, frames, exception_handlers, value_store, heavy_store)
+        }
+        OpCode::BinaryOp(idx) => {
+            return arithmetic::op_binary_op(idx, current_ip, stack, frames, exception_handlers, value_store, heavy_store)
+        }
         OpCode::Div => return arithmetic::op_div(current_ip, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::IntDiv => return arithmetic::op_int_div(current_ip, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::Mod => return arithmetic::op_mod(current_ip, stack, frames, exception_handlers, value_store, heavy_store),
@@ -166,6 +172,28 @@ pub fn execute_instruction(
         OpCode::ForRange(var_slot, start_const, end_const, step_const, end_offset) => return control_flow::op_for_range(var_slot, start_const, end_const, step_const, end_offset, frames, value_store),
         OpCode::ForRangeNext(back_offset) => return control_flow::op_for_range_next(back_offset, frames),
         OpCode::PopForRange => return control_flow::op_pop_for_range(frames),
+        OpCode::CoerceForInIterable(iter_local) => {
+            return for_iterable::op_coerce_for_in_iterable(
+                iter_local,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            );
+        }
+        OpCode::ForIterableNext(iter_local) => {
+            return for_iterable::op_for_iterable_next(
+                iter_local,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            );
+        }
         OpCode::CallWithUnpack(unpack_arity) => {
             return call_engine::execute_call_with_unpack(
                 unpack_arity, line, stack, frames, functions,
@@ -239,10 +267,12 @@ pub fn execute_instruction(
         OpCode::UnpackObject(count_slot) => return object::op_unpack_object(count_slot, line, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::MakeObjectDynamic => return object::op_make_object_dynamic(line, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::MakeArrayDynamic => return object::op_make_array_dynamic(line, stack, frames, exception_handlers, value_store, heavy_store),
-        OpCode::GetArrayLength => return object::op_get_array_length(line, stack, frames, exception_handlers, value_store, heavy_store),
+        OpCode::GetArrayLength => return object::op_get_array_length(line, stack, frames, exception_handlers, value_store, heavy_store, vm_ptr),
         OpCode::TableFilter => return object::op_table_filter(line, stack, frames, exception_handlers, value_store, heavy_store, vm_ptr),
         OpCode::GetArrayElement => return element_ops::op_get_array_element(line, stack, frames, globals, global_names, functions, natives, exception_handlers, value_store, heavy_store, vm_ptr),
+        OpCode::GetArraySlice => return element_ops::op_get_array_slice(line, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::SetArrayElement => return element_ops::op_set_array_element(line, stack, frames, globals, global_names, functions, natives, exception_handlers, value_store, heavy_store),
+        OpCode::SetArraySlice => return element_ops::op_set_array_slice(line, stack, frames, exception_handlers, value_store, heavy_store),
         OpCode::Clone => return object::op_clone(stack, frames, exception_handlers, value_store, heavy_store),
         
         OpCode::BeginTry(handler_index) => return exception::op_begin_try(handler_index, stack, frames, exception_handlers, error_type_table),

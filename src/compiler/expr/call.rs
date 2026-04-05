@@ -78,6 +78,30 @@ fn is_in_settings_chain(name: &str, class_superclass: &std::collections::HashMap
 pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), LangError> {
     if let Expr::Call { name, args: call_args, line } = expr {
         *ctx.current_line = *line;
+
+        // array(map(labels, fn(x) => one_hot(x, K)[0])) → onehots(tensor(labels), K); requires `onehots` in scope (injected import).
+        if name == "array" && call_args.len() == 1 {
+            if let Some((labels_expr, k_expr)) =
+                crate::compiler::array_map_onehot_fusion::try_match_array_map_onehot_fusion(expr)
+            {
+                if let Some(&onehots_idx) = ctx.scope.globals.get("onehots") {
+                    ctx.chunk
+                        .global_names
+                        .insert(onehots_idx, "onehots".to_string());
+                    let tensor_expr = Expr::Call {
+                        name: "tensor".to_string(),
+                        args: vec![Arg::Positional(labels_expr)],
+                        line: *line,
+                    };
+                    expr::compile_expr(ctx, &tensor_expr)?;
+                    expr::compile_expr(ctx, &k_expr)?;
+                    ctx.chunk
+                        .write_with_line(OpCode::LoadGlobal(onehots_idx), *line);
+                    ctx.chunk.write_with_line(OpCode::Call(2), *line);
+                    return Ok(());
+                }
+            }
+        }
         
         // Проверяем, начинается ли имя с маленькой буквы
         // Функции, начинающиеся с маленькой буквы, не могут быть конструкторами классов
@@ -604,7 +628,15 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                 if let Some((ctor_name, function_index)) = ctor_info {
                     let function = &ctx.functions[function_index];
                     let function_info = (function_index, function);
-                    let resolved_args = args::resolve_function_args(name, call_args, Some(function_info), *line, ctx.source_name)?;
+                    let resolved_args = args::resolve_function_args(
+                        name,
+                        call_args,
+                        Some(function_info),
+                        *line,
+                        ctx.source_name,
+                        None,
+                        None,
+                    )?;
                     let arity = resolved_args.len();
                     for arg in &resolved_args {
                         match arg {
@@ -645,7 +677,16 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         };
         
         // Разрешаем аргументы: именованные -> позиционные, применяем значения по умолчанию
-        let resolved_args = args::resolve_function_args(name, call_args, function_info, *line, ctx.source_name)?;
+        let imported_from = ctx.imported_symbols.get(name).map(|s| s.as_str());
+        let resolved_args = args::resolve_function_args(
+            name,
+            call_args,
+            function_info,
+            *line,
+            ctx.source_name,
+            imported_from,
+            None,
+        )?;
         
         // Специальная обработка для isinstance: преобразуем идентификаторы типов в строки
         let processed_args = if name == "isinstance" && resolved_args.len() >= 2 {
@@ -668,9 +709,12 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             resolved_args
         };
         
-        // Специальная обработка для функций, которые модифицируют первый аргумент in-place
-        let in_place_functions = vec!["push", "reverse", "sort"];
-        let should_assign_back = in_place_functions.contains(&name.as_str()) 
+        // reverse/sort: assign return value back so the slot tracks the (possibly new) array id.
+        // push: do NOT assign back — native_call update_cell_if_mutable already syncs arg0's cell;
+        // storing store_value(return) would replace the slot with a new ValueId and break aliases
+        // (e.g. let b = a; push(a, x) would leave b on the old id while a gets a new id → len 4+5=9).
+        let in_place_assign_back = vec!["reverse", "sort"];
+        let should_assign_back = in_place_assign_back.contains(&name.as_str())
             && !processed_args.is_empty()
             && matches!(&processed_args[0], Arg::Positional(Expr::Variable { .. }));
         

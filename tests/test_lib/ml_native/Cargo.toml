@@ -10,5 +10,5 @@ crate-type = ["cdylib"]
 path = "src/lib.rs"
 
 [dependencies]
-datacode_abi = { path = "../../../datacode_abi" }
+datacode_abi = { path = "../../../datacode_sdk/datacode_abi" }
 datacode_sdk = { path = "../../../datacode_sdk" }

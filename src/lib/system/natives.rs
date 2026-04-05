@@ -8,7 +8,9 @@ use crate::vm::vm::VM_CALL_CONTEXT;
 use std::io::Write;
 use std::rc::Rc;
 use std::cell::RefCell;
+use std::sync::OnceLock;
 use std::time::Duration;
+use std::time::Instant;
 
 fn with_vm<T, F: FnOnce(&crate::vm::Vm) -> T>(f: F) -> Option<T> {
     VM_CALL_CONTEXT.with(|ctx| {
@@ -237,6 +239,14 @@ pub fn native_system_sleep_ms(args: &[Value]) -> Value {
 pub fn native_system_uptime(_args: &[Value]) -> Value {
     let s = sysinfo::System::uptime();
     Value::Number(s as f64)
+}
+
+/// Monotonic milliseconds since the first call to this function in the process (anchor = first invocation).
+/// Use for deltas: `t0 = system.time.monotonic_ms(); ...; t1 = system.time.monotonic_ms(); print(t1 - t0)`.
+pub fn native_system_time_monotonic_ms(_args: &[Value]) -> Value {
+    static ANCHOR: OnceLock<Instant> = OnceLock::new();
+    let anchor = ANCHOR.get_or_init(Instant::now);
+    Value::Number(anchor.elapsed().as_secs_f64() * 1000.0)
 }
 
 // --- permissions (24..25) ---

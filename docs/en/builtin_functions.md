@@ -492,36 +492,40 @@ pow(2, 0.5)    # 1.4142135623730951 (square root of 2)
 
 ### `min(...)`
 
-Returns the minimum value from the passed numbers.
+Returns the minimum value from the passed numbers, or from a single array of numbers (non-numeric elements are skipped).
 
 **Arguments:**
-- `...` - any number of numbers
+- `...` - any number of numbers, **or** one array of numbers
 
-**Returns:** `number` - minimum value, or `null` if arguments are not numbers or list is empty
+**Returns:** `number` - minimum value, or `null` if there are no numeric values (e.g. empty array or only non-numbers)
 
 **Examples:**
 ```datacode
 min(1, 2, 3)        # 1
 min(5, 2, 8, 1)     # 1
 min(-5, -2, -10)    # -10
+min([3, 1, 2])      # 1
+min([])             # null
 ```
 
 ---
 
 ### `max(...)`
 
-Returns the maximum value from the passed numbers.
+Returns the maximum value from the passed numbers, or from a single array of numbers (non-numeric elements are skipped).
 
 **Arguments:**
-- `...` - any number of numbers
+- `...` - any number of numbers, **or** one array of numbers
 
-**Returns:** `number` - maximum value, or `null` if arguments are not numbers or list is empty
+**Returns:** `number` - maximum value, or `null` if there are no numeric values (e.g. empty array or only non-numbers)
 
 **Examples:**
 ```datacode
 max(1, 2, 3)        # 3
 max(5, 2, 8, 1)     # 8
 max(-5, -2, -10)    # -2
+max([3, 1, 2])      # 3
+max([])             # null
 ```
 
 ---
@@ -804,6 +808,40 @@ count([1, 2, 3])      # 3
 count([])             # 0
 count(["a", "b"])     # 2
 ```
+
+---
+
+### `map(collection, fn | native)`
+
+Transforms each element of an array (or array view) and returns a **new array of the same length**.
+
+- `fn(x) => ...` — one argument per element.
+- `fn(x, i) => ...` — value and numeric index `i` (0-based).
+- `str` (or any **single-argument** builtin) — applied to each element.
+
+**Returns:** `array`, or an error if the callback fails.
+
+---
+
+### `filter(collection, predicate)`
+
+Keeps elements in order where the predicate is truthy. **Only user functions** (not bare natives).
+
+- `fn(x) => ...` or `fn(x, i) => ...` — same arity rules as `map`.
+
+**Returns:** new `array` (length at most the input length).
+
+---
+
+### `reduce(collection, fn, initial)`
+
+Folds the array with **required** `initial`. The callback must have arity 2: `(acc, item)`.
+
+`reduce([], fn, initial)` returns `initial` without calling the function.
+
+Two-argument `reduce` (no initial) is **not** supported.
+
+**Returns:** a single value.
 
 ---
 

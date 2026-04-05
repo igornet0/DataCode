@@ -52,6 +52,11 @@ fn try_range_literals(iterable: &Expr) -> Option<(i64, i64, i64)> {
     }
 }
 
+/// `for (i, x) in enum(arr)` must keep the index-based bytecode (`GetArrayElement` on `Enumerate`).
+fn is_enum_call_expr(iterable: &Expr) -> bool {
+    matches!(iterable, Expr::Call { name, .. } if name == "enum")
+}
+
 pub fn compile_for(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), LangError> {
     if let Stmt::For { pattern, iterable, body, line } = stmt {
         *ctx.current_line = *line;
@@ -97,8 +102,78 @@ pub fn compile_for(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), Lang
                 }
             }
         }
-        
-        // Стандартный путь: итерируемое — массив
+
+        // Ленивый / унифицированный путь: `Value::Iterable` через coerce + ForIterableNext (не ломает `enum()` — отдельная ветка ниже).
+        if !is_enum_call_expr(iterable) {
+            expr::compile_expr(ctx, iterable)?;
+            let array_local = ctx.scope.declare_local("__array_iter");
+            ctx.chunk.write_with_line(OpCode::StoreLocal(array_local), *line);
+            ctx.chunk
+                .write_with_line(OpCode::CoerceForInIterable(array_local), *line);
+
+            let is_simple_case = pattern.len() == 1 && matches!(pattern[0], UnpackPattern::Variable(_));
+            let expected_count = if is_simple_case {
+                0
+            } else {
+                unpack::count_unpack_variables(pattern)
+            };
+
+            let var_locals = if is_simple_case {
+                if let UnpackPattern::Variable(name) = &pattern[0] {
+                    let index = ctx.scope.declare_local(name);
+                    vec![Some(index)]
+                } else {
+                    vec![None]
+                }
+            } else {
+                unpack::declare_unpack_pattern_variables(pattern, ctx.scope, *line)?
+            };
+
+            let loop_start_label = ctx.labels.create_label();
+            let loop_end_label = ctx.labels.create_label();
+
+            ctx.labels.mark_label(loop_start_label, ctx.chunk.code.len());
+            ctx.chunk
+                .write_with_line(OpCode::ForIterableNext(array_local), *line);
+            ctx.labels
+                .emit_jump(ctx.chunk, *ctx.current_line, true, loop_end_label)?;
+
+            if is_simple_case {
+                if let Some(local_index) = var_locals[0] {
+                    ctx.chunk
+                        .write_with_line(OpCode::StoreLocal(local_index), *line);
+                }
+            } else {
+                unpack::compile_unpack_pattern(
+                    pattern,
+                    &var_locals,
+                    expected_count,
+                    ctx.chunk,
+                    ctx.scope,
+                    ctx.labels,
+                    *ctx.current_line,
+                    *line,
+                )?;
+            }
+
+            let loop_context = LoopContext {
+                continue_label: loop_start_label,
+                break_label: loop_end_label,
+                is_for_range: false,
+            };
+            ctx.loop_contexts.push(loop_context);
+            for stmt in body {
+                stmt::compile_stmt(ctx, stmt, true)?;
+            }
+            ctx.loop_contexts.pop();
+
+            ctx.labels.emit_loop(ctx.chunk, *ctx.current_line, loop_start_label)?;
+            ctx.labels.mark_label(loop_end_label, ctx.chunk.code.len());
+            ctx.scope.end_scope();
+            return Ok(());
+        }
+
+        // Стандартный путь: итерируемое — массив / кортеж / `Enumerate` (в т.ч. `enum(...)`).
         expr::compile_expr(ctx, iterable)?;
         
         // Сохраняем массив во временную переменную (локальную)

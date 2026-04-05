@@ -298,6 +298,52 @@ mod tests {
         assert!(result.is_err() || matches!(result, Ok(Value::Null)));
     }
 
+    #[test]
+    fn test_read_file_bin_sample_bytes() {
+        let bin_path = get_test_data_path("read_file_bin_sample.bin");
+        let source = format!(
+            r#"
+            let b = read_file_bin("{}")
+            b[0] + b[1] + b[2]
+            "#,
+            bin_path
+        );
+        assert_number_result(&source, 258.0);
+    }
+
+    #[test]
+    fn test_read_file_bin_length() {
+        let bin_path = get_test_data_path("read_file_bin_sample.bin");
+        let source = format!(
+            r#"
+            len(read_file_bin("{}"))
+            "#,
+            bin_path
+        );
+        assert_number_result(&source, 3.0);
+    }
+
+    #[test]
+    fn test_read_file_bin_empty_file() {
+        let bin_path = get_test_data_path("read_file_bin_empty.bin");
+        let source = format!(
+            r#"
+            len(read_file_bin("{}"))
+            "#,
+            bin_path
+        );
+        assert_number_result(&source, 0.0);
+    }
+
+    #[test]
+    fn test_read_file_bin_nonexistent_file() {
+        let source = r#"
+            read_file_bin("nonexistent_read_file_bin.bin")
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err() || matches!(result, Ok(Value::Null)));
+    }
+
     // ========== Тесты для параметра header в read_file ==========
 
     #[test]
@@ -1962,6 +2008,104 @@ mod tests {
             Ok(v) => panic!("Expected Number(1), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
+    }
+
+    // ========== array.chunk(n) ==========
+
+    #[test]
+    fn test_array_chunk_len_and_tail() {
+        let source = r#"
+            let arr = [1, 2, 3, 4, 5, 6, 7]
+            let c = arr.chunk(3)
+            len(c)
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_array_chunk_last_chunk_shorter() {
+        let source = r#"
+            let arr = [1, 2, 3, 4, 5, 6, 7]
+            let c = arr.chunk(3)
+            len(c[2])
+        "#;
+        assert_number_result(source, 1.0);
+    }
+
+    #[test]
+    fn test_array_chunk_for_in_sums_lengths() {
+        let source = r#"
+            let arr = [1, 2, 3, 4, 5, 6, 7]
+            let total = 0
+            for ch in arr.chunk(3) {
+                total += len(ch)
+            }
+            total
+        "#;
+        assert_number_result(source, 7.0);
+    }
+
+    #[test]
+    fn test_array_chunk_empty() {
+        let source = r#"
+            let arr = []
+            len(arr.chunk(3))
+        "#;
+        assert_number_result(source, 0.0);
+    }
+
+    #[test]
+    fn test_array_chunk_invalid_zero_returns_null() {
+        let source = r#"
+            let arr = [1, 2, 3]
+            arr.chunk(0)
+        "#;
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Null) => {}
+            Ok(v) => panic!("Expected Null, got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_array_chunk_non_integer_returns_null() {
+        let source = r#"
+            let arr = [1, 2, 3]
+            arr.chunk(1.5)
+        "#;
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Null) => {}
+            Ok(v) => panic!("Expected Null, got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    /// `chunk` on an [`ArrayView`] must materialize each window as an owned array (same as `Array` path)
+    /// so `chunk[0]` and `chunk[1:]` are consistent.
+    #[test]
+    fn test_arrayview_chunk_first_element_and_tail_len() {
+        let source = r#"
+            let arr = [1, 2, 3, 4, 5, 6]
+            let v = arr[0:6]
+            let chunks = v.chunk(3)
+            let ch0 = chunks[0]
+            let ch1 = chunks[1]
+            ch0[0] + ch1[0] + len(ch0[1:]) + len(ch1[1:])
+        "#;
+        // 1 + 4 + 2 + 2 = 9
+        assert_number_result(source, 9.0);
+    }
+
+    #[test]
+    fn test_arrayview_chunk_second_chunk_first_byte() {
+        let source = r#"
+            let arr = [10, 20, 30, 40, 50, 60]
+            let v = arr[0:6]
+            v.chunk(3)[1][0]
+        "#;
+        assert_number_result(source, 40.0);
     }
 }
 

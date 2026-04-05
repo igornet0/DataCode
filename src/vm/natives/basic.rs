@@ -1,6 +1,10 @@
 // Basic native functions: print, len, range, type conversions, typeof, isinstance
 
-use crate::common::value::Value;
+use crate::common::error::LangError;
+use crate::common::value::{IterableInner, Value};
+use crate::vm::host::HostFunction;
+use crate::vm::iterable::{chunk_source_count, iterable_materialize_capacity_hint, iterable_next};
+use crate::vm::vm::VM_CALL_CONTEXT;
 use std::rc::Rc;
 use std::cell::RefCell;
 use std::io::Write;
@@ -25,7 +29,12 @@ pub fn native_print(args: &[Value]) -> Value {
             if i > 0 {
                 output.push(' ');
             }
-            output.push_str(&arg.to_string());
+            let piece = if matches!(arg, Value::PluginOpaque { .. }) {
+                plugin_opaque_display_via_abi(arg).unwrap_or_else(|| arg.to_string())
+            } else {
+                arg.to_string()
+            };
+            output.push_str(&piece);
         }
         if OutputCapture::is_capturing() {
             OutputCapture::write_output(&output);
@@ -47,6 +56,8 @@ pub fn native_len(args: &[Value]) -> Value {
         match arg {
             Value::String(s) => Value::Number(s.len() as f64),
             Value::Array(arr) => Value::Number(arr.borrow().len() as f64),
+            Value::ArrayView(av) => Value::Number(av.length as f64),
+            Value::ByteBuffer(b) => Value::Number(b.len as f64),
             Value::Table(table) => Value::Number(table.borrow().len() as f64),
             Value::Object(map_rc) => Value::Number(map_rc.borrow().len() as f64),
             Value::ColumnReference { table, column_name } => {
@@ -57,8 +68,17 @@ pub fn native_len(args: &[Value]) -> Value {
                         .unwrap_or(Value::Null)
                 })
             },
-            Value::PluginOpaque { .. } => Value::Null,
+            Value::PluginOpaque { .. } => crate::vm::interpreter::object::plugin_opaque_len_via_plugin_call(arg)
+                .unwrap_or(Value::Null),
             Value::Enumerate { data, .. } => Value::Number(data.borrow().len() as f64),
+            Value::Iterable(rc) => match &*rc.borrow() {
+                IterableInner::Chunks {
+                    source,
+                    chunk_size,
+                    ..
+                } => Value::Number(chunk_source_count(source, *chunk_size) as f64),
+                _ => Value::Null,
+            },
             _ => Value::Null,
         }
     } else {
@@ -202,12 +222,80 @@ pub fn native_str(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::String(String::new());
     }
+    if let Value::PluginOpaque { tag, .. } = &args[0] {
+        if *tag == 0 {
+            if let Some(s) = plugin_tensor_repr_via_abi(&args[0]) {
+                return Value::String(s);
+            }
+        }
+    }
     Value::String(args[0].to_string())
 }
 
-pub fn native_array(args: &[Value]) -> Value {
-    let result: Vec<Value> = args.iter().cloned().collect();
-    Value::Array(Rc::new(RefCell::new(result)))
+/// `str(tensor)` → вложенные скобки по `shape` через `ml.native_plugin_call(_, "repr")`.
+fn plugin_tensor_repr_via_abi(arg: &Value) -> Option<String> {
+    let Value::PluginOpaque { tag, .. } = arg else {
+        return None;
+    };
+    if *tag != 0 {
+        return None;
+    }
+    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow())?;
+    unsafe {
+        let vm = &*vm_ptr;
+        let native_idx = vm.plugin_call_native?;
+        let builtin_count = vm.builtin_natives_count();
+        let abi_natives = vm.get_abi_natives();
+        if native_idx < builtin_count || native_idx >= builtin_count + abi_natives.len() {
+            return None;
+        }
+        let call_args = [arg.clone(), Value::String("repr".to_string())];
+        let v = crate::vm::native_loader::call_abi_native(
+            abi_natives[native_idx - builtin_count],
+            &call_args,
+            Some((vm.value_store(), vm.heavy_store())),
+        );
+        if crate::vm::native_loader::take_last_abi_error().is_some() {
+            return None;
+        }
+        match v {
+            Value::String(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+/// `array(a, b, …)` → `[a, b, …]`. `array(iterable)` materializes lazy [`Value::Iterable`] (e.g. `map` / `filter`).
+pub struct ArrayHostFunction;
+
+impl HostFunction for ArrayHostFunction {
+    fn call(&self, args: &[Value]) -> Result<Value, LangError> {
+        if args.len() == 1 {
+            if let Value::Iterable(rc) = &args[0] {
+                let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow()).ok_or_else(|| {
+                    LangError::runtime_error(
+                        "array(iterable): VM context not available".to_string(),
+                        0,
+                    )
+                })?;
+                unsafe {
+                    let vm = &mut *vm_ptr;
+                    let mut inner = rc.borrow().clone();
+                    let cap = iterable_materialize_capacity_hint(&inner);
+                    let mut out = cap.map_or_else(Vec::new, Vec::with_capacity);
+                    loop {
+                        match iterable_next(&mut inner, vm)? {
+                            None => break,
+                            Some(v) => out.push(v),
+                        }
+                    }
+                    return Ok(Value::Array(Rc::new(RefCell::new(out))));
+                }
+            }
+        }
+        let result: Vec<Value> = args.iter().cloned().collect();
+        Ok(Value::Array(Rc::new(RefCell::new(result))))
+    }
 }
 
 pub fn native_date(args: &[Value]) -> Value {
@@ -312,10 +400,72 @@ pub fn native_money(args: &[Value]) -> Value {
 
 // Функции работы с типами
 
+/// Имя типа для `PluginOpaque` из нативного модуля (`ml.opaque_type_name`), если загружен.
+fn plugin_opaque_type_name_via_abi(arg: &Value) -> Option<String> {
+    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow());
+    let vm_ptr = vm_ptr?;
+    unsafe {
+        let vm = &mut *vm_ptr;
+        let native_idx = vm.plugin_typeof_opaque?;
+        let builtin_count = vm.builtin_natives_count();
+        let abi_natives = vm.get_abi_natives();
+        if native_idx < builtin_count || native_idx >= builtin_count + abi_natives.len() {
+            return None;
+        }
+        let v = crate::vm::native_loader::call_abi_native(
+            abi_natives[native_idx - builtin_count],
+            std::slice::from_ref(arg),
+            Some((vm.value_store(), vm.heavy_store())),
+        );
+        match v {
+            Value::String(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+/// Короткая строка из `ml.opaque_display` (`<tensor tag=0 id=4>`), если загружен libml.
+fn plugin_opaque_display_via_abi(arg: &Value) -> Option<String> {
+    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow());
+    let vm_ptr = vm_ptr?;
+    unsafe {
+        let vm = &mut *vm_ptr;
+        let native_idx = vm.plugin_opaque_display?;
+        let builtin_count = vm.builtin_natives_count();
+        let abi_natives = vm.get_abi_natives();
+        if native_idx < builtin_count || native_idx >= builtin_count + abi_natives.len() {
+            return None;
+        }
+        let v = crate::vm::native_loader::call_abi_native(
+            abi_natives[native_idx - builtin_count],
+            std::slice::from_ref(arg),
+            Some((vm.value_store(), vm.heavy_store())),
+        );
+        if crate::vm::native_loader::take_last_abi_error().is_some() {
+            return None;
+        }
+        match v {
+            Value::String(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
 pub fn native_typeof(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::String("null".to_string());
     }
+    if let Value::Object(map_rc) = &args[0] {
+        let map = map_rc.borrow();
+        if let Some(Value::String(ns)) = map.get("__plugin_namespace") {
+            return Value::String(ns.clone());
+        }
+    }
+    let plugin_opaque_ty = if matches!(&args[0], Value::PluginOpaque { .. }) {
+        plugin_opaque_type_name_via_abi(&args[0])
+    } else {
+        None
+    };
     let type_name = match &args[0] {
         Value::Number(n) => {
             // Различаем int и float по дробной части
@@ -339,7 +489,8 @@ pub fn native_typeof(args: &[Value]) -> Value {
                 "string"
             }
         }
-        Value::Array(_) => "array",
+        Value::Array(_) | Value::ArrayView(_) | Value::ByteBuffer(_) => "array",
+        Value::Iterable(_) => "iterable",
         Value::Tuple(_) => "tuple",
         Value::Path(_) => "path",
         Value::Uuid(_, _) => "uuid",
@@ -349,7 +500,7 @@ pub fn native_typeof(args: &[Value]) -> Value {
         Value::Null => "null",
         Value::Function(_) | Value::ModuleFunction { .. } => "function",
         Value::NativeFunction(_) => "function",
-        Value::PluginOpaque { .. } => "plugin_opaque",
+        Value::PluginOpaque { .. } => plugin_opaque_ty.as_deref().unwrap_or("plugin_opaque"),
         Value::Window(_) => "window",
         Value::Image(_) => "image",
         Value::Figure(_) => "figure",
@@ -404,6 +555,35 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
                 Value::Object(_) => object_class_chain_contains(value, target),
                 _ => false,
             });
+        }
+    }
+
+    // `isinstance(plugin_handle, ctor)` where `ctor` is an ABI export (e.g. flat `tensor`) or a nested
+    // namespace object (`from ml import dataset` → `__plugin_namespace` == `"dataset"`).
+    // Compare with `opaque_type_name` (plugin hook) — no compiler hardcoding.
+    if matches!(value, Value::PluginOpaque { .. }) {
+        if let Value::NativeFunction(idx) = &args[1] {
+            let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow());
+            if let Some(vm_ptr) = vm_ptr {
+                let vm = unsafe { &*vm_ptr };
+                if let Some(export_name) = vm.abi_export_name_for_native_index(*idx) {
+                    if let Some(tn) = plugin_opaque_type_name_via_abi(value) {
+                        return Value::Bool(tn.eq_ignore_ascii_case(export_name));
+                    }
+                    return Value::Bool(false);
+                }
+            }
+        }
+        if let Value::Object(map_rc) = &args[1] {
+            let map = map_rc.borrow();
+            if let Some(Value::String(ns)) =
+                map.get(crate::vm::native_loader::NATIVE_MODULE_TYPEOF_NAMESPACE)
+            {
+                if let Some(tn) = plugin_opaque_type_name_via_abi(value) {
+                    return Value::Bool(tn.eq_ignore_ascii_case(ns));
+                }
+                return Value::Bool(false);
+            }
         }
     }
 
@@ -466,14 +646,19 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
         }
         Value::Path(_) => type_name_lower == "path",
         Value::Uuid(_, _) => type_name_lower == "uuid",
-        Value::Array(_) => type_name_lower == "array" || type_name_lower == "list",
+        Value::Array(_) | Value::ArrayView(_) | Value::ByteBuffer(_) => {
+            type_name_lower == "array" || type_name_lower == "list"
+        }
         Value::Tuple(_) => type_name_lower == "tuple",
         Value::Table(_) => type_name_lower == "table",
         Value::Object(map_rc) => {
-            if type_name_lower == "object" || type_name_lower == "dict" || type_name_lower == "dictionary" {
+            let map = map_rc.borrow();
+            if let Some(Value::String(ns)) = map.get("__plugin_namespace") {
+                type_name_lower == ns.to_lowercase()
+            } else if type_name_lower == "object" || type_name_lower == "dict" || type_name_lower == "dictionary" {
                 true
             } else if type_name_lower == "table" {
-                map_rc.borrow().get("__extends_table") == Some(&Value::Bool(true))
+                map.get("__extends_table") == Some(&Value::Bool(true))
             } else {
                 false
             }
@@ -481,7 +666,13 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
         Value::ColumnReference { .. } => type_name_lower == "column",
         Value::Null => type_name_lower == "null" || type_name_lower == "none",
         Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_) => type_name_lower == "function",
-        Value::PluginOpaque { .. } => type_name_lower == "plugin_opaque",
+        Value::PluginOpaque { .. } => {
+            if let Some(tn) = plugin_opaque_type_name_via_abi(value) {
+                type_name_lower == tn.to_lowercase()
+            } else {
+                type_name_lower == "plugin_opaque"
+            }
+        }
         Value::Window(_) => type_name_lower == "window",
         Value::Image(_) => type_name_lower == "image",
         Value::Figure(_) => type_name_lower == "figure",
@@ -489,6 +680,7 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
         Value::DatabaseEngine(_) => type_name_lower == "database_engine",
         Value::DatabaseCluster(_) => type_name_lower == "database_cluster",
         Value::Enumerate { .. } => type_name_lower == "enumerate",
+        Value::Iterable(_) => type_name_lower == "iterable",
         Value::Ellipsis => type_name_lower == "ellipsis",
     };
     

@@ -146,7 +146,7 @@ fn test_unpack_not_iterable() {
         }
     "#;
     // Должна быть ошибка: объект не итерируемый
-    assert_error(source, "Expected array");
+    assert_error(source, "expected array");
 }
 
 #[test]
@@ -310,7 +310,7 @@ fn test_unpack_all_wildcards() {
         }
     "#;
         // Должна быть ошибка: объект не итерируемый
-        assert_error(source, "Expected array");
+        assert_error(source, "expected array");
     }
 
     #[test]

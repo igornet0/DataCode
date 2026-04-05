@@ -485,7 +485,22 @@ pub fn execute_call(
                     });
                     let fallback_ok = if let (Some(name), Value::Object(ref obj_rc)) = (load_global_name.as_ref(), &actual_callee) {
                         let obj = obj_rc.borrow();
-                        let v_opt = obj.get(name).cloned();
+                        // Namespace call: prefer `__call__` (plugin-defined default), then `namespace[name]`
+                        // (e.g. `from engine import engine` → key `engine`). `__call__` first avoids a wrong
+                        // same-named member shadowing the intended constructor (e.g. ml `dataset` namespace).
+                        let is_callable = |v: &Value| {
+                            matches!(
+                                v,
+                                Value::NativeFunction(_)
+                                    | Value::Function(_)
+                                    | Value::ModuleFunction { .. }
+                            )
+                        };
+                        let v_opt = obj
+                            .get("__call__")
+                            .cloned()
+                            .filter(|v| is_callable(v))
+                            .or_else(|| obj.get(name).cloned().filter(|v| is_callable(v)));
                         drop(obj);
                         if let Some(v) = v_opt {
                             if matches!(&v, Value::NativeFunction(_) | Value::Function(_) | Value::ModuleFunction { .. }) {
@@ -533,11 +548,12 @@ pub fn execute_call(
             // Callable opaque values dispatch via `native_plugin_call` in the loaded plugin.
             0
         } else {
-            let error = ExceptionHandler::runtime_error(
-                &frames,
-                "Can only call functions".to_string(),
-                line,
-            );
+            let msg = if matches!(&actual_callee, Value::Null) {
+                "Cannot call null — the callee may be missing (e.g. wrong or absent method on a module object)".to_string()
+            } else {
+                "Can only call functions".to_string()
+            };
+            let error = ExceptionHandler::runtime_error(&frames, msg, line);
             match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
@@ -644,6 +660,7 @@ pub fn execute_call(
                 let result = crate::vm::native_loader::call_abi_native(
                     abi_natives[native_idx - builtin_count],
                     &args,
+                    Some((value_store, heavy_store)),
                 );
                 if let Some(abi_err) = crate::vm::native_loader::take_last_abi_error() {
                     match ExceptionHandler::handle_exception(stack, frames, exception_handlers, abi_err, value_store, heavy_store) {

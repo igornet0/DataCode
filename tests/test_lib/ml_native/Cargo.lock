@@ -8,7 +8,7 @@ version = "1.1.0"
 
 [[package]]
 name = "datacode_sdk"
-version = "1.1.1"
+version = "1.1.2"
 dependencies = [
  "datacode_abi",
  "libc",

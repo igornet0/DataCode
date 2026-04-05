@@ -1,0 +1,139 @@
+# CIFAR-10 batch diagnostics (chunk/slice copies, push, dataset notes).
+# Replace @@CIFAR_BIN@@ with absolute path to data_batch_1.bin (30_730_000 bytes).
+
+import system
+
+fn export_data(data) {
+    labels = []
+    pixels_list = []
+    for chunk in data.chunk(3073) {
+        label = chunk[0]
+        pixels = chunk[1:]
+        labels.push(label)
+        pixels_list.push(pixels)
+    }
+    return labels, pixels_list
+}
+
+fn export_labels_only(data) {
+    for chunk in data.chunk(3073) {
+        chunk[0]
+    }
+}
+
+fn export_with_index_loop(data) {
+    labels = []
+    pixels_list = []
+    i = 0
+    while i < len(data) {
+        label = data[i]
+        pixels = data[i + 1:i + 3073]
+        labels.push(label)
+        pixels_list.push(pixels)
+        i = i + 3073
+    }
+    return labels, pixels_list
+}
+
+fn process_chunk_sum(chunk) {
+    sum(chunk)
+}
+
+let bin_path = "@@CIFAR_BIN@@"
+
+print("=== CIFAR bin diagnostics (VM: chunk/slice copy; ML: concat_axis0) ===")
+
+print("")
+print("--- Test 2: memory_free (system available bytes, not process RSS) ---")
+print("mem_before_read: " + str(system.hardware.memory_free()))
+
+print("")
+print("--- Test 1: read_file_bin (first phase) ---")
+let t_read0 = system.time.monotonic_ms()
+let data = read_file_bin(bin_path)
+let t_read1 = system.time.monotonic_ms()
+print("mem_after_read: " + str(system.hardware.memory_free()))
+print("read_ms: " + str(t_read1 - t_read0))
+
+print("")
+print("--- Test 5: export_data time vs prefix size (100 / 1000; add 10000 for full-stress locally) ---")
+for rows in [100, 1000] {
+    let need = 3073 * rows
+    let n = min(need, len(data))
+    let prefix = data[0:n]
+    let ta = system.time.monotonic_ms()
+    let yy, XX = export_data(prefix)
+    let tb = system.time.monotonic_ms()
+    print("rows=" + str(rows) + " export_ms=" + str(tb - ta) + " len(labels)=" + str(len(yy)))
+}
+
+print("")
+print("--- Test 1 (cont.): full export_data (same buffer as read) ---")
+let t_ex0 = system.time.monotonic_ms()
+let y, X = export_data(data)
+let t_ex1 = system.time.monotonic_ms()
+print("mem_after_export: " + str(system.hardware.memory_free()))
+print("export_full_ms: " + str(t_ex1 - t_ex0))
+
+print("")
+print("--- Test 3: first chunk vs slice lengths ---")
+let ch0 = data.chunk(3073)[0]
+let px = ch0[1:]
+print("len(chunk[0]): " + str(len(ch0)) + " len(chunk[1:]): " + str(len(px)))
+
+print("")
+print("--- Test 4: typeof chunk[0] ---")
+let chunks = data.chunk(3073)
+print("typeof(chunks[0]): " + str(typeof(chunks[0])))
+
+print("")
+print("--- Test 6: push 100000 ---")
+let t_push0 = system.time.monotonic_ms()
+let acc = []
+for i in range(100000) {
+    acc.push(i)
+}
+let t_push1 = system.time.monotonic_ms()
+print("push_100000_ms: " + str(t_push1 - t_push0))
+
+print("")
+print("--- Test 7: array_with_capacity(100000) + push ---")
+let t_cap0 = system.time.monotonic_ms()
+let pre = array_with_capacity(100000)
+for j in range(100000) {
+    pre.push(j)
+}
+let t_cap1 = system.time.monotonic_ms()
+print("prealloc_push_100000_ms: " + str(t_cap1 - t_cap0))
+
+print("")
+print("--- Test 8: index loop vs chunk (100 images; full data is very slow) ---")
+let idx_sample = data[0:307300]
+let t_ix0 = system.time.monotonic_ms()
+let y1, X1 = export_with_index_loop(idx_sample)
+let t_ix1 = system.time.monotonic_ms()
+print("index_loop_100img_ms: " + str(t_ix1 - t_ix0) + " len(labels)=" + str(len(y1)))
+
+print("")
+print("--- Test 9: labels only (no pixel lists) ---")
+let t_l0 = system.time.monotonic_ms()
+export_labels_only(data)
+let t_l1 = system.time.monotonic_ms()
+print("labels_only_ms: " + str(t_l1 - t_l0))
+
+print("")
+print("--- Test 10: chunk + sum (no pixel storage) ---")
+let t_s0 = system.time.monotonic_ms()
+for chunk in data.chunk(3073) {
+    process_chunk_sum(chunk)
+}
+let t_s1 = system.time.monotonic_ms()
+print("chunk_sum_ms: " + str(t_s1 - t_s0))
+
+print("")
+print("--- Test 11: dataset.concat vs push_data ---")
+print("See tests/diagnostics/cifar_bin_test11_dataset.dc (requires import ml + DPM path).")
+print("Rust: datacode_lib/ML-Datacode-lib/src/nn/dataset.rs concat_in_place / push_tensor_rows -> Tensor::concat_axis0.")
+
+print("")
+print("=== done ===")

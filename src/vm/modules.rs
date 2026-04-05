@@ -9,13 +9,14 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
 
-/// Built-in module names (for error messages and is_known_module)
-const BUILTIN_MODULE_NAMES: &[&str] = &[
+/// Built-in module names (for error messages, is_known_module, and register_all_builtin_modules / loaded_modules).
+pub const BUILTIN_MODULE_NAMES: &[&str] = &[
     "plot",
     "settings_env",
     "uuid",
     "database_engine",
     "system",
+    "debug",
 ];
 
 /// Check if a name is a known module name
@@ -52,6 +53,7 @@ pub fn register_module(
         "uuid" => register_uuid_module(natives, globals, global_names, store, heap),
         "database_engine" => register_database_module(natives, globals, global_names, store, heap),
         "system" => register_system_module(natives, globals, global_names, store, heap),
+        "debug" => register_debug_module(natives, globals, global_names, store, heap),
         _ => Err(LangError::runtime_error(
             format!("Unknown module: {}", module_name),
             0,
@@ -195,6 +197,42 @@ fn register_settings_env_module(
     Ok(())
 }
 
+fn register_debug_module(
+    natives: &mut Vec<HostEntry>,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
+) -> Result<(), LangError> {
+    use crate::vm::natives::native_debug_operators;
+
+    let start = natives.len();
+    natives.push(HostEntry::Extended(native_debug_operators));
+
+    let mut debug_object = HashMap::new();
+    debug_object.insert("operators".to_string(), Value::NativeFunction(start));
+
+    let debug_index = if let Some(idx) = global_index_by_name(global_names, "debug") {
+        if idx >= globals.len() {
+            globals.resize(idx + 1, default_global_slot());
+        }
+        idx
+    } else {
+        let idx = globals.len();
+        globals.push(default_global_slot());
+        global_names.insert(idx, "debug".to_string());
+        idx
+    };
+
+    globals[debug_index] = GlobalSlot::Heap(store_value_arena(
+        Value::Object(Rc::new(RefCell::new(debug_object))),
+        store,
+        heap,
+    ));
+
+    Ok(())
+}
+
 fn register_uuid_module(
     natives: &mut Vec<HostEntry>,
     globals: &mut Vec<GlobalSlot>,
@@ -289,6 +327,14 @@ fn register_database_module(
     database_object.insert("DatabaseCluster".to_string(), Value::NativeFunction(start + 9));
     // connect, execute, query, run are methods on engine - accessed via GetArrayElement on DatabaseEngine
     // add, get, names are methods on cluster - accessed via GetArrayElement on DatabaseCluster
+    //
+    // Re-export builtin type constructors for `from database_engine import int, str, ...` (tests / ORM).
+    // Indices must match `native_registry::register_builtin_natives`.
+    database_object.insert("int".to_string(), Value::NativeFunction(3));
+    database_object.insert("float".to_string(), Value::NativeFunction(4));
+    database_object.insert("bool".to_string(), Value::NativeFunction(5));
+    database_object.insert("str".to_string(), Value::NativeFunction(6));
+    database_object.insert("date".to_string(), Value::NativeFunction(10));
 
     let database_index = if let Some(idx) = global_index_by_name(global_names, "database_engine") {
         if idx >= globals.len() {
@@ -353,6 +399,7 @@ fn register_system_module(
     natives.push(HostEntry::Extended(natives::native_system_fs_write));
     natives.push(HostEntry::Extended(natives::native_system_get_dpm_env_base));
     natives.push(HostEntry::Extended(natives::native_system_get_dpm_env_root));
+    natives.push(HostEntry::Extended(natives::native_system_time_monotonic_ms));
 
     let mut env = HashMap::new();
     env.insert("get_os".to_string(), Value::NativeFunction(start + 0));
@@ -401,6 +448,10 @@ fn register_system_module(
     time.insert("now".to_string(), Value::NativeFunction(start + 20));
     time.insert("sleep".to_string(), Value::NativeFunction(start + 21));
     time.insert("uptime".to_string(), Value::NativeFunction(start + 22));
+    time.insert(
+        "monotonic_ms".to_string(),
+        Value::NativeFunction(start + 36),
+    );
 
     let mut permissions = HashMap::new();
     permissions.insert(

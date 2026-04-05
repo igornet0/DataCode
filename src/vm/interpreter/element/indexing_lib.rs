@@ -1,5 +1,4 @@
 //! GetArrayElement for Figure, Axis, DatabaseEngine, DatabaseCluster.
-//! (Tensor/Dataset/NN indexing lives in the ML dylib; use `import ml`.)
 
 use std::cell::RefCell;
 use std::rc::Rc;

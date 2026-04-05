@@ -34,6 +34,8 @@ pub struct FileExecutionConfig {
     pub debug: bool,
     /// When true, run in main thread without GUI event loop (script output visible; no plot windows)
     pub no_gui: bool,
+    /// Явный путь к нативной библиотеке (`lib<name>.dylib` / `.so` / `.dll`) для тестирования; имеет приоритет над DPM и поиском по умолчанию.
+    pub native_lib: Option<String>,
     pub script_args: Vec<String>, // Аргументы для передачи в скрипт (позиционные + из --имя=значение по первому параметру __main__)
     /// Полная командная строка для извлечения опций вида --X=value по имени первого параметра __main__.
     pub raw_args: Vec<String>,
@@ -62,6 +64,7 @@ pub fn print_help() {
     println!("  datacode main.dc --build_model output.db  # Export to specific file");
     println!("  datacode main.dc --no-gui       # Run in main thread (script output visible, no plot windows)");
     println!("  datacode --base-dir <dir> main.dc  # Resolve script and .env paths from <dir> (see Path resolution below)");
+    println!("  datacode script.dc --lib path/to/libml.dylib  # Load native module from this dylib (testing; overrides DPM search)");
     println!("  datacode --websocket       # Start WebSocket server for remote code execution");
     println!("  datacode --http            # Start HTTP server (or use datacode-server binary)");
     println!("  datacode --help            # Show this help");
@@ -163,7 +166,7 @@ pub fn extract_param_args(args: &[String], param_name: &str) -> Vec<String> {
     out
 }
 
-/// Parse --build_model, --debug, --no-gui, --base-dir and script args from a slice.
+/// Parse --build_model, --debug, --no-gui, --base-dir, --lib and script args from a slice.
 /// skip_script_arg_index: if Some(i), args[i] is the .dc filename and is not added to script_args.
 fn parse_file_execution_flags(
     args: &[String],
@@ -175,6 +178,7 @@ fn parse_file_execution_flags(
         bool,
         bool,
         Option<String>,
+        Option<String>,
         Vec<String>,
     ),
     String,
@@ -184,6 +188,7 @@ fn parse_file_execution_flags(
     let mut debug = false;
     let mut no_gui = false;
     let mut base_dir: Option<String> = None;
+    let mut native_lib: Option<String> = None;
     let mut script_args = Vec::new();
     let mut i = 0;
     while i < args.len() {
@@ -213,6 +218,14 @@ fn parse_file_execution_flags(
                     return Err("Ошибка: --base-dir требует значение (путь к директории)".to_string());
                 }
             }
+            "--lib" => {
+                if i + 1 < args.len() && !args[i + 1].starts_with('-') {
+                    native_lib = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    return Err("Ошибка: --lib требует путь к нативной библиотеке (например libml.dylib)".to_string());
+                }
+            }
             arg => {
                 if !arg.starts_with('-') {
                     if Some(i) != skip_script_arg_index {
@@ -223,7 +236,7 @@ fn parse_file_execution_flags(
             }
         }
     }
-    Ok((build_model, output_db, debug, no_gui, base_dir, script_args))
+    Ok((build_model, output_db, debug, no_gui, base_dir, native_lib, script_args))
 }
 
 /// Parse CLI arguments
@@ -356,7 +369,7 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
                     let dc_idx = dc_idx.map(|i| i + 1);
                     if let Some(idx) = dc_idx {
                         let filename = args[idx].clone();
-                        let (build_model, output_db, debug, no_gui, base_dir, script_args) =
+                        let (build_model, output_db, debug, no_gui, base_dir, native_lib, script_args) =
                             parse_file_execution_flags(&args[1..], Some(idx - 1))?;
                         let script_path_for_check: std::path::PathBuf = if let Some(ref b) = base_dir {
                             Path::new(b).join(&filename)
@@ -376,6 +389,7 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
                             output_db,
                             debug,
                             no_gui,
+                            native_lib,
                             script_args,
                             raw_args: args.clone(),
                         }));
@@ -387,7 +401,7 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
         
         // File execution: first arg is the .dc filename
         let filename = arg.clone();
-        let (build_model, output_db, debug, no_gui, base_dir, script_args) =
+        let (build_model, output_db, debug, no_gui, base_dir, native_lib, script_args) =
             parse_file_execution_flags(&args[2..], None)?;
         
         // Check file existence: if base_dir set and path relative, resolve relative to base_dir
@@ -411,6 +425,7 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
             output_db,
             debug,
             no_gui,
+            native_lib,
             script_args,
             raw_args: args.clone(),
         }))

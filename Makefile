@@ -1,8 +1,7 @@
 # Makefile для DataCode
 # Удобные команды для сборки, тестирования и установки DataCode
-# ML (libml) не собирается здесь — подключается готовый артефакт через DATACODE_ML_LIB_DIR
 
-.PHONY: help build test run install update uninstall clean dev release examples build-metal build-cuda run-metal run-cuda ml-check ml-link run-with-ml
+.PHONY: help build test run install update uninstall clean dev release examples
 
 # Цель по умолчанию
 help:
@@ -14,15 +13,6 @@ help:
 	@echo "  make test       - Запустить все тесты"
 	@echo "  make run        - Запустить DataCode REPL"
 	@echo "  make dev        - Собрать и запустить в режиме разработки"
-	@echo ""
-	@echo "ML (внешняя сборка, не data-code):"
-	@echo "  export DATACODE_ML_LIB_DIR=/path/to/dir   # каталог с libml.dylib / libml.so / ml.dll"
-	@echo "  make ml-check   - проверить наличие библиотеки в DATACODE_ML_LIB_DIR"
-	@echo "  make ml-link    - скопировать libml в packages/ml (install.sh --ml-artifact-only)"
-	@echo "  make run-with-ml FILE=path.dc  - ml-check затем cargo run --release"
-	@echo ""
-	@echo "Совместимость (alias): build-metal / build-cuda / run-metal / run-cuda —"
-	@echo "  только data-code + при необходимости проверка ml; без сборки ML в этом репозитории."
 	@echo ""
 	@echo "Релиз:"
 	@echo "  make release    - Собрать DataCode в релизном режиме"
@@ -65,12 +55,6 @@ release:
 	@echo "🔨 Сборка DataCode (релизный режим)..."
 	cargo build --release
 
-# Сборка только data-code (release). GPU/Metal/CUDA — в отдельно собранном libml, не в data-code.
-build-metal build-cuda:
-	@echo "🔨 Сборка только data-code (release). ML/libml не собирается в этом репозитории."
-	@echo "   Установите DATACODE_ML_LIB_DIR и при необходимости: make ml-link"
-	@$(MAKE) release
-
 # Запуск тестов
 test:
 	@echo "🧪 Запуск тестов..."
@@ -111,46 +95,6 @@ run:
 	@echo "🚀 Запуск DataCode REPL..."
 	cargo run
 
-# Проверка наличия prebuilt libml (DATACODE_ML_LIB_DIR обязателен)
-ml-check:
-	@if [ -z "$$DATACODE_ML_LIB_DIR" ]; then \
-		echo "❌ DATACODE_ML_LIB_DIR не задан."; \
-		echo "   Пример: export DATACODE_ML_LIB_DIR=/path/to/dir/with/libml"; \
-		exit 1; \
-	fi
-	@LIB_NAME="$$DATACODE_ML_LIB_NAME"; \
-	if [ -z "$$LIB_NAME" ]; then \
-		case $$(uname -s) in \
-			Darwin) LIB_NAME=libml.dylib ;; \
-			MINGW*|MSYS*|CYGWIN*) LIB_NAME=ml.dll ;; \
-			*) LIB_NAME=libml.so ;; \
-		esac; \
-	fi; \
-	SRC="$$DATACODE_ML_LIB_DIR/$$LIB_NAME"; \
-	if [ ! -f "$$SRC" ]; then \
-		echo "❌ Не найдено: $$SRC"; \
-		exit 1; \
-	fi; \
-	echo "✅ ML library: $$SRC"
-
-# Копирование libml в packages/ml (install.sh --ml-artifact-only)
-ml-link:
-	@chmod +x install.sh
-	@./install.sh --ml-artifact-only
-
-# Запуск с проверкой ML-артефакта
-run-with-ml:
-	@if [ -z "$(FILE)" ]; then \
-		echo "❌ Укажите файл: make run-with-ml FILE=examples/en/10-mnist-mlp/mnist_mlp.dc"; \
-		exit 1; \
-	fi
-	@$(MAKE) ml-check
-	@echo "🚀 Запуск $(FILE)..."
-	cargo run --release -- $(FILE)
-
-# Alias: раньше подразумевали сборку libml с Metal/CUDA — теперь только проверка + run
-run-metal run-cuda: run-with-ml
-
 # Режим разработки (сборка + запуск)
 dev: build run
 
@@ -172,7 +116,7 @@ update:
 	@echo "📦 Обновление зависимостей Cargo..."
 	@cargo update || (echo "❌ Ошибка: Не удалось обновить зависимости" && exit 1)
 	@echo ""
-	@echo "🔨 Пересборка и переустановка DataCode (без сборки ML)..."
+	@echo "🔨 Пересборка и переустановка DataCode..."
 	@cargo install --path . --force || (echo "❌ Ошибка: Не удалось переустановить DataCode" && exit 1)
 	@echo "✅ DataCode обновлен успешно!"
 	@if [ "$$(uname)" = "Darwin" ] && [ -d "packaging/macos/DataCode.app" ]; then \
@@ -261,4 +205,3 @@ info:
 	@echo "  examples/      - Примеры .dc файлов"
 	@echo "  tests/         - Тестовые файлы"
 	@echo ""
-	@echo "🔧 Доступные цели: build, test, run, install, examples, app-bundle, ml-check, ml-link"

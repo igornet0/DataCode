@@ -461,7 +461,7 @@ pub fn op_store_global(
         if !from_constant {
             if let Some(cell) = value_store.get(value_id) {
                 let skip_full_path = match cell {
-                    ValueCell::Array(_) | ValueCell::Tuple(_) | ValueCell::Function(_)
+                    ValueCell::Array(_) | ValueCell::ArrayView { .. } | ValueCell::Tuple(_) | ValueCell::Function(_)
                     | ValueCell::ModuleFunction { .. } | ValueCell::NativeFunction(_) | ValueCell::String(_) | ValueCell::Number(_)
                     | ValueCell::Bool(_) | ValueCell::Null | ValueCell::Path(_) | ValueCell::Uuid(_, _)
                     | ValueCell::ColumnReference { .. } | ValueCell::PluginOpaque { .. } | ValueCell::Window(_)

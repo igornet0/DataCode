@@ -4,9 +4,38 @@ use crate::common::{error::LangError, value::Value, value_store::{ValueStore}, T
 use crate::vm::frame::CallFrame;
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::heavy_store::HeavyStore;
+use crate::vm::native_loader::{call_abi_native, take_last_abi_error};
+use crate::vm::vm::VM_CALL_CONTEXT;
 use std::cell::RefCell;
 use std::fmt::Write;
 use std::rc::Rc;
+
+/// Two `PluginOpaque` values and loaded `ml.opaque_binop`: delegate to libml (`add`/`sub`/…).
+pub(crate) fn try_plugin_opaque_binop(a: &Value, b: &Value, op: &str) -> Option<Value> {
+    let (Value::PluginOpaque { .. }, Value::PluginOpaque { .. }) = (a, b) else {
+        return None;
+    };
+    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow())?;
+    unsafe {
+        let vm = &*vm_ptr;
+        let native_idx = vm.plugin_opaque_binop?;
+        let builtin_count = vm.builtin_natives_count();
+        let abi = vm.get_abi_natives();
+        if native_idx < builtin_count || native_idx >= builtin_count + abi.len() {
+            return None;
+        }
+        let f = abi[native_idx - builtin_count];
+        let out = call_abi_native(
+            f,
+            &[a.clone(), b.clone(), Value::String(op.to_string())],
+            Some((vm.value_store(), vm.heavy_store())),
+        );
+        if take_last_abi_error().is_some() {
+            return None;
+        }
+        Some(out)
+    }
+}
 
 /// Get the current line number from the frames
 fn get_line(frames: &mut Vec<CallFrame>) -> usize {
@@ -32,6 +61,9 @@ pub fn binary_add(
     heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
+    if let Some(v) = try_plugin_opaque_binop(a, b, "add") {
+        return Ok(v);
+    }
     // Convert null to 0 for arithmetic operations (useful for class fields with default values)
     let a = if matches!(a, Value::Null) { &Value::Number(0.0) } else { a };
     let b = if matches!(b, Value::Null) { &Value::Number(0.0) } else { b };
@@ -97,6 +129,9 @@ pub fn binary_sub(
     heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
+    if let Some(v) = try_plugin_opaque_binop(a, b, "sub") {
+        return Ok(v);
+    }
     // Convert null to 0 for arithmetic operations
     let a = if matches!(a, Value::Null) { &Value::Number(0.0) } else { a };
     let b = if matches!(b, Value::Null) { &Value::Number(0.0) } else { b };
@@ -128,6 +163,9 @@ pub fn binary_mul(
     heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
+    if let Some(v) = try_plugin_opaque_binop(a, b, "mul") {
+        return Ok(v);
+    }
     match (a, b) {
         (Value::Number(n1), Value::Number(n2)) => Ok(Value::Number(n1 * n2)),
         (Value::String(s), Value::Number(n)) => {
@@ -153,6 +191,81 @@ pub fn binary_mul(
                 line,
             );
             match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                Ok(()) => Ok(Value::Null),
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+/// Matrix multiply (`@`) for tensors via `opaque_binop`; numbers multiply as scalars.
+pub fn binary_matmul(
+    a: &Value,
+    b: &Value,
+    frames: &mut Vec<CallFrame>,
+    stack: &mut Vec<TaggedValue>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+) -> Result<Value, LangError> {
+    let line = get_line(frames);
+    if let Some(v) = try_plugin_opaque_binop(a, b, "matmul") {
+        return Ok(v);
+    }
+    match (a, b) {
+        (Value::Number(n1), Value::Number(n2)) => Ok(Value::Number(n1 * n2)),
+        _ => {
+            let error = ExceptionHandler::runtime_error(
+                frames,
+                "Operands must be numbers or tensors for @".to_string(),
+                line,
+            );
+            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                Ok(()) => Ok(Value::Null),
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+/// Dispatch for [`crate::bytecode::OpCode::BinaryOp`]: logical `op_name` from chunk constants (fast path + `opaque_binop`).
+pub fn exec_binary_op_by_name(
+    op_name: &str,
+    a: &Value,
+    b: &Value,
+    frames: &mut Vec<CallFrame>,
+    stack: &mut Vec<TaggedValue>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+) -> Result<Value, LangError> {
+    match op_name {
+        "add" => binary_add(a, b, frames, stack, exception_handlers, value_store, heavy_store),
+        "sub" => binary_sub(a, b, frames, stack, exception_handlers, value_store, heavy_store),
+        "mul" => binary_mul(a, b, frames, stack, exception_handlers, value_store, heavy_store),
+        "matmul" => binary_matmul(a, b, frames, stack, exception_handlers, value_store, heavy_store),
+        "div" => binary_div(a, b, frames, stack, exception_handlers, value_store, heavy_store),
+        "idiv" => binary_int_div(a, b, frames, stack, exception_handlers, value_store, heavy_store),
+        "mod" => binary_mod(a, b, frames, stack, exception_handlers, value_store, heavy_store),
+        "pow" => binary_pow(a, b, frames, stack, exception_handlers, value_store, heavy_store),
+        _ => {
+            if let Some(v) = try_plugin_opaque_binop(a, b, op_name) {
+                return Ok(v);
+            }
+            let line = get_line(frames);
+            let error = ExceptionHandler::runtime_error(
+                frames,
+                format!("Unknown binary op '{}'", op_name),
+                line,
+            );
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => Ok(Value::Null),
                 Err(e) => Err(e),
             }

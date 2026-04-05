@@ -4,6 +4,15 @@
 #[cfg(test)]
 mod tests {
     use data_code::{run, Value, LangError};
+    use std::path::PathBuf;
+
+    fn get_test_data_path(filename: &str) -> String {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("tests");
+        path.push("test_data");
+        path.push(filename);
+        path.to_string_lossy().to_string()
+    }
 
     // Вспомогательная функция для проверки результата выполнения
     fn run_and_get_result(source: &str) -> Result<Value, LangError> {
@@ -217,6 +226,22 @@ mod tests {
             }
             array_len("not an array")
         "#);
+    }
+
+    /// `read_file_bin` returns `ByteBuffer`; it must satisfy `: array` like `Array` / `ArrayView`.
+    #[test]
+    fn test_array_function_accepts_read_file_bin_bytebuffer() {
+        let bin_path = get_test_data_path("read_file_bin_sample.bin");
+        let source = format!(
+            r#"
+            fn array_len(arr: array) -> int {{
+                return len(arr)
+            }}
+            array_len(read_file_bin("{}"))
+            "#,
+            bin_path
+        );
+        assert_number_result(&source, 3.0);
     }
 
     // ========== 6. Тесты функций без типизации (должны работать как раньше) ==========

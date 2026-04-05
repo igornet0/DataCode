@@ -1184,6 +1184,9 @@ mod tests {
         assert_number_result("min(-5, -2, 0)", -5.0);
         assert_number_result("min(5)", 5.0);
         assert_number_result("min(1.5, 2.5, 0.5)", 0.5);
+        assert_number_result("min([1, 2, 3])", 1.0);
+        assert_number_result("min([3, 1, 2])", 1.0);
+        assert_null_result("min([])");
     }
 
     #[test]
@@ -1193,6 +1196,204 @@ mod tests {
         assert_number_result("max(-5, -2, 0)", 0.0);
         assert_number_result("max(5)", 5.0);
         assert_number_result("max(1.5, 2.5, 0.5)", 2.5);
+        assert_number_result("max([1, 2, 3])", 3.0);
+        assert_number_result("max([3, 1, 2])", 3.0);
+        assert_null_result("max([])");
+    }
+
+    #[test]
+    fn test_map_basic_and_index() {
+        assert_string_result(r#"typeof(map([1, 2, 3], fn(x) => x * 2))"#, "iterable");
+        assert_number_result(
+            r#"reduce(map([1, 2, 3], fn(x) => x * 2), fn(acc, x) => acc + x, 0)"#,
+            12.0,
+        );
+        assert_number_result(
+            r#"reduce(map([10, 20, 30], fn(x, i) => x + i), fn(acc, x) => acc + x, 0)"#,
+            63.0,
+        );
+    }
+
+    #[test]
+    fn test_map_str_native() {
+        assert_string_result(
+            r#"reduce(map([1, 2, 3], str), fn(acc, x) => acc + x, "")"#,
+            "123",
+        );
+    }
+
+    #[test]
+    fn test_filter_basic() {
+        assert_number_result(
+            r#"reduce(filter([1, 2, 3, 4], fn(x) => x > 2), fn(acc, x) => acc + x, 0)"#,
+            7.0,
+        );
+    }
+
+    #[test]
+    fn test_array_materializes_map_and_filter_iterables() {
+        let s = r#"array(map([1, 2, 3], fn(x) => x * 2))"#;
+        let result = run_and_get_result(s);
+        match result {
+            Ok(Value::Array(arr)) => {
+                let b = arr.borrow();
+                assert_eq!(b.len(), 3);
+                assert_eq!(b[0], Value::Number(2.0));
+                assert_eq!(b[1], Value::Number(4.0));
+                assert_eq!(b[2], Value::Number(6.0));
+            }
+            Ok(v) => panic!("expected array, got {:?}", v),
+            Err(e) => panic!("{:?}", e),
+        }
+        let s2 = r#"array(filter([1, 2, 3, 4], fn(x) => x > 2))"#;
+        let result = run_and_get_result(s2);
+        match result {
+            Ok(Value::Array(arr)) => {
+                let b = arr.borrow();
+                assert_eq!(b.len(), 2);
+                assert_eq!(b[0], Value::Number(3.0));
+                assert_eq!(b[1], Value::Number(4.0));
+            }
+            Ok(v) => panic!("expected array, got {:?}", v),
+            Err(e) => panic!("{:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_for_in_array_literal_count() {
+        assert_number_result(
+            r#"let n = 0
+            for x in [1, 2, 3] {
+                n = n + 1
+            }
+            n"#,
+            3.0,
+        );
+    }
+
+    #[test]
+    fn test_for_in_map_filter_and_coerced_array() {
+        let s = r#"
+            let acc = []
+            for x in map([1, 2, 3], fn(x) => x * 2) {
+                push(acc, x)
+            }
+            acc
+        "#;
+        let result = run_and_get_result(s);
+        match result {
+            Ok(Value::Array(arr)) => {
+                let b = arr.borrow();
+                assert_eq!(b.len(), 3);
+                assert_eq!(b[0], Value::Number(2.0));
+                assert_eq!(b[1], Value::Number(4.0));
+                assert_eq!(b[2], Value::Number(6.0));
+            }
+            Ok(v) => panic!("expected array, got {:?}", v),
+            Err(e) => panic!("{:?}", e),
+        }
+        let s2 = r#"
+            let acc = []
+            for x in filter([1, 2, 3, 4], fn(x) => x > 2) {
+                push(acc, x)
+            }
+            acc
+        "#;
+        let result = run_and_get_result(s2);
+        match result {
+            Ok(Value::Array(arr)) => {
+                let b = arr.borrow();
+                assert_eq!(b.len(), 2);
+                assert_eq!(b[0], Value::Number(3.0));
+                assert_eq!(b[1], Value::Number(4.0));
+            }
+            Ok(v) => panic!("expected array, got {:?}", v),
+            Err(e) => panic!("{:?}", e),
+        }
+        let s3 = r#"
+            let acc = []
+            for x in [10, 20, 30] {
+                push(acc, x)
+            }
+            acc
+        "#;
+        let result = run_and_get_result(s3);
+        match result {
+            Ok(Value::Array(arr)) => {
+                let b = arr.borrow();
+                assert_eq!(b.len(), 3);
+                assert_eq!(b[0], Value::Number(10.0));
+                assert_eq!(b[1], Value::Number(20.0));
+                assert_eq!(b[2], Value::Number(30.0));
+            }
+            Ok(v) => panic!("expected array, got {:?}", v),
+            Err(e) => panic!("{:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_for_in_iterator_exhausted_second_loop() {
+        assert_number_result(
+            r#"
+            let it = map([1, 2], fn(x) => x)
+            let n = 0
+            for x in it {
+                n = n + 1
+            }
+            for x in it {
+                n = n + 1
+            }
+            n
+            "#,
+            2.0,
+        );
+    }
+
+    #[test]
+    fn test_reduce_large_pipeline() {
+        // range(10001) → 0..10000 inclusive; even squares sum = Σ_{k=0}^{5000} (2k)²
+        let expected: f64 = (0..=5000).map(|k| (2.0 * k as f64).powi(2)).sum();
+        let src = r#"
+            let arr = range(10001)
+            reduce(
+                map(
+                    filter(arr, fn(x) => x % 2 == 0),
+                    fn(x) => x * x
+                ),
+                fn(acc, x) => acc + x,
+                0
+            )
+        "#;
+        assert_number_result(src, expected);
+    }
+
+    #[test]
+    fn test_reduce_sum_and_pipeline() {
+        assert_number_result(
+            r#"reduce([1, 2, 3, 4], fn(acc, x) => acc + x, 0)"#,
+            10.0,
+        );
+        assert_number_result(
+            r#"reduce([1, 2, 3, 4], fn(acc, x) => acc * x, 1)"#,
+            24.0,
+        );
+        let pipe = r#"
+            let arr = [1, 2, 3, 4, 5]
+            reduce(
+                map(
+                    filter(arr, fn(x) => x % 2 == 0),
+                    fn(x) => x * x
+                ),
+                fn(acc, x) => acc + x,
+                0
+            )
+        "#;
+        assert_number_result(pipe, 20.0);
+    }
+
+    #[test]
+    fn test_reduce_empty_returns_initial() {
+        assert_number_result(r#"reduce([], fn(acc, x) => acc + x, 42)"#, 42.0);
     }
 
     #[test]

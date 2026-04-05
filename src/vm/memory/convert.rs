@@ -1,7 +1,7 @@
 // Conversion between Value and ValueId for Stage 1 ValueStore migration.
 // Used at native-call boundaries: materialize Value from ValueId for natives, store Value result back as ValueId.
 
-use crate::common::value::Value;
+use crate::common::value::{ArrayViewData, ArrayViewSource, Value};
 use crate::common::value_store::{ValueCell, ValueId, ValueStore, NULL_VALUE_ID};
 use crate::common::TaggedValue;
 use std::cell::RefCell;
@@ -35,6 +35,17 @@ pub fn store_value(
             }
             store.allocate(ValueCell::Array(slots))
         }
+        Value::ArrayView(av) => match av.source {
+            ArrayViewSource::Store { base_id } => store.allocate(ValueCell::ArrayView {
+                base_id,
+                offset: av.offset,
+                length: av.length,
+            }),
+            ArrayViewSource::Heap(_) => {
+                let idx = heap.push(Value::ArrayView(av));
+                store.allocate(ValueCell::Heavy(idx))
+            }
+        },
         Value::Tuple(rc) => {
             let arr: Vec<ValueId> = rc
                 .borrow()
@@ -102,6 +113,14 @@ pub fn store_value(
         Value::Enumerate { data, start } => {
             let data_id = store_value(Value::Array(data), store, heap);
             store.allocate(ValueCell::Enumerate { data_id, start })
+        }
+        Value::Iterable(rc) => {
+            let idx = heap.push(Value::Iterable(rc.clone()));
+            store.allocate(ValueCell::Heavy(idx))
+        }
+        Value::ByteBuffer(b) => {
+            let idx = heap.push(Value::ByteBuffer(b));
+            store.allocate(ValueCell::Heavy(idx))
         }
         Value::Ellipsis => store.allocate(ValueCell::Ellipsis),
     }
@@ -180,6 +199,15 @@ pub fn load_value(
                 .collect();
             Value::Array(Rc::new(RefCell::new(arr)))
         }
+        ValueCell::ArrayView {
+            base_id,
+            offset,
+            length,
+        } => Value::ArrayView(ArrayViewData {
+            source: ArrayViewSource::Store { base_id: *base_id },
+            offset: *offset,
+            length: *length,
+        }),
         ValueCell::Tuple(ids) => {
             let arr: Vec<Value> = ids
                 .iter()
@@ -397,6 +425,25 @@ pub fn store_value_arena(
             let data_id = store_value_arena(Value::Array(data), store, heap);
             store.allocate_arena(ValueCell::Enumerate { data_id, start })
         }
+        Value::Iterable(rc) => {
+            let idx = heap.push(Value::Iterable(rc.clone()));
+            store.allocate_arena(ValueCell::Heavy(idx))
+        }
+        Value::ByteBuffer(b) => {
+            let idx = heap.push(Value::ByteBuffer(b));
+            store.allocate_arena(ValueCell::Heavy(idx))
+        }
+        Value::ArrayView(av) => match av.source {
+            ArrayViewSource::Store { base_id } => store.allocate_arena(ValueCell::ArrayView {
+                base_id,
+                offset: av.offset,
+                length: av.length,
+            }),
+            ArrayViewSource::Heap(_) => {
+                let idx = heap.push(Value::ArrayView(av));
+                store.allocate_arena(ValueCell::Heavy(idx))
+            }
+        },
         Value::Ellipsis => store.allocate_arena(ValueCell::Ellipsis),
     }
 }

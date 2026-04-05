@@ -93,6 +93,19 @@ system.time.now()
 }
 
 #[test]
+fn system_time_monotonic_ms_is_non_negative() {
+    let source = r#"
+import system
+system.time.monotonic_ms()
+"#;
+    let v = run(source).expect("run");
+    match v {
+        Value::Number(n) => assert!(n >= 0.0, "monotonic_ms {}", n),
+        other => panic!("expected Number, got {:?}", other),
+    }
+}
+
+#[test]
 fn system_net_get_interfaces_is_array() {
     let source = r#"
 import system

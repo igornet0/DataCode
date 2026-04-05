@@ -16,6 +16,7 @@ use crate::compiler::stmt;
 use crate::compiler::unpack;
 use crate::compiler::closure;
 use crate::compiler::args;
+use std::sync::Arc;
 
 pub struct Compiler {
     chunk: Chunk,
@@ -54,14 +55,29 @@ pub struct Compiler {
     class_required_keys_value: std::collections::HashMap<String, Value>,
     /// Source file path for error messages.
     source_name: Option<String>,
+    /// Preloaded `native_call_descriptor` rows (import ml / etc.).
+    native_call_param_registry: Option<Arc<crate::vm::native_call_registry::NativeCallParamRegistry>>,
 }
 
 impl Compiler {
     pub fn new() -> Self {
-        Self::new_with_source_name(None)
+        Self::new_with_source_and_native_registry(None, None)
+    }
+
+    pub fn new_with_native_call_registry(
+        registry: Option<Arc<crate::vm::native_call_registry::NativeCallParamRegistry>>,
+    ) -> Self {
+        Self::new_with_source_and_native_registry(None, registry)
     }
 
     pub fn new_with_source_name(source_name: Option<&str>) -> Self {
+        Self::new_with_source_and_native_registry(source_name, None)
+    }
+
+    pub fn new_with_source_and_native_registry(
+        source_name: Option<&str>,
+        native_call_param_registry: Option<Arc<crate::vm::native_call_registry::NativeCallParamRegistry>>,
+    ) -> Self {
         let mut compiler = Self {
             chunk: Chunk::new(),
             functions: Vec::new(),
@@ -86,6 +102,7 @@ impl Compiler {
             class_nested_specs_value: std::collections::HashMap::new(),
             class_required_keys_value: std::collections::HashMap::new(),
             source_name: source_name.map(String::from),
+            native_call_param_registry,
         };
         compiler.register_natives();
         compiler
@@ -397,7 +414,7 @@ impl Compiler {
         stmt::compile_stmt(&mut ctx, stmt, pop_value)
     }
 
-    fn create_context(&mut self) -> crate::compiler::context::CompilationContext {
+    fn create_context(&mut self) -> crate::compiler::context::CompilationContext<'_> {
         crate::compiler::context::CompilationContext {
             chunk: &mut self.chunk,
             scope: &mut self.scope,
@@ -426,6 +443,7 @@ impl Compiler {
             in_constructor: false,
             constructor_this_slot: None,
             source_name: self.source_name.as_deref(),
+            native_call_param_registry: self.native_call_param_registry.as_deref(),
         }
     }
 
@@ -1099,8 +1117,17 @@ impl Compiler {
         args: &[Arg],
         function_info: Option<(usize, &Function)>,
         line: usize,
+        override_native_param_names: Option<&[&str]>,
     ) -> Result<Vec<Arg>, LangError> {
-        args::resolve_function_args(function_name, args, function_info, line, self.source_name.as_deref())
+        args::resolve_function_args(
+            function_name,
+            args,
+            function_info,
+            line,
+            self.source_name.as_deref(),
+            None,
+            override_native_param_names,
+        )
     }
 
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), LangError> {
@@ -1419,6 +1446,10 @@ impl Compiler {
                     self.chunk.write_with_line(OpCode::LoadLocal(index), *line);
                 }
             }
+            Expr::AssignArray { .. } | Expr::AssignArrayOp { .. } => {
+                let mut ctx = self.create_context();
+                expr::compile_expr(&mut ctx, expr)?;
+            }
             Expr::Variable { name, line } => {
                 // Определяем, глобальная или локальная переменная
                 if let Some(local_index) = self.resolve_local(name) {
@@ -1459,40 +1490,57 @@ impl Compiler {
                 }
             }
             Expr::Binary { left, op, right, line } => {
+                use crate::parser::ast::BinaryOpKind;
                 self.current_line = *line;
-                // Специальная обработка логических операторов
-                if *op == TokenKind::EqualEqual {
-                    self.compile_expr(left)?;
-                    self.compile_expr(right)?;
-                    self.chunk.write_with_line(OpCode::Equal, *line);
-                } else if *op == TokenKind::BangEqual {
-                    self.compile_expr(left)?;
-                    self.compile_expr(right)?;
-                    self.chunk.write_with_line(OpCode::NotEqual, *line);
-                } else {
-                    self.compile_expr(left)?;
-                    self.compile_expr(right)?;
-                    match op {
-                        TokenKind::Plus => self.chunk.write_with_line(OpCode::Add, *line),
-                        TokenKind::Minus => self.chunk.write_with_line(OpCode::Sub, *line),
-                        TokenKind::Star => self.chunk.write_with_line(OpCode::Mul, *line),
-                        TokenKind::StarStar => self.chunk.write_with_line(OpCode::Pow, *line),
-                        TokenKind::Slash => self.chunk.write_with_line(OpCode::Div, *line),
-                        TokenKind::SlashSlash => self.chunk.write_with_line(OpCode::IntDiv, *line),
-                        TokenKind::Percent => self.chunk.write_with_line(OpCode::Mod, *line),
-                        TokenKind::Greater => self.chunk.write_with_line(OpCode::Greater, *line),
-                        TokenKind::Less => self.chunk.write_with_line(OpCode::Less, *line),
-                        TokenKind::GreaterEqual => self.chunk.write_with_line(OpCode::GreaterEqual, *line),
-                        TokenKind::LessEqual => self.chunk.write_with_line(OpCode::LessEqual, *line),
-                        TokenKind::In => self.chunk.write_with_line(OpCode::In, *line),
-                        TokenKind::Or => self.chunk.write_with_line(OpCode::Or, *line),
-                        TokenKind::And => self.chunk.write_with_line(OpCode::And, *line),
-                        _ => {
-                            return Err(LangError::ParseError {
-                                message: format!("Unknown binary operator: {:?}", op),
-                                line: *line,
-                                file: None,
-                            });
+                match op {
+                    BinaryOpKind::Plugin { name, .. } => {
+                        self.compile_expr(left)?;
+                        self.compile_expr(right)?;
+                        let idx = self.chunk.add_constant(Value::String(name.clone()));
+                        self.chunk.write_with_line(OpCode::BinaryOp(idx), *line);
+                    }
+                    BinaryOpKind::Builtin(TokenKind::EqualEqual) => {
+                        self.compile_expr(left)?;
+                        self.compile_expr(right)?;
+                        self.chunk.write_with_line(OpCode::Equal, *line);
+                    }
+                    BinaryOpKind::Builtin(TokenKind::BangEqual) => {
+                        self.compile_expr(left)?;
+                        self.compile_expr(right)?;
+                        self.chunk.write_with_line(OpCode::NotEqual, *line);
+                    }
+                    BinaryOpKind::Builtin(tok) => {
+                        self.compile_expr(left)?;
+                        self.compile_expr(right)?;
+                        match tok {
+                            TokenKind::Plus => self.chunk.write_with_line(OpCode::Add, *line),
+                            TokenKind::Minus => self.chunk.write_with_line(OpCode::Sub, *line),
+                            TokenKind::Star => self.chunk.write_with_line(OpCode::Mul, *line),
+                            TokenKind::StarStar => self.chunk.write_with_line(OpCode::Pow, *line),
+                            TokenKind::Slash => self.chunk.write_with_line(OpCode::Div, *line),
+                            TokenKind::SlashSlash => self.chunk.write_with_line(OpCode::IntDiv, *line),
+                            TokenKind::Percent => self.chunk.write_with_line(OpCode::Mod, *line),
+                            TokenKind::Greater => self.chunk.write_with_line(OpCode::Greater, *line),
+                            TokenKind::Less => self.chunk.write_with_line(OpCode::Less, *line),
+                            TokenKind::GreaterEqual => self.chunk.write_with_line(OpCode::GreaterEqual, *line),
+                            TokenKind::LessEqual => self.chunk.write_with_line(OpCode::LessEqual, *line),
+                            TokenKind::In => self.chunk.write_with_line(OpCode::In, *line),
+                            TokenKind::Or => self.chunk.write_with_line(OpCode::Or, *line),
+                            TokenKind::And => self.chunk.write_with_line(OpCode::And, *line),
+                            TokenKind::EqualEqual | TokenKind::BangEqual => {
+                                return Err(LangError::ParseError {
+                                    message: "internal: eq handled above".to_string(),
+                                    line: *line,
+                                    file: None,
+                                });
+                            }
+                            _ => {
+                                return Err(LangError::ParseError {
+                                    message: format!("Unknown binary operator: {:?}", tok),
+                                    line: *line,
+                                    file: None,
+                                });
+                            }
                         }
                     }
                 }
@@ -1508,7 +1556,7 @@ impl Compiler {
                 };
                 
                 // Разрешаем аргументы: именованные -> позиционные, применяем значения по умолчанию
-                let resolved_args = self.resolve_function_args(name, args, function_info, *line)?;
+                let resolved_args = self.resolve_function_args(name, args, function_info, *line, None)?;
                 
                 // Специальная обработка для isinstance: преобразуем идентификаторы типов в строки
                 let processed_args = if name == "isinstance" && resolved_args.len() >= 2 {
@@ -1531,9 +1579,9 @@ impl Compiler {
                     resolved_args
                 };
                 
-                // Специальная обработка для функций, которые модифицируют первый аргумент in-place
-                let in_place_functions = vec!["push", "reverse", "sort"];
-                let should_assign_back = in_place_functions.contains(&name.as_str()) 
+                // See compiler/expr/call.rs: push must not assign back (alias + update_cell); reverse/sort may.
+                let in_place_assign_back = vec!["reverse", "sort"];
+                let should_assign_back = in_place_assign_back.contains(&name.as_str())
                     && !processed_args.is_empty()
                     && matches!(&processed_args[0], Arg::Positional(Expr::Variable { .. }));
                 
@@ -1686,13 +1734,9 @@ impl Compiler {
                     self.chunk.write_with_line(OpCode::MakeObjectDynamic, *line);
                 }
             }
-            Expr::ArrayIndex { array, index, line } => {
-                // Компилируем выражение массива (оно должно быть на стеке первым)
-                self.compile_expr(array)?;
-                // Компилируем индексное выражение
-                self.compile_expr(index)?;
-                // Получаем элемент массива по индексу
-                self.chunk.write_with_line(OpCode::GetArrayElement, *line);
+            Expr::ArrayIndex { .. } => {
+                let mut ctx = self.create_context();
+                expr::compile_expr(&mut ctx, expr)?;
             }
             Expr::TableFilter { .. } => {
                 let mut ctx = self.create_context();
@@ -1944,7 +1988,7 @@ impl Compiler {
                         self.chunk.write_with_line(OpCode::Call(args.len() + 1), *line);
                     } else {
                             // Default method call: receiver + args, then get method; Call(1 + n) so method receives (self, arg_1, ...).
-                            let resolved_args = match self.resolve_function_args(method, args, None, *line) {
+                            let resolved_args = match self.resolve_function_args(method, args, None, *line, None) {
                                 Ok(resolved) => {
                                     resolved
                                 }
@@ -2011,6 +2055,10 @@ impl Compiler {
                         self.chunk.write_with_line(OpCode::Add, *line);
                     }
                 }
+            }
+            Expr::Lambda { .. } | Expr::CallValue { .. } => {
+                let mut ctx = self.create_context();
+                expr::compile_expr(&mut ctx, expr)?;
             }
         }
         Ok(())

@@ -167,7 +167,7 @@ impl StringPool {
 }
 
 /// One cell in the store; composite types refer to other cells by ValueId.
-/// Heavy types (Table, Tensor, etc.) are stored in HeavyStore and referenced by index.
+/// Heavy types (Table, etc.) are stored in HeavyStore and referenced by index.
 /// Array and Object are index-only here (no Rc<RefCell> in hot path); Value materialization
 /// with Rc<RefCell<...>> happens only at native boundaries (store_convert).
 /// Strings are stored as StringId (index into ValueStore's StringPool).
@@ -179,6 +179,12 @@ pub enum ValueCell {
     String(StringId),
     /// Elements as TaggedValue: inline (number/bool/null) without allocate; heap refs as ValueId in tag.
     Array(Vec<TaggedValue>),
+    /// Zero-copy subrange of [`ValueCell::Array`] at `base_id` (see [`crate::common::value::ArrayViewData`]).
+    ArrayView {
+        base_id: ValueId,
+        offset: usize,
+        length: usize,
+    },
     Tuple(Vec<ValueId>),
     Object(HashMap<String, ValueId>),
     Function(usize),
@@ -186,7 +192,7 @@ pub enum ValueCell {
     NativeFunction(usize),
     Path(PathBuf),
     Uuid(u64, u64),
-    /// Index into HeavyStore (Table, Tensor, Image, etc.)
+    /// Index into HeavyStore (Table, Image, etc.)
     Heavy(usize),
     ColumnReference { table_handle: usize, column_name: String },
     /// Opaque plugin object (tag + id)

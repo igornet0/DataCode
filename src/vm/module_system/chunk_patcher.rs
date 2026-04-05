@@ -53,7 +53,7 @@ pub fn update_chunk_indices_from_names(
             if matching_indices.is_empty() {
                 None
             } else if can_prefer_non_null {
-                const BUILTIN_COUNT: usize = 75;
+                const BUILTIN_COUNT: usize = crate::vm::globals::BUILTIN_GLOBAL_COUNT;
                 if let (Some(globals), Some(store), Some(heap)) = (globals_for_verify.as_deref_mut(), store.as_deref_mut(), heap) {
                     let want_function = name.contains("::new_");
                     let non_null: Vec<usize> = matching_indices

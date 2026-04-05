@@ -67,11 +67,12 @@ impl Renderer {
         let expected_width = window_size.width;
         let expected_height = window_size.height;
         
-        // Check current buffer size
-        let buffer = self.surface.buffer_mut()?;
-        let current_width = buffer.width().get();
-        let current_height = buffer.height().get();
-        
+        // Check current buffer size (scoped so buffer is dropped before we may replace self.surface)
+        let (current_width, current_height) = {
+            let buffer = self.surface.buffer_mut()?;
+            (buffer.width().get(), buffer.height().get())
+        };
+
         // If buffer size doesn't match window size, we need to recreate surface
         // softbuffer doesn't automatically resize the buffer, so we recreate the surface
         if current_width != expected_width || current_height != expected_height {

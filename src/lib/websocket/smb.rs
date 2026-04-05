@@ -2,7 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
 use std::fs;
-use std::io::Write;
+#[cfg(not(target_os = "windows"))]
+use std::io::Write as _;
 use serde::{Deserialize, Serialize};
 use regex::Regex;
 

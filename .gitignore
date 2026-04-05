@@ -41,3 +41,4 @@ debug
 target
 dist
 datacode_lib
+*.dylib

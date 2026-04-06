@@ -265,22 +265,9 @@ impl Resolver {
 
     fn resolve_expr(&mut self, expr: &Expr) -> Result<(), LangError> {
         match expr {
-            Expr::Variable { name, line } => {
-                if !self.scopes.is_empty() {
-                    if let Some(scope) = self.scopes.last() {
-                        if scope.locals.contains_key(name) && !scope.locals.contains_key(name) {
-                            // Переменная объявлена, но еще не определена
-                            return Err(LangError::SemanticError {
-                                message: format!(
-                                    "Cannot read local variable '{}' in its own initializer",
-                                    name
-                                ),
-                                line: *line,
-                                file: self.source_name.clone(),
-                            });
-                        }
-                    }
-                }
+            Expr::Variable { name, .. } => {
+                // TDZ (temporal dead zone) for `let x = x` would require tracking declare vs define;
+                // `declare`/`define` currently share one map — see `Scope::locals`.
                 self.resolve_local(expr, name);
             }
             Expr::Assign { name, value, .. } => {

@@ -2,13 +2,11 @@
 //! Registers via Host layer (HostEntry::Builtin) so VM does not depend on native implementations.
 
 use crate::vm::host::{FnWrapper, HostEntry};
+use crate::vm::native_indices::builtin;
 use crate::vm::natives;
 use crate::vm::natives::basic::{ArrayHostFunction, NativeGeneratorNext, NativeGeneratorSend};
 use crate::vm::natives::higher_order::{FilterHostFunction, MapHostFunction, ReduceHostFunction};
 use std::sync::Arc;
-
-/// ValueError::new_1 native index (must match VM's VALUE_ERROR_NATIVE_INDEX).
-const VALUE_ERROR_NATIVE_INDEX: usize = 79;
 
 /// Fills `natives` with builtin native functions in the order expected by globals and executor.
 pub fn register_builtin_natives(natives: &mut Vec<HostEntry>) {
@@ -219,7 +217,7 @@ pub fn register_builtin_natives(natives: &mut Vec<HostEntry>) {
     natives.push(HostEntry::Builtin(Arc::new(FilterHostFunction))); // 77 - filter(...)
     natives.push(HostEntry::Builtin(Arc::new(ReduceHostFunction))); // 78 - reduce(...)
     let value_error = Arc::new(FnWrapper(natives::native_value_error_new));
-    while natives.len() < VALUE_ERROR_NATIVE_INDEX {
+    while natives.len() < builtin::VALUE_ERROR {
         natives.push(HostEntry::Builtin(value_error.clone())); // placeholder so indices line up
     }
     natives.push(HostEntry::Builtin(value_error)); // 79 - ValueError::new_1 for raise ValueError("...")
@@ -231,4 +229,21 @@ pub fn register_builtin_natives(natives: &mut Vec<HostEntry>) {
     )))); // 81 - generator.final()
     natives.push(HostEntry::Builtin(Arc::new(NativeGeneratorNext))); // 82 - generator.next()
     natives.push(HostEntry::Builtin(Arc::new(NativeGeneratorSend))); // 83 - generator.send()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn builtin_register_len_matches_native_indices_constants() {
+        let mut natives = Vec::new();
+        register_builtin_natives(&mut natives);
+        let expected = crate::vm::native_indices::builtin::GENERATOR_SEND + 1;
+        assert_eq!(
+            natives.len(),
+            expected,
+            "builtin native count must match native_indices::builtin (last index GENERATOR_SEND)"
+        );
+    }
 }

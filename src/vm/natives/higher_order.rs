@@ -8,7 +8,7 @@ use crate::common::value::{IterableInner, Value};
 use crate::vm::host::HostFunction;
 use crate::vm::iterable::{iterable_from_value, iterable_next, value_to_callable_slot};
 use crate::vm::natives::utils::call_user_function;
-use crate::vm::vm::VM_CALL_CONTEXT;
+use crate::vm::vm::current_vm_ptr;
 
 fn runtime(line: usize, msg: impl Into<String>) -> LangError {
     LangError::runtime_error(msg.into(), line)
@@ -22,9 +22,8 @@ impl HostFunction for MapHostFunction {
         if args.len() < 2 {
             return Err(runtime(0, "map() expects (collection, function)"));
         }
-        let vm_ptr = VM_CALL_CONTEXT
-            .with(|ctx| *ctx.borrow())
-            .ok_or_else(|| runtime(0, "map: VM context not available"))?;
+        let vm_ptr =
+            current_vm_ptr().ok_or_else(|| runtime(0, "map: VM context not available"))?;
         let f = &args[1];
         let coll = &args[0];
         unsafe {
@@ -59,9 +58,8 @@ impl HostFunction for FilterHostFunction {
         if args.len() < 2 {
             return Err(runtime(0, "filter() expects (collection, predicate)"));
         }
-        let vm_ptr = VM_CALL_CONTEXT
-            .with(|ctx| *ctx.borrow())
-            .ok_or_else(|| runtime(0, "filter: VM context not available"))?;
+        let vm_ptr =
+            current_vm_ptr().ok_or_else(|| runtime(0, "filter: VM context not available"))?;
         let coll = &args[0];
         let pred = &args[1];
         unsafe {
@@ -110,9 +108,8 @@ impl HostFunction for ReduceHostFunction {
             ));
         };
 
-        let vm_ptr = VM_CALL_CONTEXT
-            .with(|ctx| *ctx.borrow())
-            .ok_or_else(|| runtime(0, "reduce: VM context not available"))?;
+        let vm_ptr =
+            current_vm_ptr().ok_or_else(|| runtime(0, "reduce: VM context not available"))?;
         unsafe {
             let vm = &mut *vm_ptr;
             let arity = vm

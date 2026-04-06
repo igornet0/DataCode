@@ -7,9 +7,9 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use crate::abi::{
-    abi_compatible, AbiExport, AbiModuleDescriptor, AbiModuleDescriptorV4, AbiNativeParamMeta,
+    AbiExport, AbiModuleDescriptor, AbiModuleDescriptorV4, AbiNativeParamMeta,
     AbiPluginHooksDescriptor, AbiValue, DatacodeError, DatacodeModuleEntryFn, DatacodeModuleFn,
-    DatacodeModuleLegacy, NativeAbiFn, VmContext, DATACODE_ABI_VERSION,
+    DatacodeModuleLegacy, NativeAbiFn, VmContext,
     DATACODE_MODULE_ENTRY_SYMBOL, DATACODE_MODULE_SYMBOL,
 };
 use crate::common::error::LangError;
@@ -225,16 +225,9 @@ fn collect_from_root_descriptor(
     module_name: &str,
 ) -> Result<(Vec<(String, NativeAbiFn)>, AbiModuleLoadSidecar), LangError> {
     let desc = unsafe { &*desc_ptr };
-    if !abi_compatible(&desc.abi_version, &DATACODE_ABI_VERSION) {
+    if let Err(msg) = crate::abi_policy::ensure_module_abi_compatible(&desc.abi_version) {
         return Err(LangError::runtime_error(
-            format!(
-                "Native module '{}' descriptor ABI {}.{} is not compatible with VM {}.{}",
-                module_name,
-                desc.abi_version.major,
-                desc.abi_version.minor,
-                DATACODE_ABI_VERSION.major,
-                DATACODE_ABI_VERSION.minor
-            ),
+            format!("Native module '{}' descriptor: {}", module_name, msg),
             0,
         ));
     }
@@ -602,7 +595,7 @@ pub fn try_load_native_module(
             let module_ptr = (*get_module)();
             if !module_ptr.is_null() {
                 let abi_ver = unsafe { (*module_ptr).abi_version };
-                if abi_compatible(&abi_ver, &DATACODE_ABI_VERSION) {
+                if crate::abi_policy::ensure_module_abi_compatible(&abi_ver).is_ok() {
                     from_register = if abi_ver.minor == 0 {
                         let legacy = unsafe { &*(module_ptr as *const DatacodeModuleLegacy) };
                         let mut state = RegisterState {
@@ -666,16 +659,9 @@ pub fn try_load_native_module(
         }
 
         let abi_ver = unsafe { (*module_ptr).abi_version };
-        if !abi_compatible(&abi_ver, &DATACODE_ABI_VERSION) {
+        if let Err(msg) = crate::abi_policy::ensure_module_abi_compatible(&abi_ver) {
             return Err(LangError::runtime_error(
-                format!(
-                    "Native module '{}' ABI version {}.{} is not compatible with VM ABI version {}.{}",
-                    name,
-                    abi_ver.major,
-                    abi_ver.minor,
-                    DATACODE_ABI_VERSION.major,
-                    DATACODE_ABI_VERSION.minor
-                ),
+                format!("Native module '{}': {}", name, msg),
                 0,
             ));
         }

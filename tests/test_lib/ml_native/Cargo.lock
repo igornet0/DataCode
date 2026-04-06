@@ -4,11 +4,11 @@ version = 4
 
 [[package]]
 name = "datacode_abi"
-version = "1.1.0"
+version = "1.7.0"
 
 [[package]]
 name = "datacode_sdk"
-version = "1.1.2"
+version = "1.1.4"
 dependencies = [
  "datacode_abi",
  "libc",

@@ -2,7 +2,7 @@
 
 use crate::common::value::Value;
 use crate::vm::native_loader::call_abi_native;
-use crate::vm::vm::VM_CALL_CONTEXT;
+use crate::vm::vm::current_vm_ptr;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -10,7 +10,7 @@ fn plugin_opaque_min_max_via_abi(arg: &Value, op: &str) -> Option<Value> {
     let Value::PluginOpaque { .. } = arg else {
         return None;
     };
-    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow())?;
+    let vm_ptr = current_vm_ptr()?;
     unsafe {
         let vm = &*vm_ptr;
         let native_idx = vm.plugin_call_native?;

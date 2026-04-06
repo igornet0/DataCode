@@ -1127,7 +1127,7 @@ pub fn native_zip_join(args: &[Value]) -> Value {
 // APPLY JOIN / LATERAL JOIN - для каждой строки left вызывает функцию
 pub fn native_apply_join(args: &[Value]) -> Value {
     use super::utils::call_user_function;
-    use crate::vm::vm::VM_CALL_CONTEXT;
+    use crate::vm::vm::{current_vm_ptr, VmExecutionContext, VM_CALL_CONTEXT};
 
     if args.len() < 2 {
         return Value::Null;
@@ -1166,10 +1166,7 @@ pub fn native_apply_join(args: &[Value]) -> Value {
         .unwrap_or_else(|| "inner".to_string());
 
     // Получаем доступ к VM через thread-local storage
-    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| {
-        let ctx_ref = ctx.borrow();
-        *ctx_ref
-    });
+    let vm_ptr = current_vm_ptr();
 
     let mut result_rows = Vec::new();
     let mut result_headers = Vec::new();
@@ -1186,7 +1183,7 @@ pub fn native_apply_join(args: &[Value]) -> Value {
         // Восстанавливаем контекст перед каждым вызовом
         if let Some(vm_ptr) = vm_ptr {
             VM_CALL_CONTEXT.with(|ctx| {
-                *ctx.borrow_mut() = Some(vm_ptr);
+                *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
             });
         }
 

@@ -609,7 +609,7 @@ dependencies = [
 
 [[package]]
 name = "data-code"
-version = "2.3.4"
+version = "2.3.5"
 dependencies = [
  "axum",
  "base64",
@@ -661,7 +661,7 @@ version = "1.7.0"
 
 [[package]]
 name = "datacode_sdk"
-version = "1.1.3"
+version = "1.1.4"
 dependencies = [
  "datacode_abi",
  "libc",

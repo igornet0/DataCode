@@ -1,11 +1,9 @@
 // Единый тип значений для VM
 
 use crate::common::table::Table;
+use crate::common::value_host_types::{Axis, DatabaseCluster, DatabaseEngine, Figure, Image, PlotWindowHandle};
 use crate::common::value_store::ValueId;
 use crate::common::TaggedValue;
-use crate::database_engine::cluster::DatabaseCluster;
-use crate::database_engine::engine::DatabaseEngine;
-use crate::plot::{Axis, Figure, Image, PlotWindowHandle};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};

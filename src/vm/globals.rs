@@ -6,7 +6,7 @@ use crate::vm::global_slot::{default_global_slot, GlobalSlot};
 /// Количество встроенных глобалов (индексы `0..BUILTIN_GLOBAL_COUNT`).
 pub const BUILTIN_GLOBAL_COUNT: usize = 79;
 
-/// Канонические имена встроенных глобалов по индексу `0..BUILTIN_GLOBAL_COUNT` (для merge_globals_from: не перезаписывать правильное значение ошибочным).
+/// Канонические имена встроенных глобалов по индексу `0..BUILTIN_GLOBAL_COUNT` (для legacy `legacy_merge::merge_globals_from`: не перезаписывать правильное значение ошибочным).
 pub const BUILTIN_GLOBAL_NAMES: [&str; BUILTIN_GLOBAL_COUNT] = [
     "print",
     "len",

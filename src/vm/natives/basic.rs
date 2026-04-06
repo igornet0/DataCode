@@ -4,7 +4,7 @@ use crate::common::error::LangError;
 use crate::common::value::{IterableInner, Value};
 use crate::vm::host::HostFunction;
 use crate::vm::iterable::{chunk_source_count, iterable_materialize_capacity_hint, iterable_next};
-use crate::vm::vm::VM_CALL_CONTEXT;
+use crate::vm::vm::current_vm_ptr;
 use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
@@ -249,7 +249,7 @@ fn plugin_tensor_repr_via_abi(arg: &Value) -> Option<String> {
     if *tag != 0 {
         return None;
     }
-    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow())?;
+    let vm_ptr = current_vm_ptr()?;
     unsafe {
         let vm = &*vm_ptr;
         let native_idx = vm.plugin_call_native?;
@@ -281,7 +281,7 @@ impl HostFunction for ArrayHostFunction {
     fn call(&self, args: &[Value]) -> Result<Value, LangError> {
         if args.len() == 1 {
             if let Value::Iterable(rc) = &args[0] {
-                let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow()).ok_or_else(|| {
+                let vm_ptr = current_vm_ptr().ok_or_else(|| {
                     LangError::runtime_error(
                         "array(iterable): VM context not available".to_string(),
                         0,
@@ -414,7 +414,7 @@ pub fn native_money(args: &[Value]) -> Value {
 
 /// Имя типа для `PluginOpaque` из нативного модуля (`ml.opaque_type_name`), если загружен.
 fn plugin_opaque_type_name_via_abi(arg: &Value) -> Option<String> {
-    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow());
+    let vm_ptr = current_vm_ptr();
     let vm_ptr = vm_ptr?;
     unsafe {
         let vm = &mut *vm_ptr;
@@ -438,7 +438,7 @@ fn plugin_opaque_type_name_via_abi(arg: &Value) -> Option<String> {
 
 /// Короткая строка из `ml.opaque_display` (`<tensor tag=0 id=4>`), если загружен libml.
 fn plugin_opaque_display_via_abi(arg: &Value) -> Option<String> {
-    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow());
+    let vm_ptr = current_vm_ptr();
     let vm_ptr = vm_ptr?;
     unsafe {
         let vm = &mut *vm_ptr;
@@ -584,7 +584,7 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
     // Compare with `opaque_type_name` (plugin hook) — no compiler hardcoding.
     if matches!(value, Value::PluginOpaque { .. }) {
         if let Value::NativeFunction(idx) = &args[1] {
-            let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow());
+            let vm_ptr = current_vm_ptr();
             if let Some(vm_ptr) = vm_ptr {
                 let vm = unsafe { &*vm_ptr };
                 if let Some(export_name) = vm.abi_export_name_for_native_index(*idx) {
@@ -729,7 +729,7 @@ pub fn native_generator_final(args: &[Value]) -> Value {
         Some(Value::Generator(rc)) => rc.clone(),
         _ => return Value::Null,
     };
-    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow());
+    let vm_ptr = current_vm_ptr();
     if let Some(vm_ptr) = vm_ptr {
         unsafe {
             let vm = &mut *vm_ptr;
@@ -770,7 +770,7 @@ pub fn native_generator_final(args: &[Value]) -> Value {
 pub struct NativeGeneratorNext;
 impl HostFunction for NativeGeneratorNext {
     fn call(&self, args: &[Value]) -> Result<Value, LangError> {
-        let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow()).ok_or_else(|| {
+        let vm_ptr = current_vm_ptr().ok_or_else(|| {
             LangError::runtime_error("generator.next() requires an active VM".to_string(), 0)
         })?;
         let rc = match args.first() {
@@ -803,7 +803,7 @@ impl HostFunction for NativeGeneratorNext {
 pub struct NativeGeneratorSend;
 impl HostFunction for NativeGeneratorSend {
     fn call(&self, args: &[Value]) -> Result<Value, LangError> {
-        let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow()).ok_or_else(|| {
+        let vm_ptr = current_vm_ptr().ok_or_else(|| {
             LangError::runtime_error("generator.send() requires an active VM".to_string(), 0)
         })?;
         let rc = match args.first() {

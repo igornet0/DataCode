@@ -176,8 +176,6 @@ cargo install --path . --force
 
 echo "✅ DataCode installed successfully!"
 
-install_ml_artifact
-
 echo ""
 echo "🧪 Testing installation..."
 if command -v datacode &> /dev/null; then

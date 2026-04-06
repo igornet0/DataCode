@@ -24,6 +24,13 @@ impl Lexer {
         }
     }
 
+    /// Reuse this lexer for another source slice (e.g. successive `"${...}"` expression fragments).
+    pub fn reset_source(&mut self, source: &str) {
+        self.source = source.chars().collect();
+        self.current = 0;
+        self.line = 1;
+    }
+
     pub fn tokenize(&mut self) -> Result<Vec<Token>, LangError> {
         let mut tokens = Vec::new();
         loop {

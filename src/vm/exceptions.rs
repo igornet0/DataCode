@@ -9,6 +9,7 @@ use crate::common::{
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::store_convert::store_value;
+use crate::vm::types::VMStatus;
 
 // Структура для обработчика исключений в VM
 pub struct ExceptionHandler {
@@ -217,5 +218,49 @@ impl ExceptionHandler {
 
         // Обработчик не найден - возвращаем ошибку
         Err(error)
+    }
+
+    /// Like [`Self::handle_exception`], but maps `Ok(())` to [`VMStatus::Continue`] for opcode dispatch.
+    pub fn handle_exception_vm(
+        vm_stack: &mut Vec<TaggedValue>,
+        vm_frames: &mut Vec<CallFrame>,
+        exception_handlers: &mut Vec<ExceptionHandler>,
+        error: LangError,
+        value_store: &mut ValueStore,
+        heavy_store: &mut HeavyStore,
+    ) -> Result<VMStatus, LangError> {
+        match Self::handle_exception(
+            vm_stack,
+            vm_frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
+            Ok(()) => Ok(VMStatus::Continue),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Like [`Self::handle_exception`], maps a caught exception to [`Value::Null`] (binary/unary ops).
+    pub fn handle_exception_null_value(
+        vm_stack: &mut Vec<TaggedValue>,
+        vm_frames: &mut Vec<CallFrame>,
+        exception_handlers: &mut Vec<ExceptionHandler>,
+        error: LangError,
+        value_store: &mut ValueStore,
+        heavy_store: &mut HeavyStore,
+    ) -> Result<Value, LangError> {
+        match Self::handle_exception(
+            vm_stack,
+            vm_frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
+            Ok(()) => Ok(Value::Null),
+            Err(e) => Err(e),
+        }
     }
 }

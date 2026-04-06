@@ -5,7 +5,7 @@ use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::native_loader::{call_abi_native, take_last_abi_error};
-use crate::vm::vm::VM_CALL_CONTEXT;
+use crate::vm::vm::current_vm_ptr;
 use std::cell::RefCell;
 use std::fmt::Write;
 use std::rc::Rc;
@@ -15,7 +15,7 @@ pub(crate) fn try_plugin_opaque_binop(a: &Value, b: &Value, op: &str) -> Option<
     let (Value::PluginOpaque { .. }, Value::PluginOpaque { .. }) = (a, b) else {
         return None;
     };
-    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow())?;
+    let vm_ptr = current_vm_ptr()?;
     unsafe {
         let vm = &*vm_ptr;
         let native_idx = vm.plugin_opaque_binop?;
@@ -128,17 +128,14 @@ pub fn binary_add(
                 "Operands must be numbers or strings".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }
@@ -177,17 +174,14 @@ pub fn binary_sub(
                 "Operands must be numbers".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }
@@ -230,17 +224,14 @@ pub fn binary_mul(
                 "Operands must be numbers, or string and number for repetition".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }
@@ -267,17 +258,14 @@ pub fn binary_matmul(
                 "Operands must be numbers or tensors for @".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }
@@ -376,17 +364,14 @@ pub fn exec_binary_op_by_name(
                 format!("Unknown binary op '{}'", op_name),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }
@@ -407,17 +392,14 @@ pub fn binary_div(
             if *n2 == 0.0 {
                 let error =
                     ExceptionHandler::runtime_error(frames, "Division by zero".to_string(), line);
-                match ExceptionHandler::handle_exception(
+                ExceptionHandler::handle_exception_null_value(
                     stack,
                     frames,
                     exception_handlers,
                     error,
                     value_store,
                     heavy_store,
-                ) {
-                    Ok(()) => Ok(Value::Null),
-                    Err(e) => Err(e),
-                }
+                )
             } else {
                 Ok(Value::Number(n1 / n2))
             }
@@ -441,17 +423,14 @@ pub fn binary_div(
                 "Operands must be numbers or paths".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }
@@ -472,17 +451,14 @@ pub fn binary_int_div(
             if *n2 == 0.0 {
                 let error =
                     ExceptionHandler::runtime_error(frames, "Division by zero".to_string(), line);
-                match ExceptionHandler::handle_exception(
+                ExceptionHandler::handle_exception_null_value(
                     stack,
                     frames,
                     exception_handlers,
                     error,
                     value_store,
                     heavy_store,
-                ) {
-                    Ok(()) => Ok(Value::Null),
-                    Err(e) => Err(e),
-                }
+                )
             } else {
                 // Целочисленное деление: отбрасываем дробную часть
                 Ok(Value::Number((n1 / n2).floor()))
@@ -494,17 +470,14 @@ pub fn binary_int_div(
                 "Operands must be numbers".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }
@@ -525,17 +498,14 @@ pub fn binary_mod(
             if *n2 == 0.0 {
                 let error =
                     ExceptionHandler::runtime_error(frames, "Modulo by zero".to_string(), line);
-                match ExceptionHandler::handle_exception(
+                ExceptionHandler::handle_exception_null_value(
                     stack,
                     frames,
                     exception_handlers,
                     error,
                     value_store,
                     heavy_store,
-                ) {
-                    Ok(()) => Ok(Value::Null),
-                    Err(e) => Err(e),
-                }
+                )
             } else {
                 Ok(Value::Number(n1 % n2))
             }
@@ -546,17 +516,14 @@ pub fn binary_mod(
                 "Operands must be numbers".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }
@@ -580,17 +547,14 @@ pub fn binary_pow(
                 "Operands must be numbers".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }
@@ -615,17 +579,14 @@ pub fn binary_greater(
                 "Operands must be numbers or strings".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }
@@ -650,17 +611,14 @@ pub fn binary_less(
                 "Operands must be numbers or strings".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }
@@ -685,17 +643,14 @@ pub fn binary_greater_equal(
                 "Operands must be numbers or strings".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }
@@ -720,17 +675,14 @@ pub fn binary_less_equal(
                 "Operands must be numbers or strings".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }
@@ -753,17 +705,14 @@ pub fn unary_negate(
                 "Operand must be a number".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => Ok(Value::Null),
-                Err(e) => Err(e),
-            }
+            )
         }
     }
 }

@@ -6,7 +6,7 @@
 
 use crate::common::table::Table;
 use crate::common::value::Value;
-use crate::vm::vm::VM_CALL_CONTEXT;
+use crate::vm::vm::current_vm_ptr;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -87,15 +87,13 @@ pub fn native_relate(args: &[Value]) -> Value {
         col2.0.clone(),
         col2.1.clone(),
     );
-    VM_CALL_CONTEXT.with(|ctx| {
-        if let Some(ptr) = *ctx.borrow() {
-            unsafe {
-                (*ptr).pending_relations.push(relation);
-            }
-        } else {
-            RELATIONS.with(|r| r.borrow_mut().push(relation));
+    if let Some(ptr) = current_vm_ptr() {
+        unsafe {
+            (*ptr).pending_relations.push(relation);
         }
-    });
+    } else {
+        RELATIONS.with(|r| r.borrow_mut().push(relation));
+    }
 
     Value::Null
 }
@@ -116,15 +114,13 @@ pub fn native_primary_key(args: &[Value]) -> Value {
     }
 
     let pk_entry = (col.0.clone(), col.1.clone());
-    VM_CALL_CONTEXT.with(|ctx| {
-        if let Some(ptr) = *ctx.borrow() {
-            unsafe {
-                (*ptr).pending_primary_keys.push(pk_entry);
-            }
-        } else {
-            PRIMARY_KEYS.with(|pk| pk.borrow_mut().push(pk_entry));
+    if let Some(ptr) = current_vm_ptr() {
+        unsafe {
+            (*ptr).pending_primary_keys.push(pk_entry);
         }
-    });
+    } else {
+        PRIMARY_KEYS.with(|pk| pk.borrow_mut().push(pk_entry));
+    }
 
     Value::Null
 }

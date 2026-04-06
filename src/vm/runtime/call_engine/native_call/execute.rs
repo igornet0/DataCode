@@ -12,6 +12,7 @@ use crate::debug_println;
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::global_slot::GlobalSlot;
+use crate::vm::native_indices::builtin;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::host::HostEntry;
 use crate::vm::stack;
@@ -20,14 +21,15 @@ use crate::vm::store_convert::{
 };
 use crate::vm::types::VMStatus;
 use crate::vm::types::{ExplicitPrimaryKey, ExplicitRelation};
-use crate::vm::vm::VM_CALL_CONTEXT;
+use crate::vm::vm::{VmExecutionContext, VM_CALL_CONTEXT};
+use super::fast_paths;
 use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Restores VM_CALL_CONTEXT to its previous value on drop.
 /// Allows nested native calls (e.g. __tablename__ calling enum()) without losing context.
 struct RestoreVmContextGuard {
-    previous: Option<*mut crate::vm::vm::Vm>,
+    previous: Option<VmExecutionContext>,
 }
 
 impl Drop for RestoreVmContextGuard {
@@ -67,317 +69,62 @@ pub(crate) fn execute_native_call(
             format!("Native function index {} out of bounds", native_index),
             line,
         );
-        match ExceptionHandler::handle_exception(
+        return ExceptionHandler::handle_exception_vm(
             stack,
             frames,
             exception_handlers,
             error,
             value_store,
             heavy_store,
-        ) {
-            Ok(()) => return Ok(VMStatus::Continue),
-            Err(e) => return Err(e),
-        }
+        );
     }
 
-    // Fast path for range(n) / range(start, end) / range(start, end, step)
-    const RANGE_NATIVE_INDEX: usize = 2;
-    if native_index == RANGE_NATIVE_INDEX && (arity == 1 || arity == 2 || arity == 3) {
-        let frame = frames.last().unwrap();
-        let available = stack.len().saturating_sub(frame.stack_start);
-        let need = if arity == 1 {
-            1
-        } else if arity == 2 {
-            2
-        } else {
-            3
-        };
-        if available >= need {
-            let read_number = |store: &ValueStore, id: ValueId| -> Option<i64> {
-                store.get(id).and_then(|c| match c {
-                    ValueCell::Number(n) => {
-                        let x = *n;
-                        if x.fract() == 0.0 && x >= i64::MIN as f64 && x <= i64::MAX as f64 {
-                            Some(x as i64)
-                        } else {
-                            None
-                        }
-                    }
-                    _ => None,
-                })
-            };
-            let params = if arity == 1 {
-                let n_tv = stack.pop().unwrap_or(TaggedValue::null());
-                let n_id = tagged_to_value_id(n_tv, value_store);
-                read_number(value_store, n_id)
-                    .map(|n| (0_i64, n.max(0), 1_i64))
-                    .map_or_else(
-                        || {
-                            stack::push_id(stack, n_id);
-                            None
-                        },
-                        |t| Some(t),
-                    )
-            } else if arity == 2 {
-                let end_tv = stack.pop().unwrap_or(TaggedValue::null());
-                let start_tv = stack.pop().unwrap_or(TaggedValue::null());
-                let end_id = tagged_to_value_id(end_tv, value_store);
-                let start_id = tagged_to_value_id(start_tv, value_store);
-                match (
-                    read_number(value_store, start_id),
-                    read_number(value_store, end_id),
-                ) {
-                    (Some(start), Some(end)) => Some((start, end, 1_i64)),
-                    _ => {
-                        stack::push_id(stack, start_id);
-                        stack::push_id(stack, end_id);
-                        None
-                    }
-                }
-            } else {
-                let step_tv = stack.pop().unwrap_or(TaggedValue::null());
-                let end_tv = stack.pop().unwrap_or(TaggedValue::null());
-                let start_tv = stack.pop().unwrap_or(TaggedValue::null());
-                let step_id = tagged_to_value_id(step_tv, value_store);
-                let end_id = tagged_to_value_id(end_tv, value_store);
-                let start_id = tagged_to_value_id(start_tv, value_store);
-                match (
-                    read_number(value_store, start_id),
-                    read_number(value_store, end_id),
-                    read_number(value_store, step_id),
-                ) {
-                    (Some(start), Some(end), Some(step)) if step != 0 => Some((start, end, step)),
-                    _ => {
-                        stack::push_id(stack, start_id);
-                        stack::push_id(stack, end_id);
-                        stack::push_id(stack, step_id);
-                        None
-                    }
-                }
-            };
-            if let Some((start, end, step)) = params {
-                let len = if step > 0 {
-                    if start >= end {
-                        0
-                    } else {
-                        ((end - start) as u64 / step as u64).min(usize::MAX as u64) as usize
-                    }
-                } else {
-                    if start <= end {
-                        0
-                    } else {
-                        ((start - end) as u64 / (-step) as u64).min(usize::MAX as u64) as usize
-                    }
-                };
-                value_store.reserve_min(value_store.len() + 1);
-                let mut slots = Vec::with_capacity(len);
-                if step > 0 {
-                    let mut cur = start;
-                    while cur < end {
-                        slots.push(TaggedValue::from_f64(cur as f64));
-                        cur += step;
-                    }
-                } else {
-                    let mut cur = start;
-                    while cur > end {
-                        slots.push(TaggedValue::from_f64(cur as f64));
-                        cur += step;
-                    }
-                }
-                let result_id = value_store.allocate_arena(ValueCell::Array(slots));
-                stack::push_id(stack, result_id);
-                return Ok(VMStatus::Continue);
-            }
-        }
+    if let Some(s) = fast_paths::try_range_fast_path(
+        native_index,
+        arity,
+        stack,
+        frames,
+        value_store,
+    ) {
+        return Ok(s);
     }
-
-    // push(arr, item): fast path — append one TaggedValue to ValueCell::Array in place (O(1) amortized).
-    // Avoids full load_value(arr) + store_value(result) per call (was O(n) per push → O(n²) for growing array).
-    // Stack after callee pop: ... [arr, item] with item on top → pop item, then arr.
-    // Slow path still handles non-Array cells, ArrayView, etc.
-    const PUSH_NATIVE_INDEX: usize = 35;
-    if native_index == PUSH_NATIVE_INDEX && arity == 2 {
-        let frame = frames.last().unwrap();
-        let available = stack.len().saturating_sub(frame.stack_start);
-        if available >= 2 {
-            let item_tv = stack.pop().unwrap_or(TaggedValue::null());
-            let arr_tv = stack.pop().unwrap_or(TaggedValue::null());
-            let arr_id = tagged_to_value_id(arr_tv, value_store);
-            if let Some(ValueCell::Array(slots)) = value_store.get_mut(arr_id) {
-                slots.push(item_tv);
-                stack::push_id(stack, arr_id);
-                return Ok(VMStatus::Continue);
-            }
-            stack::push(stack, arr_tv);
-            stack::push(stack, item_tv);
-        }
+    if let Some(s) = fast_paths::try_push_fast_path(
+        native_index,
+        arity,
+        stack,
+        frames,
+        value_store,
+    ) {
+        return Ok(s);
     }
-
-    // Fast path for len(x)
-    const LEN_NATIVE_INDEX: usize = 1;
-    if native_index == LEN_NATIVE_INDEX && arity == 1 {
-        let frame = frames.last().unwrap();
-        let available = stack.len().saturating_sub(frame.stack_start);
-        if available >= 1 {
-            let arg_tv = stack.pop().unwrap_or(TaggedValue::null());
-            let arg_id = tagged_to_value_id(arg_tv, value_store);
-            if let Some(cell) = value_store.get(arg_id) {
-                if let Some(len) = match cell {
-                    ValueCell::Array(ids) => Some(ids.len() as f64),
-                    ValueCell::String(sid) => value_store.get_string(*sid).map(|s| s.len() as f64),
-                    _ => None,
-                } {
-                    let result_id = value_store.allocate(ValueCell::Number(len));
-                    stack::push_id(stack, result_id);
-                    return Ok(VMStatus::Continue);
-                }
-            }
-            stack::push_id(stack, arg_id);
-        }
+    if let Some(s) = fast_paths::try_len_fast_path(
+        native_index,
+        arity,
+        stack,
+        frames,
+        value_store,
+    ) {
+        return Ok(s);
     }
-
-    // Fast path for int(x), float(x), str(x), typeof(x) — indices 3,4,6,8 only.
-    // Do not use bare `arity == 1`: print is index 0 and would fall through to push+general path (double handling, SIGSEGV).
-    if arity == 1 && matches!(native_index, 3 | 4 | 6 | 8) {
-        let frame = frames.last().unwrap();
-        let available = stack.len().saturating_sub(frame.stack_start);
-        if available >= 1 {
-            let arg_tv = stack.pop().unwrap_or(TaggedValue::null());
-            let arg_id = tagged_to_value_id(arg_tv, value_store);
-            let result_value = value_store.get(arg_id).and_then(|cell| {
-                match (native_index, cell) {
-                    (3, ValueCell::Number(n)) => Some(Value::Number(n.trunc())),
-                    (3, ValueCell::Bool(b)) => Some(Value::Number(if *b { 1.0 } else { 0.0 })),
-                    (3, ValueCell::Null) => Some(Value::Number(0.0)),
-                    (4, ValueCell::Number(n)) => Some(Value::Number(*n)),
-                    (4, ValueCell::Bool(b)) => Some(Value::Number(if *b { 1.0 } else { 0.0 })),
-                    (4, ValueCell::Null) => Some(Value::Number(0.0)),
-                    (6, ValueCell::Number(n)) => Some(Value::String(n.to_string())),
-                    (6, ValueCell::Bool(b)) => Some(Value::String(if *b {
-                        "true".to_string()
-                    } else {
-                        "false".to_string()
-                    })),
-                    (6, ValueCell::String(sid)) => value_store
-                        .get_string(*sid)
-                        .map(|s| Value::String(s.to_string())),
-                    (6, ValueCell::Null) => Some(Value::String("null".to_string())),
-                    (8, ValueCell::Number(n)) => Some(Value::String(if n.fract() == 0.0 {
-                        "int".to_string()
-                    } else {
-                        "float".to_string()
-                    })),
-                    (8, ValueCell::Bool(_)) => Some(Value::String("bool".to_string())),
-                    (8, ValueCell::String(_)) => Some(Value::String("string".to_string())),
-                    (8, ValueCell::Null) => Some(Value::String("null".to_string())),
-                    (8, ValueCell::Array(_)) => Some(Value::String("array".to_string())),
-                    (8, ValueCell::Tuple(_)) => Some(Value::String("tuple".to_string())),
-                    // Object: must call native_typeof (e.g. __plugin_namespace for native modules / ml.layer).
-                    (8, ValueCell::Path(_)) => Some(Value::String("path".to_string())),
-                    (8, ValueCell::Function(_)) | (8, ValueCell::NativeFunction(_)) => {
-                        Some(Value::String("function".to_string()))
-                    }
-                    _ => None,
-                }
-            });
-            if let Some(v) = result_value {
-                let result_id = store_value(v, value_store, heavy_store);
-                stack::push_id(stack, result_id);
-                return Ok(VMStatus::Continue);
-            }
-            stack::push_id(stack, arg_id);
-        }
+    if let Some(s) = fast_paths::try_cast_typeof_fast_path(
+        native_index,
+        arity,
+        stack,
+        frames,
+        value_store,
+        heavy_store,
+    ) {
+        return Ok(s);
     }
-
-    // Fast path for table(data, headers) - index 43
-    const TABLE_NATIVE_INDEX_43: usize = 43;
-    if native_index == TABLE_NATIVE_INDEX_43 && arity == 2 {
-        let frame = frames.last().unwrap();
-        let available = stack.len().saturating_sub(frame.stack_start);
-        if available >= 2 {
-            let headers_tv = stack.pop().unwrap_or(TaggedValue::null());
-            let data_tv = stack.pop().unwrap_or(TaggedValue::null());
-            let headers_id = tagged_to_value_id(headers_tv, value_store);
-            let data_id = tagged_to_value_id(data_tv, value_store);
-            let row_slots_opt = value_store.get(data_id).and_then(|c| {
-                if let ValueCell::Array(s) = c {
-                    Some(s.clone())
-                } else {
-                    None
-                }
-            });
-            if let Some(row_slots) = row_slots_opt {
-                let num_cols = row_slots
-                    .first()
-                    .and_then(|row_tv| {
-                        if row_tv.is_heap() {
-                            value_store.get(row_tv.get_heap_id()).and_then(|c| match c {
-                                ValueCell::Array(s) => Some(s.len()),
-                                _ => None,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(0);
-                let mut flat_cell_ids = Vec::with_capacity(row_slots.len() * num_cols.max(1));
-                for row_tv in row_slots.iter() {
-                    if row_tv.is_heap() {
-                        let row_id = row_tv.get_heap_id();
-                        let cell_slots: Vec<TaggedValue> = value_store
-                            .get(row_id)
-                            .and_then(|c| {
-                                if let ValueCell::Array(s) = c {
-                                    Some(s.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or_default();
-                        for slot in cell_slots.iter() {
-                            flat_cell_ids.push(tagged_to_value_id(*slot, value_store));
-                        }
-                    }
-                }
-                let headers: Vec<String> = {
-                    let header_slots: Vec<TaggedValue> = value_store
-                        .get(headers_id)
-                        .and_then(|c| {
-                            if let ValueCell::Array(s) = c {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_default();
-                    let mut v = Vec::with_capacity(header_slots.len());
-                    for slot in header_slots.iter() {
-                        let val = load_value(
-                            tagged_to_value_id(*slot, value_store),
-                            value_store,
-                            heavy_store,
-                        );
-                        v.push(match &val {
-                            Value::String(s) => s.clone(),
-                            _ => val.to_string(),
-                        });
-                    }
-                    if v.is_empty() {
-                        (0..num_cols).map(|i| format!("Column_{}", i)).collect()
-                    } else {
-                        v
-                    }
-                };
-                let table = Table::from_flat_view(flat_cell_ids, headers.len().max(1), headers);
-                let table_val = Value::Table(Rc::new(RefCell::new(table)));
-                let heavy_idx = heavy_store.push(table_val);
-                let result_id = value_store.allocate(ValueCell::Heavy(heavy_idx));
-                stack::push_id(stack, result_id);
-                return Ok(VMStatus::Continue);
-            }
-            stack::push_id(stack, data_id);
-            stack::push_id(stack, headers_id);
-        }
+    if let Some(s) = fast_paths::try_table_legacy_fast_path(
+        native_index,
+        arity,
+        stack,
+        frames,
+        value_store,
+        heavy_store,
+    ) {
+        return Ok(s);
     }
 
     use crate::database_engine::natives as db_natives;
@@ -447,21 +194,17 @@ pub(crate) fn execute_native_call(
                 ),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            return ExceptionHandler::handle_exception_vm(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
+            );
         }
-        // Fast path table(data, headers) - index 45
-        const TABLE_NATIVE_INDEX_45: usize = 45;
-        if native_index == TABLE_NATIVE_INDEX_45 && arity == 2 {
+        // Fast path table(data, headers)
+        if native_index == builtin::TABLE && arity == 2 {
             let headers_tv = stack.pop().unwrap_or(TaggedValue::null());
             let data_tv = stack.pop().unwrap_or(TaggedValue::null());
             let headers_id = tagged_to_value_id(headers_tv, value_store);
@@ -551,29 +294,26 @@ pub(crate) fn execute_native_call(
 
     let prev_ctx = VM_CALL_CONTEXT.with(|ctx| {
         let prev = *ctx.borrow();
-        *ctx.borrow_mut() = Some(vm_ptr);
+        *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
         prev
     });
     let _ctx_guard = RestoreVmContextGuard { previous: prev_ctx };
 
-    if native_index == 2 {
+    if native_index == builtin::RANGE {
         if arity < 1 || arity > 3 {
             let error = ExceptionHandler::runtime_error(
                 &frames,
                 format!("range() expects 1, 2, or 3 arguments, got {}", arity),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            return ExceptionHandler::handle_exception_vm(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
+            );
         }
         for arg in native_args_buffer.iter() {
             if !matches!(arg, Value::Number(_)) {
@@ -582,17 +322,14 @@ pub(crate) fn execute_native_call(
                     "range() arguments must be numbers".to_string(),
                     line,
                 );
-                match ExceptionHandler::handle_exception(
+                return ExceptionHandler::handle_exception_vm(
                     stack,
                     frames,
                     exception_handlers,
                     error,
                     value_store,
                     heavy_store,
-                ) {
-                    Ok(()) => return Ok(VMStatus::Continue),
-                    Err(e) => return Err(e),
-                }
+                );
             }
         }
         if arity == 3 {
@@ -603,39 +340,34 @@ pub(crate) fn execute_native_call(
                         "range() step cannot be zero".to_string(),
                         line,
                     );
-                    match ExceptionHandler::handle_exception(
+                    return ExceptionHandler::handle_exception_vm(
                         stack,
                         frames,
                         exception_handlers,
                         error,
                         value_store,
                         heavy_store,
-                    ) {
-                        Ok(()) => return Ok(VMStatus::Continue),
-                        Err(e) => return Err(e),
-                    }
+                    );
                 }
             }
         }
     }
-    if native_index == 72 {
+    // Index matches legacy `execute.rs` (72 = primary_key in registry; message text unchanged).
+    if native_index == builtin::PRIMARY_KEY {
         if arity != 1 {
             let error = ExceptionHandler::runtime_error(
                 &frames,
                 format!("enum() expects 1 argument, got {}", arity),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            return ExceptionHandler::handle_exception_vm(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
+            );
         }
     }
 
@@ -667,13 +399,12 @@ pub(crate) fn execute_native_call(
             || ptr == Some(plot_natives::native_plot_pie as *const ())
             || ptr == Some(plot_natives::native_plot_heatmap as *const ())
     };
-    const INSTANCEOF_NATIVE_INDEX: usize = 9;
     let second_is_class = native_args_buffer.len() >= 2
         && matches!(&native_args_buffer[1], Value::Object(rc) if rc.borrow().get("__class_name").is_some());
     let skip_drop = arity == 1
-        || native_index == INSTANCEOF_NATIVE_INDEX
+        || native_index == builtin::ISINSTANCE
         || second_is_class
-        || (native_index == 1 && native_args_buffer.len() == 1)
+        || (native_index == builtin::LEN && native_args_buffer.len() == 1)
         || is_db_column
         || is_plot_line_bar_pie_heatmap;
     if !skip_drop && !native_args_buffer.is_empty() {
@@ -686,17 +417,14 @@ pub(crate) fn execute_native_call(
         match natives[native_index].invoke(&native_args_buffer) {
             Ok(v) => v,
             Err(e) => {
-                match ExceptionHandler::handle_exception(
+                return ExceptionHandler::handle_exception_vm(
                     stack,
                     frames,
                     exception_handlers,
                     e,
                     value_store,
                     heavy_store,
-                ) {
-                    Ok(()) => return Ok(VMStatus::Continue),
-                    Err(ee) => return Err(ee),
-                }
+                );
             }
         }
     } else {
@@ -712,17 +440,14 @@ pub(crate) fn execute_native_call(
             ) {
                 Ok(x) => *v = x,
                 Err(e) => {
-                    match ExceptionHandler::handle_exception(
+                    return ExceptionHandler::handle_exception_vm(
                         stack,
                         frames,
                         exception_handlers,
                         e,
                         value_store,
                         heavy_store,
-                    ) {
-                        Ok(()) => return Ok(VMStatus::Continue),
-                        Err(ee) => return Err(ee),
-                    }
+                    );
                 }
             }
         }
@@ -744,20 +469,17 @@ pub(crate) fn execute_native_call(
     };
 
     if let Some(abi_err) = crate::vm::native_loader::take_last_abi_error() {
-        match ExceptionHandler::handle_exception(
+        return ExceptionHandler::handle_exception_vm(
             stack,
             frames,
             exception_handlers,
             abi_err,
             value_store,
             heavy_store,
-        ) {
-            Ok(()) => return Ok(VMStatus::Continue),
-            Err(e) => return Err(e),
-        }
+        );
     }
 
-    if native_index == 65 {
+    if native_index == builtin::ANTI_JOIN {
         let relations = unsafe { (*vm_ptr).take_pending_relations() };
         for (table1_rc, col1_name, table2_rc, col2_name) in relations {
             let mut found_table1_name = None;
@@ -789,7 +511,7 @@ pub(crate) fn execute_native_call(
         }
     }
 
-    if native_index == 66 {
+    if native_index == builtin::ZIP_JOIN {
         let primary_keys = unsafe { (*vm_ptr).take_pending_primary_keys() };
         for (table_rc, col_name) in primary_keys {
             let mut found_table_name = None;
@@ -830,17 +552,14 @@ pub(crate) fn execute_native_call(
             };
             let error =
                 ExceptionHandler::runtime_error_with_type(&frames, error_msg, line, error_type);
-            match ExceptionHandler::handle_exception(
+            return ExceptionHandler::handle_exception_vm(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
+            );
         }
     }
 
@@ -851,7 +570,7 @@ pub(crate) fn execute_native_call(
                 // may be Value::Array (e.g. a slice); update_cell_if_mutable(item_id, &array) would
                 // overwrite the ValueStore cell at item_id — which can alias another live array
                 // (e.g. empty pixels_list) and corrupt it. Other natives still get full write-back.
-                if native_index == PUSH_NATIVE_INDEX && arity == 2 && i == 1 {
+                if native_index == builtin::PUSH && arity == 2 && i == 1 {
                     continue;
                 }
                 update_cell_if_mutable(id, &native_args_buffer[i], value_store, heavy_store);

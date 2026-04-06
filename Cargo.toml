@@ -12,7 +12,7 @@ exclude = [
 
 [package]
 name = "data-code"
-version = "2.3.4"
+version = "2.3.5"
 edition = "2021"
 description = "ДатаКод - Интерактивный язык программирования для быстрой обработки данных"
 license = "MIT"
@@ -25,6 +25,8 @@ categories = ["command-line-utilities", "development-tools"]
 default = []
 profile = []  # Счётчики: opcodes, store allocations, store get (вывод в конце run)
 allocator_jemalloc = ["jemallocator"]
+# Reserved for embedders that need the legacy global-merge API re-exported at crate boundary (see `legacy_merge` module).
+legacy_vm_merge = []
 
 [lib]
 name = "data_code"

@@ -3,7 +3,7 @@
 use serde::Deserialize;
 use std::collections::HashMap;
 
-use crate::abi::{abi_compatible, AbiVersion, DATACODE_ABI_VERSION};
+use crate::abi::AbiVersion;
 
 /// Root manifest inside a `.dcmodule` zip.
 #[derive(Debug, Deserialize)]
@@ -56,13 +56,7 @@ impl DcmoduleManifest {
     /// Validates `abi_version` against the running VM.
     pub fn check_abi(&self) -> Result<(), String> {
         let m: AbiVersion = (&self.abi_version).into();
-        if !abi_compatible(&m, &DATACODE_ABI_VERSION) {
-            return Err(format!(
-                "manifest abi_version {}.{} is not compatible with VM {}.{}",
-                m.major, m.minor, DATACODE_ABI_VERSION.major, DATACODE_ABI_VERSION.minor
-            ));
-        }
-        Ok(())
+        crate::abi_policy::ensure_module_abi_compatible(&m)
     }
 
     /// Relative path to the native library for this host (forward slashes in JSON).

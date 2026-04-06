@@ -1,4 +1,7 @@
 //! DPM: DataCode Package Manager — virtual env from dpm.toml, cache or in-project.
+//!
+//! **Core** (manifest, lock, install, registry, env, config, adapters): resolution and package I/O.
+//! **Scaffold** (init_*, setup, add_database): project/database bootstrapping and wizards.
 
 pub mod adapters_lib;
 pub mod add_database;

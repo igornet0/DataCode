@@ -6,7 +6,7 @@ use crate::plot::command::{
 };
 use crate::plot::{system, Figure, GuiCommand, Image, PlotContext, PlotWindowHandle, Window};
 use crate::vm::native_loader::call_abi_native;
-use crate::vm::vm::VM_CALL_CONTEXT;
+use crate::vm::vm::current_vm_ptr;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
@@ -1026,7 +1026,7 @@ fn plugin_tensor_to_plot_image(tensor: &Value) -> Option<Rc<RefCell<Image>>> {
     if *tag != 0 {
         return None;
     }
-    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow())?;
+    let vm_ptr = current_vm_ptr()?;
     unsafe {
         let vm = &*vm_ptr;
         let native_idx = vm.plugin_call_native?;

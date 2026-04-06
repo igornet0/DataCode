@@ -5,7 +5,7 @@ use crate::database_engine::cluster::DatabaseCluster;
 use crate::database_engine::engine::DatabaseEngine;
 use crate::vm::globals;
 use crate::vm::natives::utils::{call_user_function, resolve_global_by_name};
-use crate::vm::vm::VM_CALL_CONTEXT;
+use crate::vm::vm::current_vm_ptr;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -557,11 +557,8 @@ fn resolve_function_index(method_val: &Value) -> Option<usize> {
         Value::ModuleFunction {
             module_uid,
             local_index,
-        } => VM_CALL_CONTEXT.with(|ctx| {
-            let vm_ptr = ctx.borrow();
-            vm_ptr.and_then(|ptr| unsafe {
-                (*ptr).get_module_function_index(*module_uid, *local_index)
-            })
+        } => current_vm_ptr().and_then(|ptr| unsafe {
+            (*ptr).get_module_function_index(*module_uid, *local_index)
         }),
         _ => None,
     }

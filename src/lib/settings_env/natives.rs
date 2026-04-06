@@ -57,9 +57,9 @@ fn resolve_env_path(path_str: &str) -> std::path::PathBuf {
                 return candidate;
             }
         }
-        if let Some(proj) = crate::vm::vm::VM_CALL_CONTEXT.with(|ctx| {
-            (*ctx.borrow()).and_then(|ptr| unsafe { (*ptr).get_project_root().clone() })
-        }) {
+        if let Some(proj) = crate::vm::vm::current_vm_ptr()
+            .and_then(|ptr| unsafe { (*ptr).get_project_root().clone() })
+        {
             let candidate = proj.join(path);
             if candidate.exists() {
                 return candidate;
@@ -69,13 +69,13 @@ fn resolve_env_path(path_str: &str) -> std::path::PathBuf {
     if let Some(base) = crate::vm::file_import::get_base_path() {
         return base.join(path);
     }
-    if let Some(base) = crate::vm::vm::VM_CALL_CONTEXT
-        .with(|ctx| (*ctx.borrow()).and_then(|ptr| unsafe { (*ptr).get_base_path().clone() }))
+    if let Some(base) = crate::vm::vm::current_vm_ptr()
+        .and_then(|ptr| unsafe { (*ptr).get_base_path().clone() })
     {
         return base.join(path);
     }
-    if let Some(base) = crate::vm::vm::VM_CALL_CONTEXT
-        .with(|ctx| (*ctx.borrow()).and_then(|ptr| unsafe { (*ptr).get_project_root().clone() }))
+    if let Some(base) = crate::vm::vm::current_vm_ptr()
+        .and_then(|ptr| unsafe { (*ptr).get_project_root().clone() })
     {
         return base.join(path);
     }

@@ -2,6 +2,7 @@ pub mod error;
 pub mod span;
 pub mod tagged_value;
 pub mod value;
+pub mod value_host_types;
 pub mod value_store;
 pub use tagged_value::TaggedValue;
 pub use value_store::ValueStore;

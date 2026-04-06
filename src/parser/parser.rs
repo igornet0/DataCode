@@ -1490,8 +1490,13 @@ impl Parser {
     }
 
     /// Parse one expression from source string (used for "${...}" contents).
-    fn parse_expression_from_source(&self, source: &str, _line: usize) -> Result<Expr, LangError> {
-        let mut lexer = crate::lexer::Lexer::new(source);
+    fn parse_expression_from_source(
+        &mut self,
+        lexer: &mut crate::lexer::Lexer,
+        source: &str,
+        _line: usize,
+    ) -> Result<Expr, LangError> {
+        lexer.reset_source(source);
         let tokens = lexer.tokenize()?;
         let mut sub_parser =
             Parser::new_with_source_name_and_registry(tokens, None, self.operator_registry.clone());
@@ -1540,11 +1545,12 @@ impl Parser {
 
     /// Split string content into interpolation segments; returns segments or error if unclosed "${".
     fn parse_interpolated_segments(
-        &self,
+        &mut self,
         raw: &str,
         line: usize,
     ) -> Result<Vec<InterpolatedSegment>, LangError> {
         let mut segments = Vec::new();
+        let mut lexer = crate::lexer::Lexer::new("");
         let bytes = raw.as_bytes();
         let mut literal_start = 0;
         loop {
@@ -1590,7 +1596,7 @@ impl Parser {
                     let expr_source = raw[pos + 2..end_byte].trim();
                     let (expr_content, include_name, format_spec) =
                         Self::split_interpolation_suffix(expr_source);
-                    let expr = self.parse_expression_from_source(&expr_content, line)?;
+                    let expr = self.parse_expression_from_source(&mut lexer, &expr_content, line)?;
                     segments.push(InterpolatedSegment::Expr {
                         expr: Box::new(expr),
                         include_name,
@@ -1621,24 +1627,35 @@ impl Parser {
                         && self.tokens[saved_position + 2].kind == TokenKind::Identifier
                         && self.tokens[saved_position + 3].kind == TokenKind::Equal
                     {
-                        // Проверяем, не находимся ли мы внутри вызова функции (внутри скобок)
-                        let mut paren_count = 0;
-                        let mut found_lparen = false;
-                        for i in (0..saved_position).rev() {
-                            match self.tokens[i].kind {
-                                TokenKind::RParen => paren_count += 1,
-                                TokenKind::LParen => {
-                                    if paren_count == 0 {
-                                        found_lparen = true;
-                                        break;
+                        // Проверяем, не находимся ли мы внутри вызова функции (внутри скобок).
+                        // Быстрый путь: без '(' / ')' слева от текущего токена распаковка возможна — полный обратный скан не нужен.
+                        let found_lparen = if saved_position == 0 {
+                            false
+                        } else if !self.tokens[..saved_position]
+                            .iter()
+                            .any(|t| matches!(t.kind, TokenKind::LParen | TokenKind::RParen))
+                        {
+                            false
+                        } else {
+                            let mut paren_count = 0;
+                            let mut found = false;
+                            for i in (0..saved_position).rev() {
+                                match self.tokens[i].kind {
+                                    TokenKind::RParen => paren_count += 1,
+                                    TokenKind::LParen => {
+                                        if paren_count == 0 {
+                                            found = true;
+                                            break;
+                                        }
+                                        if paren_count > 0 {
+                                            paren_count -= 1;
+                                        }
                                     }
-                                    if paren_count > 0 {
-                                        paren_count -= 1;
-                                    }
+                                    _ => {}
                                 }
-                                _ => {}
                             }
-                        }
+                            found
+                        };
 
                         // Если мы внутри скобок, не проверяем распаковку
                         if !found_lparen {

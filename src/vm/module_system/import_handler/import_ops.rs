@@ -21,6 +21,36 @@ use std::rc::Rc;
 
 /// `from ml.layer import ...` — не файловый модуль, а объект `globals["ml"]["layer"]` после `import ml`
 /// (нативный модуль с `nest_dotted_module_exports`, например `layer.linear` → `ml.layer.linear`).
+/// Install a heap `ValueId` for a module at the global slot named `module_name`.
+/// Preserves argv-slot collision behavior: if the name collides with the argv slot, append a new slot.
+fn upsert_global_heap_for_module_name(
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    module_name: &str,
+    module_id: ValueId,
+    argv_slot_import: Option<usize>,
+) {
+    if let Some(idx) = global_index_by_name(global_names, module_name) {
+        if Some(idx) != argv_slot_import {
+            if idx < globals.len() {
+                globals[idx] = GlobalSlot::Heap(module_id);
+            } else {
+                globals.resize(idx + 1, default_global_slot());
+                globals[idx] = GlobalSlot::Heap(module_id);
+            }
+        } else {
+            let new_idx = globals.len();
+            globals.push(GlobalSlot::Heap(module_id));
+            global_names.remove(&idx);
+            global_names.insert(new_idx, module_name.to_string());
+        }
+    } else {
+        let idx = globals.len();
+        globals.push(GlobalSlot::Heap(module_id));
+        global_names.insert(idx, module_name.to_string());
+    }
+}
+
 fn resolve_dotted_namespace_from_loaded_parent(
     module_name: &str,
     global_names: &std::collections::BTreeMap<usize, String>,
@@ -211,17 +241,14 @@ pub(crate) fn handle_import(
                 "Import expects module name as string".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            return ExceptionHandler::handle_exception_vm(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
+            );
         }
     };
 
@@ -264,66 +291,27 @@ pub(crate) fn handle_import_from(
     heavy_store: &mut HeavyStore,
     vm_ptr: *mut crate::vm::vm::Vm,
 ) -> Result<VMStatus, LangError> {
-    let frame = frames.last().unwrap();
-    let module_name = match load_value(frame.constant_ids[module_index], value_store, heavy_store) {
-        Value::String(name) => name,
-        _ => {
-            let error = ExceptionHandler::runtime_error(
-                &frames,
-                "ImportFrom expects module name as string".to_string(),
-                line,
-            );
-            match ExceptionHandler::handle_exception(
-                stack,
-                frames,
-                exception_handlers,
-                error,
-                value_store,
-                heavy_store,
-            ) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
-        }
+    // Phase 1: decode opcode operands (module name, items, imported name set).
+    let (module_const_id, items_const_id) = {
+        let f = frames.last().unwrap();
+        (f.constant_ids[module_index], f.constant_ids[items_index])
     };
-    let items_array = match load_value(frame.constant_ids[items_index], value_store, heavy_store) {
-        Value::Array(arr) => arr.borrow().clone(),
-        _ => {
-            let error = ExceptionHandler::runtime_error(
-                &frames,
-                "ImportFrom expects items array".to_string(),
-                line,
-            );
-            match ExceptionHandler::handle_exception(
-                stack,
-                frames,
-                exception_handlers,
-                error,
-                value_store,
-                heavy_store,
-            ) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
-        }
+    let ops = match super::import_from_pipeline::decode_import_from_operands(
+        module_const_id,
+        items_const_id,
+        line,
+        stack,
+        frames,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    ) {
+        Ok(o) => o,
+        Err(early) => return early,
     };
-    // Bound names to import (for module isolation: only these are visible in caller)
-    let imported_names: std::collections::HashSet<String> = items_array
-        .iter()
-        .filter_map(|v| {
-            if let Value::String(s) = v {
-                if s == "*" {
-                    Some("*".to_string())
-                } else if let Some((_, alias)) = s.split_once(':') {
-                    Some(alias.to_string())
-                } else {
-                    Some(s.clone())
-                }
-            } else {
-                None
-            }
-        })
-        .collect();
+    let module_name = ops.module_name;
+    let items_array = ops.items_array;
+    let imported_names = ops.imported_names;
     let argv_slot_import = unsafe { (*vm_ptr).get_argv_slot_index() };
     // Preserve argv value id before any feed/per-item writes so we can restore the slot at the end (nested module run clears RunContext/SCRIPT_ARGV_VALUE_ID visibility).
     let saved_argv_value_id = argv_slot_import.and_then(|slot_idx| {
@@ -382,25 +370,13 @@ pub(crate) fn handle_import_from(
                 ) {
                     if matches!(&ns, Value::Object(_)) {
                         let module_id = store_value(ns, value_store, heavy_store);
-                        if let Some(idx) = global_index_by_name(global_names, &module_name) {
-                            if Some(idx) != argv_slot_import {
-                                if idx < globals.len() {
-                                    globals[idx] = GlobalSlot::Heap(module_id);
-                                } else {
-                                    globals.resize(idx + 1, default_global_slot());
-                                    globals[idx] = GlobalSlot::Heap(module_id);
-                                }
-                            } else {
-                                let new_idx = globals.len();
-                                globals.push(GlobalSlot::Heap(module_id));
-                                global_names.remove(&idx);
-                                global_names.insert(new_idx, module_name.clone());
-                            }
-                        } else {
-                            let idx = globals.len();
-                            globals.push(GlobalSlot::Heap(module_id));
-                            global_names.insert(idx, module_name.clone());
-                        }
+                        upsert_global_heap_for_module_name(
+                            globals,
+                            global_names,
+                            &module_name,
+                            module_id,
+                            argv_slot_import,
+                        );
                         loaded_modules.insert(module_name.clone());
                         loaded_from_parent = true;
                     }
@@ -433,8 +409,10 @@ pub(crate) fn handle_import_from(
                                     module_function_count,
                                     start_idx
                                 );
-                                let parent_module =
-                                    frame.module_name.as_deref().unwrap_or("__main__");
+                                let parent_module = frames
+                                    .last()
+                                    .and_then(|f| f.module_name.as_deref())
+                                    .unwrap_or("__main__");
                                 let full_module_name =
                                     if parent_module == "__main__" || module_name.contains('.') {
                                         module_name.clone()
@@ -1095,17 +1073,14 @@ pub(crate) fn handle_import_from(
                 ),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            return ExceptionHandler::handle_exception_vm(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
+            );
         }
         _ => {
             let error = ExceptionHandler::runtime_error(
@@ -1117,17 +1092,14 @@ pub(crate) fn handle_import_from(
                 ),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            return ExceptionHandler::handle_exception_vm(
                 stack,
                 frames,
                 exception_handlers,
                 error,
                 value_store,
                 heavy_store,
-            ) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
+            );
         }
     };
     // Clone the HashMap to avoid borrowing issues - we can now mutate globals
@@ -1658,5 +1630,5 @@ pub(crate) fn handle_import_from(
             ));
         }
     }
-    return Ok(VMStatus::Continue);
+    Ok(VMStatus::Continue)
 }

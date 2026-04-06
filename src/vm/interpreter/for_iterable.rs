@@ -11,7 +11,7 @@ use crate::vm::iterable::{iterable_next, prepare_for_in_iterable};
 use crate::vm::stack;
 use crate::vm::store_convert::{load_value, store_value, tagged_to_value_id};
 use crate::vm::types::VMStatus;
-use crate::vm::vm::VM_CALL_CONTEXT;
+use crate::vm::vm::current_vm_ptr;
 
 /// Replace local `iter_local` with `prepare_for_in_iterable` result.
 pub fn op_coerce_for_in_iterable(
@@ -63,7 +63,7 @@ pub fn op_for_iterable_next(
     value_store: &mut ValueStore,
     heavy_store: &mut HeavyStore,
 ) -> Result<VMStatus, LangError> {
-    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow()).ok_or_else(|| {
+    let vm_ptr = current_vm_ptr().ok_or_else(|| {
         LangError::runtime_error(
             "ForIterableNext: VM context not available".to_string(),
             line,

@@ -32,6 +32,8 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
+pub(crate) use crate::vm::execution_context::{current_vm_ptr, VmExecutionContext, VM_CALL_CONTEXT};
+
 /// Legacy function pointer type for native functions. Host layer uses HostEntry (Builtin/Extended).
 pub type NativeFn = fn(&[Value]) -> Value;
 
@@ -48,7 +50,7 @@ impl Drop for RestoreArgvIdGuard {
 
 /// Restores [`VM_CALL_CONTEXT`] after [`Vm::step`] (so `operations::try_plugin_opaque_binop` and natives see the VM).
 struct StepVmCallContextGuard {
-    previous: Option<*mut Vm>,
+    previous: Option<VmExecutionContext>,
 }
 
 impl Drop for StepVmCallContextGuard {
@@ -57,12 +59,6 @@ impl Drop for StepVmCallContextGuard {
             *ctx.borrow_mut() = self.previous;
         });
     }
-}
-
-// Thread-local storage для хранения контекста VM во время вызова нативных функций
-// Это позволяет нативным функциям вызывать пользовательские функции
-thread_local! {
-    pub(crate) static VM_CALL_CONTEXT: RefCell<Option<*mut Vm>> = RefCell::new(None);
 }
 
 /// Number of builtin global slots (0..BUILTIN_END). Indices >= this are module globals.
@@ -167,7 +163,11 @@ where
     F: FnOnce(&ValueStore, &HeavyStore) -> R,
 {
     VM_CALL_CONTEXT.with(|ctx| {
-        let ptr = (*ctx.borrow()).expect("with_current_stores: VM context not set");
+        let ptr = ctx
+            .borrow()
+            .as_ref()
+            .expect("with_current_stores: VM context not set")
+            .vm;
         unsafe { (*ptr).with_stores(f) }
     })
 }
@@ -535,7 +535,7 @@ impl Vm {
     }
 
     /// Native index for ValueError::new_1 (constructor used by raise ValueError("...")).
-    pub const VALUE_ERROR_NATIVE_INDEX: usize = 79;
+    pub const VALUE_ERROR_NATIVE_INDEX: usize = crate::vm::native_indices::builtin::VALUE_ERROR;
 
     fn register_natives(&mut self) {
         crate::vm::native_registry::register_builtin_natives(&mut self.natives);
@@ -778,7 +778,7 @@ impl Vm {
         let _vm_call_ctx = {
             let previous = VM_CALL_CONTEXT.with(|ctx| {
                 let p = *ctx.borrow();
-                *ctx.borrow_mut() = Some(vm_ptr);
+                *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
                 p
             });
             StepVmCallContextGuard { previous }
@@ -974,9 +974,10 @@ impl Vm {
     }
 
     /// Legacy: merges another VM's globals into this VM. Not used with module isolation (__lib__ is registered as a module instead).
+    /// See [`crate::vm::module_system::legacy_merge`].
     #[allow(dead_code)]
     pub fn merge_globals_from(&mut self, other: &Vm) {
-        crate::vm::module_system::linker::merge_globals_from(
+        crate::vm::module_system::legacy_merge::merge_globals_from(
             other.get_globals(),
             other.get_global_names(),
             other.get_natives(),
@@ -1008,6 +1009,7 @@ impl Vm {
     }
 
     /// Legacy: merge module VM into caller's buffers. Not used with module isolation (ImportFrom only adds requested items).
+    /// See [`crate::vm::module_system::legacy_merge`].
     #[allow(dead_code)]
     pub fn merge_globals_from_into(
         other: &Vm,
@@ -1018,7 +1020,7 @@ impl Vm {
         store: &mut ValueStore,
         heap: &mut HeavyStore,
     ) {
-        crate::vm::module_system::linker::merge_globals_from_into(
+        crate::vm::module_system::legacy_merge::merge_globals_from_into(
             other.get_globals(),
             other.get_global_names(),
             other.get_natives(),

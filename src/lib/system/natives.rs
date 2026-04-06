@@ -4,7 +4,7 @@ use crate::common::debug;
 use crate::common::value::Value;
 use crate::dpm::registry::registry_index_url;
 use crate::vm::permission_policy::PermissionPolicy;
-use crate::vm::vm::VM_CALL_CONTEXT;
+use crate::vm::vm::current_vm_ptr;
 use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
@@ -13,10 +13,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 fn with_vm<T, F: FnOnce(&crate::vm::Vm) -> T>(f: F) -> Option<T> {
-    VM_CALL_CONTEXT.with(|ctx| {
-        let ptr = (*ctx.borrow())?;
-        Some(unsafe { f(&*ptr) })
-    })
+    let ptr = current_vm_ptr()?;
+    Some(unsafe { f(&*ptr) })
 }
 
 fn check_perm(perm: &str) -> bool {

@@ -120,41 +120,12 @@ impl Compiler {
         // Начинаем область видимости для главной функции
         self.begin_scope();
 
-        // Assign global indices to top-level functions in sorted order so module export is deterministic
-        // (same name always gets same index regardless of source order, e.g. get_settings vs load_settings).
-        let mut top_level_fn_names: Vec<String> = statements
-            .iter()
-            .filter_map(|s| match s {
-                Stmt::Function { name, .. } | Stmt::StreamFunction { name, .. } => {
-                    Some(name.clone())
-                }
-                _ => None,
-            })
-            .collect();
-        top_level_fn_names.sort();
-        for name in &top_level_fn_names {
-            if !self.scope.globals.contains_key(name) {
-                let idx = self.scope.globals.len();
-                self.scope.globals.insert(name.clone(), idx);
-            }
-        }
+        self.pass_sorted_top_level_function_slots(statements);
 
         // Первый проход: объявляем все функции (forward declaration), включая вложенные
         self.collect_all_functions(statements)?;
 
-        // Ранний проход: объявляем глобальные переменные из top-level Let (только имена в scope/chunk),
-        // чтобы при компиляции тел функций (например get_settings) глобалы вроде "settings" уже были в scope.globals
-        // и не подменялись на UNDEFINED_GLOBAL_SENTINEL, иначе после merge байткод остаётся LoadGlobal(MAX).
-        for stmt in statements {
-            if let Stmt::Let {
-                name,
-                is_global: true,
-                ..
-            } = stmt
-            {
-                self.declare_global_name(&name);
-            }
-        }
+        self.pass_declare_global_lets(statements);
 
         // Второй проход: компилируем все statements (порядок детерминирован — AST/parse order, Vec).
         // pop_value: снимать значение со стека, если не последний statement или последний не производит значения (программа без выражения должна вернуть Null).
@@ -481,6 +452,38 @@ impl Compiler {
             }
         }
         Ok(())
+    }
+
+    fn pass_sorted_top_level_function_slots(&mut self, statements: &[Stmt]) {
+        let mut top_level_fn_names: Vec<String> = statements
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Function { name, .. } | Stmt::StreamFunction { name, .. } => {
+                    Some(name.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        top_level_fn_names.sort();
+        for name in &top_level_fn_names {
+            if !self.scope.globals.contains_key(name) {
+                let idx = self.scope.globals.len();
+                self.scope.globals.insert(name.clone(), idx);
+            }
+        }
+    }
+
+    fn pass_declare_global_lets(&mut self, statements: &[Stmt]) {
+        for stmt in statements {
+            if let Stmt::Let {
+                name,
+                is_global: true,
+                ..
+            } = stmt
+            {
+                self.declare_global_name(name);
+            }
+        }
     }
 
     /// Объявляет имя глобальной переменной в scope и chunk (без генерации байткода).

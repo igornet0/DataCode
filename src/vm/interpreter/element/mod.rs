@@ -282,11 +282,10 @@ pub(crate) fn op_get_array_element(
                     return Ok(VMStatus::Continue);
                 }
                 if key.as_str() == "final" {
-                    const GENERATOR_FINAL_NATIVE_INDEX: usize = 81;
                     stack::push_id(
                         stack,
                         store_value(
-                            Value::NativeFunction(GENERATOR_FINAL_NATIVE_INDEX),
+                            Value::NativeFunction(crate::vm::native_indices::builtin::GENERATOR_FINAL),
                             value_store,
                             heavy_store,
                         ),
@@ -294,11 +293,10 @@ pub(crate) fn op_get_array_element(
                     return Ok(VMStatus::Continue);
                 }
                 if key.as_str() == "next" {
-                    const GENERATOR_NEXT_NATIVE_INDEX: usize = 82;
                     stack::push_id(
                         stack,
                         store_value(
-                            Value::NativeFunction(GENERATOR_NEXT_NATIVE_INDEX),
+                            Value::NativeFunction(crate::vm::native_indices::builtin::GENERATOR_NEXT),
                             value_store,
                             heavy_store,
                         ),
@@ -306,11 +304,10 @@ pub(crate) fn op_get_array_element(
                     return Ok(VMStatus::Continue);
                 }
                 if key.as_str() == "send" {
-                    const GENERATOR_SEND_NATIVE_INDEX: usize = 83;
                     stack::push_id(
                         stack,
                         store_value(
-                            Value::NativeFunction(GENERATOR_SEND_NATIVE_INDEX),
+                            Value::NativeFunction(crate::vm::native_indices::builtin::GENERATOR_SEND),
                             value_store,
                             heavy_store,
                         ),
@@ -578,10 +575,9 @@ pub(crate) fn op_get_array_element(
         }
         Value::NativeFunction(native_index) => {
             use crate::vm::natives::basic::native_str;
-            const STR_NATIVE_INDEX: usize = 6;
             if native_index < natives.len()
                 && (natives[native_index].as_fn_ptr() == Some(native_str as *const ())
-                    || native_index == STR_NATIVE_INDEX)
+                    || native_index == crate::vm::native_indices::builtin::STR)
             {
                 return indexing::get_native_str(
                     line,

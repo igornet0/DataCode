@@ -17,7 +17,7 @@ use crate::vm::stack;
 use crate::vm::store_convert::tagged_to_value_id;
 use crate::vm::store_convert::{load_value, store_value};
 use crate::vm::types::VMStatus;
-use crate::vm::vm::{Vm, VM_CALL_CONTEXT};
+use crate::vm::vm::{current_vm_ptr, Vm, VmExecutionContext, VM_CALL_CONTEXT};
 
 use super::helpers::pop_to_value_id;
 
@@ -27,7 +27,7 @@ pub(crate) fn plugin_opaque_len_via_plugin_call(opaque: &Value) -> Option<Value>
     if !matches!(opaque, Value::PluginOpaque { .. }) {
         return None;
     }
-    let vm_ptr = VM_CALL_CONTEXT.with(|ctx| *ctx.borrow())?;
+    let vm_ptr = current_vm_ptr()?;
     unsafe {
         let vm = &*vm_ptr;
         let native_idx = vm.plugin_call_native?;
@@ -451,7 +451,7 @@ pub(crate) fn op_table_filter(
     };
     if let Value::Table(table_rc) = &table_val {
         VM_CALL_CONTEXT.with(|ctx| {
-            *ctx.borrow_mut() = Some(vm_ptr);
+            *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
         });
         let result = crate::vm::natives::table::table_where_impl(
             table_rc,

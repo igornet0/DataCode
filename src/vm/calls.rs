@@ -1,18 +1,18 @@
 // Function call operations for VM (Stage 1: stack/slots as ValueId)
 
-use crate::debug_println;
 use crate::common::{
     error::{ErrorType, LangError},
     value::{GeneratorState, Value},
     value_store::ValueStore,
     TaggedValue,
 };
-use std::cell::RefCell;
-use std::rc::Rc;
+use crate::debug_println;
 use crate::parser::ast::TypePart;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::store_convert::store_value;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Проверяет, соответствует ли значение одному типу
 fn check_single_type(value: &Value, type_name: &str) -> bool {
@@ -41,7 +41,10 @@ fn check_single_type(value: &Value, type_name: &str) -> bool {
         // Специальные типы
         (Value::Null, "null" | "none") => true,
         (Value::Path(_), "path") => true,
-        (Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_), "function" | "fn") => true,
+        (
+            Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_),
+            "function" | "fn",
+        ) => true,
         // Графические типы
         (Value::Window(_), "window") => true,
         (Value::Image(_), "image") => true,
@@ -79,7 +82,11 @@ pub fn format_type_parts(type_parts: &[TypePart]) -> String {
 pub fn get_type_name_value(value: &Value) -> &'static str {
     match value {
         Value::Number(n) => {
-            if n.fract() == 0.0 { "int" } else { "float" }
+            if n.fract() == 0.0 {
+                "int"
+            } else {
+                "float"
+            }
         }
         Value::Bool(_) => "bool",
         Value::String(_) => "str",
@@ -120,11 +127,15 @@ pub fn setup_function_call(
 ) -> Result<Option<Value>, LangError> {
     if function_index >= functions.len() {
         return Err(LangError::runtime_error(
-            format!("Function index {} out of bounds (functions.len() = {})", function_index, functions.len()),
+            format!(
+                "Function index {} out of bounds (functions.len() = {})",
+                function_index,
+                functions.len()
+            ),
             0,
         ));
     }
-    
+
     let function = functions[function_index].clone();
 
     // Module-style call: compiler passes receiver for obj.method(); if function has arity 0, treat single Object arg as receiver and drop it.
@@ -137,7 +148,7 @@ pub fn setup_function_call(
     } else {
         args
     };
-    
+
     debug_println!("[DEBUG setup_function_call] Вызываем функцию с индексом {}, имя: '{}', arity: {}, получено аргументов: {} (всего функций в VM: {})", 
         function_index, function.name, function.arity, effective_args.len(), functions.len());
 
@@ -146,7 +157,8 @@ pub fn setup_function_call(
         return Err(LangError::runtime_error(
             format!(
                 "Expected {} arguments but got {}",
-                function.arity, args.len()
+                function.arity,
+                args.len()
             ),
             0,
         ));
@@ -156,13 +168,17 @@ pub fn setup_function_call(
     for (i, (arg, expected_types)) in effective_args.iter().zip(&function.param_types).enumerate() {
         if let Some(type_names) = expected_types {
             if !check_type_value(arg, type_names) {
-                let param_name = function.param_names.get(i)
+                let param_name = function
+                    .param_names
+                    .get(i)
                     .map(|s| s.as_str())
                     .unwrap_or("unknown");
                 return Err(LangError::runtime_error_with_type(
                     format!(
                         "Argument '{}' expected type '{}', got '{}'",
-                        param_name, format_type_parts(type_names), get_type_name_value(arg)
+                        param_name,
+                        format_type_parts(type_names),
+                        get_type_name_value(arg)
                     ),
                     0,
                     ErrorType::TypeError,
@@ -196,7 +212,7 @@ pub fn setup_function_call(
     // Проверяем кэш, если функция помечена как кэшируемая
     if function.is_cached {
         use crate::bytecode::function::CacheKey;
-        
+
         if let Some(cache_key) = CacheKey::new(effective_args) {
             if let Some(cache_rc) = &function.cache {
                 let cache = cache_rc.borrow();
@@ -208,8 +224,10 @@ pub fn setup_function_call(
         }
     }
 
-    let args_tvs: Vec<TaggedValue> =
-        effective_args.iter().map(|a| TaggedValue::from_heap(store_value(a.clone(), store, heap))).collect();
+    let args_tvs: Vec<TaggedValue> = effective_args
+        .iter()
+        .map(|a| TaggedValue::from_heap(store_value(a.clone(), store, heap)))
+        .collect();
     let stack_start = stack.len();
     let mut new_frame = if function.is_cached {
         CallFrame::new_with_cache(function.clone(), stack_start, args_tvs.clone(), store, heap)
@@ -224,7 +242,9 @@ pub fn setup_function_call(
     if !frames.is_empty() && !function.captured_vars.is_empty() {
         for captured_var in &function.captured_vars {
             if captured_var.local_slot_index >= new_frame.slots.len() {
-                new_frame.slots.resize(captured_var.local_slot_index + 1, TaggedValue::null());
+                new_frame
+                    .slots
+                    .resize(captured_var.local_slot_index + 1, TaggedValue::null());
             }
             let ancestor_index = frames.len().saturating_sub(1 + captured_var.ancestor_depth);
             if ancestor_index < frames.len() {

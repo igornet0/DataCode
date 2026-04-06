@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::common::{error::LangError, error::ErrorType, value::Value, value_store::ValueStore};
+use crate::common::{error::ErrorType, error::LangError, value::Value, value_store::ValueStore};
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
@@ -24,43 +24,46 @@ pub fn get_figure(
     index_value: Value,
 ) -> Result<VMStatus, LangError> {
     match index_value {
-        Value::String(key) => {
-            match key.as_str() {
-                "axes" => {
-                    let figure_ref = figure_rc.borrow();
-                    let mut axes_array = Vec::new();
-                    for row in &figure_ref.axes {
-                        let mut row_array = Vec::new();
-                        for axis in row {
-                            row_array.push(Value::Axis(axis.clone()));
-                        }
-                        axes_array.push(Value::Array(Rc::new(RefCell::new(row_array))));
+        Value::String(key) => match key.as_str() {
+            "axes" => {
+                let figure_ref = figure_rc.borrow();
+                let mut axes_array = Vec::new();
+                for row in &figure_ref.axes {
+                    let mut row_array = Vec::new();
+                    for axis in row {
+                        row_array.push(Value::Axis(axis.clone()));
                     }
-                    stack::push_id(
-                        stack,
-                        store_value(
-                            Value::Array(Rc::new(RefCell::new(axes_array))),
-                            value_store,
-                            heavy_store,
-                        ),
-                    );
+                    axes_array.push(Value::Array(Rc::new(RefCell::new(row_array))));
                 }
-                _ => {
-                    let error = ExceptionHandler::runtime_error_with_type(
-                        &frames,
-                        format!("Figure has no property '{}'", key),
-                        line,
-                        ErrorType::KeyError,
-                    );
-                    return match ExceptionHandler::handle_exception(
-                        stack, frames, exception_handlers, error, value_store, heavy_store,
-                    ) {
-                        Ok(()) => Ok(VMStatus::Continue),
-                        Err(e) => Err(e),
-                    };
-                }
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::Array(Rc::new(RefCell::new(axes_array))),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
             }
-        }
+            _ => {
+                let error = ExceptionHandler::runtime_error_with_type(
+                    &frames,
+                    format!("Figure has no property '{}'", key),
+                    line,
+                    ErrorType::KeyError,
+                );
+                return match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
+                    Ok(()) => Ok(VMStatus::Continue),
+                    Err(e) => Err(e),
+                };
+            }
+        },
         _ => {
             let error = ExceptionHandler::runtime_error(
                 &frames,
@@ -68,7 +71,12 @@ pub fn get_figure(
                 line,
             );
             return match ExceptionHandler::handle_exception(
-                stack, frames, exception_handlers, error, value_store, heavy_store,
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
             ) {
                 Ok(()) => Ok(VMStatus::Continue),
                 Err(e) => Err(e),
@@ -104,23 +112,29 @@ pub fn get_axis(
                         ErrorType::KeyError,
                     );
                     return match ExceptionHandler::handle_exception(
-                        stack, frames, exception_handlers, error, value_store, heavy_store,
+                        stack,
+                        frames,
+                        exception_handlers,
+                        error,
+                        value_store,
+                        heavy_store,
                     ) {
                         Ok(()) => Ok(VMStatus::Continue),
                         Err(e) => Err(e),
                     };
                 }
             };
-            let method_index = if let Some((_plot_id, plot_val)) = globals.iter_mut().find_map(|slot| {
-                let plot_id = slot.resolve_to_value_id(value_store);
-                let plot_val = load_value(plot_id, value_store, heavy_store);
-                if let Value::Object(map_rc) = &plot_val {
-                    if map_rc.borrow().contains_key("image") {
-                        return Some((plot_id, plot_val));
+            let method_index = if let Some((_plot_id, plot_val)) =
+                globals.iter_mut().find_map(|slot| {
+                    let plot_id = slot.resolve_to_value_id(value_store);
+                    let plot_val = load_value(plot_id, value_store, heavy_store);
+                    if let Value::Object(map_rc) = &plot_val {
+                        if map_rc.borrow().contains_key("image") {
+                            return Some((plot_id, plot_val));
+                        }
                     }
-                }
-                None
-            }) {
+                    None
+                }) {
                 if let Value::Object(map_rc) = &plot_val {
                     let map = map_rc.borrow();
                     let idx_key = match method_name {
@@ -138,7 +152,12 @@ pub fn get_axis(
                             line,
                         );
                         return match ExceptionHandler::handle_exception(
-                            stack, frames, exception_handlers, error, value_store, heavy_store,
+                            stack,
+                            frames,
+                            exception_handlers,
+                            error,
+                            value_store,
+                            heavy_store,
                         ) {
                             Ok(()) => Ok(VMStatus::Continue),
                             Err(e) => Err(e),
@@ -151,7 +170,12 @@ pub fn get_axis(
                         line,
                     );
                     return match ExceptionHandler::handle_exception(
-                        stack, frames, exception_handlers, error, value_store, heavy_store,
+                        stack,
+                        frames,
+                        exception_handlers,
+                        error,
+                        value_store,
+                        heavy_store,
                     ) {
                         Ok(()) => Ok(VMStatus::Continue),
                         Err(e) => Err(e),
@@ -164,13 +188,25 @@ pub fn get_axis(
                     line,
                 );
                 return match ExceptionHandler::handle_exception(
-                    stack, frames, exception_handlers, error, value_store, heavy_store,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
                 ) {
                     Ok(()) => Ok(VMStatus::Continue),
                     Err(e) => Err(e),
                 };
             };
-            stack::push_id(stack, store_value(Value::NativeFunction(method_index), value_store, heavy_store));
+            stack::push_id(
+                stack,
+                store_value(
+                    Value::NativeFunction(method_index),
+                    value_store,
+                    heavy_store,
+                ),
+            );
         }
         _ => {
             let error = ExceptionHandler::runtime_error(
@@ -179,7 +215,12 @@ pub fn get_axis(
                 line,
             );
             return match ExceptionHandler::handle_exception(
-                stack, frames, exception_handlers, error, value_store, heavy_store,
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
             ) {
                 Ok(()) => Ok(VMStatus::Continue),
                 Err(e) => Err(e),
@@ -209,8 +250,12 @@ pub fn get_database_engine(
                 db_natives::native_engine_run as *const (),
             );
             let method_index = match property_name.as_str() {
-                "connect" => natives.iter().position(|e| e.as_fn_ptr() == Some(connect_fn)),
-                "execute" => natives.iter().position(|e| e.as_fn_ptr() == Some(execute_fn)),
+                "connect" => natives
+                    .iter()
+                    .position(|e| e.as_fn_ptr() == Some(connect_fn)),
+                "execute" => natives
+                    .iter()
+                    .position(|e| e.as_fn_ptr() == Some(execute_fn)),
                 "query" => natives.iter().position(|e| e.as_fn_ptr() == Some(query_fn)),
                 "run" => natives.iter().position(|e| e.as_fn_ptr() == Some(run_fn)),
                 _ => {
@@ -223,7 +268,12 @@ pub fn get_database_engine(
                         line,
                     );
                     return match ExceptionHandler::handle_exception(
-                        stack, frames, exception_handlers, error, value_store, heavy_store,
+                        stack,
+                        frames,
+                        exception_handlers,
+                        error,
+                        value_store,
+                        heavy_store,
                     ) {
                         Ok(()) => Ok(VMStatus::Continue),
                         Err(e) => Err(e),
@@ -242,7 +292,12 @@ pub fn get_database_engine(
                     line,
                 );
                 return match ExceptionHandler::handle_exception(
-                    stack, frames, exception_handlers, error, value_store, heavy_store,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
                 ) {
                     Ok(()) => Ok(VMStatus::Continue),
                     Err(e) => Err(e),
@@ -252,11 +307,17 @@ pub fn get_database_engine(
         _ => {
             let error = ExceptionHandler::runtime_error(
                 &frames,
-                "DatabaseEngine property access requires string key (connect, execute, query, run)".to_string(),
+                "DatabaseEngine property access requires string key (connect, execute, query, run)"
+                    .to_string(),
                 line,
             );
             return match ExceptionHandler::handle_exception(
-                stack, frames, exception_handlers, error, value_store, heavy_store,
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
             ) {
                 Ok(()) => Ok(VMStatus::Continue),
                 Err(e) => Err(e),
@@ -301,7 +362,12 @@ pub fn get_database_cluster(
                         line,
                     );
                     return match ExceptionHandler::handle_exception(
-                        stack, frames, exception_handlers, error, value_store, heavy_store,
+                        stack,
+                        frames,
+                        exception_handlers,
+                        error,
+                        value_store,
+                        heavy_store,
                     ) {
                         Ok(()) => Ok(VMStatus::Continue),
                         Err(e) => Err(e),
@@ -311,7 +377,11 @@ pub fn get_database_cluster(
             if let Some(idx) = method_index {
                 stack::push_id(
                     stack,
-                    store_value(Value::DatabaseCluster(Rc::clone(&cluster_rc)), value_store, heavy_store),
+                    store_value(
+                        Value::DatabaseCluster(Rc::clone(&cluster_rc)),
+                        value_store,
+                        heavy_store,
+                    ),
                 );
                 stack::push_id(
                     stack,
@@ -324,7 +394,12 @@ pub fn get_database_cluster(
                     line,
                 );
                 return match ExceptionHandler::handle_exception(
-                    stack, frames, exception_handlers, error, value_store, heavy_store,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
                 ) {
                     Ok(()) => Ok(VMStatus::Continue),
                     Err(e) => Err(e),
@@ -338,7 +413,12 @@ pub fn get_database_cluster(
                 line,
             );
             return match ExceptionHandler::handle_exception(
-                stack, frames, exception_handlers, error, value_store, heavy_store,
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
             ) {
                 Ok(()) => Ok(VMStatus::Continue),
                 Err(e) => Err(e),

@@ -4,15 +4,15 @@
 //! String↔Str, Null, Array, Object как handle, ByteBuffer↔Bytes). Сложные типы (Figure и т.д.)
 //! во внешних ABI-модулях не экспонируются.
 
-use std::ffi::{CStr, CString, c_void};
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ffi::{c_void, CStr, CString};
+use std::rc::Rc;
 
+use crate::abi::AbiValue;
 use crate::common::table::TableData;
 use crate::common::value::{ByteBuffer, Value};
 use crate::common::value_store::ValueStore;
-use crate::abi::AbiValue;
 use crate::vm::array_view::materialize_array_view;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::store_convert::load_value;
@@ -267,9 +267,9 @@ mod tests {
     use crate::common::value::{ArrayViewData, ArrayViewSource, ByteBuffer};
     use crate::common::value_store::ValueStore;
     use crate::vm::heavy_store::HeavyStore;
-    use std::rc::Rc;
     use std::cell::RefCell;
     use std::collections::HashMap;
+    use std::rc::Rc;
 
     #[test]
     fn materialize_nested_array_view_converts_to_abi() {
@@ -310,9 +310,18 @@ mod tests {
     #[test]
     fn bridge_number_bool_null() {
         let mut ctx = AbiBridgeContext::new();
-        assert!(matches!(ctx.value_to_abi(&Value::Number(42.0)), Ok(AbiValue::Int(42))));
-        assert!(matches!(ctx.value_to_abi(&Value::Number(3.14)), Ok(AbiValue::Float(_))));
-        assert!(matches!(ctx.value_to_abi(&Value::Bool(true)), Ok(AbiValue::Bool(true))));
+        assert!(matches!(
+            ctx.value_to_abi(&Value::Number(42.0)),
+            Ok(AbiValue::Int(42))
+        ));
+        assert!(matches!(
+            ctx.value_to_abi(&Value::Number(3.14)),
+            Ok(AbiValue::Float(_))
+        ));
+        assert!(matches!(
+            ctx.value_to_abi(&Value::Bool(true)),
+            Ok(AbiValue::Bool(true))
+        ));
         assert!(matches!(ctx.value_to_abi(&Value::Null), Ok(AbiValue::Null)));
     }
 

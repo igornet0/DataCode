@@ -33,7 +33,10 @@ impl HostFunction for MapHostFunction {
             if arity != 1 && arity != 2 {
                 return Err(runtime(
                     0,
-                    format!("map callback must have 1 or 2 parameters, got arity {}", arity),
+                    format!(
+                        "map callback must have 1 or 2 parameters, got arity {}",
+                        arity
+                    ),
                 ));
             }
             let base = iterable_from_value(coll)?;
@@ -67,7 +70,10 @@ impl HostFunction for FilterHostFunction {
             if arity != 1 && arity != 2 {
                 return Err(runtime(
                     0,
-                    format!("filter predicate must have 1 or 2 parameters, got arity {}", arity),
+                    format!(
+                        "filter predicate must have 1 or 2 parameters, got arity {}",
+                        arity
+                    ),
                 ));
             }
             let base = iterable_from_value(coll)?;
@@ -98,7 +104,10 @@ impl HostFunction for ReduceHostFunction {
         let initial = args[2].clone();
 
         let Value::Function(fn_idx) = f else {
-            return Err(runtime(0, "reduce: second argument must be a user function"));
+            return Err(runtime(
+                0,
+                "reduce: second argument must be a user function",
+            ));
         };
 
         let vm_ptr = VM_CALL_CONTEXT
@@ -114,7 +123,10 @@ impl HostFunction for ReduceHostFunction {
             if arity != 2 {
                 return Err(runtime(
                     0,
-                    format!("reduce callback must have arity 2 (acc, item), got {}", arity),
+                    format!(
+                        "reduce callback must have arity 2 (acc, item), got {}",
+                        arity
+                    ),
                 ));
             }
             let rc = iterable_from_value(coll)?;

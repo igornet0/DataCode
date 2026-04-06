@@ -1,11 +1,10 @@
-/// Компиляция интерполированных строк "Hello ${name}!", "${n=}", "${n:.2f}", "${n=:.0f}"
-
-use crate::parser::ast::{Expr, InterpolatedSegment};
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
+/// Компиляция интерполированных строк "Hello ${name}!", "${n=}", "${n:.2f}", "${n=:.0f}"
+use crate::parser::ast::{Expr, InterpolatedSegment};
 
 pub fn compile_interpolated_string(
     ctx: &mut CompilationContext,
@@ -42,7 +41,8 @@ pub fn compile_interpolated_string(
                 expr::compile_expr(ctx, e)?;
                 if let Some(ref fmt) = format {
                     let fmt_idx = ctx.chunk.add_constant(Value::String(fmt.clone()));
-                    ctx.chunk.write_with_line(OpCode::FormatInterp(fmt_idx), *line);
+                    ctx.chunk
+                        .write_with_line(OpCode::FormatInterp(fmt_idx), *line);
                 }
                 if *include_name {
                     ctx.chunk.write_with_line(OpCode::Add, *line);

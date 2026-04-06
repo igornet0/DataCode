@@ -1,14 +1,14 @@
 // Plot execution context (replaces many global RefCells in natives).
 // VM owns PlotContext and sets it thread-local at run() so plot natives use it without globals.
 
-use winit::window::WindowId;
+use crate::plot::command::ChartData;
+use crate::plot::renderer::Renderer;
+use crate::plot::window::ImageViewState;
+use crate::plot::{Image, Window};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use crate::plot::{Image, Window};
-use crate::plot::window::ImageViewState;
-use crate::plot::renderer::Renderer;
-use crate::plot::command::ChartData;
+use winit::window::WindowId;
 
 #[derive(Default)]
 pub struct WindowData {
@@ -69,7 +69,9 @@ impl PlotContext {
     {
         PLOT_CONTEXT.with(|cell| {
             let mut borrow = cell.borrow_mut();
-            let ctx = borrow.as_mut().expect("PlotContext not set. VM must set context before run().");
+            let ctx = borrow
+                .as_mut()
+                .expect("PlotContext not set. VM must set context before run().");
             f(ctx)
         })
     }

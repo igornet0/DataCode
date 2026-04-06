@@ -5,9 +5,9 @@ use crate::common::table::TableData;
 use crate::common::value::{CallableSlot, ChunkSource, IterableInner, Value};
 use crate::common::value_store::ValueStore;
 use crate::vm::array_view::{materialize_array_view, subview, view_get_element};
+use crate::vm::generator::run_generator_next;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::natives::utils::call_user_function;
-use crate::vm::generator::run_generator_next;
 use crate::vm::vm::Vm;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -68,10 +68,7 @@ pub fn iterable_from_value(coll: &Value) -> Result<Rc<RefCell<IterableInner>>, L
     }
 }
 
-pub fn value_to_callable_slot(
-    f: &Value,
-    vm: &Vm,
-) -> Result<(CallableSlot, u8), LangError> {
+pub fn value_to_callable_slot(f: &Value, vm: &Vm) -> Result<(CallableSlot, u8), LangError> {
     match f {
         Value::Function(fn_idx) => {
             let arity = vm
@@ -90,11 +87,7 @@ pub fn value_to_callable_slot(
     }
 }
 
-fn dispatch_slot(
-    slot: &CallableSlot,
-    args: &[Value],
-    vm: &mut Vm,
-) -> Result<Value, LangError> {
+fn dispatch_slot(slot: &CallableSlot, args: &[Value], vm: &mut Vm) -> Result<Value, LangError> {
     match slot {
         CallableSlot::UserFunction(fn_idx) => call_user_function(*fn_idx, args),
         CallableSlot::NativeFunction(nidx) => {
@@ -116,9 +109,7 @@ pub fn iterable_materialize_capacity_hint(inner: &IterableInner) -> Option<usize
         IterableInner::Filter { .. } => None,
         IterableInner::Enumerate { data, .. } => Some(data.borrow().len()),
         IterableInner::Chunks {
-            source,
-            chunk_size,
-            ..
+            source, chunk_size, ..
         } => Some(chunk_source_count(source, *chunk_size)),
         IterableInner::StreamGenerator { .. } => None,
     }
@@ -140,7 +131,7 @@ pub fn chunk_source_count(source: &ChunkSource, chunk_size: usize) -> usize {
     if n == 0 {
         0
     } else {
-        (n + chunk_size - 1) / chunk_size
+        n.div_ceil(chunk_size)
     }
 }
 
@@ -160,7 +151,7 @@ pub fn materialize_chunk_at(
                 return Err(runtime(0, "chunk index out of range"));
             }
             let end = (start + chunk_size).min(len);
-            let chunk: Vec<Value> = borrow[start..end].iter().cloned().collect();
+            let chunk: Vec<Value> = borrow[start..end].to_vec();
             Ok(Value::Array(Rc::new(RefCell::new(chunk))))
         }
         ChunkSource::ArrayView(av) => {
@@ -253,17 +244,13 @@ pub fn iterable_next(inner: &mut IterableInner, vm: &mut Vm) -> Result<Option<Va
             let keep = if *fn_arity == 2 {
                 dispatch_slot(pred, &[val.clone(), Value::Number(i as f64)], vm)?.is_truthy()
             } else {
-                dispatch_slot(pred, &[val.clone()], vm)?.is_truthy()
+                dispatch_slot(pred, std::slice::from_ref(&val), vm)?.is_truthy()
             };
             if keep {
                 return Ok(Some(val));
             }
         },
-        IterableInner::Enumerate {
-            data,
-            start,
-            index,
-        } => {
+        IterableInner::Enumerate { data, start, index } => {
             let data_ref = data.borrow();
             if *index >= data_ref.len() {
                 return Ok(None);
@@ -303,9 +290,7 @@ pub fn iterable_next(inner: &mut IterableInner, vm: &mut Vm) -> Result<Option<Va
             *chunk_index += 1;
             Ok(Some(v))
         }
-        IterableInner::StreamGenerator { state } => {
-            run_generator_next(vm, &mut state.borrow_mut())
-        }
+        IterableInner::StreamGenerator { state } => run_generator_next(vm, &mut state.borrow_mut()),
     }
 }
 

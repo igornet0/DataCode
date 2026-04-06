@@ -111,3 +111,52 @@ if-addrs = { version = "0.15.0", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
+
+[lints]
+workspace = true
+
+# Единая политика clippy для workspace (наследуется пакетами с [lints] workspace = true).
+[workspace.lints.clippy]
+# Литералы вроде 3.14 в тестах и примерах не являются «приближением к PI» намеренно.
+approx_constant = "allow"
+# Массовый стилистический шум в логах make check 
+empty_line_after_doc_comments = "allow"
+redundant_field_names = "allow"
+# Частые линты по `cargo clippy -p data-code --lib` (счётчик по #lint в help URL).
+needless_borrow = "allow"
+needless_return = "allow"
+explicit_auto_deref = "allow"
+manual_strip = "allow"
+missing_const_for_thread_local = "allow"
+ptr_arg = "allow"
+map_clone = "allow"
+redundant_closure = "allow"
+useless_asref = "allow"
+# Топ по chek_2.log / повторный замер после --fix (стиль, без списка файлов).
+collapsible_match = "allow"
+collapsible_if = "allow"
+new_without_default = "allow"
+mutable_key_type = "allow"
+get_first = "allow"
+# Топ по chek_3.log (повторный замер после --fix).
+manual_range_contains = "allow"
+identity_op = "allow"
+needless_range_loop = "allow"
+len_zero = "allow"
+option_as_ref_deref = "allow"
+# Топ по chek_4.log (повторный замер).
+unwrap_or_default = "allow"
+unused_enumerate_index = "allow"
+unnecessary_map_or = "allow"
+manual_clamp = "allow"
+useless_format = "allow"
+manual_checked_ops = "allow"
+# chek_6.log / повторный замер после --fix и точечных правок.
+module_inception = "allow"
+arc_with_non_send_sync = "allow"
+only_used_in_recursion = "allow"
+wrong_self_convention = "allow"
+inherent_to_string = "allow"
+while_let_loop = "allow"
+nonminimal_bool = "allow"
+match_like_matches_macro = "allow"

@@ -1,7 +1,7 @@
 //! Smoke tests for the built-in `system` module.
 
-use data_code::{run, PermissionPolicy, Value};
 use data_code::vm::permission_policy::is_permission_allowed;
+use data_code::{run, PermissionPolicy, Value};
 
 #[test]
 fn permission_restricted_denies_unsafe() {

@@ -32,65 +32,65 @@ pub enum TokenKind {
     String,
 
     // Операторы
-    Plus,    // +
-    Minus,   // -
-    Star,    // *
-    StarStar, // **
-    Slash,   // /
-    SlashSlash, // // (целочисленное деление)
-    Percent, // %
-    Equal,   // =
-    EqualEqual, // ==
-    PlusEqual,   // +=
-    MinusEqual,  // -=
-    StarEqual,   // *=
-    StarStarEqual, // **=
-    SlashEqual,  // /=
+    Plus,            // +
+    Minus,           // -
+    Star,            // *
+    StarStar,        // **
+    Slash,           // /
+    SlashSlash,      // // (целочисленное деление)
+    Percent,         // %
+    Equal,           // =
+    EqualEqual,      // ==
+    PlusEqual,       // +=
+    MinusEqual,      // -=
+    StarEqual,       // *=
+    StarStarEqual,   // **=
+    SlashEqual,      // /=
     SlashSlashEqual, // //=
-    PercentEqual, // %=
-    Bang,    // !
-    BangEqual, // !=
-    Less,    // <
-    Greater, // >
-    LessEqual,  // <=
-    GreaterEqual, // >=
-    Or,         // or
-    And,        // and
+    PercentEqual,    // %=
+    Bang,            // !
+    BangEqual,       // !=
+    Less,            // <
+    Greater,         // >
+    LessEqual,       // <=
+    GreaterEqual,    // >=
+    Or,              // or
+    And,             // and
 
     // Разделители
-    LParen,   // (
-    RParen,   // )
-    LBrace,   // {
-    RBrace,   // }
-    LBracket, // [
-    RBracket, // ]
-    Comma,    // ,
+    LParen,    // (
+    RParen,    // )
+    LBrace,    // {
+    RBrace,    // }
+    LBracket,  // [
+    RBracket,  // ]
+    Comma,     // ,
     Semicolon, // ;
-    Dot,      // .
-    Ellipsis, // ...
-    Colon,    // :
-    Arrow,    // ->
-    FatArrow, // =>
-    Pipe,     // |
+    Dot,       // .
+    Ellipsis,  // ...
+    Colon,     // :
+    Arrow,     // ->
+    FatArrow,  // =>
+    Pipe,      // |
 
     // Ключевые слова для циклов
-    In,       // in
+    In, // in
 
     // Ключевые слова для обработки исключений
-    Try,      // try
-    Catch,    // catch
-    Throw,    // throw
-    Finally,  // finally 
+    Try,     // try
+    Catch,   // catch
+    Throw,   // throw
+    Finally, // finally
 
     // Аннотации
-    At,       // @
-    Cache,    // cache
+    At,    // @
+    Cache, // cache
 
     // Ключевые слова для классов
-    Abstract, // @Abstract for abstract class
-    Cls,      // cls
-    This,     // this
-    Super,    // super
+    Abstract,  // @Abstract for abstract class
+    Cls,       // cls
+    This,      // this
+    Super,     // super
     Private,   // private
     Protected, // protected
     Public,    // public
@@ -111,4 +111,3 @@ impl Token {
         Self { kind, lexeme, line }
     }
 }
-

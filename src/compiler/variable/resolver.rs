@@ -1,5 +1,4 @@
 /// Разрешение переменных (локальных/глобальных)
-
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
 use crate::compiler::context::CompilationContext;
@@ -23,13 +22,19 @@ impl VariableResolver {
                 ctx.scope.globals.insert(name.to_string(), idx);
                 idx
             };
-            ctx.chunk.global_names.insert(global_index, name.to_string());
-            ctx.chunk.explicit_global_names.insert(global_index, name.to_string());
-            ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), line);
+            ctx.chunk
+                .global_names
+                .insert(global_index, name.to_string());
+            ctx.chunk
+                .explicit_global_names
+                .insert(global_index, name.to_string());
+            ctx.chunk
+                .write_with_line(OpCode::StoreGlobal(global_index), line);
         } else {
             // Локальная переменная или глобальная на верхнем уровне
             if let Some(local_index) = ctx.scope.resolve_local(name) {
-                ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), line);
+                ctx.chunk
+                    .write_with_line(OpCode::StoreLocal(local_index), line);
             } else if ctx.current_function.is_some() {
                 // Мы находимся внутри функции - объявляем новую локальную переменную
                 let index = ctx.scope.declare_local(name);
@@ -37,13 +42,19 @@ impl VariableResolver {
             } else {
                 // Переменная не найдена локально - проверяем, является ли она глобальной
                 if let Some(&global_index) = ctx.scope.globals.get(name) {
-                    ctx.chunk.global_names.insert(global_index, name.to_string());
-                    ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), line);
+                    ctx.chunk
+                        .global_names
+                        .insert(global_index, name.to_string());
+                    ctx.chunk
+                        .write_with_line(OpCode::StoreGlobal(global_index), line);
                 } else {
                     let global_index = ctx.scope.globals.len();
                     ctx.scope.globals.insert(name.to_string(), global_index);
-                    ctx.chunk.global_names.insert(global_index, name.to_string());
-                    ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), line);
+                    ctx.chunk
+                        .global_names
+                        .insert(global_index, name.to_string());
+                    ctx.chunk
+                        .write_with_line(OpCode::StoreGlobal(global_index), line);
                 }
             }
         }
@@ -57,16 +68,23 @@ impl VariableResolver {
         line: usize,
     ) -> Result<(), LangError> {
         if let Some(local_index) = ctx.scope.resolve_local(name) {
-            ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+            ctx.chunk
+                .write_with_line(OpCode::LoadLocal(local_index), line);
         } else if let Some(&global_index) = ctx.scope.globals.get(name) {
-            ctx.chunk.global_names.insert(global_index, name.to_string());
-            ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), line);
+            ctx.chunk
+                .global_names
+                .insert(global_index, name.to_string());
+            ctx.chunk
+                .write_with_line(OpCode::LoadGlobal(global_index), line);
         } else {
             // Переменная не найдена - создаем новый глобальный индекс
             let global_index = ctx.scope.globals.len();
             ctx.scope.globals.insert(name.to_string(), global_index);
-            ctx.chunk.global_names.insert(global_index, name.to_string());
-            ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), line);
+            ctx.chunk
+                .global_names
+                .insert(global_index, name.to_string());
+            ctx.chunk
+                .write_with_line(OpCode::LoadGlobal(global_index), line);
         }
         Ok(())
     }
@@ -80,26 +98,34 @@ impl VariableResolver {
     ) -> Result<bool, LangError> {
         if let Some(local_index) = ctx.scope.resolve_local(name) {
             // Локальная переменная найдена
-            ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+            ctx.chunk
+                .write_with_line(OpCode::LoadLocal(local_index), line);
             Ok(true)
         } else if ctx.current_function.is_some() {
             // Мы находимся внутри функции - создаем локальную переменную
             let index = ctx.scope.declare_local(name);
             // Загружаем 0 как начальное значение
-            let zero_index = ctx.chunk.add_constant(crate::common::value::Value::Number(0.0));
-            ctx.chunk.write_with_line(OpCode::Constant(zero_index), line);
+            let zero_index = ctx
+                .chunk
+                .add_constant(crate::common::value::Value::Number(0.0));
+            ctx.chunk
+                .write_with_line(OpCode::Constant(zero_index), line);
             ctx.chunk.write_with_line(OpCode::StoreLocal(index), line);
             ctx.chunk.write_with_line(OpCode::LoadLocal(index), line);
             Ok(true)
         } else if let Some(&global_index) = ctx.scope.globals.get(name) {
             // Глобальная переменная найдена
-            ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), line);
+            ctx.chunk
+                .write_with_line(OpCode::LoadGlobal(global_index), line);
             Ok(false)
         } else {
             // Переменная не найдена - создаем новую локальную переменную
             let index = ctx.scope.declare_local(name);
-            let zero_index = ctx.chunk.add_constant(crate::common::value::Value::Number(0.0));
-            ctx.chunk.write_with_line(OpCode::Constant(zero_index), line);
+            let zero_index = ctx
+                .chunk
+                .add_constant(crate::common::value::Value::Number(0.0));
+            ctx.chunk
+                .write_with_line(OpCode::Constant(zero_index), line);
             ctx.chunk.write_with_line(OpCode::StoreLocal(index), line);
             ctx.chunk.write_with_line(OpCode::LoadLocal(index), line);
             Ok(true)
@@ -115,17 +141,22 @@ impl VariableResolver {
     ) -> Result<(), LangError> {
         if is_local {
             if let Some(local_index) = ctx.scope.resolve_local(name) {
-                ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), line);
-                ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+                ctx.chunk
+                    .write_with_line(OpCode::StoreLocal(local_index), line);
+                ctx.chunk
+                    .write_with_line(OpCode::LoadLocal(local_index), line);
             }
         } else {
             if let Some(&global_index) = ctx.scope.globals.get(name) {
-                ctx.chunk.global_names.insert(global_index, name.to_string());
-                ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), line);
-                ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), line);
+                ctx.chunk
+                    .global_names
+                    .insert(global_index, name.to_string());
+                ctx.chunk
+                    .write_with_line(OpCode::StoreGlobal(global_index), line);
+                ctx.chunk
+                    .write_with_line(OpCode::LoadGlobal(global_index), line);
             }
         }
         Ok(())
     }
 }
-

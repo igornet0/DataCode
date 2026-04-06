@@ -101,9 +101,7 @@ pub fn resolve_dylib_from_archive(zip_path: &Path, cache_root: &Path) -> Result<
     manifest.check_abi()?;
     let rel = manifest.library_relative_path()?;
     let digest = hex_sha256(&bytes);
-    let out_dir = cache_root
-        .join(&manifest.name)
-        .join(&digest);
+    let out_dir = cache_root.join(&manifest.name).join(&digest);
     let dylib_path = out_dir.join(&rel);
     if dylib_path.is_file() {
         return Ok(dylib_path);

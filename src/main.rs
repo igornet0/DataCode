@@ -1,7 +1,7 @@
-use data_code::compile;
-use data_code::sqlite_export;
 use data_code::common::debug;
-use data_code::infra::{cli, repl, gui, websocket, http_server};
+use data_code::compile;
+use data_code::infra::{cli, gui, http_server, repl, websocket};
+use data_code::sqlite_export;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -34,7 +34,7 @@ fn main() {
             execute_file(config);
         }
         Ok(cli::CliArgs::Repl) => {
-            if let Err(e) = gui::run_with_event_loop(|| repl::run_repl()) {
+            if let Err(e) = gui::run_with_event_loop(repl::run_repl) {
                 eprintln!("Ошибка: {}", e);
             }
         }
@@ -46,8 +46,11 @@ fn main() {
 }
 
 fn execute_file(config: cli::FileExecutionConfig) {
+    use data_code::dpm::{
+        datacode_version_satisfies, find_project_root, load_manifest, lock_file_name,
+        resolve_env_and_packages,
+    };
     use std::path::Path;
-    use data_code::dpm::{resolve_env_and_packages, find_project_root, load_manifest, lock_file_name, datacode_version_satisfies};
 
     let native_lib_resolved: Option<PathBuf> = config.native_lib.as_ref().map(|s| {
         let p = Path::new(s);
@@ -67,7 +70,8 @@ fn execute_file(config: cli::FileExecutionConfig) {
             std::process::exit(1);
         }
     }
-    let _native_lib_guard = data_code::vm::file_import::push_native_lib_override(native_lib_resolved);
+    let _native_lib_guard =
+        data_code::vm::file_import::push_native_lib_override(native_lib_resolved);
 
     // Определяем путь к файлу
     let file_path = Path::new(&config.filename);
@@ -150,30 +154,34 @@ fn execute_file(config: cli::FileExecutionConfig) {
         }
     };
     file_import::set_dpm_package_paths(dpm_package_paths.clone());
-    
+
     // Унифицированный подход: используем run_with_vm_with_args_and_lib для обоих случаев
     // Читаем файл по разрешённому пути (каноническому), чтобы при --base-dir использовался правильный файл
     match fs::read_to_string(script_path_for_read) {
         Ok(source) => {
             // argv для скрипта: по каждому параметру fn __main__(a, b, ...) — --a=value или позиция, при отсутствии — default из сигнатуры
-            let script_args: Vec<String> = if let Some(params) = data_code::get_main_entry_params(&source) {
-                let mut argv = Vec::with_capacity(params.len());
-                for (i, (name, default)) in params.iter().enumerate() {
-                    let v = cli::extract_param_args(&config.raw_args, name)
-                        .into_iter()
-                        .next()
-                        .or_else(|| config.script_args.get(i).cloned())
-                        .or_else(|| default.as_ref().map(|val| val.to_string()));
-                    if let Some(s) = v {
-                        argv.push(s);
+            let script_args: Vec<String> =
+                if let Some(params) = data_code::get_main_entry_params(&source) {
+                    let mut argv = Vec::with_capacity(params.len());
+                    for (i, (name, default)) in params.iter().enumerate() {
+                        let v = cli::extract_param_args(&config.raw_args, name)
+                            .into_iter()
+                            .next()
+                            .or_else(|| config.script_args.get(i).cloned())
+                            .or_else(|| default.as_ref().map(|val| val.to_string()));
+                        if let Some(s) = v {
+                            argv.push(s);
+                        }
                     }
-                }
-                argv
-            } else {
-                config.script_args.clone()
-            };
+                    argv
+                } else {
+                    config.script_args.clone()
+                };
             if config.debug {
-                eprintln!("[DataCode] script_args (argv для скрипта): {:?}", script_args);
+                eprintln!(
+                    "[DataCode] script_args (argv для скрипта): {:?}",
+                    script_args
+                );
             }
             // If debug mode, print bytecode first
             if config.debug {
@@ -189,10 +197,16 @@ fn execute_file(config: cli::FileExecutionConfig) {
                     }
                 }
             }
-            
+
             if config.build_model {
                 // Execute with SQLite export
-                match data_code::run_with_vm_with_args_and_lib(&source, Some(script_args), lib_path.as_deref(), script_base_path.as_deref(), Some(script_canonical.as_path())) {
+                match data_code::run_with_vm_with_args_and_lib(
+                    &source,
+                    Some(script_args),
+                    lib_path.as_deref(),
+                    script_base_path.as_deref(),
+                    Some(script_canonical.as_path()),
+                ) {
                     Ok((_, mut vm)) => {
                         // Determine output database filename
                         let db_filename = if let Some(db) = config.output_db {
@@ -202,12 +216,13 @@ fn execute_file(config: cli::FileExecutionConfig) {
                         } else {
                             // Default: script name with .db extension
                             let path = PathBuf::from(&config.filename);
-                            let stem = path.file_stem()
+                            let stem = path
+                                .file_stem()
                                 .and_then(|s| s.to_str())
                                 .unwrap_or("output");
                             format!("{}.db", stem)
                         };
-                        
+
                         // Export tables to SQLite
                         match sqlite_export::export_to_sqlite(&mut vm, &db_filename) {
                             Ok(_) => {
@@ -228,7 +243,13 @@ fn execute_file(config: cli::FileExecutionConfig) {
                 // Normal execution without export
                 if config.no_gui {
                     // Run in main thread: script output (print) is visible; no plot windows
-                    match data_code::run_with_vm_with_args_and_lib(&source, Some(script_args), lib_path.as_deref(), script_base_path.as_deref(), Some(script_canonical.as_path())) {
+                    match data_code::run_with_vm_with_args_and_lib(
+                        &source,
+                        Some(script_args),
+                        lib_path.as_deref(),
+                        script_base_path.as_deref(),
+                        Some(script_canonical.as_path()),
+                    ) {
                         Ok(_) => {}
                         Err(e) => {
                             eprintln!("Ошибка выполнения: {}", e);
@@ -254,9 +275,15 @@ fn execute_file(config: cli::FileExecutionConfig) {
 
                         // Используем run_with_vm_with_args_and_lib для передачи пути к __lib__.dc и base_path
                         // __lib__.dc будет выполнен внутри GUI потока перед основным скриптом
-                        data_code::run_with_vm_with_args_and_lib(&source_clone, Some(script_args_clone), lib_path_clone.as_deref(), script_base_path_clone.as_deref(), Some(script_canonical_clone.as_path()))
-                            .map(|_| ()) // Ignore return value
-                            .map_err(|e| e.to_string())
+                        data_code::run_with_vm_with_args_and_lib(
+                            &source_clone,
+                            Some(script_args_clone),
+                            lib_path_clone.as_deref(),
+                            script_base_path_clone.as_deref(),
+                            Some(script_canonical_clone.as_path()),
+                        )
+                        .map(|_| ()) // Ignore return value
+                        .map_err(|e| e.to_string())
                     }) {
                         Ok(_) => {}
                         Err(e) => {
@@ -268,7 +295,11 @@ fn execute_file(config: cli::FileExecutionConfig) {
             }
         }
         Err(e) => {
-            eprintln!("Ошибка чтения файла '{}': {}", script_path_for_read.display(), e);
+            eprintln!(
+                "Ошибка чтения файла '{}': {}",
+                script_path_for_read.display(),
+                e
+            );
             std::process::exit(1);
         }
     }

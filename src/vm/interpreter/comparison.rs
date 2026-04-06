@@ -22,11 +22,17 @@ pub fn op_equal(
     let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     if a_tv.is_number() && b_tv.is_number() {
-        stack::push(stack, TaggedValue::from_bool(a_tv.get_f64() == b_tv.get_f64()));
+        stack::push(
+            stack,
+            TaggedValue::from_bool(a_tv.get_f64() == b_tv.get_f64()),
+        );
         return Ok(VMStatus::Continue);
     }
     if a_tv.is_bool() && b_tv.is_bool() {
-        stack::push(stack, TaggedValue::from_bool(a_tv.get_bool() == b_tv.get_bool()));
+        stack::push(
+            stack,
+            TaggedValue::from_bool(a_tv.get_bool() == b_tv.get_bool()),
+        );
         return Ok(VMStatus::Continue);
     }
     if a_tv.is_null() && b_tv.is_null() {
@@ -55,11 +61,17 @@ pub fn op_not_equal(
     let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     if a_tv.is_number() && b_tv.is_number() {
-        stack::push(stack, TaggedValue::from_bool(a_tv.get_f64() != b_tv.get_f64()));
+        stack::push(
+            stack,
+            TaggedValue::from_bool(a_tv.get_f64() != b_tv.get_f64()),
+        );
         return Ok(VMStatus::Continue);
     }
     if a_tv.is_bool() && b_tv.is_bool() {
-        stack::push(stack, TaggedValue::from_bool(a_tv.get_bool() != b_tv.get_bool()));
+        stack::push(
+            stack,
+            TaggedValue::from_bool(a_tv.get_bool() != b_tv.get_bool()),
+        );
         return Ok(VMStatus::Continue);
     }
     if a_tv.is_null() && b_tv.is_null() {
@@ -88,7 +100,10 @@ pub fn op_greater(
     let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     if a_tv.is_number() && b_tv.is_number() {
-        stack::push(stack, TaggedValue::from_bool(a_tv.get_f64() > b_tv.get_f64()));
+        stack::push(
+            stack,
+            TaggedValue::from_bool(a_tv.get_f64() > b_tv.get_f64()),
+        );
         return Ok(VMStatus::Continue);
     }
     let a_id = tagged_to_value_id(a_tv, value_store);
@@ -97,7 +112,15 @@ pub fn op_greater(
     let b = load_value(b_id, value_store, heavy_store);
     let result = match (&a, &b) {
         (Value::Number(n1), Value::Number(n2)) => Value::Bool(n1 > n2),
-        _ => operations::binary_greater(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+        _ => operations::binary_greater(
+            &a,
+            &b,
+            frames,
+            stack,
+            exception_handlers,
+            value_store,
+            heavy_store,
+        )?,
     };
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)
@@ -113,7 +136,10 @@ pub fn op_less(
     let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     if a_tv.is_number() && b_tv.is_number() {
-        stack::push(stack, TaggedValue::from_bool(a_tv.get_f64() < b_tv.get_f64()));
+        stack::push(
+            stack,
+            TaggedValue::from_bool(a_tv.get_f64() < b_tv.get_f64()),
+        );
         return Ok(VMStatus::Continue);
     }
     let a_id = tagged_to_value_id(a_tv, value_store);
@@ -122,7 +148,15 @@ pub fn op_less(
     let b = load_value(b_id, value_store, heavy_store);
     let result = match (&a, &b) {
         (Value::Number(n1), Value::Number(n2)) => Value::Bool(n1 < n2),
-        _ => operations::binary_less(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+        _ => operations::binary_less(
+            &a,
+            &b,
+            frames,
+            stack,
+            exception_handlers,
+            value_store,
+            heavy_store,
+        )?,
     };
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)
@@ -138,7 +172,10 @@ pub fn op_greater_equal(
     let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     if a_tv.is_number() && b_tv.is_number() {
-        stack::push(stack, TaggedValue::from_bool(a_tv.get_f64() >= b_tv.get_f64()));
+        stack::push(
+            stack,
+            TaggedValue::from_bool(a_tv.get_f64() >= b_tv.get_f64()),
+        );
         return Ok(VMStatus::Continue);
     }
     let a_id = tagged_to_value_id(a_tv, value_store);
@@ -147,7 +184,15 @@ pub fn op_greater_equal(
     let b = load_value(b_id, value_store, heavy_store);
     let result = match (&a, &b) {
         (Value::Number(n1), Value::Number(n2)) => Value::Bool(n1 >= n2),
-        _ => operations::binary_greater_equal(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+        _ => operations::binary_greater_equal(
+            &a,
+            &b,
+            frames,
+            stack,
+            exception_handlers,
+            value_store,
+            heavy_store,
+        )?,
     };
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)
@@ -163,7 +208,10 @@ pub fn op_less_equal(
     let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     if a_tv.is_number() && b_tv.is_number() {
-        stack::push(stack, TaggedValue::from_bool(a_tv.get_f64() <= b_tv.get_f64()));
+        stack::push(
+            stack,
+            TaggedValue::from_bool(a_tv.get_f64() <= b_tv.get_f64()),
+        );
         return Ok(VMStatus::Continue);
     }
     let a_id = tagged_to_value_id(a_tv, value_store);
@@ -172,7 +220,15 @@ pub fn op_less_equal(
     let b = load_value(b_id, value_store, heavy_store);
     let result = match (&a, &b) {
         (Value::Number(n1), Value::Number(n2)) => Value::Bool(n1 <= n2),
-        _ => operations::binary_less_equal(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+        _ => operations::binary_less_equal(
+            &a,
+            &b,
+            frames,
+            stack,
+            exception_handlers,
+            value_store,
+            heavy_store,
+        )?,
     };
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)
@@ -194,7 +250,10 @@ pub fn op_in(
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let found = arr_ref.iter().any(|item| item == &value);
-            stack::push_id(stack, store_value(Value::Bool(found), value_store, heavy_store));
+            stack::push_id(
+                stack,
+                store_value(Value::Bool(found), value_store, heavy_store),
+            );
         }
         _ => {
             let error = ExceptionHandler::runtime_error(
@@ -202,7 +261,14 @@ pub fn op_in(
                 "Right operand of 'in' operator must be an array".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }

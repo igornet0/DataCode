@@ -1,38 +1,54 @@
-/// Компиляция вызовов методов
-
-use crate::debug_println;
-use crate::parser::ast::{Expr, Arg};
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
 use crate::common::value::Value;
+use crate::compiler::args;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
-use crate::compiler::args;
+/// Компиляция вызовов методов
+use crate::debug_println;
+use crate::parser::ast::{Arg, Expr};
 
 pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), LangError> {
-    if let Expr::MethodCall { object, method, args: call_args, line } = expr {
+    if let Expr::MethodCall {
+        object,
+        method,
+        args: call_args,
+        line,
+    } = expr
+    {
         *ctx.current_line = *line;
-        
+
         // Специальная обработка для метода clone()
         if method == "clone" {
             expr::compile_expr(ctx, object)?;
             return compile_clone_method(ctx, call_args, *line);
         }
-        
+
         // Специальная обработка для метода suffixes
         if method == "suffixes" {
             expr::compile_expr(ctx, object)?;
             return compile_suffixes_method(ctx, call_args, *line);
         }
-        
+
         // Специальная обработка для JOIN методов
-        if matches!(method.as_str(), "inner_join" | "left_join" | "right_join" | "full_join" | 
-                   "cross_join" | "semi_join" | "anti_join" | "zip_join" | "asof_join" | 
-                   "apply_join" | "join_on") {
+        if matches!(
+            method.as_str(),
+            "inner_join"
+                | "left_join"
+                | "right_join"
+                | "full_join"
+                | "cross_join"
+                | "semi_join"
+                | "anti_join"
+                | "zip_join"
+                | "asof_join"
+                | "apply_join"
+                | "join_on"
+        ) {
             expr::compile_expr(ctx, object)?;
             return compile_join_method(ctx, method, call_args, *line);
         }
-        
+
         // NOTE: We intentionally do NOT use the direct Constant+Call path for class methods.
         // Private and protected methods must go through GetArrayElement so the VM can enforce
         // visibility (__private_methods, __protected_methods) at runtime. The direct path would
@@ -41,7 +57,10 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
         //
         // Для методов engine/cluster (run, execute, query, ...) сначала компилируем аргументы в временные слоты,
         // затем receiver, чтобы StoreLocal(receiver) не перезаписывал слот переменной-аргумента (например create_all).
-        let is_db_receiver = matches!(method.as_str(), "add" | "get" | "names" | "connect" | "execute" | "query" | "run");
+        let is_db_receiver = matches!(
+            method.as_str(),
+            "add" | "get" | "names" | "connect" | "execute" | "query" | "run"
+        );
         if is_db_receiver {
             let mut arg_slots = Vec::with_capacity(call_args.len());
             for (i, arg) in call_args.iter().enumerate() {
@@ -56,8 +75,15 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
             }
             expr::compile_expr(ctx, object)?;
             let temp_object_slot = ctx.scope.declare_local("__method_object");
-            ctx.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
-            compile_db_receiver_method_with_arg_slots(ctx, method, &arg_slots, temp_object_slot, *line)
+            ctx.chunk
+                .write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
+            compile_db_receiver_method_with_arg_slots(
+                ctx,
+                method,
+                &arg_slots,
+                temp_object_slot,
+                *line,
+            )
         } else {
             // Общий случай: компилируем объект и вызываем compile_generic_method
             debug_println!("[DEBUG compile_method_call] Метод '{}' не распознан как метод класса, используем compile_generic_method", method);
@@ -100,16 +126,20 @@ fn compile_suffixes_method(
     // Проверяем количество аргументов (должно быть 2)
     if args.len() != 2 {
         return Err(LangError::ParseError {
-            message: format!("suffixes() method expects 2 arguments (left_suffix, right_suffix), got {}", args.len()),
+            message: format!(
+                "suffixes() method expects 2 arguments (left_suffix, right_suffix), got {}",
+                args.len()
+            ),
             line,
             file: None,
         });
     }
-    
+
     // Сохраняем объект (таблицу) во временную локальную переменную
     let temp_object_slot = ctx.scope.declare_local("__method_object");
-    ctx.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), line);
-    
+    ctx.chunk
+        .write_with_line(OpCode::StoreLocal(temp_object_slot), line);
+
     // Компилируем аргументы в нормальном порядке (left_suffix, right_suffix)
     for arg in args {
         match arg {
@@ -118,15 +148,16 @@ fn compile_suffixes_method(
             Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
-    
+
     // Переставляем аргументы для правильного порядка: table, left_suffix, right_suffix
     // Удаляем только аргументы со стека (объект уже сохранен в локальной переменной)
     for _ in 0..args.len() {
         ctx.chunk.write_with_line(OpCode::Pop, line);
     }
-    
+
     // Загружаем в правильном порядке: table, left_suffix, right_suffix
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    ctx.chunk
+        .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
     // Компилируем аргументы заново
     for arg in args {
         match arg {
@@ -135,10 +166,11 @@ fn compile_suffixes_method(
             Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
-    
+
     // Находим индекс функции table_suffixes и загружаем её на стек
     if let Some(&function_index) = ctx.scope.globals.get("table_suffixes") {
-        ctx.chunk.write_with_line(OpCode::LoadGlobal(function_index), line);
+        ctx.chunk
+            .write_with_line(OpCode::LoadGlobal(function_index), line);
         ctx.chunk.write_with_line(OpCode::Call(3), line);
         Ok(())
     } else {
@@ -159,8 +191,9 @@ fn compile_join_method(
     // JOIN методы для таблиц
     // Сохраняем объект во временную локальную переменную
     let temp_object_slot = ctx.scope.declare_local("__method_object");
-    ctx.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), line);
-    
+    ctx.chunk
+        .write_with_line(OpCode::StoreLocal(temp_object_slot), line);
+
     // Компилируем аргументы в нормальном порядке
     for arg in args {
         match arg {
@@ -169,10 +202,11 @@ fn compile_join_method(
             Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
-    
+
     // Загружаем объект обратно (он должен быть первым аргументом)
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    
+    ctx.chunk
+        .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+
     // Определяем имя функции для вызова
     let function_name = match method {
         "inner_join" => "inner_join",
@@ -188,7 +222,7 @@ fn compile_join_method(
         "join_on" => "join_on",
         _ => unreachable!(),
     };
-    
+
     // Находим индекс функции
     if let Some(&function_index) = ctx.scope.globals.get(function_name) {
         // Перекомпилируем аргументы в обратном порядке
@@ -196,7 +230,7 @@ fn compile_join_method(
         for _ in 0..args.len() {
             ctx.chunk.write_with_line(OpCode::Pop, line);
         }
-        
+
         // Компилируем аргументы в обратном порядке
         for arg in args.iter().rev() {
             match arg {
@@ -205,15 +239,18 @@ fn compile_join_method(
                 Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
             }
         }
-        
+
         // Загружаем объект обратно
-        ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-        
+        ctx.chunk
+            .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+
         // Загружаем функцию на стек
-        ctx.chunk.write_with_line(OpCode::LoadGlobal(function_index), line);
-        
+        ctx.chunk
+            .write_with_line(OpCode::LoadGlobal(function_index), line);
+
         // Вызываем функцию с количеством аргументов (object + args)
-        ctx.chunk.write_with_line(OpCode::Call(args.len() + 1), line);
+        ctx.chunk
+            .write_with_line(OpCode::Call(args.len() + 1), line);
         Ok(())
     } else {
         Err(LangError::ParseError {
@@ -251,7 +288,13 @@ fn ambiguous_plugin_method_use_module_path(
         return true;
     }
     if let Arg::Positional(expr) = &args[0] {
-        return matches!(expr, Expr::Literal { value: Value::Number(_), .. });
+        return matches!(
+            expr,
+            Expr::Literal {
+                value: Value::Number(_),
+                ..
+            }
+        );
     }
     false
 }
@@ -265,8 +308,9 @@ fn compile_generic_method(
 ) -> Result<(), LangError> {
     // Сохраняем объект во временную переменную
     let temp_object_slot = ctx.scope.declare_local("__method_object");
-    ctx.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), line);
-    
+    ctx.chunk
+        .write_with_line(OpCode::StoreLocal(temp_object_slot), line);
+
     // Проверяем, является ли это методом объекта (например, axis.imshow)
     let is_axis_method = matches!(method, "imshow" | "set_title" | "axis");
     let is_string_method = matches!(
@@ -325,15 +369,16 @@ fn compile_axis_method(
             Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
-    
+
     // Удаляем текущие аргументы со стека
     for _ in 0..args.len() {
         ctx.chunk.write_with_line(OpCode::Pop, line);
     }
-    
+
     // Загружаем объект первым
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    
+    ctx.chunk
+        .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+
     // Компилируем аргументы в нормальном порядке (они будут после объекта)
     for arg in args {
         match arg {
@@ -342,15 +387,18 @@ fn compile_axis_method(
             Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
         }
     }
-    
+
     // Получаем свойство объекта по имени метода
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    ctx.chunk
+        .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
     let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
-    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
+    ctx.chunk
+        .write_with_line(OpCode::Constant(method_name_index), line);
     ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-    
+
     // Вызываем метод
-    ctx.chunk.write_with_line(OpCode::Call(args.len() + 1), line);
+    ctx.chunk
+        .write_with_line(OpCode::Call(args.len() + 1), line);
     Ok(())
 }
 
@@ -362,15 +410,19 @@ fn compile_db_receiver_method_with_arg_slots(
     temp_object_slot: usize,
     line: usize,
 ) -> Result<(), LangError> {
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    ctx.chunk
+        .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
     for &slot in arg_slots {
         ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
     }
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    ctx.chunk
+        .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
     let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
-    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
+    ctx.chunk
+        .write_with_line(OpCode::Constant(method_name_index), line);
     ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-    ctx.chunk.write_with_line(OpCode::Call(1 + arg_slots.len()), line);
+    ctx.chunk
+        .write_with_line(OpCode::Call(1 + arg_slots.len()), line);
     Ok(())
 }
 
@@ -400,7 +452,8 @@ fn compile_string_method(
                 Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
             }
         }
-        ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+        ctx.chunk
+            .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
     } else {
         if matches!(method, "lower" | "upper" | "isupper" | "islower" | "trim") && n != 0 {
             return Err(LangError::ParseError {
@@ -416,7 +469,8 @@ fn compile_string_method(
                 file: None,
             });
         }
-        ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+        ctx.chunk
+            .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
         for arg in args {
             match arg {
                 Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
@@ -425,9 +479,11 @@ fn compile_string_method(
             }
         }
     }
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    ctx.chunk
+        .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
     let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
-    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
+    ctx.chunk
+        .write_with_line(OpCode::Constant(method_name_index), line);
     ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
     ctx.chunk.write_with_line(OpCode::Call(1 + n), line);
     Ok(())
@@ -458,39 +514,51 @@ fn compile_module_method(
                 LangError::ParseError { message, .. } => message,
                 _ => "",
             };
-            
-            if error_msg.contains("not supported") || error_msg.contains("Named arguments are not supported") {
+
+            if error_msg.contains("not supported")
+                || error_msg.contains("Named arguments are not supported")
+            {
                 // Fallback: компилируем аргументы как есть
-                args.iter().map(|a| match a {
-                    Arg::Positional(e) => Arg::Positional(e.clone()),
-                    Arg::Named { value, .. } => Arg::Positional(value.clone()),
-                    Arg::UnpackObject(e) => Arg::Positional(e.clone()),
-                }).collect()
+                args.iter()
+                    .map(|a| match a {
+                        Arg::Positional(e) => Arg::Positional(e.clone()),
+                        Arg::Named { value, .. } => Arg::Positional(value.clone()),
+                        Arg::UnpackObject(e) => Arg::Positional(e.clone()),
+                    })
+                    .collect()
             } else {
                 return Err(e);
             }
         }
     };
-    
+
     // Stack before Call: [receiver, arg_1, ..., arg_n, method]. Call(1 + n) so method receives (receiver, arg_1, ...).
     let start_ip = ctx.chunk.code.len();
     debug_println!("[DEBUG compile_module_method] Начало компиляции вызова метода '{}' на строке {}, начальный IP: {}", method, line, start_ip);
-    
+
     let args_to_compile = if resolved_args.is_empty() {
-        debug_println!("[DEBUG compile_module_method] resolved_args пуст, используем исходные args");
-        args.iter().map(|a| match a {
-            Arg::Positional(e) => Arg::Positional(e.clone()),
-            Arg::Named { value, .. } => Arg::Positional(value.clone()),
-            Arg::UnpackObject(e) => Arg::Positional(e.clone()),
-        }).collect::<Vec<_>>()
+        debug_println!(
+            "[DEBUG compile_module_method] resolved_args пуст, используем исходные args"
+        );
+        args.iter()
+            .map(|a| match a {
+                Arg::Positional(e) => Arg::Positional(e.clone()),
+                Arg::Named { value, .. } => Arg::Positional(value.clone()),
+                Arg::UnpackObject(e) => Arg::Positional(e.clone()),
+            })
+            .collect::<Vec<_>>()
     } else {
         debug_println!("[DEBUG compile_module_method] используем resolved_args");
         resolved_args.clone()
     };
-    debug_println!("[DEBUG compile_module_method] args_to_compile.len() = {}", args_to_compile.len());
-    
+    debug_println!(
+        "[DEBUG compile_module_method] args_to_compile.len() = {}",
+        args_to_compile.len()
+    );
+
     // 1. Push receiver first, then compile args → stack [receiver, arg_1, ..., arg_n]
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    ctx.chunk
+        .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
     for arg in &args_to_compile {
         match arg {
             Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
@@ -499,32 +567,47 @@ fn compile_module_method(
         }
     }
     debug_println!("[DEBUG compile_module_method] После компиляции аргументов, IP: {}, стек: [receiver, arg_1, ..., arg_n]", ctx.chunk.code.len());
-    
+
     // 2. Get method: LoadLocal object, Constant(method_name), GetArrayElement → stack [receiver, arg_1, ..., arg_n, method]
-    ctx.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    ctx.chunk
+        .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
     let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
-    ctx.chunk.write_with_line(OpCode::Constant(method_name_index), line);
+    ctx.chunk
+        .write_with_line(OpCode::Constant(method_name_index), line);
     ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
     debug_println!("[DEBUG compile_module_method] После GetArrayElement для метода '{}', IP: {}, стек: [receiver, arg_1, ..., arg_n, method_function]", method, ctx.chunk.code.len());
-    
+
     // 3. Call(1 + n): VM pops method then 1+n args → method receives (receiver, arg_1, ..., arg_n)
     let call_arity = 1 + args_to_compile.len();
     let call_ip = ctx.chunk.code.len();
     ctx.chunk.write_with_line(OpCode::Call(call_arity), line);
-    debug_println!("[DEBUG compile_module_method] Сгенерирован Call({}) на IP {} для метода '{}'", call_arity, call_ip, method);
-    
+    debug_println!(
+        "[DEBUG compile_module_method] Сгенерирован Call({}) на IP {} для метода '{}'",
+        call_arity,
+        call_ip,
+        method
+    );
+
     // ВАЖНО: После вызова метода Call должен извлечь функцию и аргументы со стека
     // и вызвать метод. Если Call не выполняется (например, из-за ошибки или раннего возврата),
     // функция может остаться на стеке. Это может вызвать проблемы в следующей итерации цикла.
     // Однако, мы не можем добавить Pop здесь, так как Call должен вернуть результат метода.
     // Вместо этого, мы полагаемся на то, что Call правильно обработает стек.
-    
+
     // Логируем все инструкции, которые были сгенерированы
-    debug_println!("[DEBUG compile_module_method] Сгенерированные инструкции для метода '{}' (IP {} - {}):", method, start_ip, ctx.chunk.code.len());
+    debug_println!(
+        "[DEBUG compile_module_method] Сгенерированные инструкции для метода '{}' (IP {} - {}):",
+        method,
+        start_ip,
+        ctx.chunk.code.len()
+    );
     for i in start_ip..ctx.chunk.code.len() {
-        debug_println!("[DEBUG compile_module_method]   IP {}: {:?}", i, ctx.chunk.code.get(i));
+        debug_println!(
+            "[DEBUG compile_module_method]   IP {}: {:?}",
+            i,
+            ctx.chunk.code.get(i)
+        );
     }
-    
+
     Ok(())
 }
-

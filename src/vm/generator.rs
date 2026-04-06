@@ -89,7 +89,8 @@ pub(crate) fn run_generator_resume(
             if gen.waiting_for_input {
                 if for_iterable {
                     return Err(LangError::runtime_error(
-                        "generator requires input inside for-in; use send() outside the loop".to_string(),
+                        "generator requires input inside for-in; use send() outside the loop"
+                            .to_string(),
                         0,
                     ));
                 }
@@ -133,7 +134,9 @@ pub(crate) fn run_generator_resume(
             .get_functions()
             .get(gen.fn_index)
             .cloned()
-            .ok_or_else(|| LangError::runtime_error("generator: invalid function index".to_string(), 0))?;
+            .ok_or_else(|| {
+                LangError::runtime_error("generator: invalid function index".to_string(), 0)
+            })?;
         if !function.is_stream {
             return Err(LangError::runtime_error(
                 "generator: not a stream function".to_string(),
@@ -150,7 +153,9 @@ pub(crate) fn run_generator_resume(
         .get_functions()
         .get(gen.fn_index)
         .cloned()
-        .ok_or_else(|| LangError::runtime_error("generator: invalid function index".to_string(), 0))?;
+        .ok_or_else(|| {
+            LangError::runtime_error("generator: invalid function index".to_string(), 0)
+        })?;
     if !function.is_stream {
         return Err(LangError::runtime_error(
             "generator: not a stream function".to_string(),
@@ -234,7 +239,8 @@ pub(crate) fn run_generator_resume(
                     vm.pending_generator_send = None;
                     if for_iterable {
                         return Err(LangError::runtime_error(
-                            "generator requires input inside for-in; use send() outside the loop".to_string(),
+                            "generator requires input inside for-in; use send() outside the loop"
+                                .to_string(),
                             0,
                         ));
                     }
@@ -284,6 +290,9 @@ pub(crate) fn run_generator_resume(
 }
 
 /// Один шаг итератора: `Some(v)` при yield, `None` при завершении.
-pub fn run_generator_next(vm: &mut Vm, gen: &mut GeneratorState) -> Result<Option<Value>, LangError> {
+pub fn run_generator_next(
+    vm: &mut Vm,
+    gen: &mut GeneratorState,
+) -> Result<Option<Value>, LangError> {
     run_generator_resume(vm, gen, GeneratorResumeMode::Next, true)
 }

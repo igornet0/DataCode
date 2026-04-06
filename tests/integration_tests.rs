@@ -581,7 +581,7 @@ mod tests {
             Ok(v) => panic!("Expected String('----------'), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
-        
+
         let source = r#"
             let x = "hello"
             x * 3
@@ -589,7 +589,11 @@ mod tests {
         let result = run_and_get_result(source);
         match result {
             Ok(Value::String(s)) => {
-                assert_eq!(s, "hellohellohello", "Expected 'hellohellohello', got '{}'", s);
+                assert_eq!(
+                    s, "hellohellohello",
+                    "Expected 'hellohellohello', got '{}'",
+                    s
+                );
             }
             Ok(v) => panic!("Expected String('hellohellohello'), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
@@ -784,7 +788,11 @@ mod tests {
         let result = run_and_get_result(source);
         match result {
             Ok(Value::String(s)) => {
-                assert_eq!(s, "42 is the answer", "Expected '42 is the answer', got '{}'", s);
+                assert_eq!(
+                    s, "42 is the answer",
+                    "Expected '42 is the answer', got '{}'",
+                    s
+                );
             }
             Ok(v) => panic!("Expected String('42 is the answer'), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
@@ -1029,9 +1037,14 @@ mod tests {
             }
         "#;
         let result = run_and_get_result(source);
-        assert!(result.is_err(), "Expected parse error for non-default argument after default");
+        assert!(
+            result.is_err(),
+            "Expected parse error for non-default argument after default"
+        );
         if let Err(e) = result {
-            assert!(e.to_string().contains("Non-default argument follows default argument"));
+            assert!(e
+                .to_string()
+                .contains("Non-default argument follows default argument"));
         }
     }
 
@@ -1044,7 +1057,10 @@ mod tests {
             test_fn(a=4, 6)
         "#;
         let result = run_and_get_result(source);
-        assert!(result.is_err(), "Expected parse error for positional argument after named");
+        assert!(
+            result.is_err(),
+            "Expected parse error for positional argument after named"
+        );
     }
 
     #[test]
@@ -1056,7 +1072,10 @@ mod tests {
             test_fn(1)
         "#;
         let result = run_and_get_result(source);
-        assert!(result.is_err(), "Expected error for missing required argument");
+        assert!(
+            result.is_err(),
+            "Expected error for missing required argument"
+        );
     }
 
     #[test]
@@ -1068,7 +1087,10 @@ mod tests {
             test_fn(a=4, c=1)
         "#;
         let result = run_and_get_result(source);
-        assert!(result.is_err(), "Expected error for unexpected keyword argument");
+        assert!(
+            result.is_err(),
+            "Expected error for unexpected keyword argument"
+        );
         if let Err(e) = result {
             assert!(e.to_string().contains("unexpected keyword argument"));
         }
@@ -1098,45 +1120,55 @@ mod tests {
             list_files(test_dir)
         "#;
         let result = run_and_get_result(source);
-        
+
         match result {
             Ok(Value::Array(arr)) => {
                 let arr_ref = arr.borrow();
                 // Проверяем что массив не пустой
                 assert!(!arr_ref.is_empty(), "Expected non-empty array of files");
-                
+
                 // Проверяем что все элементы - Path значения
                 for item in arr_ref.iter() {
                     match item {
-                        Value::Path(_) => {},
+                        Value::Path(_) => {}
                         _ => panic!("Expected all items to be Path values, got {:?}", item),
                     }
                 }
-                
+
                 // Собираем имена файлов/папок для проверки
-                let file_names: Vec<String> = arr_ref.iter()
-                    .map(|item| {
-                        match item {
-                            Value::Path(p) => {
-                                p.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("")
-                                    .to_string()
-                            }
-                            _ => String::new(),
-                        }
+                let file_names: Vec<String> = arr_ref
+                    .iter()
+                    .map(|item| match item {
+                        Value::Path(p) => p
+                            .file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("")
+                            .to_string(),
+                        _ => String::new(),
                     })
                     .collect();
-                
+
                 // Проверяем наличие ожидаемых файлов
-                assert!(file_names.contains(&"sample.csv".to_string()), 
-                    "Expected sample.csv in list, got: {:?}", file_names);
-                assert!(file_names.contains(&"sample.txt".to_string()), 
-                    "Expected sample.txt in list, got: {:?}", file_names);
-                assert!(file_names.contains(&"sample.xlsx".to_string()), 
-                    "Expected sample.xlsx in list, got: {:?}", file_names);
-                assert!(file_names.contains(&"dir_test".to_string()), 
-                    "Expected dir_test in list, got: {:?}", file_names);
+                assert!(
+                    file_names.contains(&"sample.csv".to_string()),
+                    "Expected sample.csv in list, got: {:?}",
+                    file_names
+                );
+                assert!(
+                    file_names.contains(&"sample.txt".to_string()),
+                    "Expected sample.txt in list, got: {:?}",
+                    file_names
+                );
+                assert!(
+                    file_names.contains(&"sample.xlsx".to_string()),
+                    "Expected sample.xlsx in list, got: {:?}",
+                    file_names
+                );
+                assert!(
+                    file_names.contains(&"dir_test".to_string()),
+                    "Expected dir_test in list, got: {:?}",
+                    file_names
+                );
             }
             Ok(v) => panic!("Expected Array, got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
@@ -1168,4 +1200,3 @@ print(uuid.to_string(uuid.v5(uuid.DNS, "example.com")))
         }
     }
 }
-

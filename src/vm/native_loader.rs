@@ -6,18 +6,18 @@ use std::ffi::CStr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use libloading::Library;
-use crate::common::error::LangError;
-use crate::common::value::Value;
 use crate::abi::{
     abi_compatible, AbiExport, AbiModuleDescriptor, AbiModuleDescriptorV4, AbiNativeParamMeta,
-    AbiPluginHooksDescriptor, DatacodeError, DatacodeModuleEntryFn, DatacodeModuleFn,
-    DatacodeModuleLegacy, DATACODE_ABI_VERSION, DATACODE_MODULE_ENTRY_SYMBOL, NativeAbiFn,
-    VmContext, AbiValue, DATACODE_MODULE_SYMBOL,
+    AbiPluginHooksDescriptor, AbiValue, DatacodeError, DatacodeModuleEntryFn, DatacodeModuleFn,
+    DatacodeModuleLegacy, NativeAbiFn, VmContext, DATACODE_ABI_VERSION,
+    DATACODE_MODULE_ENTRY_SYMBOL, DATACODE_MODULE_SYMBOL,
 };
+use crate::common::error::LangError;
+use crate::common::value::Value;
 use crate::common::value_store::ValueStore;
-use crate::vm::abi_bridge::{AbiBridgeContext, BridgeError, materialize_value_for_abi};
+use crate::vm::abi_bridge::{materialize_value_for_abi, AbiBridgeContext, BridgeError};
 use crate::vm::heavy_store::HeavyStore;
+use libloading::Library;
 
 thread_local! {
     /// Ошибка, установленная ABI-нативом через throw_error. Исполнитель проверяет после вызова.
@@ -48,7 +48,9 @@ pub struct PluginHookNames {
     pub opaque_binop: Option<String>,
 }
 
-fn parse_abi_native_param_meta(m: &AbiNativeParamMeta) -> Result<ResolvedNativeParamMeta, LangError> {
+fn parse_abi_native_param_meta(
+    m: &AbiNativeParamMeta,
+) -> Result<ResolvedNativeParamMeta, LangError> {
     let names = if m.param_names.is_null() || m.param_names_len == 0 {
         Vec::new()
     } else {
@@ -136,10 +138,7 @@ pub fn call_abi_native(
     let abi_args: Vec<AbiValue> = match abi_args_result {
         Ok(a) => a,
         Err(BridgeError::Unrepresentable(msg)) => {
-            set_last_abi_error(LangError::runtime_error(
-                format!("ABI bridge: {}", msg),
-                0,
-            ));
+            set_last_abi_error(LangError::runtime_error(format!("ABI bridge: {}", msg), 0));
             return Value::Null;
         }
         Err(BridgeError::InvalidUtf8) => {
@@ -195,7 +194,11 @@ pub fn call_abi_native(
     }
 }
 
-extern "C" fn abi_register_native_noop(_ctx: *mut VmContext, _name: *const std::ffi::c_char, _func: NativeAbiFn) {
+extern "C" fn abi_register_native_noop(
+    _ctx: *mut VmContext,
+    _name: *const std::ffi::c_char,
+    _func: NativeAbiFn,
+) {
     // Используется только при вызове ABI-натива (модуль не вызывает register_native из натива).
 }
 
@@ -297,8 +300,9 @@ fn collect_from_root_descriptor(
                     0,
                 ));
             }
-            let metas =
-                unsafe { std::slice::from_raw_parts(ext.native_param_metas, ext.native_param_metas_len) };
+            let metas = unsafe {
+                std::slice::from_raw_parts(ext.native_param_metas, ext.native_param_metas_len)
+            };
             for (i, (name, _)) in out_native.iter().enumerate() {
                 let r = parse_abi_native_param_meta(&metas[i])?;
                 sidecar.export_param_meta.insert(name.clone(), r);
@@ -309,8 +313,7 @@ fn collect_from_root_descriptor(
     let mut out = out_native;
 
     if !desc.globals.is_null() && desc.globals_len > 0 {
-        let globals =
-            unsafe { std::slice::from_raw_parts(desc.globals, desc.globals_len) };
+        let globals = unsafe { std::slice::from_raw_parts(desc.globals, desc.globals_len) };
         for g in globals {
             if g.name.is_null() {
                 return Err(LangError::runtime_error(
@@ -417,7 +420,9 @@ fn set_native_module_package_root_env(module_name: &str, dylib_path: &Path) {
     let Some(parent) = dylib_path.parent() else {
         return;
     };
-    let root: PathBuf = parent.canonicalize().unwrap_or_else(|_| parent.to_path_buf());
+    let root: PathBuf = parent
+        .canonicalize()
+        .unwrap_or_else(|_| parent.to_path_buf());
     let key = native_module_root_env_key(module_name);
     if let Some(s) = root.to_str() {
         std::env::set_var(&key, s);
@@ -466,7 +471,13 @@ pub fn try_load_native_module(
     abi_natives: &mut Vec<NativeAbiFn>,
     loaded_libs: &mut Vec<Library>,
     mut abi_native_export_names: Option<&mut Vec<String>>,
-) -> Result<(std::collections::HashMap<String, Value>, AbiModuleLoadSidecar), LangError> {
+) -> Result<
+    (
+        std::collections::HashMap<String, Value>,
+        AbiModuleLoadSidecar,
+    ),
+    LangError,
+> {
     let lib_name = if cfg!(target_os = "macos") {
         format!("lib{}.dylib", name)
     } else if cfg!(target_os = "windows") {
@@ -501,10 +512,7 @@ pub fn try_load_native_module(
         p
     } else if let Some(zip_path) = dcmodule_candidates.into_iter().find(|p| p.exists()) {
         crate::dcmodule::resolve_dylib_from_archive(&zip_path, &cache_root).map_err(|e| {
-            LangError::runtime_error(
-                format!("Native module '{}' (.dcmodule): {}", name, e),
-                0,
-            )
+            LangError::runtime_error(format!("Native module '{}' (.dcmodule): {}", name, e), 0)
         })?
     } else {
         let mut candidates = Vec::new();
@@ -564,21 +572,21 @@ pub fn try_load_native_module(
 
     // 1) Preferred: `datacode_module_entry` → root [`AbiModuleDescriptor`].
     let mut entry_sidecar = AbiModuleLoadSidecar::default();
-    let registered_from_entry: Vec<(String, NativeAbiFn)> =
-        if let Ok(get_entry) = unsafe { lib.get::<DatacodeModuleEntryFn>(DATACODE_MODULE_ENTRY_SYMBOL.as_bytes()) }
-        {
-            let desc_ptr = (*get_entry)();
-            if !desc_ptr.is_null() {
-                let (v, sc) =
-                    collect_from_root_descriptor(desc_ptr as *const AbiModuleDescriptorV4, name)?;
-                entry_sidecar = sc;
-                v
-            } else {
-                Vec::new()
-            }
+    let registered_from_entry: Vec<(String, NativeAbiFn)> = if let Ok(get_entry) =
+        unsafe { lib.get::<DatacodeModuleEntryFn>(DATACODE_MODULE_ENTRY_SYMBOL.as_bytes()) }
+    {
+        let desc_ptr = (*get_entry)();
+        if !desc_ptr.is_null() {
+            let (v, sc) =
+                collect_from_root_descriptor(desc_ptr as *const AbiModuleDescriptorV4, name)?;
+            entry_sidecar = sc;
+            v
         } else {
             Vec::new()
-        };
+        }
+    } else {
+        Vec::new()
+    };
 
     // Root descriptor may list only a static subset; `define_module!` also registers names in
     // `register_ml_exports` (e.g. `operator_descriptor`) that must be merged for preload.
@@ -588,7 +596,9 @@ pub fn try_load_native_module(
     // trampoline when the name already appears in the root descriptor.
     let registered: Vec<(String, NativeAbiFn)> = if !registered_from_entry.is_empty() {
         let mut from_register: Vec<(String, NativeAbiFn)> = Vec::new();
-        if let Ok(get_module) = unsafe { lib.get::<DatacodeModuleFn>(DATACODE_MODULE_SYMBOL.as_bytes()) } {
+        if let Ok(get_module) =
+            unsafe { lib.get::<DatacodeModuleFn>(DATACODE_MODULE_SYMBOL.as_bytes()) }
+        {
             let module_ptr = (*get_module)();
             if !module_ptr.is_null() {
                 let abi_ver = unsafe { (*module_ptr).abi_version };
@@ -637,10 +647,7 @@ pub fn try_load_native_module(
                     LangError::runtime_error(
                         format!(
                             "Native module '{}' has neither '{}' nor '{}': {}",
-                            name,
-                            DATACODE_MODULE_ENTRY_SYMBOL,
-                            DATACODE_MODULE_SYMBOL,
-                            e
+                            name, DATACODE_MODULE_ENTRY_SYMBOL, DATACODE_MODULE_SYMBOL, e
                         ),
                         0,
                     )
@@ -650,7 +657,10 @@ pub fn try_load_native_module(
         let module_ptr = (*get_module)();
         if module_ptr.is_null() {
             return Err(LangError::runtime_error(
-                format!("Native module '{}' returned null from datacode_module()", name),
+                format!(
+                    "Native module '{}' returned null from datacode_module()",
+                    name
+                ),
                 0,
             ));
         }
@@ -796,7 +806,10 @@ pub fn merge_operator_descriptor_from_native_module_object(
 
 #[cfg(test)]
 mod tests {
-    use super::{infer_module_name_from_dylib_path, nest_dotted_module_exports, try_load_native_module, NATIVE_MODULE_TYPEOF_NAMESPACE};
+    use super::{
+        infer_module_name_from_dylib_path, nest_dotted_module_exports, try_load_native_module,
+        NATIVE_MODULE_TYPEOF_NAMESPACE,
+    };
     use crate::abi::{DatacodeModuleFn, DATACODE_MODULE_SYMBOL};
     use crate::common::value::Value;
     use crate::vm::module_object::BUILTIN_END;
@@ -896,14 +909,25 @@ mod tests {
         } else if release_lib.is_file() {
             release_lib
         } else {
-            eprintln!("skip: build ml cdylib (expected {} or {})", debug_lib.display(), release_lib.display());
+            eprintln!(
+                "skip: build ml cdylib (expected {} or {})",
+                debug_lib.display(),
+                release_lib.display()
+            );
             return;
         };
         let _g = crate::vm::file_import::push_native_lib_override(Some(lib.clone()));
         let mut abi = Vec::new();
         let mut libs = Vec::new();
-        let (m, _) = try_load_native_module("ml", Some(lib.parent().unwrap().as_ref()), BUILTIN_END, &mut abi, &mut libs, None)
-            .expect("try_load_native_module ml with override");
+        let (m, _) = try_load_native_module(
+            "ml",
+            Some(lib.parent().unwrap().as_ref()),
+            BUILTIN_END,
+            &mut abi,
+            &mut libs,
+            None,
+        )
+        .expect("try_load_native_module ml with override");
         assert!(
             m.contains_key("operator_descriptor"),
             "expected operator_descriptor export, keys: {:?}",
@@ -936,8 +960,15 @@ mod tests {
         let _g = crate::vm::file_import::push_native_lib_override(Some(lib.clone()));
         let mut abi = Vec::new();
         let mut libs = Vec::new();
-        let (m, _) = try_load_native_module("ml", Some(lib.parent().unwrap().as_ref()), BUILTIN_END, &mut abi, &mut libs, None)
-            .expect("try_load_native_module ml with override");
+        let (m, _) = try_load_native_module(
+            "ml",
+            Some(lib.parent().unwrap().as_ref()),
+            BUILTIN_END,
+            &mut abi,
+            &mut libs,
+            None,
+        )
+        .expect("try_load_native_module ml with override");
         assert!(
             matches!(m.get("dataset"), Some(Value::Object(_))),
             "`from ml import dataset` expects ml.dataset to be a namespace Object; got {:?}",
@@ -960,8 +991,9 @@ mod tests {
         };
         let mut abi = Vec::new();
         let mut libs = Vec::new();
-        let (m, _) = try_load_native_module("ml", Some(base), BUILTIN_END, &mut abi, &mut libs, None)
-            .expect("try_load_native_module ml");
+        let (m, _) =
+            try_load_native_module("ml", Some(base), BUILTIN_END, &mut abi, &mut libs, None)
+                .expect("try_load_native_module ml");
         assert_eq!(
             m.get("__plugin_namespace"),
             Some(&Value::String("module".to_string())),
@@ -995,4 +1027,3 @@ mod tests {
         );
     }
 }
-

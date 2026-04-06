@@ -1,23 +1,25 @@
 //! Execution of user function and closure calls (including constructors and methods).
 
 use super::{constructor_call, method_call};
+use crate::common::error::ErrorType;
+use crate::common::{
+    error::LangError, value::GeneratorState, value::Value, value_store::ValueStore, TaggedValue,
+};
 use crate::debug_println;
-use crate::common::{error::LangError, value::GeneratorState, value::Value, value_store::ValueStore, TaggedValue};
+use crate::vm::exceptions::ExceptionHandler;
+use crate::vm::frame::CallFrame;
+use crate::vm::global_slot::GlobalSlot;
+use crate::vm::heavy_store::HeavyStore;
+use crate::vm::stack;
+use crate::vm::store_convert::{slot_to_value, store_value};
+use crate::vm::types::VMStatus;
 use std::cell::RefCell;
 use std::rc::Rc;
-use crate::vm::types::VMStatus;
-use crate::vm::frame::CallFrame;
-use crate::vm::exceptions::ExceptionHandler;
-use crate::vm::stack;
-use crate::vm::global_slot::GlobalSlot;
-use crate::vm::store_convert::{store_value, slot_to_value};
-use crate::vm::heavy_store::HeavyStore;
-use crate::common::error::ErrorType;
 
 /// Execute a user function or closure call (including constructor and method dispatch).
 /// Called from call_dispatch when function_index_resolved.is_some().
 #[allow(clippy::too_many_arguments)]
-pub fn execute_closure_call(
+pub(crate) fn execute_closure_call(
     current_ip: usize,
     function_index: usize,
     constructing_class_opt: Option<Value>,
@@ -55,7 +57,10 @@ pub fn execute_closure_call(
         "[CALL] function_index={}, functions.len()={}, function.name={}",
         function_index,
         functions.len(),
-        functions.get(function_index).map(|f| f.name.as_str()).unwrap_or("?")
+        functions
+            .get(function_index)
+            .map(|f| f.name.as_str())
+            .unwrap_or("?")
     );
 
     let mut args = Vec::new();
@@ -72,7 +77,14 @@ pub fn execute_closure_call(
                 ),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }
@@ -83,12 +95,18 @@ pub fn execute_closure_call(
                 &frames,
                 format!(
                     "Not enough arguments on stack: expected {} but got {}",
-                    arity,
-                    available_args
+                    arity, available_args
                 ),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }
@@ -110,11 +128,19 @@ pub fn execute_closure_call(
             &frames,
             format!(
                 "Expected {} arguments but got {}",
-                function.arity, args.len()
+                function.arity,
+                args.len()
             ),
             line,
         );
-        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+        match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
             Ok(()) => return Ok(VMStatus::Continue),
             Err(e) => return Err(e),
         }
@@ -123,7 +149,9 @@ pub fn execute_closure_call(
     for (i, (arg, expected_types)) in args.iter().zip(&function.param_types).enumerate() {
         if let Some(type_names) = expected_types {
             if !crate::vm::calls::check_type_value(arg, type_names) {
-                let param_name = function.param_names.get(i)
+                let param_name = function
+                    .param_names
+                    .get(i)
                     .map(|s| s.as_str())
                     .unwrap_or("unknown");
                 let error = LangError::runtime_error_with_type(
@@ -136,7 +164,14 @@ pub fn execute_closure_call(
                     line,
                     ErrorType::TypeError,
                 );
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
                     Ok(()) => return Ok(VMStatus::Continue),
                     Err(e) => return Err(e),
                 }
@@ -163,7 +198,11 @@ pub fn execute_closure_call(
             cold_send_first_yield: None,
             pending_deferred_yield: None,
         };
-        let id = store_value(Value::Generator(Rc::new(RefCell::new(gen))), value_store, heavy_store);
+        let id = store_value(
+            Value::Generator(Rc::new(RefCell::new(gen))),
+            value_store,
+            heavy_store,
+        );
         stack::push_id(stack, id);
         return Ok(VMStatus::Continue);
     }
@@ -184,7 +223,13 @@ pub fn execute_closure_call(
 
     let stack_start = stack.len();
     let mut new_frame = if function.is_cached {
-        CallFrame::new_with_cache(function.clone(), stack_start, arg_tvs.clone(), value_store, heavy_store)
+        CallFrame::new_with_cache(
+            function.clone(),
+            stack_start,
+            arg_tvs.clone(),
+            value_store,
+            heavy_store,
+        )
     } else {
         CallFrame::new(function.clone(), stack_start, value_store, heavy_store)
     };
@@ -194,13 +239,16 @@ pub fn execute_closure_call(
     if !frames.is_empty() && !function.captured_vars.is_empty() {
         for captured_var in &function.captured_vars {
             if captured_var.local_slot_index >= new_frame.slots.len() {
-                new_frame.slots.resize(captured_var.local_slot_index + 1, TaggedValue::null());
+                new_frame
+                    .slots
+                    .resize(captured_var.local_slot_index + 1, TaggedValue::null());
             }
             let ancestor_index = frames.len().saturating_sub(1 + captured_var.ancestor_depth);
             if ancestor_index < frames.len() {
                 let ancestor_frame = &frames[ancestor_index];
                 if captured_var.parent_slot_index < ancestor_frame.slots.len() {
-                    new_frame.slots[captured_var.local_slot_index] = ancestor_frame.slots[captured_var.parent_slot_index];
+                    new_frame.slots[captured_var.local_slot_index] =
+                        ancestor_frame.slots[captured_var.parent_slot_index];
                 } else {
                     new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
                 }

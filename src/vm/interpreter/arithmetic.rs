@@ -1,7 +1,12 @@
 // Arithmetic opcodes: Add, Sub, Mul, Div, IntDiv, Mod, Pow, Negate, Not, Or, And, RegAdd.
 // Logic preserved 1:1 from executor.rs — no semantic changes.
 
-use crate::common::{error::LangError, value::Value, value_store::{ValueCell, ValueId, ValueStore}, TaggedValue};
+use crate::common::{
+    error::LangError,
+    value::Value,
+    value_store::{ValueCell, ValueId, ValueStore},
+    TaggedValue,
+};
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
@@ -36,7 +41,10 @@ pub fn op_add(
         let frame = frames.last_mut().unwrap();
         let cache_hit = frame.add_cache_ip == Some(current_ip) && frame.add_cache_both_number;
         if cache_hit && a_tv.is_number() && b_tv.is_number() {
-            stack::push(stack, TaggedValue::from_f64(a_tv.get_f64() + b_tv.get_f64()));
+            stack::push(
+                stack,
+                TaggedValue::from_f64(a_tv.get_f64() + b_tv.get_f64()),
+            );
             return Ok(VMStatus::Continue);
         }
         if cache_hit {
@@ -45,7 +53,10 @@ pub fn op_add(
         if a_tv.is_number() && b_tv.is_number() {
             frame.add_cache_ip = Some(current_ip);
             frame.add_cache_both_number = true;
-            stack::push(stack, TaggedValue::from_f64(a_tv.get_f64() + b_tv.get_f64()));
+            stack::push(
+                stack,
+                TaggedValue::from_f64(a_tv.get_f64() + b_tv.get_f64()),
+            );
             return Ok(VMStatus::Continue);
         }
         frame.add_cache_both_number = false;
@@ -82,13 +93,26 @@ pub fn op_add(
     let b = load_value(b_id, value_store, heavy_store);
     let result = match (&a, &b) {
         (Value::Number(n1), Value::Number(n2)) => Value::Number(n1 + n2),
-        _ => operations::binary_add(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+        _ => operations::binary_add(
+            &a,
+            &b,
+            frames,
+            stack,
+            exception_handlers,
+            value_store,
+            heavy_store,
+        )?,
     };
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)
 }
 
-pub fn op_reg_add(rd: u8, r1: u8, r2: u8, frames: &mut Vec<CallFrame>) -> Result<VMStatus, LangError> {
+pub fn op_reg_add(
+    rd: u8,
+    r1: u8,
+    r2: u8,
+    frames: &mut Vec<CallFrame>,
+) -> Result<VMStatus, LangError> {
     let frame = frames.last_mut().unwrap();
     let (rd, r1, r2) = (rd as usize, r1 as usize, r2 as usize);
     let n = 1 + rd.max(r1).max(r2);
@@ -114,7 +138,10 @@ pub fn op_sub(
     let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     if a_tv.is_number() && b_tv.is_number() {
-        stack::push(stack, TaggedValue::from_f64(a_tv.get_f64() - b_tv.get_f64()));
+        stack::push(
+            stack,
+            TaggedValue::from_f64(a_tv.get_f64() - b_tv.get_f64()),
+        );
         return Ok(VMStatus::Continue);
     }
     {
@@ -131,7 +158,15 @@ pub fn op_sub(
         (Value::Number(n1), Value::Number(n2)) => Value::Number(n1 - n2),
         (Value::Null, Value::Number(n2)) => Value::Number(-n2),
         (Value::Number(n1), Value::Null) => Value::Number(*n1),
-        _ => operations::binary_sub(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+        _ => operations::binary_sub(
+            &a,
+            &b,
+            frames,
+            stack,
+            exception_handlers,
+            value_store,
+            heavy_store,
+        )?,
     };
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)
@@ -148,7 +183,10 @@ pub fn op_mul(
     let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     if a_tv.is_number() && b_tv.is_number() {
-        stack::push(stack, TaggedValue::from_f64(a_tv.get_f64() * b_tv.get_f64()));
+        stack::push(
+            stack,
+            TaggedValue::from_f64(a_tv.get_f64() * b_tv.get_f64()),
+        );
         return Ok(VMStatus::Continue);
     }
     {
@@ -163,7 +201,15 @@ pub fn op_mul(
     let b = load_value(b_id, value_store, heavy_store);
     let result = match (&a, &b) {
         (Value::Number(n1), Value::Number(n2)) => Value::Number(n1 * n2),
-        _ => operations::binary_mul(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+        _ => operations::binary_mul(
+            &a,
+            &b,
+            frames,
+            stack,
+            exception_handlers,
+            value_store,
+            heavy_store,
+        )?,
     };
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)
@@ -228,7 +274,10 @@ pub fn op_matmul(
     let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     if a_tv.is_number() && b_tv.is_number() {
-        stack::push(stack, TaggedValue::from_f64(a_tv.get_f64() * b_tv.get_f64()));
+        stack::push(
+            stack,
+            TaggedValue::from_f64(a_tv.get_f64() * b_tv.get_f64()),
+        );
         return Ok(VMStatus::Continue);
     }
     {
@@ -241,7 +290,15 @@ pub fn op_matmul(
     let b_id = tagged_to_value_id(b_tv, value_store);
     let a = load_value(a_id, value_store, heavy_store);
     let b = load_value(b_id, value_store, heavy_store);
-    let result = operations::binary_matmul(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?;
+    let result = operations::binary_matmul(
+        &a,
+        &b,
+        frames,
+        stack,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    )?;
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)
 }
@@ -275,7 +332,15 @@ pub fn op_div(
     let b = load_value(b_id, value_store, heavy_store);
     let result = match (&a, &b) {
         (Value::Number(n1), Value::Number(n2)) if *n2 != 0.0 => Value::Number(n1 / n2),
-        (Value::Number(_), Value::Number(_)) | _ => operations::binary_div(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?,
+        _ => operations::binary_div(
+            &a,
+            &b,
+            frames,
+            stack,
+            exception_handlers,
+            value_store,
+            heavy_store,
+        )?,
     };
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)
@@ -308,7 +373,15 @@ pub fn op_int_div(
     let b_id = tagged_to_value_id(b_tv, value_store);
     let a = load_value(a_id, value_store, heavy_store);
     let b = load_value(b_id, value_store, heavy_store);
-    let result = operations::binary_int_div(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?;
+    let result = operations::binary_int_div(
+        &a,
+        &b,
+        frames,
+        stack,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    )?;
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)
 }
@@ -340,7 +413,15 @@ pub fn op_mod(
     let b_id = tagged_to_value_id(b_tv, value_store);
     let a = load_value(a_id, value_store, heavy_store);
     let b = load_value(b_id, value_store, heavy_store);
-    let result = operations::binary_mod(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?;
+    let result = operations::binary_mod(
+        &a,
+        &b,
+        frames,
+        stack,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    )?;
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)
 }
@@ -355,14 +436,25 @@ pub fn op_pow(
     let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     if a_tv.is_number() && b_tv.is_number() {
-        stack::push(stack, TaggedValue::from_f64(a_tv.get_f64().powf(b_tv.get_f64())));
+        stack::push(
+            stack,
+            TaggedValue::from_f64(a_tv.get_f64().powf(b_tv.get_f64())),
+        );
         return Ok(VMStatus::Continue);
     }
     let a_id = tagged_to_value_id(a_tv, value_store);
     let b_id = tagged_to_value_id(b_tv, value_store);
     let a = load_value(a_id, value_store, heavy_store);
     let b = load_value(b_id, value_store, heavy_store);
-    let result = operations::binary_pow(&a, &b, frames, stack, exception_handlers, value_store, heavy_store)?;
+    let result = operations::binary_pow(
+        &a,
+        &b,
+        frames,
+        stack,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    )?;
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)
 }
@@ -381,7 +473,14 @@ pub fn op_negate(
     }
     let val_id = tagged_to_value_id(val_tv, value_store);
     let value = load_value(val_id, value_store, heavy_store);
-    let result = operations::unary_negate(&value, frames, stack, exception_handlers, value_store, heavy_store)?;
+    let result = operations::unary_negate(
+        &value,
+        frames,
+        stack,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    )?;
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)
 }

@@ -1,0 +1,6 @@
+# Пороги Clippy для всего репозитория (без правок по отдельным функциям).
+# chek_4.log: 2× too_many_arguments при пороге 12 — сигнатуры с 13 аргументами.
+# chek_6: одна сигнатура с 22 аргументами (import_handler).
+too-many-arguments-threshold = 22
+# VM/CLI: сложные возвращаемые типы (например infra/cli).
+type-complexity-threshold = 500

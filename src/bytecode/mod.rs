@@ -1,8 +1,7 @@
-pub mod opcode;
 pub mod chunk;
 pub mod function;
+pub mod opcode;
 
-pub use opcode::OpCode;
 pub use chunk::{Chunk, ExceptionHandlerInfo};
-pub use function::{Function, CapturedVar};
-
+pub use function::{CapturedVar, Function};
+pub use opcode::OpCode;

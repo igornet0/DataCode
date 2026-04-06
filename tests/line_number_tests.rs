@@ -15,9 +15,16 @@ mod tests {
         // Неопределённая переменная обнаруживается при выполнении (RuntimeError)
         if let Err(LangError::RuntimeError { line, message, .. }) = result {
             assert!(line > 0, "Expected line number > 0, got {}", line);
-            assert!(message.contains("Undefined variable"), "Expected undefined variable message, got {}", message);
+            assert!(
+                message.contains("Undefined variable"),
+                "Expected undefined variable message, got {}",
+                message
+            );
         } else {
-            panic!("Expected RuntimeError for undefined variable, got {:?}", result);
+            panic!(
+                "Expected RuntimeError for undefined variable, got {:?}",
+                result
+            );
         }
     }
 
@@ -91,11 +98,14 @@ mod tests {
             for entry in &stack_trace {
                 // Каждая запись должна иметь номер строки (может быть 0, если не удалось определить)
                 // Note: line is usize, so it's always >= 0, but we check it's reasonable
-                assert!(entry.line > 0, "Expected line number > 0, got {}", entry.line);
+                assert!(
+                    entry.line > 0,
+                    "Expected line number > 0, got {}",
+                    entry.line
+                );
             }
         } else {
             panic!("Expected RuntimeError with stack trace, got {:?}", result);
         }
     }
 }
-

@@ -1,12 +1,11 @@
-/// Компиляция массивов, кортежей и индексации
-
-use crate::parser::ast::{Expr, IndexExpr};
-use crate::lexer::TokenKind;
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
+use crate::lexer::TokenKind;
+/// Компиляция массивов, кортежей и индексации
+use crate::parser::ast::{Expr, IndexExpr};
 
 pub fn compile_array(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), LangError> {
     match expr {
@@ -89,9 +88,9 @@ pub fn compile_array(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
                     step,
                     line: sl,
                 } => {
-                    emit_slice_bound(ctx, start.as_ref(), *sl)?;
-                    emit_slice_bound(ctx, stop.as_ref(), *sl)?;
-                    emit_slice_bound(ctx, step.as_ref(), *sl)?;
+                    emit_slice_bound(ctx, start.as_deref(), *sl)?;
+                    emit_slice_bound(ctx, stop.as_deref(), *sl)?;
+                    emit_slice_bound(ctx, step.as_deref(), *sl)?;
                     ctx.chunk.write_with_line(OpCode::GetArraySlice, *sl);
                 }
             }
@@ -128,7 +127,7 @@ pub fn compile_array(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
 
 pub(crate) fn emit_slice_bound(
     ctx: &mut CompilationContext,
-    bound: Option<&Box<Expr>>,
+    bound: Option<&Expr>,
     line: usize,
 ) -> Result<(), LangError> {
     if let Some(e) = bound {
@@ -139,4 +138,3 @@ pub(crate) fn emit_slice_bound(
     }
     Ok(())
 }
-

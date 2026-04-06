@@ -46,7 +46,9 @@ impl RunContext {
     {
         RUN_CONTEXT.with(|cell| {
             let mut borrow = cell.borrow_mut();
-            let ctx = borrow.as_mut().expect("RunContext not set. VM must set context before run().");
+            let ctx = borrow
+                .as_mut()
+                .expect("RunContext not set. VM must set context before run().");
             f(ctx)
         })
     }
@@ -70,22 +72,32 @@ impl RunContext {
 
     /// Get base_path from current context if set; otherwise None.
     pub fn get_base_path() -> Option<PathBuf> {
-        RUN_CONTEXT.with(|cell| cell.borrow().as_ref().map(|r| r.base_path.clone()).flatten())
+        RUN_CONTEXT.with(|cell| cell.borrow().as_ref().and_then(|r| r.base_path.clone()))
     }
 
     /// Get project_root from current context if set; otherwise None.
     pub fn get_project_root() -> Option<PathBuf> {
-        RUN_CONTEXT.with(|cell| cell.borrow().as_ref().map(|r| r.project_root.clone()).flatten())
+        RUN_CONTEXT.with(|cell| cell.borrow().as_ref().and_then(|r| r.project_root.clone()))
     }
 
     /// Get executing_lib from current context if set; otherwise false.
     pub fn get_executing_lib() -> bool {
-        RUN_CONTEXT.with(|cell| cell.borrow().as_ref().map(|r| r.executing_lib).unwrap_or(false))
+        RUN_CONTEXT.with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .map(|r| r.executing_lib)
+                .unwrap_or(false)
+        })
     }
 
     /// Get dpm_package_paths from current context if set; otherwise empty vec.
     pub fn get_dpm_package_paths() -> Vec<PathBuf> {
-        RUN_CONTEXT.with(|cell| cell.borrow().as_ref().map(|r| r.dpm_package_paths.clone()).unwrap_or_default())
+        RUN_CONTEXT.with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .map(|r| r.dpm_package_paths.clone())
+                .unwrap_or_default()
+        })
     }
 
     /// Get SMB manager from current context if set (preferred over thread_local during run()).

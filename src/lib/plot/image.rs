@@ -2,30 +2,33 @@
 
 #[derive(Debug, Clone)]
 pub struct Image {
-    pub data: Vec<u8>,  // RGBA pixels
+    pub data: Vec<u8>, // RGBA pixels
     pub width: u32,
     pub height: u32,
 }
 
 impl Image {
     pub fn new(data: Vec<u8>, width: u32, height: u32) -> Self {
-        Self { data, width, height }
+        Self {
+            data,
+            width,
+            height,
+        }
     }
 
     /// Load image from file path
     pub fn load_from_path(path: &str) -> Result<Self, String> {
         use std::path::Path;
         let path = Path::new(path);
-        
+
         // Load image using image crate
-        let img = image::open(path)
-            .map_err(|e| format!("Failed to open image: {}", e))?;
-        
+        let img = image::open(path).map_err(|e| format!("Failed to open image: {}", e))?;
+
         // Convert to RGBA
         let rgba_img = img.to_rgba8();
         let (width, height) = rgba_img.dimensions();
         let data = rgba_img.into_raw();
-        
+
         Ok(Self {
             data,
             width,
@@ -37,11 +40,11 @@ impl Image {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, String> {
         let img = image::load_from_memory(bytes)
             .map_err(|e| format!("Failed to load image from bytes: {}", e))?;
-        
+
         let rgba_img = img.to_rgba8();
         let (width, height) = rgba_img.dimensions();
         let data = rgba_img.into_raw();
-        
+
         Ok(Self {
             data,
             width,
@@ -50,7 +53,6 @@ impl Image {
     }
 
     pub fn from_tensor_shape_data(shape: &[usize], data: &[f32]) -> Result<Self, String> {
-
         if data.is_empty() {
             return Err("Tensor data is empty".to_string());
         }
@@ -96,7 +98,11 @@ impl Image {
                 // Convert to grayscale RGBA
                 let mut rgba_data = Vec::with_capacity((width * height * 4) as usize);
                 for i in 0..(width * height) as usize {
-                    let val = if i < data.len() { normalize(data[i]) } else { 0 };
+                    let val = if i < data.len() {
+                        normalize(data[i])
+                    } else {
+                        0
+                    };
                     rgba_data.push(val); // R
                     rgba_data.push(val); // G
                     rgba_data.push(val); // B
@@ -116,7 +122,11 @@ impl Image {
 
                 let mut rgba_data = Vec::with_capacity((width * height * 4) as usize);
                 for i in 0..(width * height) as usize {
-                    let val = if i < data.len() { normalize(data[i]) } else { 0 };
+                    let val = if i < data.len() {
+                        normalize(data[i])
+                    } else {
+                        0
+                    };
                     rgba_data.push(val); // R
                     rgba_data.push(val); // G
                     rgba_data.push(val); // B
@@ -145,9 +155,21 @@ impl Image {
                     for h in 0..height as usize {
                         for w in 0..width as usize {
                             let base_idx = (h * width as usize + w) * channels;
-                            let r = if base_idx < data.len() { normalize(data[base_idx]) } else { 0 };
-                            let g = if base_idx + 1 < data.len() { normalize(data[base_idx + 1]) } else { 0 };
-                            let b = if base_idx + 2 < data.len() { normalize(data[base_idx + 2]) } else { 0 };
+                            let r = if base_idx < data.len() {
+                                normalize(data[base_idx])
+                            } else {
+                                0
+                            };
+                            let g = if base_idx + 1 < data.len() {
+                                normalize(data[base_idx + 1])
+                            } else {
+                                0
+                            };
+                            let b = if base_idx + 2 < data.len() {
+                                normalize(data[base_idx + 2])
+                            } else {
+                                0
+                            };
                             let a = if channels == 4 && base_idx + 3 < data.len() {
                                 normalize(data[base_idx + 3])
                             } else {
@@ -175,9 +197,21 @@ impl Image {
                     for h in 0..height as usize {
                         for w in 0..width as usize {
                             let base_idx = (h * width as usize + w) * channels;
-                            let r = if base_idx < data.len() { normalize(data[base_idx]) } else { 0 };
-                            let g = if base_idx + 1 < data.len() { normalize(data[base_idx + 1]) } else { 0 };
-                            let b = if base_idx + 2 < data.len() { normalize(data[base_idx + 2]) } else { 0 };
+                            let r = if base_idx < data.len() {
+                                normalize(data[base_idx])
+                            } else {
+                                0
+                            };
+                            let g = if base_idx + 1 < data.len() {
+                                normalize(data[base_idx + 1])
+                            } else {
+                                0
+                            };
+                            let b = if base_idx + 2 < data.len() {
+                                normalize(data[base_idx + 2])
+                            } else {
+                                0
+                            };
                             let a = if channels == 4 && base_idx + 3 < data.len() {
                                 normalize(data[base_idx + 3])
                             } else {
@@ -209,4 +243,3 @@ impl Image {
         }
     }
 }
-

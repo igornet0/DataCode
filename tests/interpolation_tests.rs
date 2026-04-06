@@ -50,19 +50,13 @@ let age = 22
     #[test]
     fn test_interpolation_escaped_literal() {
         // \${ → literal ${ in output (not interpolation); unescape strips the backslash
-        assert_string_result(
-            r#" "\${not interpolation}""#,
-            r#"${not interpolation}"#,
-        );
+        assert_string_result(r#" "\${not interpolation}""#, r#"${not interpolation}"#);
     }
 
     #[test]
     fn test_interpolation_backslash_then_escaped() {
-        // Source "\\${literal}": one \ then ${ → output \ then literal ${ 
-        assert_string_result(
-            r#" "\\${literal}""#,
-            r"\${literal}",
-        );
+        // Source "\\${literal}": one \ then ${ → output \ then literal ${
+        assert_string_result(r#" "\\${literal}""#, r"\${literal}");
     }
 
     #[test]

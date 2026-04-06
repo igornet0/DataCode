@@ -37,7 +37,11 @@ fn compile_yield_await_assign(
 }
 
 /// Компилирует тело stream fn (линейные stmt, `if`, `let`, `expr`, `return`, `ereturn`).
-pub fn compile_stream_body(ctx: &mut CompilationContext, body: &[Stmt], line_hint: usize) -> Result<(), LangError> {
+pub fn compile_stream_body(
+    ctx: &mut CompilationContext,
+    body: &[Stmt],
+    line_hint: usize,
+) -> Result<(), LangError> {
     let mut yield_counter: i32 = 0;
     for stmt in body {
         compile_stream_stmt(ctx, stmt, &mut yield_counter, line_hint)?;
@@ -47,8 +51,7 @@ pub fn compile_stream_body(ctx: &mut CompilationContext, body: &[Stmt], line_hin
         ctx.chunk.code.last(),
         Some(OpCode::GeneratorDone) | Some(OpCode::GeneratorDoneWithFinal)
     ) {
-        ctx.chunk
-            .write_with_line(OpCode::GeneratorDone, line_hint);
+        ctx.chunk.write_with_line(OpCode::GeneratorDone, line_hint);
     }
     Ok(())
 }
@@ -90,7 +93,13 @@ fn compile_stream_stmt(
                 if let Expr::ExprReturn { value: rv, .. } | Expr::Ireturn { value: rv, .. } =
                     value.as_ref()
                 {
-                    return compile_yield_await_assign(ctx, name, rv.as_deref(), *al, yield_counter);
+                    return compile_yield_await_assign(
+                        ctx,
+                        name,
+                        rv.as_deref(),
+                        *al,
+                        yield_counter,
+                    );
                 }
             }
             if let Expr::ExprReturn { value, line: el } = expr {
@@ -106,8 +115,18 @@ fn compile_stream_stmt(
                 ctx.chunk.write_with_line(OpCode::Yield(y), *line);
                 return Ok(());
             }
-            if let Expr::Ireturn { value: rv, line: el } = expr {
-                return compile_yield_await_assign(ctx, "__ireturn_discard", rv.as_deref(), *el, yield_counter);
+            if let Expr::Ireturn {
+                value: rv,
+                line: el,
+            } = expr
+            {
+                return compile_yield_await_assign(
+                    ctx,
+                    "__ireturn_discard",
+                    rv.as_deref(),
+                    *el,
+                    yield_counter,
+                );
             }
             expr::compile_expr(ctx, expr)?;
             ctx.chunk.write_with_line(OpCode::Pop, *line);
@@ -119,8 +138,7 @@ fn compile_stream_stmt(
                 expr::compile_expr(ctx, e)?;
             } else {
                 let c = ctx.chunk.add_constant(Value::Null);
-                ctx.chunk
-                    .write_with_line(OpCode::Constant(c), *line);
+                ctx.chunk.write_with_line(OpCode::Constant(c), *line);
             }
             let y = *yield_counter;
             *yield_counter += 1;
@@ -134,8 +152,7 @@ fn compile_stream_stmt(
                 ctx.chunk
                     .write_with_line(OpCode::GeneratorDoneWithFinal, *line);
             } else {
-                ctx.chunk
-                    .write_with_line(OpCode::GeneratorDone, *line);
+                ctx.chunk.write_with_line(OpCode::GeneratorDone, *line);
             }
             Ok(())
         }
@@ -154,8 +171,7 @@ fn compile_stream_stmt(
             } else {
                 end_label
             };
-            ctx.labels
-                .emit_jump(ctx.chunk, *line, true, target_else)?;
+            ctx.labels.emit_jump(ctx.chunk, *line, true, target_else)?;
             ctx.scope.begin_scope();
             for s in then_branch {
                 compile_stream_stmt(ctx, s, yield_counter, line_hint)?;

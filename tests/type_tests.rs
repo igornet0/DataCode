@@ -16,7 +16,6 @@ mod tests {
         assert!(result.is_err(), "Expected type error, got {:?}", result);
     }
 
-
     // Вспомогательная функция для проверки числового результата
     fn assert_number_result(source: &str, expected: f64) {
         let result = run_and_get_result(source);
@@ -62,7 +61,6 @@ mod tests {
             Err(e) => panic!("Error: {:?}", e),
         }
     }
-
 
     // ========== 1. Тесты типизации переменных (Type Assignment Tests) ==========
 
@@ -196,67 +194,93 @@ mod tests {
 
     #[test]
     fn test_type_error_string_minus_number() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             let x = "hello"
             x - 5
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_string_multiply_number() {
-        assert_string_result(r#"
+        assert_string_result(
+            r#"
             let x = "-"
             x * 10
-        "#, "----------");
-        assert_string_result(r#"
+        "#,
+            "----------",
+        );
+        assert_string_result(
+            r#"
             let x = "hello"
             x * 3
-        "#, "hellohellohello");
+        "#,
+            "hellohellohello",
+        );
     }
 
     #[test]
     fn test_number_multiply_string() {
-        assert_string_result(r#"
+        assert_string_result(
+            r#"
             let n = 5
             n * "-"
-        "#, "-----");
-        assert_string_result(r#"
+        "#,
+            "-----",
+        );
+        assert_string_result(
+            r#"
             3 * "ab"
-        "#, "ababab");
+        "#,
+            "ababab",
+        );
     }
 
     #[test]
     fn test_string_multiply_zero() {
-        assert_string_result(r#"
+        assert_string_result(
+            r#"
             "hello" * 0
-        "#, "");
-        assert_string_result(r#"
+        "#,
+            "",
+        );
+        assert_string_result(
+            r#"
             0 * "hello"
-        "#, "");
+        "#,
+            "",
+        );
     }
 
     #[test]
     fn test_type_error_string_divide_number() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             let x = "hello"
             x / 5
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_type_error_bool_arithmetic() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             let x = true
             x + 5
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_type_error_array_arithmetic() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             let x = [1, 2, 3]
             x + 5
-        "#);
+        "#,
+        );
     }
 
     #[test]
@@ -297,16 +321,20 @@ mod tests {
 
     #[test]
     fn test_type_error_string_number_comparison() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             "hello" > 5
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_type_error_bool_number_comparison() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             true > 5
-        "#);
+        "#,
+        );
     }
 
     // ========== 3. Тесты преобразования типов (Type Conversion Tests) ==========
@@ -529,45 +557,61 @@ mod tests {
     #[test]
     fn test_string_number_incompatibility_arithmetic() {
         // String и Number несовместимы в арифметических операциях (кроме конкатенации и умножения)
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             "10" - 5
-        "#);
-        assert_type_error(r#"
+        "#,
+        );
+        assert_type_error(
+            r#"
             "10" / 5
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_bool_number_incompatibility_arithmetic() {
         // Bool и Number несовместимы в арифметических операциях
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             true - 5
-        "#);
-        assert_type_error(r#"
+        "#,
+        );
+        assert_type_error(
+            r#"
             false * 5
-        "#);
-        assert_type_error(r#"
+        "#,
+        );
+        assert_type_error(
+            r#"
             true / 5
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_array_number_incompatibility_arithmetic() {
         // Array и Number несовместимы в арифметических операциях
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             [1, 2, 3] - 5
-        "#);
-        assert_type_error(r#"
+        "#,
+        );
+        assert_type_error(
+            r#"
             [1, 2, 3] * 5
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_string_bool_incompatibility() {
         // String и Bool несовместимы в сравнении
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             "hello" > true
-        "#);
+        "#,
+        );
     }
 
     // ========== 5. Тесты типов в функциях (Type in Functions Tests) ==========
@@ -654,12 +698,14 @@ mod tests {
     #[test]
     fn test_function_type_error_in_function() {
         // Ошибка типа внутри функции должна быть обработана
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn bad(a) {
                 return a - "hello"
             }
             bad(10)
-        "#);
+        "#,
+        );
     }
 
     #[test]
@@ -852,16 +898,20 @@ mod tests {
 
     #[test]
     fn test_division_by_zero() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             10 / 0
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_modulo_by_zero() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             10 % 0
-        "#);
+        "#,
+        );
     }
 
     #[test]
@@ -1165,7 +1215,10 @@ mod tests {
         assert_number_result("sqrt(1)", 1.0);
         // Проверяем, что sqrt от отрицательного числа возвращает Null
         let result = run_and_get_result("sqrt(-1)");
-        assert!(matches!(result, Ok(Value::Null)), "sqrt(-1) should return Null");
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "sqrt(-1) should return Null"
+        );
     }
 
     #[test]
@@ -1369,14 +1422,8 @@ mod tests {
 
     #[test]
     fn test_reduce_sum_and_pipeline() {
-        assert_number_result(
-            r#"reduce([1, 2, 3, 4], fn(acc, x) => acc + x, 0)"#,
-            10.0,
-        );
-        assert_number_result(
-            r#"reduce([1, 2, 3, 4], fn(acc, x) => acc * x, 1)"#,
-            24.0,
-        );
+        assert_number_result(r#"reduce([1, 2, 3, 4], fn(acc, x) => acc + x, 0)"#, 10.0);
+        assert_number_result(r#"reduce([1, 2, 3, 4], fn(acc, x) => acc * x, 1)"#, 24.0);
         let pipe = r#"
             let arr = [1, 2, 3, 4, 5]
             reduce(
@@ -1500,27 +1547,45 @@ mod tests {
     fn test_math_functions_wrong_types() {
         // abs с неправильным типом
         let result = run_and_get_result(r#"abs("hello")"#);
-        assert!(matches!(result, Ok(Value::Null)), "abs with string should return Null");
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "abs with string should return Null"
+        );
 
         // sqrt с неправильным типом
         let result = run_and_get_result(r#"sqrt("hello")"#);
-        assert!(matches!(result, Ok(Value::Null)), "sqrt with string should return Null");
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "sqrt with string should return Null"
+        );
 
         // pow с неправильными типами
         let result = run_and_get_result(r#"pow("hello", 2)"#);
-        assert!(matches!(result, Ok(Value::Null)), "pow with wrong types should return Null");
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "pow with wrong types should return Null"
+        );
 
         // min с неправильными типами
         let result = run_and_get_result(r#"min("hello", 2)"#);
-        assert!(matches!(result, Ok(Value::Null)), "min with wrong types should return Null");
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "min with wrong types should return Null"
+        );
 
         // max с неправильными типами
         let result = run_and_get_result(r#"max("hello", 2)"#);
-        assert!(matches!(result, Ok(Value::Null)), "max with wrong types should return Null");
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "max with wrong types should return Null"
+        );
 
         // round с неправильным типом
         let result = run_and_get_result(r#"round("hello")"#);
-        assert!(matches!(result, Ok(Value::Null)), "round with string should return Null");
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "round with string should return Null"
+        );
     }
 
     // ========== Тесты обработки ошибок для строковых функций ==========
@@ -1529,27 +1594,45 @@ mod tests {
     fn test_string_functions_wrong_types() {
         // upper с неправильным типом
         let result = run_and_get_result("upper(123)");
-        assert!(matches!(result, Ok(Value::Null)), "upper with number should return Null");
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "upper with number should return Null"
+        );
 
         // lower с неправильным типом
         let result = run_and_get_result("lower(123)");
-        assert!(matches!(result, Ok(Value::Null)), "lower with number should return Null");
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "lower with number should return Null"
+        );
 
         // trim с неправильным типом
         let result = run_and_get_result("trim(123)");
-        assert!(matches!(result, Ok(Value::Null)), "trim with number should return Null");
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "trim with number should return Null"
+        );
 
         // split с неправильными типами
         let result = run_and_get_result("split(123, \",\")");
-        assert!(matches!(result, Ok(Value::Null)), "split with wrong types should return Null");
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "split with wrong types should return Null"
+        );
 
         // join с неправильными типами
         let result = run_and_get_result(r#"join("hello", ",")"#);
-        assert!(matches!(result, Ok(Value::Null)), "join with wrong types should return Null");
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "join with wrong types should return Null"
+        );
 
         // contains с неправильными типами
         let result = run_and_get_result("contains(123, \"hello\")");
-        assert!(matches!(result, Ok(Value::Bool(false))), "contains with wrong types should return false");
+        assert!(
+            matches!(result, Ok(Value::Bool(false))),
+            "contains with wrong types should return false"
+        );
     }
 
     // ========== Тесты кортежей (Tuple Tests) ==========
@@ -1944,4 +2027,3 @@ mod tests {
         assert_number_result(source, 0.0);
     }
 }
-

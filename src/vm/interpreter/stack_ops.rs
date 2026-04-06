@@ -9,7 +9,7 @@ use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::stack;
-use crate::vm::store_convert::{load_value, store_value, slot_to_value};
+use crate::vm::store_convert::{load_value, slot_to_value, store_value};
 use crate::vm::types::VMStatus;
 use std::rc::Rc;
 
@@ -48,7 +48,9 @@ pub fn op_constant(
             file: frame.function.chunk.source_name.clone(),
         });
     }
-    let tv = frame.constant_tagged.get(index)
+    let tv = frame
+        .constant_tagged
+        .get(index)
         .and_then(|opt| *opt)
         .unwrap_or_else(|| TaggedValue::from_heap(frame.constant_ids[index]));
     stack::push(stack, tv);
@@ -109,7 +111,13 @@ pub fn op_store_local(
             let current_ip = f.ip - 1;
             if is_constructor {
                 let map = obj_rc.borrow();
-                crate::debug_println!("[DEBUG StoreLocal] constructor '{}' IP {} slot {}: Object ({} keys)", f.function.name, current_ip, index, map.len());
+                crate::debug_println!(
+                    "[DEBUG StoreLocal] constructor '{}' IP {} slot {}: Object ({} keys)",
+                    f.function.name,
+                    current_ip,
+                    index,
+                    map.len()
+                );
             }
         }
     }
@@ -156,11 +164,15 @@ pub fn op_format_interp(
 ) -> Result<VMStatus, LangError> {
     let value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
     let frame = frames.last_mut().unwrap();
-    let format_id = frame.constant_ids.get(format_index).copied().ok_or_else(|| LangError::ParseError {
-        message: format!("FormatInterp: constant index {} out of range", format_index),
-        line: 0,
-        file: None,
-    })?;
+    let format_id = frame
+        .constant_ids
+        .get(format_index)
+        .copied()
+        .ok_or_else(|| LangError::ParseError {
+            message: format!("FormatInterp: constant index {} out of range", format_index),
+            line: 0,
+            file: None,
+        })?;
     let value = load_value(value_id, value_store, heavy_store);
     let format_spec = match load_value(format_id, value_store, heavy_store) {
         Value::String(s) => s,

@@ -3,8 +3,8 @@
 
 #[cfg(test)]
 mod tests {
-    use data_code::{run_with_base_path, run_with_vm_with_args_and_lib, Value};
     use data_code::vm::file_import;
+    use data_code::{run_with_base_path, run_with_vm_with_args_and_lib, Value};
     use std::path::PathBuf;
 
     fn fixtures_dir() -> PathBuf {
@@ -16,7 +16,12 @@ mod tests {
 
     fn assert_number_result(result: Result<Value, data_code::LangError>, expected: f64) {
         match result {
-            Ok(Value::Number(n)) => assert!((n - expected).abs() < 1e-10, "expected {}, got {}", expected, n),
+            Ok(Value::Number(n)) => assert!(
+                (n - expected).abs() < 1e-10,
+                "expected {}, got {}",
+                expected,
+                n
+            ),
             Ok(v) => panic!("expected Number({}), got {:?}", expected, v),
             Err(e) => panic!("error: {:?}", e),
         }
@@ -140,11 +145,18 @@ get_x()
         get_settings()
         "#;
         let result = run_with_base_path(source, base.as_path());
-        assert!(result.is_err(), "expected ValueError (Settings are not loaded), got {:?}", result);
+        assert!(
+            result.is_err(),
+            "expected ValueError (Settings are not loaded), got {:?}",
+            result
+        );
         let err = result.unwrap_err();
         let msg = format!("{:?}", err);
-        assert!(msg.contains("not loaded") || msg.contains("Settings") || msg.contains("load_settings"),
-            "error should mention settings/load: {}", msg);
+        assert!(
+            msg.contains("not loaded") || msg.contains("Settings") || msg.contains("load_settings"),
+            "error should mention settings/load: {}",
+            msg
+        );
     }
 
     #[test]
@@ -155,7 +167,11 @@ get_x()
         load_settings("staging")
         "#;
         let result = run_with_base_path(source, base.as_path());
-        assert!(result.is_err(), "expected ValueError (Invalid environment), got {:?}", result);
+        assert!(
+            result.is_err(),
+            "expected ValueError (Invalid environment), got {:?}",
+            result
+        );
     }
 
     // ========== Абсолютный импорт из вложенного пакета (core.database.engine -> core.config) ==========
@@ -260,7 +276,11 @@ get_config_env("prod")
         get_x()
         "#;
         let result = data_code::run(source);
-        assert!(result.is_err(), "without base_path import should fail: {:?}", result);
+        assert!(
+            result.is_err(),
+            "without base_path import should fail: {:?}",
+            result
+        );
     }
 
     // ========== Повторный запуск с тем же base_path (стабильность) ==========
@@ -321,7 +341,13 @@ get_config_env("prod")
                 return env
             }
             "#;
-        let result = run_with_vm_with_args_and_lib(source, Some(vec!["prod".to_string()]), None, Some(base.as_path()), None);
+        let result = run_with_vm_with_args_and_lib(
+            source,
+            Some(vec!["prod".to_string()]),
+            None,
+            Some(base.as_path()),
+            None,
+        );
         let (value, _) = result.expect("run should succeed");
         match &value {
             Value::String(s) => assert_eq!(s, "prod", "argv[0] should be 'prod'"),
@@ -338,10 +364,20 @@ get_config_env("prod")
             load_settings("prod")
             get_settings().env
             "#;
-        let result = run_with_vm_with_args_and_lib(source, Some(vec!["prod".to_string()]), None, Some(base.as_path()), None);
+        let result = run_with_vm_with_args_and_lib(
+            source,
+            Some(vec!["prod".to_string()]),
+            None,
+            Some(base.as_path()),
+            None,
+        );
         let (value, _) = result.expect("run should succeed");
         match &value {
-            Value::String(s) => assert_eq!(s, "prod", "when args=[\"prod\"], get_settings().env should get \"prod\", got \"{}\"", s),
+            Value::String(s) => assert_eq!(
+                s, "prod",
+                "when args=[\"prod\"], get_settings().env should get \"prod\", got \"{}\"",
+                s
+            ),
             v => panic!("expected String(\"prod\"), got {:?}", v),
         }
     }
@@ -376,11 +412,18 @@ get_config_env("prod")
 
     #[test]
     fn test_private_fields_with_model_config() {
-        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sandbox").join("web_api");
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("sandbox")
+            .join("web_api");
         if !base.join("core").join("config").join("__lib__.dc").exists() {
             return;
         }
-        if !base.join("core").join("config").join("dev_config.dc").exists() {
+        if !base
+            .join("core")
+            .join("config")
+            .join("dev_config.dc")
+            .exists()
+        {
             return;
         }
         if !base.join("settings").join("dev.env").exists() {
@@ -400,25 +443,41 @@ get_config_env("prod")
                 }
             "#;
 
-        let result = run_with_vm_with_args_and_lib(source, Some(vec!["dev".to_string()]), None, Some(base.as_path()), None);
+        let result = run_with_vm_with_args_and_lib(
+            source,
+            Some(vec!["dev".to_string()]),
+            None,
+            Some(base.as_path()),
+            None,
+        );
         if let Some(ref p) = prev {
             let _ = std::env::set_current_dir(p);
         }
         let (value, _) = result.expect("run should succeed");
         match &value {
             Value::String(s) => assert!(!s.is_empty(), "get_code() should return non-empty string"),
-            v => panic!("expected String from get_settings().secret.get_code(), got {:?}", v),
+            v => panic!(
+                "expected String from get_settings().secret.get_code(), got {:?}",
+                v
+            ),
         }
     }
 
     /// Same as test_private_fields_with_model_config but with core.database import (reproduces main.dc).
     #[test]
     fn test_private_fields_with_core_database_import() {
-        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sandbox").join("web_api");
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("sandbox")
+            .join("web_api");
         if !base.join("core").join("config").join("__lib__.dc").exists() {
             return;
         }
-        if !base.join("core").join("database").join("engine.dc").exists() {
+        if !base
+            .join("core")
+            .join("database")
+            .join("engine.dc")
+            .exists()
+        {
             return;
         }
         if !base.join("settings").join("dev.env").exists() {
@@ -438,14 +497,23 @@ get_config_env("prod")
                 return main(env)
             }
         "#;
-        let result = run_with_vm_with_args_and_lib(source, Some(vec!["dev".to_string()]), None, Some(base.as_path()), None);
+        let result = run_with_vm_with_args_and_lib(
+            source,
+            Some(vec!["dev".to_string()]),
+            None,
+            Some(base.as_path()),
+            None,
+        );
         if let Some(ref p) = prev {
             let _ = std::env::set_current_dir(p);
         }
         let (value, _) = result.expect("run should succeed");
         match &value {
             Value::String(s) => assert!(!s.is_empty(), "get_code() should return non-empty string"),
-            v => panic!("expected String from get_settings().secret.get_code(), got {:?}", v),
+            v => panic!(
+                "expected String from get_settings().secret.get_code(), got {:?}",
+                v
+            ),
         }
     }
 
@@ -453,7 +521,9 @@ get_config_env("prod")
     /// Если да — в VM при запуске main.dc сначала мержится lib, что меняет start_idx при импорте core.config.
     #[test]
     fn test_find_nearest_lib_from_web_api_base() {
-        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sandbox").join("web_api");
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("sandbox")
+            .join("web_api");
         if !base.exists() {
             return;
         }
@@ -461,7 +531,11 @@ get_config_env("prod")
         // Если найден __lib__.dc выше web_api (например в sandbox/ или корне репо),
         // то при run_with_vm_with_args_and_lib(lib_path=None) он подхватится и добавит функции в VM до импорта core.config.
         if let Some(ref p) = found {
-            assert!(p.ends_with("__lib__.dc"), "find_nearest_lib should return path to __lib__.dc, got {:?}", p);
+            assert!(
+                p.ends_with("__lib__.dc"),
+                "find_nearest_lib should return path to __lib__.dc, got {:?}",
+                p
+            );
         }
     }
 
@@ -470,11 +544,18 @@ get_config_env("prod")
     /// "Function index 19 out of bounds"; после исправления — успех.
     #[test]
     fn test_web_api_cli_like_reproduces_or_passes() {
-        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sandbox").join("web_api");
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("sandbox")
+            .join("web_api");
         if !base.join("core").join("config").join("__lib__.dc").exists() {
             return;
         }
-        if !base.join("core").join("config").join("dev_config.dc").exists() {
+        if !base
+            .join("core")
+            .join("config")
+            .join("dev_config.dc")
+            .exists()
+        {
             return;
         }
         let source = r#"
@@ -506,11 +587,18 @@ get_config_env("prod")
     /// Если в sandbox/web_api есть core/config с dev_config, проверяем импорт (тест может быть пропущен при ошибке VM).
     #[test]
     fn test_sandbox_web_api_from_core_config_import_when_present() {
-        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sandbox").join("web_api");
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("sandbox")
+            .join("web_api");
         if !base.join("core").join("config").join("__lib__.dc").exists() {
             return;
         }
-        if !base.join("core").join("config").join("dev_config.dc").exists() {
+        if !base
+            .join("core")
+            .join("config")
+            .join("dev_config.dc")
+            .exists()
+        {
             return;
         }
         let source = r#"

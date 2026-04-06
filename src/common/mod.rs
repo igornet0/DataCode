@@ -1,11 +1,10 @@
-pub mod span;
 pub mod error;
+pub mod span;
+pub mod tagged_value;
 pub mod value;
 pub mod value_store;
-pub mod tagged_value;
-pub use value_store::ValueStore;
 pub use tagged_value::TaggedValue;
-pub mod table;
-pub mod debug;
+pub use value_store::ValueStore;
 pub mod array_slice;
-
+pub mod debug;
+pub mod table;

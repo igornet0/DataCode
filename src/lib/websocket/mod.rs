@@ -1,20 +1,20 @@
 use crate::run_with_vm;
 use crate::sqlite_export;
-use serde::{Deserialize, Serialize};
-use tokio_tungstenite::{accept_async, tungstenite::Message};
 use futures_util::{SinkExt, StreamExt};
-use tokio::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
-use std::path::{Path, PathBuf};
-use std::fs;
+use serde::{Deserialize, Serialize};
 use std::env;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::net::{TcpListener, TcpStream};
+use tokio_tungstenite::{accept_async, tungstenite::Message};
 
 pub mod output_capture;
 pub mod smb;
 
 use output_capture::OutputCapture;
-use smb::{SmbManager, SmbConnection};
+use smb::{SmbConnection, SmbManager};
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -30,20 +30,14 @@ enum WebSocketRequest {
         share_name: String,
     },
     #[serde(rename = "smb_list_files")]
-    SmbListFiles {
-        share_name: String,
-        path: String,
-    },
+    SmbListFiles { share_name: String, path: String },
     #[serde(rename = "smb_read_file")]
     SmbReadFile {
         share_name: String,
         file_path: String,
     },
     #[serde(rename = "upload_file")]
-    UploadFile {
-        filename: String,
-        content: String,
-    },
+    UploadFile { filename: String, content: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -120,7 +114,11 @@ pub fn take_native_error() -> Option<String> {
 }
 
 /// Запустить WebSocket сервер на указанном адресе
-pub async fn start_server(address: &str, use_ve: bool, build_model: bool) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+pub async fn start_server(
+    address: &str,
+    use_ve: bool,
+    build_model: bool,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(address).await?;
     println!("🚀 DataCode WebSocket Server запущен на {}", address);
     println!("📡 Ожидание подключений...");
@@ -133,33 +131,41 @@ pub async fn start_server(address: &str, use_ve: bool, build_model: bool) -> Res
         let temp_sessions_dir = Path::new("src/temp_sessions");
         if !temp_sessions_dir.exists() {
             if let Err(e) = fs::create_dir_all(temp_sessions_dir) {
-                eprintln!("⚠️  Предупреждение: не удалось создать папку temp_sessions: {}", e);
+                eprintln!(
+                    "⚠️  Предупреждение: не удалось создать папку temp_sessions: {}",
+                    e
+                );
             } else {
-                println!("📁 Создана папка для сессий: {}", temp_sessions_dir.display());
+                println!(
+                    "📁 Создана папка для сессий: {}",
+                    temp_sessions_dir.display()
+                );
             }
         }
     }
 
     // Используем LocalSet для локальных задач, так как Interpreter не является Send
     let local_set = tokio::task::LocalSet::new();
-    
+
     // Создаем listener внутри LocalSet и обрабатываем подключения
-    local_set.run_until(async {
-        loop {
-            let (stream, addr) = match listener.accept().await {
-                Ok((s, a)) => (s, a),
-                Err(e) => {
-                    eprintln!("❌ Ошибка принятия подключения: {}", e);
-                    continue;
-                }
-            };
-            
-            println!("✅ Новое подключение от {}", addr);
-            // DIAG: Log task spawn
-            // eprintln!("[DIAG] WebSocket: Spawning client handler task for {}", addr);
-            local_set.spawn_local(handle_client(stream, use_ve, build_model));
-        }
-    }).await;
+    local_set
+        .run_until(async {
+            loop {
+                let (stream, addr) = match listener.accept().await {
+                    Ok((s, a)) => (s, a),
+                    Err(e) => {
+                        eprintln!("❌ Ошибка принятия подключения: {}", e);
+                        continue;
+                    }
+                };
+
+                println!("✅ Новое подключение от {}", addr);
+                // DIAG: Log task spawn
+                // eprintln!("[DIAG] WebSocket: Spawning client handler task for {}", addr);
+                local_set.spawn_local(handle_client(stream, use_ve, build_model));
+            }
+        })
+        .await;
 
     Ok(())
 }
@@ -168,7 +174,7 @@ pub async fn start_server(address: &str, use_ve: bool, build_model: bool) -> Res
 async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
     let _client_start_time = std::time::Instant::now();
     let _client_addr = stream.peer_addr().ok();
-    
+
     let ws_stream = match accept_async(stream).await {
         Ok(ws) => ws,
         Err(e) => {
@@ -180,13 +186,13 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
     let (mut write, mut read) = ws_stream.split();
     // Создаем отдельный SmbManager для каждого клиента
     let smb_manager = Arc::new(Mutex::new(SmbManager::new()));
-    
+
     // Устанавливаем SmbManager в thread-local storage для доступа из функций файловых операций
     crate::vm::file_ops::set_smb_manager(smb_manager.clone());
-    
+
     // Устанавливаем флаг use_ve
     set_use_ve(use_ve);
-    
+
     // Если включен режим use_ve, создаем папку для пользователя
     let user_session_path = if use_ve {
         // Генерируем уникальный ID для пользователя на основе времени и случайного числа
@@ -197,31 +203,34 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
             .as_nanos();
         let user_id = format!("user_{}", timestamp);
         let user_dir = Path::new("src/temp_sessions").join(&user_id);
-        
+
         // Преобразуем в абсолютный путь для корректной работы с путями от list_files
         let user_dir_absolute = match user_dir.canonicalize() {
             Ok(p) => p,
             Err(_) => {
-                // Если канонизация не удалась (папка еще не существует), 
+                // Если канонизация не удалась (папка еще не существует),
                 // создаем абсолютный путь через current_dir
                 match env::current_dir() {
                     Ok(cwd) => cwd.join(&user_dir),
                     Err(_) => user_dir, // Fallback к относительному пути
                 }
-            },
+            }
         };
-        
+
         if let Err(e) = fs::create_dir_all(&user_dir_absolute) {
             eprintln!("❌ Ошибка создания папки пользователя: {}", e);
             None
         } else {
-            println!("📁 Создана папка пользователя: {}", user_dir_absolute.display());
+            println!(
+                "📁 Создана папка пользователя: {}",
+                user_dir_absolute.display()
+            );
             Some(user_dir_absolute)
         }
     } else {
         None
     };
-    
+
     // Устанавливаем путь к папке пользователя в thread-local storage
     set_user_session_path(user_session_path.clone());
 
@@ -234,7 +243,7 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                         WebSocketRequest::Execute { code } => {
                             // Выполняем код
                             let response = execute_code(&code, &smb_manager, build_model);
-                            
+
                             // Отправляем ответ
                             if let Ok(json) = serde_json::to_string(&response) {
                                 if let Err(e) = write.send(Message::Text(json)).await {
@@ -243,10 +252,17 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                                 }
                             }
                         }
-                        WebSocketRequest::SmbConnect { ip, login, password, domain, share_name } => {
-                            let connection = SmbConnection::new(ip, login, password, domain, share_name);
+                        WebSocketRequest::SmbConnect {
+                            ip,
+                            login,
+                            password,
+                            domain,
+                            share_name,
+                        } => {
+                            let connection =
+                                SmbConnection::new(ip, login, password, domain, share_name);
                             let result = smb_manager.lock().unwrap().connect(connection);
-                            
+
                             let response = match result {
                                 Ok(msg) => SmbConnectResponse {
                                     success: true,
@@ -259,7 +275,7 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                                     error: Some(e),
                                 },
                             };
-                            
+
                             if let Ok(json) = serde_json::to_string(&response) {
                                 if let Err(e) = write.send(Message::Text(json)).await {
                                     eprintln!("❌ Ошибка отправки ответа: {}", e);
@@ -268,8 +284,13 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                             }
                         }
                         WebSocketRequest::SmbListFiles { share_name, path } => {
-                            let result = smb_manager.lock().unwrap().list_files(&share_name, &path, None, true);
-                            
+                            let result = smb_manager.lock().unwrap().list_files(
+                                &share_name,
+                                &path,
+                                None,
+                                true,
+                            );
+
                             let response = match result {
                                 Ok(files) => SmbListFilesResponse {
                                     success: true,
@@ -282,7 +303,7 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                                     error: Some(e),
                                 },
                             };
-                            
+
                             if let Ok(json) = serde_json::to_string(&response) {
                                 if let Err(e) = write.send(Message::Text(json)).await {
                                     eprintln!("❌ Ошибка отправки ответа: {}", e);
@@ -290,9 +311,15 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                                 }
                             }
                         }
-                        WebSocketRequest::SmbReadFile { share_name, file_path } => {
-                            let result = smb_manager.lock().unwrap().read_file(&share_name, &file_path);
-                            
+                        WebSocketRequest::SmbReadFile {
+                            share_name,
+                            file_path,
+                        } => {
+                            let result = smb_manager
+                                .lock()
+                                .unwrap()
+                                .read_file(&share_name, &file_path);
+
                             let response = match result {
                                 Ok(content) => {
                                     // Пытаемся декодировать как UTF-8, если не получается - возвращаем base64
@@ -305,7 +332,9 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                                         Err(_) => {
                                             // Если не UTF-8, возвращаем base64
                                             use base64::Engine;
-                                            let base64_content = base64::engine::general_purpose::STANDARD.encode(&content);
+                                            let base64_content =
+                                                base64::engine::general_purpose::STANDARD
+                                                    .encode(&content);
                                             SmbReadFileResponse {
                                                 success: true,
                                                 content: Some(format!("base64:{}", base64_content)),
@@ -320,7 +349,7 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                                     error: Some(e),
                                 },
                             };
-                            
+
                             if let Ok(json) = serde_json::to_string(&response) {
                                 if let Err(e) = write.send(Message::Text(json)).await {
                                     eprintln!("❌ Ошибка отправки ответа: {}", e);
@@ -332,32 +361,45 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                             let response = if use_ve {
                                 if let Some(session_path) = get_user_session_path() {
                                     let file_path = session_path.join(&filename);
-                                    
+
                                     // Создаем родительские директории если нужно
                                     if let Some(parent) = file_path.parent() {
                                         match fs::create_dir_all(parent) {
                                             Ok(_) => {
                                                 // Декодируем base64 контент если нужно
-                                                let file_content_result = if content.starts_with("base64:") {
-                                                    use base64::Engine;
-                                                    base64::engine::general_purpose::STANDARD.decode(&content[7..])
-                                                        .map_err(|e| format!("Ошибка декодирования base64: {}", e))
-                                                } else {
-                                                    Ok(content.as_bytes().to_vec())
-                                                };
-                                                
+                                                let file_content_result =
+                                                    if content.starts_with("base64:") {
+                                                        use base64::Engine;
+                                                        base64::engine::general_purpose::STANDARD
+                                                            .decode(&content[7..])
+                                                            .map_err(|e| {
+                                                                format!(
+                                                                "Ошибка декодирования base64: {}",
+                                                                e
+                                                            )
+                                                            })
+                                                    } else {
+                                                        Ok(content.as_bytes().to_vec())
+                                                    };
+
                                                 match file_content_result {
                                                     Ok(file_content) => {
                                                         match fs::write(&file_path, file_content) {
                                                             Ok(_) => UploadFileResponse {
                                                                 success: true,
-                                                                message: format!("Файл {} успешно загружен", filename),
+                                                                message: format!(
+                                                                    "Файл {} успешно загружен",
+                                                                    filename
+                                                                ),
                                                                 error: None,
                                                             },
                                                             Err(e) => UploadFileResponse {
                                                                 success: false,
                                                                 message: String::new(),
-                                                                error: Some(format!("Ошибка записи файла: {}", e)),
+                                                                error: Some(format!(
+                                                                    "Ошибка записи файла: {}",
+                                                                    e
+                                                                )),
                                                             },
                                                         }
                                                     }
@@ -371,7 +413,10 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                                             Err(e) => UploadFileResponse {
                                                 success: false,
                                                 message: String::new(),
-                                                error: Some(format!("Ошибка создания директории: {}", e)),
+                                                error: Some(format!(
+                                                    "Ошибка создания директории: {}",
+                                                    e
+                                                )),
                                             },
                                         }
                                     } else {
@@ -395,7 +440,7 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                                     error: Some("Режим --use-ve не включен".to_string()),
                                 }
                             };
-                            
+
                             if let Ok(json) = serde_json::to_string(&response) {
                                 if let Err(e) = write.send(Message::Text(json)).await {
                                     eprintln!("❌ Ошибка отправки ответа: {}", e);
@@ -408,7 +453,7 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                     // Пытаемся распарсить как старый формат для обратной совместимости
                     if let Ok(request) = serde_json::from_str::<ExecuteRequest>(&text) {
                         let response = execute_code(&request.code, &smb_manager, build_model);
-                        
+
                         if let Ok(json) = serde_json::to_string(&response) {
                             if let Err(e) = write.send(Message::Text(json)).await {
                                 eprintln!("❌ Ошибка отправки ответа: {}", e);
@@ -436,20 +481,27 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                 for share in shares {
                     let _ = manager.disconnect(&share);
                 }
-                
+
                 // Если включен режим use_ve, удаляем папку пользователя
                 if use_ve {
                     if let Some(session_path) = get_user_session_path() {
                         if session_path.exists() {
                             if let Err(e) = fs::remove_dir_all(&session_path) {
-                                eprintln!("⚠️  Ошибка удаления папки пользователя {}: {}", session_path.display(), e);
+                                eprintln!(
+                                    "⚠️  Ошибка удаления папки пользователя {}: {}",
+                                    session_path.display(),
+                                    e
+                                );
                             } else {
-                                println!("🗑️  Удалена папка пользователя: {}", session_path.display());
+                                println!(
+                                    "🗑️  Удалена папка пользователя: {}",
+                                    session_path.display()
+                                );
                             }
                         }
                     }
                 }
-                
+
                 break;
             }
             Ok(Message::Ping(data)) => {
@@ -460,7 +512,7 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
             }
             Err(e) => {
                 eprintln!("❌ Ошибка чтения сообщения: {}", e);
-                
+
                 // Если включен режим use_ve, удаляем папку пользователя при ошибке
                 if use_ve {
                     if let Some(session_path) = get_user_session_path() {
@@ -469,31 +521,35 @@ async fn handle_client(stream: TcpStream, use_ve: bool, build_model: bool) {
                         }
                     }
                 }
-                
+
                 break;
             }
             _ => {}
         }
     }
-    
+
     // Если включен режим use_ve, удаляем папку пользователя при выходе из цикла
     if use_ve {
         if let Some(session_path) = get_user_session_path() {
             if session_path.exists() {
                 if let Err(e) = fs::remove_dir_all(&session_path) {
-                    eprintln!("⚠️  Ошибка удаления папки пользователя {}: {}", session_path.display(), e);
+                    eprintln!(
+                        "⚠️  Ошибка удаления папки пользователя {}: {}",
+                        session_path.display(),
+                        e
+                    );
                 } else {
                     println!("🗑️  Удалена папка пользователя: {}", session_path.display());
                 }
             }
         }
     }
-    
+
     // Очищаем thread-local storage
     crate::vm::file_ops::clear_smb_manager();
     set_user_session_path(None);
     set_use_ve(false);
-    
+
     // DIAG: Log client handler completion
     // let client_duration = client_start_time.elapsed();
     // eprintln!(
@@ -510,10 +566,10 @@ fn execute_code(
 ) -> ExecuteResponse {
     // Устанавливаем SmbManager в thread-local storage для доступа из функций файловых операций
     crate::vm::file_ops::set_smb_manager(smb_manager.clone());
-    
+
     // Создаем буфер для перехвата вывода
     let output_capture = OutputCapture::new();
-    
+
     // Устанавливаем буфер для текущего потока
     output_capture.set_capture(true);
 
@@ -528,7 +584,7 @@ fn execute_code(
     let response = match result {
         Ok((_, mut vm)) => {
             let mut sqlite_db = None;
-            
+
             // Если включен build_model, проверяем наличие таблиц и экспортируем их
             if build_model {
                 // Проверяем наличие таблиц
@@ -539,19 +595,24 @@ fn execute_code(
                             .duration_since(UNIX_EPOCH)
                             .unwrap()
                             .as_nanos();
-                        let temp_db_path = env::temp_dir().join(format!("datacode_export_{}.db", timestamp));
-                        
+                        let temp_db_path =
+                            env::temp_dir().join(format!("datacode_export_{}.db", timestamp));
+
                         // Экспортируем таблицы в SQLite
-                        match sqlite_export::export_to_sqlite(&mut vm, temp_db_path.to_str().unwrap()) {
+                        match sqlite_export::export_to_sqlite(
+                            &mut vm,
+                            temp_db_path.to_str().unwrap(),
+                        ) {
                             Ok(_) => {
                                 // Читаем SQLite БД как байты
                                 match fs::read(&temp_db_path) {
                                     Ok(db_bytes) => {
                                         // Кодируем в base64
                                         use base64::Engine;
-                                        let base64_db = base64::engine::general_purpose::STANDARD.encode(&db_bytes);
+                                        let base64_db = base64::engine::general_purpose::STANDARD
+                                            .encode(&db_bytes);
                                         sqlite_db = Some(base64_db);
-                                        
+
                                         // Удаляем временный файл
                                         let _ = fs::remove_file(&temp_db_path);
                                     }
@@ -574,7 +635,7 @@ fn execute_code(
                     }
                 }
             }
-            
+
             ExecuteResponse {
                 success: true,
                 output,
@@ -589,7 +650,6 @@ fn execute_code(
             sqlite_db: None,
         },
     };
-    
+
     response
 }
-

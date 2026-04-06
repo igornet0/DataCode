@@ -35,7 +35,8 @@ impl DatabaseEngine {
         connect_args: HashMap<String, Value>,
     ) -> Result<Self, String> {
         let path = parse_sqlite_path(&url)?;
-        let conn = Connection::open(&path).map_err(|e| format!("SQLite connection failed: {}", e))?;
+        let conn =
+            Connection::open(&path).map_err(|e| format!("SQLite connection failed: {}", e))?;
         conn.execute("PRAGMA foreign_keys = ON", [])
             .map_err(|e| format!("Failed to enable foreign keys: {}", e))?;
         Ok(Self {
@@ -56,29 +57,30 @@ impl DatabaseEngine {
                 if self.echo {
                     eprintln!("[SQL] {}", sql);
                 }
-                let params_vec: Vec<Box<dyn rusqlite::ToSql>> = params
-                    .iter()
-                    .map(value_to_sql_param)
-                    .collect();
+                let params_vec: Vec<Box<dyn rusqlite::ToSql>> =
+                    params.iter().map(value_to_sql_param).collect();
                 let params_refs: Vec<&dyn rusqlite::ToSql> =
                     params_vec.iter().map(|b| b.as_ref()).collect();
-                let count = conn.execute(sql, params_refs.as_slice())
+                let count = conn
+                    .execute(sql, params_refs.as_slice())
                     .map_err(|e| format!("Execute failed: {}", e))?;
                 Ok(count as i64)
             }
         }
     }
 
-    pub fn query(&mut self, sql: &str, params: &[Value]) -> Result<crate::common::table::Table, String> {
+    pub fn query(
+        &mut self,
+        sql: &str,
+        params: &[Value],
+    ) -> Result<crate::common::table::Table, String> {
         match &mut self.backend {
             DbBackend::SQLite(conn) => {
                 if self.echo {
                     eprintln!("[SQL] {}", sql);
                 }
-                let params_vec: Vec<Box<dyn rusqlite::ToSql>> = params
-                    .iter()
-                    .map(value_to_sql_param)
-                    .collect();
+                let params_vec: Vec<Box<dyn rusqlite::ToSql>> =
+                    params.iter().map(value_to_sql_param).collect();
                 let params_refs: Vec<&dyn rusqlite::ToSql> =
                     params_vec.iter().map(|b| b.as_ref()).collect();
                 let mut stmt = conn

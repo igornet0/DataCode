@@ -14,7 +14,8 @@ pub fn native_debug_operators(_args: &[Value]) -> Value {
             let vm = &*ptr;
             let Some(ref reg) = vm.operator_registry_snapshot else {
                 return Value::String(
-                    "(no operator registry snapshot — host did not set parse-time registry)".to_string(),
+                    "(no operator registry snapshot — host did not set parse-time registry)"
+                        .to_string(),
                 );
             };
             let s = reg.format_debug_text();

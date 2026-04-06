@@ -19,7 +19,10 @@ mod tests {
         let params = get_main_entry_params(source).expect("__main__ should be found");
         assert_eq!(params.len(), 2, "two params: env, count");
         assert_eq!(params[0].0, "env");
-        assert_eq!(params[0].1.as_ref(), Some(&Value::String("dev".to_string())));
+        assert_eq!(
+            params[0].1.as_ref(),
+            Some(&Value::String("dev".to_string()))
+        );
         assert_eq!(params[1].0, "count");
         assert_eq!(params[1].1.as_ref(), Some(&Value::Number(5.0)));
     }
@@ -99,10 +102,8 @@ mod tests {
                 return env + ":" + str(count)
             }
         "#;
-        let result = run_with_vm_with_args(
-            source,
-            Some(vec!["prod".to_string(), "10".to_string()]),
-        );
+        let result =
+            run_with_vm_with_args(source, Some(vec!["prod".to_string(), "10".to_string()]));
         let (value, _vm) = result.expect("run should succeed");
         match &value {
             Value::String(s) => assert_eq!(s.as_str(), "prod:10"),
@@ -232,10 +233,7 @@ mod tests {
                 return a + b + c
             }
         "#;
-        let result = run_with_vm_with_args(
-            source,
-            Some(vec!["1".into(), "2".into(), "3".into()]),
-        );
+        let result = run_with_vm_with_args(source, Some(vec!["1".into(), "2".into(), "3".into()]));
         let (value, _vm) = result.expect("run should succeed");
         match &value {
             Value::String(s) => assert_eq!(s.as_str(), "123"),
@@ -282,10 +280,8 @@ mod tests {
                 return int(a) + int(b) + int(c)
             }
         "#;
-        let result = run_with_vm_with_args(
-            source,
-            Some(vec!["10".into(), "20".into(), "12".into()]),
-        );
+        let result =
+            run_with_vm_with_args(source, Some(vec!["10".into(), "20".into(), "12".into()]));
         let (value, _vm) = result.expect("run should succeed");
         match value {
             Value::Number(n) => assert_eq!(n, 42.0),
@@ -325,10 +321,7 @@ mod tests {
                 return sum
             }
         "#;
-        let result = run_with_vm_with_args(
-            source,
-            Some(vec!["1".into(), "2".into(), "3".into()]),
-        );
+        let result = run_with_vm_with_args(source, Some(vec!["1".into(), "2".into(), "3".into()]));
         let (value, _vm) = result.expect("run should succeed");
         match value {
             Value::Number(n) => assert_eq!(n, 6.0),

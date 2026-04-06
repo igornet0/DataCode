@@ -58,14 +58,19 @@ pub fn find_project_root(start: &Path) -> Option<PathBuf> {
 /// Load and parse dpm.toml from project root.
 pub fn load_manifest(project_root: &Path) -> Result<DpmManifest, String> {
     let path = project_root.join("dpm.toml");
-    let s = std::fs::read_to_string(&path).map_err(|e| format!("Read {}: {}", path.display(), e))?;
+    let s =
+        std::fs::read_to_string(&path).map_err(|e| format!("Read {}: {}", path.display(), e))?;
     toml::from_str(&s).map_err(|e| format!("Parse dpm.toml: {}", e))
 }
 
 /// Portable `env_base` value for `dpm.toml`: `.` when base equals project root, else relative path when under project, else absolute.
 pub fn env_base_value_for_storage(project_root: &Path, abs_base: &Path) -> String {
-    let proj = project_root.canonicalize().unwrap_or_else(|_| project_root.to_path_buf());
-    let base = abs_base.canonicalize().unwrap_or_else(|_| abs_base.to_path_buf());
+    let proj = project_root
+        .canonicalize()
+        .unwrap_or_else(|_| project_root.to_path_buf());
+    let base = abs_base
+        .canonicalize()
+        .unwrap_or_else(|_| abs_base.to_path_buf());
     if base == proj {
         return ".".to_string();
     }
@@ -83,10 +88,7 @@ pub fn env_base_value_for_storage(project_root: &Path, abs_base: &Path) -> Strin
 }
 
 fn toml_escape_line_value(s: &str) -> String {
-    format!(
-        "\"{}\"",
-        s.replace('\\', "\\\\").replace('"', "\\\"")
-    )
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
 /// Merge or update `[dpm]` / `env_base` in `dpm.toml` without dropping other sections.
@@ -201,10 +203,7 @@ pub fn datacode_version_satisfies(required: &str, current: &str) -> bool {
         ("", required)
     };
     let parse = |s: &str| -> (u32, u32, u32) {
-        let parts: Vec<u32> = s
-            .split('.')
-            .filter_map(|p| p.trim().parse().ok())
-            .collect();
+        let parts: Vec<u32> = s.split('.').filter_map(|p| p.trim().parse().ok()).collect();
         (
             parts.get(0).copied().unwrap_or(0),
             parts.get(1).copied().unwrap_or(0),
@@ -231,7 +230,13 @@ pub fn project_name_for_env(manifest: &DpmManifest) -> String {
         .map(|p| {
             p.name
                 .chars()
-                .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+                .map(|c| {
+                    if c.is_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect::<String>()
         })
         .unwrap_or_else(|| "project".to_string())

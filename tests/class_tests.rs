@@ -3,9 +3,9 @@
 
 #[cfg(test)]
 mod tests {
-    use data_code::{run, Value};
-    use data_code::parser::{Parser, Stmt};
     use data_code::lexer::Lexer;
+    use data_code::parser::{Parser, Stmt};
+    use data_code::{run, Value};
 
     fn parse(source: &str) -> Vec<Stmt> {
         let mut lexer = Lexer::new(source);
@@ -67,7 +67,17 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Class { name, private_fields, public_fields, private_variables, public_variables, constructors, methods, .. } = &stmts[0] {
+        if let Stmt::Class {
+            name,
+            private_fields,
+            public_fields,
+            private_variables,
+            public_variables,
+            constructors,
+            methods,
+            ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "Empty");
             assert!(private_fields.is_empty());
             assert!(public_fields.is_empty());
@@ -89,7 +99,10 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Class { name, is_abstract, .. } = &stmts[0] {
+        if let Stmt::Class {
+            name, is_abstract, ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "AbstractBase");
             assert!(*is_abstract, "expected is_abstract = true");
         } else {
@@ -137,7 +150,13 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Class { name, private_variables, public_variables, .. } = &stmts[0] {
+        if let Stmt::Class {
+            name,
+            private_variables,
+            public_variables,
+            ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "Config");
             assert!(private_variables.is_empty());
             assert_eq!(public_variables.len(), 1);
@@ -157,7 +176,13 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Class { name, private_variables, public_variables, .. } = &stmts[0] {
+        if let Stmt::Class {
+            name,
+            private_variables,
+            public_variables,
+            ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "C");
             assert!(private_variables.is_empty());
             assert_eq!(public_variables.len(), 1);
@@ -180,7 +205,14 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Class { name, private_variables, public_fields, public_variables, .. } = &stmts[0] {
+        if let Stmt::Class {
+            name,
+            private_variables,
+            public_fields,
+            public_variables,
+            ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "Data");
             assert!(private_variables.is_empty());
             assert_eq!(public_fields.len(), 1);
@@ -204,7 +236,12 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Class { name, public_fields, .. } = &stmts[0] {
+        if let Stmt::Class {
+            name,
+            public_fields,
+            ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "Point");
             assert_eq!(public_fields.len(), 2);
             assert_eq!(public_fields[0].name, "x");
@@ -227,7 +264,13 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Class { name, private_fields, public_fields, .. } = &stmts[0] {
+        if let Stmt::Class {
+            name,
+            private_fields,
+            public_fields,
+            ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "Data");
             assert_eq!(private_fields.len(), 2);
             assert_eq!(private_fields[0].name, "id");
@@ -272,7 +315,15 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Class { name, private_fields, protected_fields, protected_variables, public_fields, .. } = &stmts[0] {
+        if let Stmt::Class {
+            name,
+            private_fields,
+            protected_fields,
+            protected_variables,
+            public_fields,
+            ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "Base");
             assert_eq!(private_fields.len(), 1);
             assert_eq!(private_fields[0].name, "a");
@@ -300,7 +351,14 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Class { name, private_fields, public_fields, constructors, .. } = &stmts[0] {
+        if let Stmt::Class {
+            name,
+            private_fields,
+            public_fields,
+            constructors,
+            ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "Parent");
             assert!(private_fields.is_empty());
             assert_eq!(public_fields.len(), 1);
@@ -326,7 +384,10 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Class { name, constructors, .. } = &stmts[0] {
+        if let Stmt::Class {
+            name, constructors, ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "Point");
             assert_eq!(constructors.len(), 1);
             assert_eq!(constructors[0].params.len(), 2);
@@ -394,10 +455,17 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
         let result = parser.parse();
-        assert!(result.is_err(), "expected parse error when @class is not first param");
+        assert!(
+            result.is_err(),
+            "expected parse error when @class is not first param"
+        );
         let err = result.unwrap_err();
         let err_msg = format!("{:?}", err);
-        assert!(err_msg.contains("@class can only be the first"), "expected message about @class first, got {}", err_msg);
+        assert!(
+            err_msg.contains("@class can only be the first"),
+            "expected message about @class first, got {}",
+            err_msg
+        );
     }
 
     #[test]
@@ -413,7 +481,10 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
         let result = parser.parse();
-        assert!(result.is_err(), "expected parse error for constructor name mismatch");
+        assert!(
+            result.is_err(),
+            "expected parse error for constructor name mismatch"
+        );
     }
 
     // ========== Парсер: наследование (superclass, delegate_args) ==========
@@ -428,7 +499,13 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Class { name, superclass, public_fields, .. } = &stmts[0] {
+        if let Stmt::Class {
+            name,
+            superclass,
+            public_fields,
+            ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "Child");
             assert_eq!(superclass.as_deref(), Some("Parent"));
             assert_eq!(public_fields.len(), 1);
@@ -446,7 +523,10 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Class { name, superclass, .. } = &stmts[0] {
+        if let Stmt::Class {
+            name, superclass, ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "Empty");
             assert!(superclass.is_none());
         } else {
@@ -466,7 +546,10 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Class { name, constructors, .. } = &stmts[0] {
+        if let Stmt::Class {
+            name, constructors, ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "Child");
             assert_eq!(constructors.len(), 1);
             let delegate_args = &constructors[0].delegate_args;
@@ -913,7 +996,20 @@ mod tests {
         "#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 2);
-        if let (Stmt::Class { name: pname, superclass: psuper, .. }, Stmt::Class { name: cname, superclass: csuper, constructors, .. }) = (&stmts[0], &stmts[1]) {
+        if let (
+            Stmt::Class {
+                name: pname,
+                superclass: psuper,
+                ..
+            },
+            Stmt::Class {
+                name: cname,
+                superclass: csuper,
+                constructors,
+                ..
+            },
+        ) = (&stmts[0], &stmts[1])
+        {
             assert_eq!(pname, "Parent");
             assert!(psuper.is_none());
             assert_eq!(cname, "Child");
@@ -1039,7 +1135,11 @@ mod tests {
         "#;
         // Проверяем, что публичное поле label доступно (результат последнего выражения — строка "A").
         let v = run_ok(source);
-        assert!(matches!(v, Value::String(ref s) if s == "A"), "expected String(\"A\"), got {:?}", v);
+        assert!(
+            matches!(v, Value::String(ref s) if s == "A"),
+            "expected String(\"A\"), got {:?}",
+            v
+        );
     }
 
     #[test]
@@ -1231,7 +1331,11 @@ mod tests {
             b.name
         "#;
         let v = run_ok(source);
-        assert!(matches!(v, Value::String(ref s) if s == "my_base"), "expected String(my_base), got {:?}", v);
+        assert!(
+            matches!(v, Value::String(ref s) if s == "my_base"),
+            "expected String(my_base), got {:?}",
+            v
+        );
     }
 
     #[test]

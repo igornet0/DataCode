@@ -1,16 +1,16 @@
 // Единый тип значений для VM
 
-use std::path::PathBuf;
-use std::rc::Rc;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use crate::common::table::Table;
 use crate::common::value_store::ValueId;
 use crate::common::TaggedValue;
-use crate::plot::{Image, Figure, Axis, PlotWindowHandle};
 use crate::database_engine::cluster::DatabaseCluster;
 use crate::database_engine::engine::DatabaseEngine;
+use crate::plot::{Axis, Figure, Image, PlotWindowHandle};
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
+use std::rc::Rc;
 
 /// Backing for [`Value::ArrayView`]: store cell or shared heap vec (zero-copy slice / chunk).
 #[derive(Debug, Clone)]
@@ -64,7 +64,9 @@ impl PartialEq for ArrayViewData {
         self.offset == other.offset
             && self.length == other.length
             && match (&self.source, &other.source) {
-                (ArrayViewSource::Store { base_id: a }, ArrayViewSource::Store { base_id: b }) => a == b,
+                (ArrayViewSource::Store { base_id: a }, ArrayViewSource::Store { base_id: b }) => {
+                    a == b
+                }
                 (ArrayViewSource::Heap(ra), ArrayViewSource::Heap(rb)) => Rc::ptr_eq(ra, rb),
                 _ => false,
             }
@@ -118,10 +120,13 @@ pub enum Value {
     Function(usize), // Индекс функции в массиве функций (main chunk или legacy)
     /// Функция из импортированного модуля: разрешается в момент Call через module_registry.
     /// module_uid = hash(module_path), stable across VMs so shared cached objects work.
-    ModuleFunction { module_uid: u64, local_index: usize },
+    ModuleFunction {
+        module_uid: u64,
+        local_index: usize,
+    },
     NativeFunction(usize), // Индекс нативной функции
-    Path(PathBuf), // Путь к файлу или директории
-    Uuid(u64, u64), // 128-bit UUID (hi, lo), value-type, ABI-friendly
+    Path(PathBuf),         // Путь к файлу или директории
+    Uuid(u64, u64),        // 128-bit UUID (hi, lo), value-type, ABI-friendly
     Table(Rc<RefCell<Table>>),
     Object(Rc<RefCell<HashMap<String, Value>>>), // Словарь/объект: ключ-значение (обернут в Rc<RefCell> для мутабельности)
     ColumnReference {
@@ -129,14 +134,20 @@ pub enum Value {
         column_name: String,
     },
     /// Opaque plugin-owned object (`tag` + `id`); semantics defined by the plugin (e.g. dylib).
-    PluginOpaque { tag: u8, id: u64 },
+    PluginOpaque {
+        tag: u8,
+        id: u64,
+    },
     Window(PlotWindowHandle), // Runtime only holds WindowId - Window lives in GUI thread
     Image(Rc<RefCell<Image>>),
     Figure(Rc<RefCell<Figure>>),
     Axis(Rc<RefCell<Axis>>),
     DatabaseEngine(Rc<RefCell<DatabaseEngine>>),
     DatabaseCluster(Rc<RefCell<DatabaseCluster>>),
-    Enumerate { data: Rc<RefCell<Vec<Value>>>, start: i64 }, // enum(iterable): lazy (idx, element) wrapper
+    Enumerate {
+        data: Rc<RefCell<Vec<Value>>>,
+        start: i64,
+    }, // enum(iterable): lazy (idx, element) wrapper
     /// Zero-copy view; see [`ArrayViewData`].
     ArrayView(ArrayViewData),
     /// Raw bytes from a file or similar; slice with `ByteBuffer::slice_range` / VM slice ops.
@@ -244,9 +255,7 @@ impl Clone for IterableInner {
                 index: 0,
             },
             Self::Chunks {
-                source,
-                chunk_size,
-                ..
+                source, chunk_size, ..
             } => Self::Chunks {
                 source: source.clone(),
                 chunk_size: *chunk_size,
@@ -264,61 +273,97 @@ impl std::fmt::Debug for Value {
         match self {
             Value::Object(map_rc) => {
                 let map = map_rc.borrow();
-                if map.get("__meta").and_then(|v| {
-                    if let Value::Bool(b) = v { Some(*b) } else { None }
-                }).unwrap_or(false) {
-                    let schema = map.get("schema").map(|v| v.to_string()).unwrap_or_else(|| "?".to_string());
+                if map
+                    .get("__meta")
+                    .and_then(|v| {
+                        if let Value::Bool(b) = v {
+                            Some(*b)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false)
+                {
+                    let schema = map
+                        .get("schema")
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "?".to_string());
                     return write!(f, "Object(<metadata: schema={}>)", schema);
                 }
-                if map.get("__create_all").and_then(|v| {
-                    if let Value::Bool(b) = v { Some(*b) } else { None }
-                }).unwrap_or(false) {
+                if map
+                    .get("__create_all")
+                    .and_then(|v| {
+                        if let Value::Bool(b) = v {
+                            Some(*b)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false)
+                {
                     return write!(f, "Object(<create_all>)");
                 }
-                f.debug_map().entries(map.iter().map(|(k, v)| (k, v))).finish()
+                f.debug_map().entries(map.iter()).finish()
             }
-            _ => {
-                match self {
-                    Value::Number(n) => std::fmt::Debug::fmt(n, f),
-                    Value::Bool(b) => std::fmt::Debug::fmt(b, f),
-                    Value::String(s) => std::fmt::Debug::fmt(s, f),
-                    Value::Array(arr) => f.debug_tuple("Array").field(&arr.borrow()).finish(),
-                    Value::Tuple(tup) => f.debug_tuple("Tuple").field(&tup.borrow()).finish(),
-                    Value::Function(i) => f.debug_tuple("Function").field(i).finish(),
-                    Value::ModuleFunction { module_uid, local_index } => f.debug_struct("ModuleFunction").field("module_uid", module_uid).field("local_index", local_index).finish(),
-                    Value::NativeFunction(i) => f.debug_tuple("NativeFunction").field(i).finish(),
-                    Value::Path(p) => f.debug_tuple("Path").field(p).finish(),
-                    Value::Uuid(hi, lo) => f.debug_tuple("Uuid").field(hi).field(lo).finish(),
-                    Value::Table(t) => f.debug_tuple("Table").field(&t.borrow()).finish(),
-                    Value::Object(_) => unreachable!(),
-                    Value::ColumnReference { table, column_name } => f.debug_struct("ColumnReference").field("table", table).field("column_name", column_name).finish(),
-                    Value::PluginOpaque { tag, id } => f
-                        .debug_struct("PluginOpaque")
-                        .field("tag", tag)
-                        .field("id", id)
-                        .finish(),
-                    Value::Window(h) => f.debug_tuple("Window").field(h).finish(),
-                    Value::Image(img) => f.debug_tuple("Image").field(&img.borrow()).finish(),
-                    Value::Figure(fig) => f.debug_tuple("Figure").field(&fig.borrow()).finish(),
-                    Value::Axis(ax) => f.debug_tuple("Axis").field(&ax.borrow()).finish(),
-                    Value::DatabaseEngine(e) => f.debug_tuple("DatabaseEngine").field(&e.borrow()).finish(),
-                    Value::DatabaseCluster(c) => f.debug_tuple("DatabaseCluster").field(&c.borrow()).finish(),
-                    Value::Enumerate { data, start } => f.debug_struct("Enumerate").field("data", &data.borrow()).field("start", start).finish(),
-                    Value::ArrayView(av) => f
-                        .debug_struct("ArrayView")
-                        .field("offset", &av.offset)
-                        .field("length", &av.length)
-                        .finish_non_exhaustive(),
-                    Value::Iterable(_) => write!(f, "Iterable(<lazy>)"),
-                    Value::Generator(g) => f.debug_tuple("Generator").field(&Rc::as_ptr(g)).finish(),
-                    Value::ByteBuffer(b) => f
-                        .debug_struct("ByteBuffer")
-                        .field("len", &b.len)
-                        .finish_non_exhaustive(),
-                    Value::Null => write!(f, "Null"),
-                    Value::Ellipsis => write!(f, "Ellipsis"),
+            _ => match self {
+                Value::Number(n) => std::fmt::Debug::fmt(n, f),
+                Value::Bool(b) => std::fmt::Debug::fmt(b, f),
+                Value::String(s) => std::fmt::Debug::fmt(s, f),
+                Value::Array(arr) => f.debug_tuple("Array").field(&arr.borrow()).finish(),
+                Value::Tuple(tup) => f.debug_tuple("Tuple").field(&tup.borrow()).finish(),
+                Value::Function(i) => f.debug_tuple("Function").field(i).finish(),
+                Value::ModuleFunction {
+                    module_uid,
+                    local_index,
+                } => f
+                    .debug_struct("ModuleFunction")
+                    .field("module_uid", module_uid)
+                    .field("local_index", local_index)
+                    .finish(),
+                Value::NativeFunction(i) => f.debug_tuple("NativeFunction").field(i).finish(),
+                Value::Path(p) => f.debug_tuple("Path").field(p).finish(),
+                Value::Uuid(hi, lo) => f.debug_tuple("Uuid").field(hi).field(lo).finish(),
+                Value::Table(t) => f.debug_tuple("Table").field(&t.borrow()).finish(),
+                Value::Object(_) => unreachable!(),
+                Value::ColumnReference { table, column_name } => f
+                    .debug_struct("ColumnReference")
+                    .field("table", table)
+                    .field("column_name", column_name)
+                    .finish(),
+                Value::PluginOpaque { tag, id } => f
+                    .debug_struct("PluginOpaque")
+                    .field("tag", tag)
+                    .field("id", id)
+                    .finish(),
+                Value::Window(h) => f.debug_tuple("Window").field(h).finish(),
+                Value::Image(img) => f.debug_tuple("Image").field(&img.borrow()).finish(),
+                Value::Figure(fig) => f.debug_tuple("Figure").field(&fig.borrow()).finish(),
+                Value::Axis(ax) => f.debug_tuple("Axis").field(&ax.borrow()).finish(),
+                Value::DatabaseEngine(e) => {
+                    f.debug_tuple("DatabaseEngine").field(&e.borrow()).finish()
                 }
-            }
+                Value::DatabaseCluster(c) => {
+                    f.debug_tuple("DatabaseCluster").field(&c.borrow()).finish()
+                }
+                Value::Enumerate { data, start } => f
+                    .debug_struct("Enumerate")
+                    .field("data", &data.borrow())
+                    .field("start", start)
+                    .finish(),
+                Value::ArrayView(av) => f
+                    .debug_struct("ArrayView")
+                    .field("offset", &av.offset)
+                    .field("length", &av.length)
+                    .finish_non_exhaustive(),
+                Value::Iterable(_) => write!(f, "Iterable(<lazy>)"),
+                Value::Generator(g) => f.debug_tuple("Generator").field(&Rc::as_ptr(g)).finish(),
+                Value::ByteBuffer(b) => f
+                    .debug_struct("ByteBuffer")
+                    .field("len", &b.len)
+                    .finish_non_exhaustive(),
+                Value::Null => write!(f, "Null"),
+                Value::Ellipsis => write!(f, "Ellipsis"),
+            },
         }
     }
 }
@@ -333,7 +378,16 @@ impl PartialEq for Value {
             (Value::ArrayView(a), Value::ArrayView(b)) => a == b,
             (Value::Tuple(a), Value::Tuple(b)) => *a.borrow() == *b.borrow(),
             (Value::Function(a), Value::Function(b)) => a == b,
-            (Value::ModuleFunction { module_uid: a_uid, local_index: a_li }, Value::ModuleFunction { module_uid: b_uid, local_index: b_li }) => a_uid == b_uid && a_li == b_li,
+            (
+                Value::ModuleFunction {
+                    module_uid: a_uid,
+                    local_index: a_li,
+                },
+                Value::ModuleFunction {
+                    module_uid: b_uid,
+                    local_index: b_li,
+                },
+            ) => a_uid == b_uid && a_li == b_li,
             (Value::NativeFunction(a), Value::NativeFunction(b)) => a == b,
             (Value::Path(a), Value::Path(b)) => a == b,
             (Value::Uuid(hi_a, lo_a), Value::Uuid(hi_b, lo_b)) => hi_a == hi_b && lo_a == lo_b,
@@ -342,19 +396,62 @@ impl PartialEq for Value {
                 let am = a.borrow();
                 let bm = b.borrow();
                 // MetaData and create_all have circular refs; compare by pointer to avoid recursion
-                let a_meta = am.get("__meta").and_then(|v| if let Value::Bool(x) = v { Some(*x) } else { None }).unwrap_or(false);
-                let a_create_all = am.get("__create_all").and_then(|v| if let Value::Bool(x) = v { Some(*x) } else { None }).unwrap_or(false);
-                let b_meta = bm.get("__meta").and_then(|v| if let Value::Bool(x) = v { Some(*x) } else { None }).unwrap_or(false);
-                let b_create_all = bm.get("__create_all").and_then(|v| if let Value::Bool(x) = v { Some(*x) } else { None }).unwrap_or(false);
+                let a_meta = am
+                    .get("__meta")
+                    .and_then(|v| {
+                        if let Value::Bool(x) = v {
+                            Some(*x)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
+                let a_create_all = am
+                    .get("__create_all")
+                    .and_then(|v| {
+                        if let Value::Bool(x) = v {
+                            Some(*x)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
+                let b_meta = bm
+                    .get("__meta")
+                    .and_then(|v| {
+                        if let Value::Bool(x) = v {
+                            Some(*x)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
+                let b_create_all = bm
+                    .get("__create_all")
+                    .and_then(|v| {
+                        if let Value::Bool(x) = v {
+                            Some(*x)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
                 if (a_meta || a_create_all) && (b_meta || b_create_all) {
                     std::rc::Rc::ptr_eq(a, b)
                 } else {
                     *am == *bm
                 }
-            },
-            (Value::ColumnReference { table: a, column_name: col_a }, Value::ColumnReference { table: b, column_name: col_b }) => {
-                Rc::ptr_eq(a, b) && col_a == col_b
-            },
+            }
+            (
+                Value::ColumnReference {
+                    table: a,
+                    column_name: col_a,
+                },
+                Value::ColumnReference {
+                    table: b,
+                    column_name: col_b,
+                },
+            ) => Rc::ptr_eq(a, b) && col_a == col_b,
             (Value::PluginOpaque { tag: ta, id: ia }, Value::PluginOpaque { tag: tb, id: ib }) => {
                 ta == tb && ia == ib
             }
@@ -364,13 +461,13 @@ impl PartialEq for Value {
             (Value::Axis(a), Value::Axis(b)) => Rc::ptr_eq(a, b),
             (Value::DatabaseEngine(a), Value::DatabaseEngine(b)) => Rc::ptr_eq(a, b),
             (Value::DatabaseCluster(a), Value::DatabaseCluster(b)) => Rc::ptr_eq(a, b),
-            (Value::Enumerate { data: a, start: sa }, Value::Enumerate { data: b, start: sb }) => Rc::ptr_eq(a, b) && sa == sb,
+            (Value::Enumerate { data: a, start: sa }, Value::Enumerate { data: b, start: sb }) => {
+                Rc::ptr_eq(a, b) && sa == sb
+            }
             (Value::Iterable(a), Value::Iterable(b)) => Rc::ptr_eq(a, b),
             (Value::Generator(a), Value::Generator(b)) => Rc::ptr_eq(a, b),
             (Value::ByteBuffer(a), Value::ByteBuffer(b)) => {
-                a.len == b.len
-                    && a.bytes.as_ptr() == b.bytes.as_ptr()
-                    && a.offset == b.offset
+                a.len == b.len && a.bytes.as_ptr() == b.bytes.as_ptr() && a.offset == b.offset
             }
             (Value::Null, Value::Null) => true,
             (Value::Ellipsis, Value::Ellipsis) => true,
@@ -383,7 +480,15 @@ impl Value {
     /// Проверяет, можно ли использовать это значение как ключ кэша
     /// (только простые типы: Number, Bool, String, Null)
     pub fn is_hashable(&self) -> bool {
-        matches!(self, Value::Number(_) | Value::Bool(_) | Value::String(_) | Value::Uuid(_, _) | Value::Null | Value::Ellipsis)
+        matches!(
+            self,
+            Value::Number(_)
+                | Value::Bool(_)
+                | Value::String(_)
+                | Value::Uuid(_, _)
+                | Value::Null
+                | Value::Ellipsis
+        )
     }
 
     pub fn is_truthy(&self) -> bool {
@@ -391,21 +496,21 @@ impl Value {
             Value::Null => false,
             Value::Bool(false) => false,
             Value::Number(n) => *n != 0.0,
-            Value::String(s) => !s.is_empty(),  // Пустая строка = false
+            Value::String(s) => !s.is_empty(), // Пустая строка = false
             Value::Array(arr) => !arr.borrow().is_empty(),
             Value::ArrayView(av) => av.length > 0,
             Value::Tuple(tuple) => !tuple.borrow().is_empty(),
-            Value::Path(p) => !p.as_os_str().is_empty(),  // Путь не пустой = true
-            Value::Uuid(_, _) => true,  // UUID всегда truthy
-            Value::Table(table) => table.borrow().len() > 0,  // Таблица не пустая = true
-            Value::Object(map_rc) => !map_rc.borrow().is_empty(),  // Объект не пустой = true
+            Value::Path(p) => !p.as_os_str().is_empty(), // Путь не пустой = true
+            Value::Uuid(_, _) => true,                   // UUID всегда truthy
+            Value::Table(table) => table.borrow().len() > 0, // Таблица не пустая = true
+            Value::Object(map_rc) => !map_rc.borrow().is_empty(), // Объект не пустой = true
             Value::ColumnReference { table, column_name } => {
                 if let Some(column) = table.borrow_mut().get_column(column_name) {
                     !column.is_empty()
                 } else {
                     false
                 }
-            },
+            }
             Value::PluginOpaque { .. } => true,
             Value::Window(_) => true,
             Value::Image(_) => true,
@@ -456,9 +561,10 @@ impl Value {
                 if get_use_ve() {
                     if let Some(session_path) = get_user_session_path() {
                         // Канонизируем оба пути для корректного сравнения
-                        let canonical_session = session_path.canonicalize().ok().unwrap_or(session_path);
+                        let canonical_session =
+                            session_path.canonicalize().ok().unwrap_or(session_path);
                         let canonical_path = p.canonicalize().ok().unwrap_or(p.clone());
-                        
+
                         // Проверяем, начинается ли путь с пути сессии
                         if let Ok(stripped) = canonical_path.strip_prefix(&canonical_session) {
                             // Формируем относительный путь с префиксом ./
@@ -467,7 +573,7 @@ impl Value {
                                 "./".to_string()
                             } else {
                                 // Убираем начальные слеши и добавляем ./
-                                let trimmed = relative.trim_start_matches(|c| c == '/' || c == '\\');
+                                let trimmed = relative.trim_start_matches(['/', '\\']);
                                 if trimmed.is_empty() {
                                     "./".to_string()
                                 } else {
@@ -486,31 +592,56 @@ impl Value {
                     // Не режим --use-ve - возвращаем полный путь
                     p.to_string_lossy().to_string()
                 }
-            },
+            }
             Value::Table(table) => {
                 let t = table.borrow();
                 format!("<table: {} rows, {} columns>", t.len(), t.column_count())
             }
             Value::ColumnReference { table, column_name } => {
                 let mut t = table.borrow_mut();
-                let name: String = t.name.as_ref().map(|n| n.as_str()).unwrap_or("table").to_string();
+                let name: String = t
+                    .name
+                    .as_ref()
+                    .map(|n| n.as_str())
+                    .unwrap_or("table")
+                    .to_string();
                 if let Some(column) = t.get_column(column_name) {
-                    format!("<column: {}.{} ({} values)>", name, column_name, column.len())
+                    format!(
+                        "<column: {}.{} ({} values)>",
+                        name,
+                        column_name,
+                        column.len()
+                    )
                 } else {
-                    format!("<column: {}.{} (not found)>",
+                    format!(
+                        "<column: {}.{} (not found)>",
                         t.name.as_ref().map(|n| n.as_str()).unwrap_or("table"),
-                        column_name)
+                        column_name
+                    )
                 }
             }
             Value::Object(map_rc) => {
                 let map = map_rc.borrow();
-                if map.get("__meta").and_then(|v| {
-                    if let Value::Bool(b) = v { Some(*b) } else { None }
-                }).unwrap_or(false) {
-                    return format!("<metadata: schema={}>",
-                        map.get("schema").map(|v| v.to_string()).unwrap_or_else(|| "?".to_string()));
+                if map
+                    .get("__meta")
+                    .and_then(|v| {
+                        if let Value::Bool(b) = v {
+                            Some(*b)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false)
+                {
+                    return format!(
+                        "<metadata: schema={}>",
+                        map.get("schema")
+                            .map(|v| v.to_string())
+                            .unwrap_or_else(|| "?".to_string())
+                    );
                 }
-                let pairs: Vec<String> = map.iter()
+                let pairs: Vec<String> = map
+                    .iter()
                     .map(|(k, v)| format!("\"{}\": {}", k, v.to_string()))
                     .collect();
                 format!("{{{}}}", pairs.join(", "))
@@ -527,10 +658,17 @@ impl Value {
             }
             Value::Figure(figure) => {
                 let fig = figure.borrow();
-                format!("<figure: {}x{} axes, figsize=({}, {})>", 
-                    fig.axes.len(), 
-                    if !fig.axes.is_empty() { fig.axes[0].len() } else { 0 },
-                    fig.figsize.0, fig.figsize.1)
+                format!(
+                    "<figure: {}x{} axes, figsize=({}, {})>",
+                    fig.axes.len(),
+                    if !fig.axes.is_empty() {
+                        fig.axes[0].len()
+                    } else {
+                        0
+                    },
+                    fig.figsize.0,
+                    fig.figsize.1
+                )
             }
             Value::Axis(_) => {
                 format!("<axis>")
@@ -567,8 +705,14 @@ impl Value {
                     u32::from_be_bytes([hi_b[0], hi_b[1], hi_b[2], hi_b[3]]),
                     u16::from_be_bytes([hi_b[4], hi_b[5]]),
                     u16::from_be_bytes([hi_b[6], hi_b[7]]),
-                    lo_b[0], lo_b[1],
-                    lo_b[2], lo_b[3], lo_b[4], lo_b[5], lo_b[6], lo_b[7]
+                    lo_b[0],
+                    lo_b[1],
+                    lo_b[2],
+                    lo_b[3],
+                    lo_b[4],
+                    lo_b[5],
+                    lo_b[6],
+                    lo_b[7]
                 )
             }
             Value::Null => "null".to_string(),
@@ -627,56 +771,62 @@ impl Clone for Value {
                 let arr_ref = arr.borrow();
                 let cloned_vec: Vec<Value> = arr_ref.iter().map(|v| v.clone()).collect();
                 Value::Array(Rc::new(RefCell::new(cloned_vec)))
-            },
+            }
             Value::Tuple(tuple) => {
                 // Создаем глубокую копию кортежа, рекурсивно клонируя все элементы
                 let tuple_ref = tuple.borrow();
                 let cloned_vec: Vec<Value> = tuple_ref.iter().map(|v| v.clone()).collect();
                 Value::Tuple(Rc::new(RefCell::new(cloned_vec)))
-            },
+            }
             Value::Function(idx) => Value::Function(*idx),
-            Value::ModuleFunction { module_uid, local_index } => Value::ModuleFunction { module_uid: *module_uid, local_index: *local_index },
+            Value::ModuleFunction {
+                module_uid,
+                local_index,
+            } => Value::ModuleFunction {
+                module_uid: *module_uid,
+                local_index: *local_index,
+            },
             Value::NativeFunction(idx) => Value::NativeFunction(*idx),
             Value::Path(p) => Value::Path(p.clone()),
             Value::Uuid(hi, lo) => Value::Uuid(*hi, *lo),
             Value::Table(table) => {
                 // Создаем новый Rc с глубокой копией таблицы
                 Value::Table(Rc::new(RefCell::new(table.borrow().clone())))
-            },
+            }
             Value::ColumnReference { table, column_name } => {
                 // Для ColumnReference клонируем ссылку на таблицу и имя колонки
                 Value::ColumnReference {
                     table: table.clone(),
                     column_name: column_name.clone(),
                 }
-            },
+            }
             Value::Object(map_rc) => {
                 // Клонируем Rc (shallow copy), чтобы изменения сохранялись
                 Value::Object(map_rc.clone())
-            },
-            Value::PluginOpaque { tag, id } => Value::PluginOpaque {
-                tag: *tag,
-                id: *id,
-            },
+            }
+            Value::PluginOpaque { tag, id } => Value::PluginOpaque { tag: *tag, id: *id },
             Value::Window(handle) => {
                 // WindowHandle is Copy, so just copy it
                 Value::Window(*handle)
-            },
+            }
             Value::Image(image) => {
                 // Клонируем Rc (shallow copy), чтобы изменения сохранялись
                 Value::Image(image.clone())
-            },
+            }
             Value::Figure(figure) => {
                 // Клонируем Rc (shallow copy), чтобы изменения сохранялись
                 Value::Figure(figure.clone())
-            },
+            }
             Value::Axis(axis) => {
                 // Клонируем Rc (shallow copy), чтобы изменения сохранялись
                 Value::Axis(axis.clone())
-            },
+            }
             Value::DatabaseEngine(engine) => Value::DatabaseEngine(engine.clone()),
             Value::DatabaseCluster(cluster) => Value::DatabaseCluster(cluster.clone()),
-            Value::Enumerate { data, start } => Value::Enumerate { data: data.clone(), start: *start },
+            Value::Enumerate { data, start } => Value::Enumerate {
+                data: data.clone(),
+                start: *start,
+            },
             Value::ArrayView(av) => Value::ArrayView(av.clone()),
             // Share iterator state (Rc) — deep clone would reset IterableInner indices and break for-in / iterable_next.
             Value::Iterable(rc) => Value::Iterable(Rc::clone(rc)),
@@ -687,4 +837,3 @@ impl Clone for Value {
         }
     }
 }
-

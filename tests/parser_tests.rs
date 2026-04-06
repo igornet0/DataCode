@@ -1,9 +1,9 @@
 // Тесты для парсера
 #[cfg(test)]
 mod tests {
-    use data_code::parser::{Parser, Stmt};
     use data_code::lexer::Lexer;
-    use data_code::parser::ast::{Expr, Arg, ImportItem, ImportStmt};
+    use data_code::parser::ast::{Arg, Expr, ImportItem, ImportStmt};
+    use data_code::parser::{Parser, Stmt};
 
     fn parse(source: &str) -> Vec<Stmt> {
         let mut lexer = Lexer::new(source);
@@ -75,9 +75,12 @@ mod tests {
         let source = "global x = 10";
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Let { name, is_global, .. } = &stmts[0] {
+        if let Stmt::Let {
+            name, is_global, ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "x");
-            assert_eq!(*is_global, true);
+            assert!(*is_global);
         } else {
             panic!("Expected Let statement with is_global=true");
         }
@@ -88,9 +91,12 @@ mod tests {
         let source = "let x = 10";
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
-        if let Stmt::Let { name, is_global, .. } = &stmts[0] {
+        if let Stmt::Let {
+            name, is_global, ..
+        } = &stmts[0]
+        {
             assert_eq!(name, "x");
-            assert_eq!(*is_global, false);
+            assert!(!(*is_global));
         } else {
             panic!("Expected Let statement with is_global=false");
         }
@@ -133,7 +139,7 @@ mod tests {
                 assert_eq!(args.len(), 2);
                 // Первый аргумент должен быть позиционным
                 match &args[0] {
-                    Arg::Positional(_) => {},
+                    Arg::Positional(_) => {}
                     _ => panic!("Expected positional argument"),
                 }
                 // Второй аргумент должен быть именованным
@@ -161,7 +167,7 @@ mod tests {
                 // Оба аргумента должны быть именованными
                 for arg in args {
                     match arg {
-                        Arg::Named { .. } => {},
+                        Arg::Named { .. } => {}
                         _ => panic!("Expected all named arguments"),
                     }
                 }
@@ -201,7 +207,7 @@ mod tests {
                 assert_eq!(args.len(), 2);
                 // Первый аргумент должен быть позиционным (вызов функции path)
                 match &args[0] {
-                    Arg::Positional(_) => {},
+                    Arg::Positional(_) => {}
                     _ => panic!("Expected positional argument"),
                 }
                 // Второй аргумент должен быть именованным
@@ -246,10 +252,18 @@ mod tests {
         };
         // Argument must be Property(Property(User, "metadata"), "create_all"), not just Variable(User)
         let Expr::Property { name, object, .. } = arg_expr else {
-            panic!("expected argument to be Property (member chain), got {:?}", arg_expr);
+            panic!(
+                "expected argument to be Property (member chain), got {:?}",
+                arg_expr
+            );
         };
         assert_eq!(name, "create_all");
-        let Expr::Property { name: inner_name, object: inner_obj, .. } = object.as_ref() else {
+        let Expr::Property {
+            name: inner_name,
+            object: inner_obj,
+            ..
+        } = object.as_ref()
+        else {
             panic!("expected inner Property (metadata), got {:?}", object);
         };
         assert_eq!(inner_name, "metadata");
@@ -303,4 +317,3 @@ let x = 1"#;
         assert!(matches!(&items[1], ImportItem::Named(n) if n == "bar"));
     }
 }
-

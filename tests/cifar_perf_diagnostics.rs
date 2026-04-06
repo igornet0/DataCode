@@ -36,7 +36,7 @@ b - a
 "#;
     let v = run(source).expect("run");
     match v {
-        Value::Number(n) => assert!(n >= 0.0 && n < 1_000_000.0, "delta ms {}", n),
+        Value::Number(n) => assert!((0.0..1_000_000.0).contains(&n), "delta ms {}", n),
         other => panic!("expected Number, got {:?}", other),
     }
 }
@@ -44,8 +44,8 @@ b - a
 /// Fast sanity check: tiny bin file, full diagnostic script.
 #[test]
 fn cifar_diagnostics_script_runs_on_sample_bin() {
-    let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/test_data/read_file_bin_sample.bin");
+    let sample =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/test_data/read_file_bin_sample.bin");
     let p = sample.to_string_lossy();
     let src = diagnostics_smoke_source(&p);
     run_with_base_path(&src, PathBuf::from(env!("CARGO_MANIFEST_DIR")).as_path())
@@ -55,8 +55,8 @@ fn cifar_diagnostics_script_runs_on_sample_bin() {
 /// After `read_file_bin`, `chunk(n)[0]` must be a scalar Number (CIFAR label byte), not a pixel slice.
 #[test]
 fn cifar_chunk_index0_is_number_on_sample_bin() {
-    let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/test_data/read_file_bin_sample.bin");
+    let sample =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/test_data/read_file_bin_sample.bin");
     let p = sample.to_string_lossy();
     let src = format!(
         r#"let data = read_file_bin("{}")
@@ -76,8 +76,8 @@ ch0[0]"#,
 /// Sample file is 3 bytes `01 02 ff`: one full chunk of 3, `ch[0]+len(ch[1:])` = 1 + 2 = 3.
 #[test]
 fn cifar_read_file_bin_slice_then_chunk_label_and_tail_len() {
-    let sample = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/test_data/read_file_bin_sample.bin");
+    let sample =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/test_data/read_file_bin_sample.bin");
     let p = sample.to_string_lossy();
     let src = format!(
         r#"let data = read_file_bin("{}")

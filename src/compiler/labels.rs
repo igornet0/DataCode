@@ -1,5 +1,4 @@
 /// Управление метками и jump-инструкциями
-
 use crate::bytecode::{Chunk, OpCode};
 use crate::common::error::LangError;
 
@@ -22,8 +21,13 @@ impl LabelManager {
     }
 
     /// Регистрирует ForRange для последующей подстановки end_offset при finalize_jumps.
-    pub fn register_for_range_end(&mut self, forrange_instruction_index: usize, end_label_id: usize) {
-        self.pending_for_range.push((forrange_instruction_index, end_label_id));
+    pub fn register_for_range_end(
+        &mut self,
+        forrange_instruction_index: usize,
+        end_label_id: usize,
+    ) {
+        self.pending_for_range
+            .push((forrange_instruction_index, end_label_id));
     }
 
     pub fn create_label(&mut self) -> usize {
@@ -36,7 +40,13 @@ impl LabelManager {
         self.labels.insert(label_id, instruction_index);
     }
 
-    pub fn emit_jump(&mut self, chunk: &mut Chunk, current_line: usize, is_conditional: bool, label_id: usize) -> Result<usize, LangError> {
+    pub fn emit_jump(
+        &mut self,
+        chunk: &mut Chunk,
+        current_line: usize,
+        is_conditional: bool,
+        label_id: usize,
+    ) -> Result<usize, LangError> {
         let jump_index = chunk.code.len();
         let opcode = if is_conditional {
             OpCode::JumpIfFalseLabel(label_id)
@@ -44,11 +54,17 @@ impl LabelManager {
             OpCode::JumpLabel(label_id)
         };
         chunk.write_with_line(opcode, current_line);
-        self.pending_jumps.push((jump_index, label_id, is_conditional));
+        self.pending_jumps
+            .push((jump_index, label_id, is_conditional));
         Ok(jump_index)
     }
 
-    pub fn emit_loop(&mut self, chunk: &mut Chunk, current_line: usize, loop_label_id: usize) -> Result<(), LangError> {
+    pub fn emit_loop(
+        &mut self,
+        chunk: &mut Chunk,
+        current_line: usize,
+        loop_label_id: usize,
+    ) -> Result<(), LangError> {
         self.emit_jump(chunk, current_line, false, loop_label_id)?;
         Ok(())
     }
@@ -63,22 +79,22 @@ impl LabelManager {
             OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_) => 2, // Временно считаем как Jump8 до финализации
             OpCode::ForRange(_, _, _, _, _) | OpCode::ForRangeNext(_) | OpCode::PopForRange => 1,
             OpCode::CoerceForInIterable(_) | OpCode::ForIterableNext(_) => 1,
-            
+
             // Инструкции с параметрами
-            OpCode::Constant(_) => 2,  // 1 байт opcode + 1 байт индекс константы (usize может быть больше, но упрощаем)
+            OpCode::Constant(_) => 2, // 1 байт opcode + 1 байт индекс константы (usize может быть больше, но упрощаем)
             OpCode::LoadLocal(_) | OpCode::StoreLocal(_) => 2, // 1 байт opcode + 1 байт индекс
             OpCode::LoadGlobal(_) | OpCode::StoreGlobal(_) => 2, // 1 байт opcode + 1 байт индекс
-            OpCode::Call(_) => 2, // 1 байт opcode + 1 байт количество аргументов
+            OpCode::Call(_) => 2,     // 1 байт opcode + 1 байт количество аргументов
             OpCode::CallWithUnpack(_) => 2, // 1 байт opcode + 1 байт количество аргументов (1 для kwargs)
-            OpCode::MakeArray(_) => 2, // 1 байт opcode + 1 байт размер
-            OpCode::MakeTuple(_) => 2, // 1 байт opcode + 1 байт размер
+            OpCode::MakeArray(_) => 2,      // 1 байт opcode + 1 байт размер
+            OpCode::MakeTuple(_) => 2,      // 1 байт opcode + 1 байт размер
             OpCode::MakeArrayDynamic => 1, // 1 байт opcode (размер на стеке) 1 байт opcode + 1 байт количество элементов
-            OpCode::BeginTry(_) => 2, // 1 байт opcode + 1 байт индекс обработчика
-            OpCode::Catch(Some(_)) => 2, // 1 байт opcode + 1 байт тип ошибки
-            OpCode::Catch(None) => 1, // 1 байт opcode
-            OpCode::Throw(Some(_)) => 2, // 1 байт opcode + 1 байт тип ошибки
-            OpCode::Throw(None) => 1, // 1 байт opcode
-            
+            OpCode::BeginTry(_) => 2,      // 1 байт opcode + 1 байт индекс обработчика
+            OpCode::Catch(Some(_)) => 2,   // 1 байт opcode + 1 байт тип ошибки
+            OpCode::Catch(None) => 1,      // 1 байт opcode
+            OpCode::Throw(Some(_)) => 2,   // 1 байт opcode + 1 байт тип ошибки
+            OpCode::Throw(None) => 1,      // 1 байт opcode
+
             // Все остальные инструкции занимают 1 байт
             _ => 1,
         }
@@ -88,12 +104,12 @@ impl LabelManager {
     pub fn compute_instruction_addresses(&self, chunk: &Chunk) -> Vec<usize> {
         let mut addresses = Vec::with_capacity(chunk.code.len());
         let mut current_addr = 0;
-        
+
         for opcode in &chunk.code {
             addresses.push(current_addr);
             current_addr += Self::instruction_size(opcode);
         }
-        
+
         addresses
     }
 
@@ -102,31 +118,31 @@ impl LabelManager {
     pub fn upgrade_jump_instructions(&mut self, chunk: &mut Chunk) -> bool {
         let addresses = self.compute_instruction_addresses(chunk);
         let mut changed = false;
-        
+
         // Обрабатываем все pending jumps (JumpLabel и JumpIfFalseLabel)
         for (jump_index, label_id, is_conditional) in self.pending_jumps.iter() {
             if *jump_index >= chunk.code.len() {
                 continue;
             }
-            
+
             // Получаем адрес целевой метки
             let dst_instruction_index = *self.labels.get(label_id).unwrap_or(jump_index);
             if dst_instruction_index >= addresses.len() {
                 continue;
             }
-            
+
             // VM использует индексы инструкций, а не байтовые адреса
             // IP инкрементируется на 1 после каждой инструкции
             // Поэтому смещение вычисляется как: offset = dst_index - (src_index + 1)
             let src_index = *jump_index;
             let dst_index = dst_instruction_index;
-            
+
             // Вычисляем относительное смещение в индексах инструкций
             let offset = (dst_index as i64 - (src_index as i64 + 1)) as i32;
-            
+
             // Определяем текущий размер jump-инструкции (для апгрейда)
             let current_opcode = &chunk.code[*jump_index];
-            
+
             // Определяем минимально достаточный формат
             let new_opcode = if offset >= -128 && offset <= 127 {
                 if *is_conditional {
@@ -147,13 +163,16 @@ impl LabelManager {
                     OpCode::Jump32(offset)
                 }
             };
-            
+
             // Проверяем, нужно ли апгрейдить
             // НЕ заменяем JumpLabel здесь - это делает finalize_jumps
-            if matches!(current_opcode, OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_)) {
+            if matches!(
+                current_opcode,
+                OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_)
+            ) {
                 continue;
             }
-            
+
             let new_size = Self::instruction_size(&new_opcode);
             let current_size = Self::instruction_size(current_opcode);
             if new_size != current_size {
@@ -162,31 +181,39 @@ impl LabelManager {
             } else {
                 // Если размер не изменился, но смещение могло измениться, обновляем
                 match current_opcode {
-                    OpCode::Jump8(_) | OpCode::Jump16(_) | OpCode::Jump32(_) |
-                    OpCode::JumpIfFalse8(_) | OpCode::JumpIfFalse16(_) | OpCode::JumpIfFalse32(_) => {
+                    OpCode::Jump8(_)
+                    | OpCode::Jump16(_)
+                    | OpCode::Jump32(_)
+                    | OpCode::JumpIfFalse8(_)
+                    | OpCode::JumpIfFalse16(_)
+                    | OpCode::JumpIfFalse32(_) => {
                         chunk.code[*jump_index] = new_opcode;
                     }
                     _ => {}
                 }
             }
         }
-        
+
         changed
     }
 
     /// Итеративно стабилизирует layout до полной фиксации размеров
-    pub fn stabilize_layout(&mut self, chunk: &mut Chunk, current_line: usize) -> Result<(), LangError> {
+    pub fn stabilize_layout(
+        &mut self,
+        chunk: &mut Chunk,
+        current_line: usize,
+    ) -> Result<(), LangError> {
         let mut iterations = 0;
         const MAX_ITERATIONS: usize = 100;
-        
+
         loop {
             let changed = self.upgrade_jump_instructions(chunk);
             iterations += 1;
-            
+
             if !changed {
                 break;
             }
-            
+
             if iterations >= MAX_ITERATIONS {
                 return Err(LangError::ParseError {
                     message: "Layout stabilization failed: too many iterations".to_string(),
@@ -195,79 +222,100 @@ impl LabelManager {
                 });
             }
         }
-        
+
         Ok(())
     }
 
     /// Финализирует jump-инструкции: заменяет все JumpLabel на финальные инструкции
-    pub fn finalize_jumps(&mut self, chunk: &mut Chunk, current_line: usize) -> Result<(), LangError> {
+    pub fn finalize_jumps(
+        &mut self,
+        chunk: &mut Chunk,
+        current_line: usize,
+    ) -> Result<(), LangError> {
         let addresses = self.compute_instruction_addresses(chunk);
-        
+
         let mut jumps_to_finalize = self.pending_jumps.clone();
-        
+
         // Также ищем все JumpLabel в коде, которые могут не быть в pending_jumps
         for (jump_index, opcode) in chunk.code.iter().enumerate() {
             match opcode {
                 OpCode::JumpLabel(label_id) => {
-                    if !jumps_to_finalize.iter().any(|(idx, _, _)| *idx == jump_index) {
+                    if !jumps_to_finalize
+                        .iter()
+                        .any(|(idx, _, _)| *idx == jump_index)
+                    {
                         jumps_to_finalize.push((jump_index, *label_id, false));
                     }
                 }
                 OpCode::JumpIfFalseLabel(label_id) => {
-                    if !jumps_to_finalize.iter().any(|(idx, _, _)| *idx == jump_index) {
+                    if !jumps_to_finalize
+                        .iter()
+                        .any(|(idx, _, _)| *idx == jump_index)
+                    {
                         jumps_to_finalize.push((jump_index, *label_id, true));
                     }
                 }
                 _ => {}
             }
         }
-        
+
         for (jump_index, label_id, is_conditional) in jumps_to_finalize.iter() {
             if *jump_index >= chunk.code.len() {
                 continue;
             }
-            
+
             let current_opcode = &chunk.code[*jump_index];
-            
+
             // Пропускаем, если уже финализировано
-            if !matches!(current_opcode, OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_)) {
+            if !matches!(
+                current_opcode,
+                OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_)
+            ) {
                 continue;
             }
-            
+
             // Получаем адрес целевой метки
-            let dst_instruction_index = *self.labels.get(label_id)
-                .ok_or_else(|| LangError::ParseError {
-                    message: format!("Label {} not found", label_id),
-                    line: current_line,
-                    file: None,
-                })?;
-            
+            let dst_instruction_index =
+                *self
+                    .labels
+                    .get(label_id)
+                    .ok_or_else(|| LangError::ParseError {
+                        message: format!("Label {} not found", label_id),
+                        line: current_line,
+                        file: None,
+                    })?;
+
             let dst_instruction_index = if dst_instruction_index >= chunk.code.len() {
                 if chunk.code.is_empty() {
                     return Err(LangError::ParseError {
                         message: format!("Label {} points to empty code", label_id),
                         line: current_line,
-                    file: None,
+                        file: None,
                     });
                 }
                 chunk.code.len() - 1
             } else {
                 dst_instruction_index
             };
-            
+
             if dst_instruction_index >= addresses.len() {
                 return Err(LangError::ParseError {
-                    message: format!("Label {} instruction index {} >= addresses len {} (code len: {})", 
-                        label_id, dst_instruction_index, addresses.len(), chunk.code.len()),
+                    message: format!(
+                        "Label {} instruction index {} >= addresses len {} (code len: {})",
+                        label_id,
+                        dst_instruction_index,
+                        addresses.len(),
+                        chunk.code.len()
+                    ),
                     line: current_line,
                     file: None,
                 });
             }
-            
+
             let src_index = *jump_index;
             let dst_index = dst_instruction_index;
             let offset = (dst_index as i64 - (src_index as i64 + 1)) as i32;
-            
+
             let final_opcode = if offset >= -128 && offset <= 127 {
                 if *is_conditional {
                     OpCode::JumpIfFalse8(offset as i8)
@@ -287,10 +335,10 @@ impl LabelManager {
                     OpCode::Jump32(offset)
                 }
             };
-            
+
             chunk.code[*jump_index] = final_opcode;
         }
-        
+
         // Патчим ForRange: подставляем end_offset по end_label_id
         let pending = std::mem::take(&mut self.pending_for_range);
         for (forrange_index, end_label_id) in pending {
@@ -300,19 +348,27 @@ impl LabelManager {
             let dst_instruction_index = *self.labels.get(&end_label_id).unwrap_or(&forrange_index);
             let src_index = forrange_index;
             let end_offset = (dst_instruction_index as i64 - (src_index as i64 + 1)) as i32;
-            if let OpCode::ForRange(var_slot, start_c, end_c, step_c, _) = chunk.code[forrange_index] {
-                chunk.code[forrange_index] = OpCode::ForRange(var_slot, start_c, end_c, step_c, end_offset);
+            if let OpCode::ForRange(var_slot, start_c, end_c, step_c, _) =
+                chunk.code[forrange_index]
+            {
+                chunk.code[forrange_index] =
+                    OpCode::ForRange(var_slot, start_c, end_c, step_c, end_offset);
             }
         }
-        
+
         self.pending_jumps.clear();
-        
+
         Ok(())
     }
 
     /// Финализирует только прыжки, добавленные начиная с индекса `from` в pending_jumps.
     /// Используется при компиляции вложенных chunk (например, конструктор класса), чтобы не затронуть прыжки основного chunk.
-    pub fn finalize_jumps_from(&mut self, chunk: &mut Chunk, from: usize, current_line: usize) -> Result<(), LangError> {
+    pub fn finalize_jumps_from(
+        &mut self,
+        chunk: &mut Chunk,
+        from: usize,
+        current_line: usize,
+    ) -> Result<(), LangError> {
         if from >= self.pending_jumps.len() {
             return Ok(());
         }
@@ -323,20 +379,27 @@ impl LabelManager {
                 continue;
             }
             let current_opcode = &chunk.code[*jump_index];
-            if !matches!(current_opcode, OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_)) {
+            if !matches!(
+                current_opcode,
+                OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_)
+            ) {
                 continue;
             }
-            let dst_instruction_index = *self.labels.get(label_id).ok_or_else(|| LangError::ParseError {
-                message: format!("Label {} not found", label_id),
-                line: current_line,
-                file: None,
-            })?;
+            let dst_instruction_index =
+                *self
+                    .labels
+                    .get(label_id)
+                    .ok_or_else(|| LangError::ParseError {
+                        message: format!("Label {} not found", label_id),
+                        line: current_line,
+                        file: None,
+                    })?;
             let dst_instruction_index = if dst_instruction_index >= chunk.code.len() {
                 if chunk.code.is_empty() {
                     return Err(LangError::ParseError {
                         message: format!("Label {} points to empty code", label_id),
                         line: current_line,
-                    file: None,
+                        file: None,
                     });
                 }
                 chunk.code.len() - 1
@@ -345,8 +408,12 @@ impl LabelManager {
             };
             if dst_instruction_index >= addresses.len() {
                 return Err(LangError::ParseError {
-                    message: format!("Label {} instruction index {} >= addresses len {}",
-                        label_id, dst_instruction_index, addresses.len()),
+                    message: format!(
+                        "Label {} instruction index {} >= addresses len {}",
+                        label_id,
+                        dst_instruction_index,
+                        addresses.len()
+                    ),
                     line: current_line,
                     file: None,
                 });
@@ -384,5 +451,3 @@ impl LabelManager {
         self.pending_for_range.clear();
     }
 }
-
-

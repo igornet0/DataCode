@@ -76,10 +76,16 @@ pub fn print_help() {
     println!();
     println!("Path resolution (--base-dir):");
     println!("  • Relative script path (e.g. src/main.dc) is resolved from current working directory (CWD).");
-    println!("  • When running from repo root or IDE, CWD may be the project root — then load_env reads");
+    println!(
+        "  • When running from repo root or IDE, CWD may be the project root — then load_env reads"
+    );
     println!("    settings from that tree (e.g. project_root/src/settings/dev.env), not from the script dir.");
-    println!("  • Use --base-dir <dir> to fix: datacode --base-dir sandbox/config_test src/main.dc");
-    println!("  • Or run from the script directory: cd sandbox/config_test && cargo run -- src/main.dc");
+    println!(
+        "  • Use --base-dir <dir> to fix: datacode --base-dir sandbox/config_test src/main.dc"
+    );
+    println!(
+        "  • Or run from the script directory: cd sandbox/config_test && cargo run -- src/main.dc"
+    );
     println!("  • Use --debug to print CWD, script path and resolved .env path to stderr.");
     println!();
     println!("SQLite Export (--build_model):");
@@ -101,7 +107,9 @@ pub fn print_help() {
     println!("    - Supports file uploads via upload_file request");
     println!("    - Session folder is deleted on disconnect");
     println!("  • Send JSON: {{\"code\": \"print('Hello World')\"}}");
-    println!("  • Receive JSON: {{\"success\": true, \"output\": \"Hello World\\n\", \"error\": null}}");
+    println!(
+        "  • Receive JSON: {{\"success\": true, \"output\": \"Hello World\\n\", \"error\": null}}"
+    );
     println!("      • Upload file: {{\"type\": \"upload_file\", \"filename\": \"test.txt\", \"content\": \"...\"}}");
     println!();
     println!("HTTP Server (datacode-server):");
@@ -215,7 +223,9 @@ fn parse_file_execution_flags(
                     base_dir = Some(args[i + 1].clone());
                     i += 2;
                 } else {
-                    return Err("Ошибка: --base-dir требует значение (путь к директории)".to_string());
+                    return Err(
+                        "Ошибка: --base-dir требует значение (путь к директории)".to_string()
+                    );
                 }
             }
             "--lib" => {
@@ -223,7 +233,10 @@ fn parse_file_execution_flags(
                     native_lib = Some(args[i + 1].clone());
                     i += 2;
                 } else {
-                    return Err("Ошибка: --lib требует путь к нативной библиотеке (например libml.dylib)".to_string());
+                    return Err(
+                        "Ошибка: --lib требует путь к нативной библиотеке (например libml.dylib)"
+                            .to_string(),
+                    );
                 }
             }
             arg => {
@@ -236,14 +249,22 @@ fn parse_file_execution_flags(
             }
         }
     }
-    Ok((build_model, output_db, debug, no_gui, base_dir, native_lib, script_args))
+    Ok((
+        build_model,
+        output_db,
+        debug,
+        no_gui,
+        base_dir,
+        native_lib,
+        script_args,
+    ))
 }
 
 /// Parse CLI arguments
 pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
     if args.len() > 1 {
         let arg = &args[1];
-        
+
         match arg.as_str() {
             "-h" | "--help" => {
                 return Ok(CliArgs::Help);
@@ -256,7 +277,7 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
                 let mut port = 8080u16;
                 let mut use_ve = false;
                 let mut build_model = false;
-                
+
                 // Check environment variable
                 if let Ok(ws_address) = env::var("DATACODE_WS_ADDRESS") {
                     if let Some(colon_pos) = ws_address.find(':') {
@@ -268,7 +289,7 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
                         host = ws_address;
                     }
                 }
-                
+
                 // Parse command line arguments
                 let mut i = 2;
                 while i < args.len() {
@@ -306,7 +327,7 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
                         }
                     }
                 }
-                
+
                 return Ok(CliArgs::WebSocket(WebSocketConfig {
                     host,
                     port,
@@ -360,7 +381,11 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
                         }
                     }
                 }
-                return Ok(CliArgs::HttpServer(HttpServerConfig { host, port, app_file }));
+                return Ok(CliArgs::HttpServer(HttpServerConfig {
+                    host,
+                    port,
+                    app_file,
+                }));
             }
             _ => {
                 // Allow flags before filename (e.g. datacode --no-gui script.dc); if first arg is a flag, find .dc file in args
@@ -369,18 +394,32 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
                     let dc_idx = dc_idx.map(|i| i + 1);
                     if let Some(idx) = dc_idx {
                         let filename = args[idx].clone();
-                        let (build_model, output_db, debug, no_gui, base_dir, native_lib, script_args) =
-                            parse_file_execution_flags(&args[1..], Some(idx - 1))?;
-                        let script_path_for_check: std::path::PathBuf = if let Some(ref b) = base_dir {
-                            Path::new(b).join(&filename)
-                        } else {
-                            Path::new(&filename).to_path_buf()
-                        };
+                        let (
+                            build_model,
+                            output_db,
+                            debug,
+                            no_gui,
+                            base_dir,
+                            native_lib,
+                            script_args,
+                        ) = parse_file_execution_flags(&args[1..], Some(idx - 1))?;
+                        let script_path_for_check: std::path::PathBuf =
+                            if let Some(ref b) = base_dir {
+                                Path::new(b).join(&filename)
+                            } else {
+                                Path::new(&filename).to_path_buf()
+                            };
                         if !script_path_for_check.exists() {
-                            return Err(format!("Ошибка: файл '{}' не найден", script_path_for_check.display()));
+                            return Err(format!(
+                                "Ошибка: файл '{}' не найден",
+                                script_path_for_check.display()
+                            ));
                         }
                         if !filename.ends_with(".dc") {
-                            eprintln!("Предупреждение: файл '{}' не имеет расширения .dc", filename);
+                            eprintln!(
+                                "Предупреждение: файл '{}' не имеет расширения .dc",
+                                filename
+                            );
                         }
                         return Ok(CliArgs::FileExecution(FileExecutionConfig {
                             filename,
@@ -394,16 +433,19 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
                             raw_args: args.clone(),
                         }));
                     }
-                    return Err(format!("Неизвестная опция: {}\nИспользуйте --help для справки", arg));
+                    return Err(format!(
+                        "Неизвестная опция: {}\nИспользуйте --help для справки",
+                        arg
+                    ));
                 }
             }
         }
-        
+
         // File execution: first arg is the .dc filename
         let filename = arg.clone();
         let (build_model, output_db, debug, no_gui, base_dir, native_lib, script_args) =
             parse_file_execution_flags(&args[2..], None)?;
-        
+
         // Check file existence: if base_dir set and path relative, resolve relative to base_dir
         let script_path_for_check: std::path::PathBuf = if let Some(ref b) = base_dir {
             Path::new(b).join(&filename)
@@ -411,13 +453,19 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
             Path::new(&filename).to_path_buf()
         };
         if !script_path_for_check.exists() {
-            return Err(format!("Ошибка: файл '{}' не найден", script_path_for_check.display()));
+            return Err(format!(
+                "Ошибка: файл '{}' не найден",
+                script_path_for_check.display()
+            ));
         }
-        
+
         if !filename.ends_with(".dc") {
-            eprintln!("Предупреждение: файл '{}' не имеет расширения .dc", filename);
+            eprintln!(
+                "Предупреждение: файл '{}' не имеет расширения .dc",
+                filename
+            );
         }
-        
+
         Ok(CliArgs::FileExecution(FileExecutionConfig {
             filename,
             base_dir,

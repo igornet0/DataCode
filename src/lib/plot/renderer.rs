@@ -1,12 +1,12 @@
 // Renderer for plot module
 
-use crate::plot::{Window, Image, Figure, FontAtlas};
-use crate::plot::window::ImageViewState;
 use crate::plot::command::FigureData;
-use softbuffer::{Context, Surface};
-use std::rc::Rc;
-use std::cell::RefCell;
+use crate::plot::window::ImageViewState;
+use crate::plot::{Figure, FontAtlas, Image, Window};
 use fontdue::Font;
+use softbuffer::{Context, Surface};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub struct Renderer {
     _context: Context<&'static winit::window::Window>,
@@ -21,21 +21,20 @@ impl Renderer {
     pub fn new(window: &Window) -> Result<Self, softbuffer::SoftBufferError> {
         // We need to extend the lifetime, but this is unsafe
         // In practice, the window will outlive the renderer
-        let window_ref: &'static winit::window::Window = unsafe {
-            std::mem::transmute(&window.window_handle)
-        };
+        let window_ref: &'static winit::window::Window =
+            unsafe { std::mem::transmute(&window.window_handle) };
         let context = Context::new(window_ref)?;
         let surface = Surface::new(&context, window_ref)?;
-        
+
         // Get scale factor from window for DPI-aware rendering
         let scale_factor = window_ref.scale_factor() as f32;
-        
+
         // Try to load a system font or use built-in font
         // For now, we'll create a simple font from built-in data
         // In the future, you can embed a TTF font file here
         let font = Self::load_font();
-        
-        Ok(Self { 
+
+        Ok(Self {
             _context: context,
             surface,
             font,
@@ -44,20 +43,19 @@ impl Renderer {
             window_ref,
         })
     }
-    
+
     /// Update scale factor from window (called on resize or DPI change)
     pub fn update_scale_factor(&mut self, window: &Window) {
-        let window_ref: &'static winit::window::Window = unsafe {
-            std::mem::transmute(&window.window_handle)
-        };
+        let window_ref: &'static winit::window::Window =
+            unsafe { std::mem::transmute(&window.window_handle) };
         self.scale_factor = window_ref.scale_factor() as f32;
     }
-    
+
     /// Get current scale factor (for debugging)
     pub fn get_scale_factor(&self) -> f32 {
         self.scale_factor
     }
-    
+
     /// Force buffer resize by recreating surface if needed
     /// This ensures the buffer is updated to the new window size
     /// Note: softbuffer may not auto-resize, so we need to recreate surface
@@ -66,7 +64,7 @@ impl Renderer {
         let window_size = self.window_ref.inner_size();
         let expected_width = window_size.width;
         let expected_height = window_size.height;
-        
+
         // Check current buffer size (scoped so buffer is dropped before we may replace self.surface)
         let (current_width, current_height) = {
             let buffer = self.surface.buffer_mut()?;
@@ -79,7 +77,7 @@ impl Renderer {
             // Recreate surface to match new window size
             let new_surface = Surface::new(&self._context, self.window_ref)?;
             self.surface = new_surface;
-            
+
             // Get new buffer size
             let new_buffer = self.surface.buffer_mut()?;
             let new_width = new_buffer.width().get();
@@ -89,41 +87,53 @@ impl Renderer {
             Ok((current_width, current_height))
         }
     }
-    
+
     /// Get current buffer size (for debugging)
     pub fn get_buffer_size(&mut self) -> Result<(u32, u32), softbuffer::SoftBufferError> {
         let buffer = self.surface.buffer_mut()?;
         Ok((buffer.width().get(), buffer.height().get()))
     }
-    
+
     /// Calculate adaptive margins based on window size
     /// Returns (left, right, top, bottom) margins
     /// Uses percentage of window size with minimum values for small windows
     /// Public for use in window_events (hover/click detection)
-    pub fn calculate_adaptive_margins(scale_factor: f32, buffer_width: u32, buffer_height: u32) -> (u32, u32, u32, u32) {
+    pub fn calculate_adaptive_margins(
+        scale_factor: f32,
+        buffer_width: u32,
+        buffer_height: u32,
+    ) -> (u32, u32, u32, u32) {
         // Calculate margins as percentage of window size, with minimum values
         // Left margin: 12% of width, minimum 150px (for y-axis labels)
-        let left_margin = ((buffer_width as f32 * 0.12).max(150.0) * scale_factor).min(buffer_width as f32 * 0.25) as u32;
-        
+        let left_margin = ((buffer_width as f32 * 0.12).max(150.0) * scale_factor)
+            .min(buffer_width as f32 * 0.25) as u32;
+
         // Right margin: 3% of width, minimum 30px
-        let right_margin = ((buffer_width as f32 * 0.03).max(30.0) * scale_factor).min(buffer_width as f32 * 0.1) as u32;
-        
+        let right_margin = ((buffer_width as f32 * 0.03).max(30.0) * scale_factor)
+            .min(buffer_width as f32 * 0.1) as u32;
+
         // Top margin: 5% of height, minimum 50px (for title)
-        let top_margin = ((buffer_height as f32 * 0.05).max(50.0) * scale_factor).min(buffer_height as f32 * 0.15) as u32;
-        
+        let top_margin = ((buffer_height as f32 * 0.05).max(50.0) * scale_factor)
+            .min(buffer_height as f32 * 0.15) as u32;
+
         // Bottom margin: 8% of height, minimum 70px (for x-axis labels)
-        let bottom_margin = ((buffer_height as f32 * 0.08).max(70.0) * scale_factor).min(buffer_height as f32 * 0.2) as u32;
-        
+        let bottom_margin = ((buffer_height as f32 * 0.08).max(70.0) * scale_factor)
+            .min(buffer_height as f32 * 0.2) as u32;
+
         (left_margin, right_margin, top_margin, bottom_margin)
     }
 
-    pub fn draw_image(&mut self, image: &Image, _window: &Window) -> Result<(), softbuffer::SoftBufferError> {
+    pub fn draw_image(
+        &mut self,
+        image: &Image,
+        _window: &Window,
+    ) -> Result<(), softbuffer::SoftBufferError> {
         let image_width = image.width;
         let image_height = image.height;
 
         // Get buffer - it will be resized automatically based on window size
         let mut buffer = self.surface.buffer_mut()?;
-        
+
         // Get actual buffer dimensions
         let buffer_width = buffer.width().get();
         let buffer_height = buffer.height().get();
@@ -140,11 +150,11 @@ impl Renderer {
         let margin_factor = 0.96;
         let available_width = (buffer_width as f32 * margin_factor) as u32;
         let available_height = (buffer_height as f32 * margin_factor) as u32;
-        
+
         // Calculate scale factors for width and height
         let scale_x = available_width as f32 / image_width as f32;
         let scale_y = available_height as f32 / image_height as f32;
-        
+
         // Use minimum scale to ensure image fits in both dimensions (maintain aspect ratio)
         // But ensure minimum scale for very small images
         let min_base_scale = if image_width <= 100 && image_height <= 100 {
@@ -154,7 +164,7 @@ impl Renderer {
         } else {
             4.0
         };
-        
+
         let adaptive_scale = scale_x.min(scale_y);
         let scale_f = adaptive_scale.max(min_base_scale);
         let scale = scale_f as usize;
@@ -181,7 +191,7 @@ impl Renderer {
         let image_height_usize = image_height as usize;
         let offset_x_usize = offset_x as usize;
         let offset_y_usize = offset_y as usize;
-        let scale_usize = scale as usize;
+        let scale_usize = scale;
 
         // Nearest neighbor scaling (like matplotlib interpolation='nearest')
         // Each source pixel becomes a scale×scale block in the output
@@ -194,20 +204,20 @@ impl Renderer {
                     let g = image.data[image_idx + 1] as u32;
                     let b = image.data[image_idx + 2] as u32;
                     let a = image.data[image_idx + 3] as u32;
-                    
+
                     // Convert RGBA to BGRA format (softbuffer uses BGRA on most platforms)
                     // Format: 0xAABBGGRR
                     let pixel = (a << 24) | (b << 16) | (g << 8) | r;
-                    
+
                     // Draw scale×scale block (nearest neighbor - no interpolation)
                     let dst_y_start = offset_y_usize + src_y * scale_usize;
                     let dst_x_start = offset_x_usize + src_x * scale_usize;
-                    
+
                     for dy in 0..scale_usize {
                         for dx in 0..scale_usize {
                             let dst_y = dst_y_start + dy;
                             let dst_x = dst_x_start + dx;
-                            
+
                             if dst_y < buffer_height_usize && dst_x < buffer_width_usize {
                                 let buffer_idx = dst_y * buffer_width_usize + dst_x;
                                 if buffer_idx < buffer.len() {
@@ -236,7 +246,7 @@ impl Renderer {
 
         // Get buffer - it will be resized automatically based on window size
         let mut buffer = self.surface.buffer_mut()?;
-        
+
         // Get actual buffer dimensions
         let buffer_width = buffer.width().get();
         let buffer_height = buffer.height().get();
@@ -246,11 +256,11 @@ impl Renderer {
         let margin_factor = 0.96;
         let available_width = (buffer_width as f32 * margin_factor) as u32;
         let available_height = (buffer_height as f32 * margin_factor) as u32;
-        
+
         // Calculate scale factors for width and height
         let scale_x = available_width as f32 / image_width as f32;
         let scale_y = available_height as f32 / image_height as f32;
-        
+
         // Use minimum scale to ensure image fits in both dimensions (maintain aspect ratio)
         // But ensure minimum scale for very small images
         let min_base_scale = if image_width <= 100 && image_height <= 100 {
@@ -260,7 +270,7 @@ impl Renderer {
         } else {
             4.0
         };
-        
+
         let adaptive_base_scale = scale_x.min(scale_y).max(min_base_scale);
 
         // Apply zoom to scale
@@ -302,8 +312,10 @@ impl Renderer {
         // Calculate visible region to optimize rendering
         let start_x = (-offset_x / effective_scale as i32).max(0) as usize;
         let start_y = (-offset_y / effective_scale as i32).max(0) as usize;
-        let end_x = ((buffer_width as i32 - offset_x) / effective_scale as i32).min(image_width as i32) as usize;
-        let end_y = ((buffer_height_usize as i32 - offset_y) / effective_scale as i32).min(image_height as i32) as usize;
+        let end_x = ((buffer_width as i32 - offset_x) / effective_scale as i32)
+            .min(image_width as i32) as usize;
+        let end_y = ((buffer_height_usize as i32 - offset_y) / effective_scale as i32)
+            .min(image_height as i32) as usize;
 
         // Draw only visible pixels
         for src_y in start_y..end_y.min(image_height_usize) {
@@ -315,23 +327,27 @@ impl Renderer {
                     let g = image.data[image_idx + 1] as u32;
                     let b = image.data[image_idx + 2] as u32;
                     let a = image.data[image_idx + 3] as u32;
-                    
+
                     // Convert RGBA to BGRA format (softbuffer uses BGRA on most platforms)
                     // Format: 0xAABBGGRR
                     let pixel = (a << 24) | (b << 16) | (g << 8) | r;
-                    
+
                     // Draw effective_scale×effective_scale block (nearest neighbor - no interpolation)
                     let dst_y_start = offset_y + (src_y as i32 * effective_scale as i32);
                     let dst_x_start = offset_x + (src_x as i32 * effective_scale as i32);
-                    
+
                     for dy in 0..effective_scale {
                         for dx in 0..effective_scale {
                             let dst_y = dst_y_start + dy as i32;
                             let dst_x = dst_x_start + dx as i32;
-                            
-                            if dst_y >= 0 && dst_y < buffer_height as i32 &&
-                               dst_x >= 0 && dst_x < buffer_width as i32 {
-                                let buffer_idx = (dst_y as usize) * buffer_width_usize + (dst_x as usize);
+
+                            if dst_y >= 0
+                                && dst_y < buffer_height as i32
+                                && dst_x >= 0
+                                && dst_x < buffer_width as i32
+                            {
+                                let buffer_idx =
+                                    (dst_y as usize) * buffer_width_usize + (dst_x as usize);
                                 if buffer_idx < buffer.len() {
                                     buffer[buffer_idx] = pixel;
                                 }
@@ -374,7 +390,8 @@ impl Renderer {
 
         // Calculate cell dimensions with adaptive padding
         // Padding scales with window size but has minimum value
-        let padding = ((buffer_width.min(buffer_height) as f32 * 0.01).max(8.0) * self.scale_factor).min(20.0) as u32;
+        let padding = ((buffer_width.min(buffer_height) as f32 * 0.01).max(8.0) * self.scale_factor)
+            .min(20.0) as u32;
         let cols_u32 = cols as u32;
         let rows_u32 = rows as u32;
         let cell_width = (buffer_width - padding * (cols_u32 + 1)) / cols_u32;
@@ -426,15 +443,15 @@ impl Renderer {
                         let g = image.data[image_idx + 1] as u32;
                         let b = image.data[image_idx + 2] as u32;
                         let a = image.data[image_idx + 3] as u32;
-                        
+
                         let pixel = (a << 24) | (b << 16) | (g << 8) | r;
-                        
+
                         // Draw scale×scale block
                         for dy in 0..scale_usize {
                             for dx in 0..scale_usize {
                                 let dst_y = offset_y + src_y * scale_usize + dy;
                                 let dst_x = offset_x + src_x * scale_usize + dx;
-                                
+
                                 if dst_y < buffer_height_usize && dst_x < buffer_width_usize {
                                     let buffer_idx = dst_y * buffer_width_usize + dst_x;
                                     if buffer_idx < buffer.len() {
@@ -478,17 +495,22 @@ impl Renderer {
         let (padding, axes_len) = {
             let figure_ref = figure.borrow();
             let pad = if figure_ref.tight_layout { 5u32 } else { 10u32 };
-            let len = figure_ref.axes.len() * (if rows > 0 && !figure_ref.axes.is_empty() { figure_ref.axes[0].len() } else { 0 });
+            let len = figure_ref.axes.len()
+                * (if rows > 0 && !figure_ref.axes.is_empty() {
+                    figure_ref.axes[0].len()
+                } else {
+                    0
+                });
             (pad, len)
         };
         let title_height = 20u32; // Space for title above each image
         let cols_u32 = cols as u32;
         let rows_u32 = rows as u32;
-        
+
         // Available space for images (excluding titles)
         let available_height = buffer_height - (rows_u32 + 1) * padding - rows_u32 * title_height;
         let available_width = buffer_width - (cols_u32 + 1) * padding;
-        
+
         let cell_width = available_width / cols_u32;
         let cell_height = available_height / rows_u32;
 
@@ -515,7 +537,8 @@ impl Renderer {
 
                 // Calculate cell position
                 let cell_x = padding_usize + col_idx * (cell_width_usize + padding_usize);
-                let cell_y = padding_usize + row_idx * (cell_height_usize + padding_usize + title_height_usize);
+                let cell_y = padding_usize
+                    + row_idx * (cell_height_usize + padding_usize + title_height_usize);
 
                 // Draw title if present
                 if idx < titles.len() && !titles[idx].is_empty() {
@@ -523,9 +546,11 @@ impl Renderer {
                     // Calculate text width using exact font metrics for proper centering
                     let base_font_size = 20.0; // Reduced from 32.0 for smaller text
                     let font_size = base_font_size * self.scale_factor;
-                    let text_width = Self::calculate_text_width(self.font.as_ref(), title, font_size);
+                    let text_width =
+                        Self::calculate_text_width(self.font.as_ref(), title, font_size);
                     // Center text: (cell_width - text_width) / 2, rounded to integer
-                    let text_x = (cell_x as f32 + (cell_width_usize as f32 - text_width) / 2.0).round() as usize;
+                    let text_x = (cell_x as f32 + (cell_width_usize as f32 - text_width) / 2.0)
+                        .round() as usize;
                     // Calculate baseline using font metrics for proper text alignment
                     let text_y = if let Some(font) = self.font.as_ref() {
                         if let Some(line_metrics) = font.horizontal_line_metrics(font_size) {
@@ -586,25 +611,31 @@ impl Renderer {
                                     let g = image.data[image_idx + 1] as u32;
                                     let b = image.data[image_idx + 2] as u32;
                                     let a = image.data[image_idx + 3] as u32;
-                                    
+
                                     // Apply grayscale colormap if needed
                                     let (final_r, final_g, final_b) = if axis_ref.cmap == "gray" {
                                         // Convert to grayscale
-                                        let gray = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as u32;
+                                        let gray = (0.299 * r as f32
+                                            + 0.587 * g as f32
+                                            + 0.114 * b as f32)
+                                            as u32;
                                         (gray, gray, gray)
                                     } else {
                                         (r, g, b)
                                     };
-                                    
-                                    let pixel = (a << 24) | (final_b << 16) | (final_g << 8) | final_r;
-                                    
+
+                                    let pixel =
+                                        (a << 24) | (final_b << 16) | (final_g << 8) | final_r;
+
                                     // Draw scale×scale block
                                     for dy in 0..scale_usize {
                                         for dx in 0..scale_usize {
                                             let dst_y = offset_y + src_y * scale_usize + dy;
                                             let dst_x = offset_x + src_x * scale_usize + dx;
-                                            
-                                            if dst_y < buffer_height_usize && dst_x < buffer_width_usize {
+
+                                            if dst_y < buffer_height_usize
+                                                && dst_x < buffer_width_usize
+                                            {
                                                 let buffer_idx = dst_y * buffer_width_usize + dst_x;
                                                 if buffer_idx < buffer.len() {
                                                     buffer[buffer_idx] = pixel;
@@ -649,16 +680,25 @@ impl Renderer {
         }
 
         // Calculate cell dimensions with padding (tight layout)
-        let padding = if figure_data.tight_layout { 5u32 } else { 10u32 };
-        let axes_len = figure_data.axes.len() * (if rows > 0 && !figure_data.axes.is_empty() { figure_data.axes[0].len() } else { 0 });
+        let padding = if figure_data.tight_layout {
+            5u32
+        } else {
+            10u32
+        };
+        let axes_len = figure_data.axes.len()
+            * (if rows > 0 && !figure_data.axes.is_empty() {
+                figure_data.axes[0].len()
+            } else {
+                0
+            });
         let title_height = 20u32; // Space for title above each image
         let cols_u32 = cols as u32;
         let rows_u32 = rows as u32;
-        
+
         // Available space for images (excluding titles)
         let available_height = buffer_height - (rows_u32 + 1) * padding - rows_u32 * title_height;
         let available_width = buffer_width - (cols_u32 + 1) * padding;
-        
+
         let cell_width = available_width / cols_u32;
         let cell_height = available_height / rows_u32;
 
@@ -673,7 +713,10 @@ impl Renderer {
         let mut idx = 0;
         for row_idx in 0..rows {
             for col_idx in 0..cols {
-                if idx >= axes_len || row_idx >= figure_data.axes.len() || col_idx >= figure_data.axes[row_idx].len() {
+                if idx >= axes_len
+                    || row_idx >= figure_data.axes.len()
+                    || col_idx >= figure_data.axes[row_idx].len()
+                {
                     break;
                 }
 
@@ -681,7 +724,8 @@ impl Renderer {
 
                 // Calculate cell position
                 let cell_x = padding_usize + col_idx * (cell_width_usize + padding_usize);
-                let cell_y = padding_usize + row_idx * (cell_height_usize + padding_usize + title_height_usize);
+                let cell_y = padding_usize
+                    + row_idx * (cell_height_usize + padding_usize + title_height_usize);
 
                 // Draw title if present
                 if idx < titles.len() && !titles[idx].is_empty() {
@@ -689,9 +733,11 @@ impl Renderer {
                     // Calculate text width using exact font metrics for proper centering
                     let base_font_size = 20.0; // Reduced from 32.0 for smaller text
                     let font_size = base_font_size * self.scale_factor;
-                    let text_width = Self::calculate_text_width(self.font.as_ref(), title, font_size);
+                    let text_width =
+                        Self::calculate_text_width(self.font.as_ref(), title, font_size);
                     // Center text: (cell_width - text_width) / 2, rounded to integer
-                    let text_x = (cell_x as f32 + (cell_width_usize as f32 - text_width) / 2.0).round() as usize;
+                    let text_x = (cell_x as f32 + (cell_width_usize as f32 - text_width) / 2.0)
+                        .round() as usize;
                     // Calculate baseline using font metrics for proper text alignment
                     let text_y = if let Some(font) = self.font.as_ref() {
                         if let Some(line_metrics) = font.horizontal_line_metrics(font_size) {
@@ -752,25 +798,31 @@ impl Renderer {
                                     let g = image.data[image_idx + 1] as u32;
                                     let b = image.data[image_idx + 2] as u32;
                                     let a = image.data[image_idx + 3] as u32;
-                                    
+
                                     // Apply grayscale colormap if needed
                                     let (final_r, final_g, final_b) = if axis_data.cmap == "gray" {
                                         // Convert to grayscale
-                                        let gray = (0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32) as u32;
+                                        let gray = (0.299 * r as f32
+                                            + 0.587 * g as f32
+                                            + 0.114 * b as f32)
+                                            as u32;
                                         (gray, gray, gray)
                                     } else {
                                         (r, g, b)
                                     };
-                                    
-                                    let pixel = (a << 24) | (final_b << 16) | (final_g << 8) | final_r;
-                                    
+
+                                    let pixel =
+                                        (a << 24) | (final_b << 16) | (final_g << 8) | final_r;
+
                                     // Draw scale×scale block
                                     for dy in 0..scale_usize {
                                         for dx in 0..scale_usize {
                                             let dst_y = offset_y + src_y * scale_usize + dy;
                                             let dst_x = offset_x + src_x * scale_usize + dx;
-                                            
-                                            if dst_y < buffer_height_usize && dst_x < buffer_width_usize {
+
+                                            if dst_y < buffer_height_usize
+                                                && dst_x < buffer_width_usize
+                                            {
                                                 let buffer_idx = dst_y * buffer_width_usize + dst_x;
                                                 if buffer_idx < buffer.len() {
                                                     buffer[buffer_idx] = pixel;
@@ -817,8 +869,11 @@ impl Renderer {
         let cursor_y_usize = cursor_y as usize;
 
         // Check if cursor is within plot area
-        if cursor_x_usize < plot_x || cursor_x_usize >= plot_x + plot_width ||
-           cursor_y_usize < plot_y || cursor_y_usize >= plot_y + plot_height {
+        if cursor_x_usize < plot_x
+            || cursor_x_usize >= plot_x + plot_width
+            || cursor_y_usize < plot_y
+            || cursor_y_usize >= plot_y + plot_height
+        {
             return None;
         }
 
@@ -880,8 +935,11 @@ impl Renderer {
         let cursor_y_usize = cursor_y as usize;
 
         // Check if cursor is within plot area
-        if cursor_x_usize < plot_x || cursor_x_usize >= plot_x + plot_width ||
-           cursor_y_usize < plot_y || cursor_y_usize >= plot_y + plot_height {
+        if cursor_x_usize < plot_x
+            || cursor_x_usize >= plot_x + plot_width
+            || cursor_y_usize < plot_y
+            || cursor_y_usize >= plot_y + plot_height
+        {
             return None;
         }
 
@@ -999,8 +1057,12 @@ impl Renderer {
                         // Use square pattern for simplicity and better coverage
                         let px = x + dx_offset;
                         let py = y + dy_offset;
-                        
-                        if px >= 0 && px < buffer_width as i32 && py >= 0 && py < buffer_height as i32 {
+
+                        if px >= 0
+                            && px < buffer_width as i32
+                            && py >= 0
+                            && py < buffer_height as i32
+                        {
                             let idx = (py as usize) * buffer_width + (px as usize);
                             if idx < buffer.len() {
                                 buffer[idx] = line_color;
@@ -1069,7 +1131,7 @@ impl Renderer {
         }
 
         // Calculate plot area with adaptive margins for labels
-        let (left_margin, right_margin, top_margin, bottom_margin) = 
+        let (left_margin, right_margin, top_margin, bottom_margin) =
             Self::calculate_adaptive_margins(scale_factor, buffer_width, buffer_height);
         let plot_width = buffer_width.saturating_sub(left_margin + right_margin);
         let plot_height = buffer_height.saturating_sub(top_margin + bottom_margin);
@@ -1081,7 +1143,7 @@ impl Renderer {
         let mut x_max = f64::NEG_INFINITY;
         let mut y_min = f64::INFINITY;
         let mut y_max = f64::NEG_INFINITY;
-        
+
         for (x_data, y_data, _, _, _, _) in lines {
             for &x_val in x_data {
                 x_min = x_min.min(x_val);
@@ -1190,7 +1252,8 @@ impl Renderer {
 
         // Draw all lines first (so points will be drawn on top)
         // Connect points in the order they were passed (x[i], y[i]) -> (x[i+1], y[i+1])
-        for (_line_idx, (x_data, y_data, _, _, line_width, line_color)) in lines.iter().enumerate() {
+        for (_line_idx, (x_data, y_data, _, _, line_width, line_color)) in lines.iter().enumerate()
+        {
             for i in 0..x_data.len() - 1 {
                 let x1 = to_screen_x(x_data[i]);
                 let y1 = to_screen_y(y_data[i]);
@@ -1215,16 +1278,18 @@ impl Renderer {
         let selected_color = 0xFFFFFF00; // Yellow for selected point
         let hovered_color = 0xFFFF69B4; // Hot pink for hovered point
         let hovered_outline_color = 0xFFFFFFFF; // White outline for hovered point
-        
-        for (line_idx, (x_data, y_data, show_points, point_size, _, line_color)) in lines.iter().enumerate() {
+
+        for (line_idx, (x_data, y_data, show_points, point_size, _, line_color)) in
+            lines.iter().enumerate()
+        {
             for i in 0..x_data.len() {
                 let x_center = to_screen_x(x_data[i]);
                 let y_center = to_screen_y(y_data[i]);
-                
+
                 // Determine point size and color based on state (works for all lines)
                 let is_hovered = hovered_point_index == Some((line_idx, i));
                 let is_selected = selected_point_index == Some((line_idx, i));
-                
+
                 // Draw point if show_points is true OR if point is hovered/selected
                 if *show_points || is_hovered || is_selected {
                     let current_point_size = if is_hovered || is_selected {
@@ -1235,7 +1300,7 @@ impl Renderer {
                     } else {
                         *point_size
                     };
-                    
+
                     let current_color = if is_selected {
                         selected_color
                     } else if is_hovered {
@@ -1243,11 +1308,11 @@ impl Renderer {
                     } else {
                         *line_color // Use line color for points
                     };
-                    
+
                     // Draw filled circle for each point
                     let point_radius_i32 = current_point_size as i32;
                     let radius_squared = point_radius_i32 * point_radius_i32;
-                    
+
                     // Draw outline for hovered/selected points (slightly larger circle)
                     if is_hovered || is_selected {
                         let outline_radius = point_radius_i32 + 2;
@@ -1259,8 +1324,12 @@ impl Renderer {
                                 if dist_sq <= outline_radius_squared && dist_sq > radius_squared {
                                     let x = x_center as i32 + dx;
                                     let y = y_center as i32 + dy;
-                                    
-                                    if x >= 0 && x < buffer_width as i32 && y >= 0 && y < buffer_height as i32 {
+
+                                    if x >= 0
+                                        && x < buffer_width as i32
+                                        && y >= 0
+                                        && y < buffer_height as i32
+                                    {
                                         let idx = (y as usize) * buffer_width_usize + (x as usize);
                                         if idx < buffer.len() {
                                             buffer[idx] = hovered_outline_color;
@@ -1270,15 +1339,19 @@ impl Renderer {
                             }
                         }
                     }
-                    
+
                     // Draw main point circle
                     for dy in -point_radius_i32..=point_radius_i32 {
                         for dx in -point_radius_i32..=point_radius_i32 {
                             if dx * dx + dy * dy <= radius_squared {
                                 let x = x_center as i32 + dx;
                                 let y = y_center as i32 + dy;
-                                
-                                if x >= 0 && x < buffer_width as i32 && y >= 0 && y < buffer_height as i32 {
+
+                                if x >= 0
+                                    && x < buffer_width as i32
+                                    && y >= 0
+                                    && y < buffer_height as i32
+                                {
                                     let idx = (y as usize) * buffer_width_usize + (x as usize);
                                     if idx < buffer.len() {
                                         buffer[idx] = current_color;
@@ -1356,7 +1429,8 @@ impl Renderer {
 
         // X-axis label
         if let Some(xlabel_text) = xlabel {
-            let text_width = Self::calculate_text_width(self.font.as_ref(), xlabel_text, label_font_size);
+            let text_width =
+                Self::calculate_text_width(self.font.as_ref(), xlabel_text, label_font_size);
             let text_x = plot_x_usize + (plot_width_usize as f32 - text_width) as usize / 2;
             let text_y = buffer_height_usize - 50; // Increased from 20 to 40 pixels from bottom
             if text_y < buffer_height_usize {
@@ -1379,11 +1453,13 @@ impl Renderer {
         if let Some(ylabel_text) = ylabel {
             // Draw vertically by drawing each character
             let char_height = label_font_size as usize;
-            let start_y = plot_y_usize + (plot_height_usize - ylabel_text.chars().count() * char_height) / 2;
+            let start_y =
+                plot_y_usize + (plot_height_usize - ylabel_text.chars().count() * char_height) / 2;
             let mut current_y = start_y;
             for ch in ylabel_text.chars() {
                 let char_str = ch.to_string();
-                let text_width = Self::calculate_text_width(self.font.as_ref(), &char_str, label_font_size);
+                let text_width =
+                    Self::calculate_text_width(self.font.as_ref(), &char_str, label_font_size);
                 let text_x = (40.0 - text_width / 2.0).max(0.0) as usize; // Increased to 80 pixels from left
                 if current_y < buffer_height_usize {
                     Self::draw_text_improved(
@@ -1432,27 +1508,33 @@ impl Renderer {
         } else if let Some((cursor_x, cursor_y)) = cursor_pos {
             let cursor_x_usize = cursor_x as usize;
             let cursor_y_usize = cursor_y as usize;
-            
+
             // Show x, y for cursor anywhere in window - clamp to plot bounds when outside plot area
             let (clamped_x, clamped_y) = (
-                cursor_x_usize.clamp(plot_x_usize, plot_x_usize + plot_width_usize.saturating_sub(1)),
-                cursor_y_usize.clamp(plot_y_usize, plot_y_usize + plot_height_usize.saturating_sub(1)),
+                cursor_x_usize.clamp(
+                    plot_x_usize,
+                    plot_x_usize + plot_width_usize.saturating_sub(1),
+                ),
+                cursor_y_usize.clamp(
+                    plot_y_usize,
+                    plot_y_usize + plot_height_usize.saturating_sub(1),
+                ),
             );
-            
+
             let screen_x_rel = (clamped_x - plot_x_usize) as f64;
             let screen_y_rel = (clamped_y - plot_y_usize) as f64;
-            
+
             let normalized_x = screen_x_rel / plot_width_usize.max(1) as f64;
             let normalized_y = 1.0 - (screen_y_rel / plot_height_usize.max(1) as f64); // Flip y-axis
-            
+
             let data_x = x_min_plot + normalized_x * x_range_plot;
             let data_y = y_min_plot + normalized_y * y_range_plot;
-            
+
             Some((data_x, data_y))
         } else {
             None
         };
-        
+
         if let Some((data_x, data_y)) = tooltip_data {
             // Format tooltip text with better precision
             let tooltip_text = if data_x.fract() == 0.0 && data_y.fract() == 0.0 {
@@ -1471,15 +1553,17 @@ impl Renderer {
                 };
                 format!("x: {}, y: {}", x_str, y_str)
             };
-            
+
             // Draw tooltip at the top of the plot area
             let tooltip_font_size = 16.0 * self.scale_factor;
-            let text_width = Self::calculate_text_width(self.font.as_ref(), &tooltip_text, tooltip_font_size);
-            
+            let text_width =
+                Self::calculate_text_width(self.font.as_ref(), &tooltip_text, tooltip_font_size);
+
             // Center tooltip horizontally, position at top of plot area
-            let tooltip_x = plot_x_usize + ((plot_width_usize as f32 - text_width) / 2.0).max(0.0) as usize;
+            let tooltip_x =
+                plot_x_usize + ((plot_width_usize as f32 - text_width) / 2.0).max(0.0) as usize;
             let tooltip_y = plot_y_usize + 10; // 10 pixels from top of plot area
-            
+
             if tooltip_y < buffer_height_usize {
                 Self::draw_text_improved(
                     &mut self.atlas,
@@ -1537,7 +1621,7 @@ impl Renderer {
         }
 
         // Calculate plot area with adaptive margins for labels
-        let (left_margin, right_margin, top_margin, bottom_margin) = 
+        let (left_margin, right_margin, top_margin, bottom_margin) =
             Self::calculate_adaptive_margins(scale_factor, buffer_width, buffer_height);
         // Increase bottom margin for bar charts to accommodate category labels
         let bottom_margin = bottom_margin.max((buffer_height as f32 * 0.1).max(90.0) as u32);
@@ -1549,7 +1633,7 @@ impl Renderer {
         // Calculate y bounds from all bars
         let mut y_min = f64::INFINITY;
         let mut y_max = f64::NEG_INFINITY;
-        
+
         for (_, y_data, _) in bars {
             for &y_val in y_data {
                 y_min = y_min.min(y_val);
@@ -1585,11 +1669,13 @@ impl Renderer {
         let num_categories = first_x_labels.len();
 
         // Calculate bar width and spacing (adaptive based on plot width)
-        let bar_spacing = ((plot_width_usize as f32 * 0.01).max(8.0) * self.scale_factor).min(20.0) as usize; // Adaptive spacing
+        let bar_spacing =
+            ((plot_width_usize as f32 * 0.01).max(8.0) * self.scale_factor).min(20.0) as usize; // Adaptive spacing
         let total_bar_width = plot_width_usize.saturating_sub((num_categories - 1) * bar_spacing);
         let bar_width = if num_categories > 0 {
             // Adaptive bar width: min 5px, max 10% of plot width per bar
-            let max_bar_width = ((plot_width_usize as f32 / num_categories as f32) * 0.8).min(100.0) as usize;
+            let max_bar_width =
+                ((plot_width_usize as f32 / num_categories as f32) * 0.8).min(100.0) as usize;
             (total_bar_width / num_categories).max(5).min(max_bar_width)
         } else {
             20
@@ -1654,11 +1740,7 @@ impl Renderer {
                 let bar_bottom = to_screen_y(0.0);
 
                 // Draw bar rectangle
-                let bar_height = if bar_bottom > bar_top {
-                    bar_bottom - bar_top
-                } else {
-                    bar_top - bar_bottom
-                };
+                let bar_height = bar_bottom.abs_diff(bar_top);
 
                 for dy in 0..bar_height {
                     let y_pos = if bar_bottom > bar_top {
@@ -1666,11 +1748,14 @@ impl Renderer {
                     } else {
                         bar_bottom + dy
                     };
-                    
+
                     if y_pos >= plot_y_usize && y_pos < plot_y_usize + plot_height_usize {
                         for dx in 0..actual_bar_width {
                             let x_pos = bar_x + dx;
-                            if x_pos < plot_x_usize + plot_width_usize && x_pos < buffer_width_usize && y_pos < buffer_height_usize {
+                            if x_pos < plot_x_usize + plot_width_usize
+                                && x_pos < buffer_width_usize
+                                && y_pos < buffer_height_usize
+                            {
                                 let idx = y_pos * buffer_width_usize + x_pos;
                                 if idx < buffer.len() {
                                     buffer[idx] = *bar_color;
@@ -1684,7 +1769,6 @@ impl Renderer {
 
         // Draw value labels on top of bars
         let value_font_size = 16.0 * self.scale_factor;
-        let bar_bottom_y = to_screen_y(0.0); // Y position of x-axis (y=0)
         for (x_labels, y_data, _) in bars {
             for (i, (_, &y_val)) in x_labels.iter().zip(y_data.iter()).enumerate() {
                 // Calculate bar position (same as when drawing bars)
@@ -1695,27 +1779,27 @@ impl Renderer {
                 };
                 let bar_x = plot_x_usize + i * slot_width + (slot_width - actual_bar_width) / 2;
                 let bar_top = to_screen_y(y_val);
-                
+
                 // Format value label
                 let value_label = if y_val.fract() == 0.0 {
                     format!("{}", y_val as i64)
                 } else {
                     format!("{:.2}", y_val)
                 };
-                
+
                 // Calculate text position (centered above bar)
-                let text_width = Self::calculate_text_width(self.font.as_ref(), &value_label, value_font_size);
-                let text_x = (bar_x as f32 + (actual_bar_width as f32 - text_width) / 2.0).max(plot_x_usize as f32) as usize;
+                let text_width =
+                    Self::calculate_text_width(self.font.as_ref(), &value_label, value_font_size);
+                let text_x = (bar_x as f32 + (actual_bar_width as f32 - text_width) / 2.0)
+                    .max(plot_x_usize as f32) as usize;
                 // Position text above bar top (15 pixels above)
-                let text_y = if bar_bottom_y > bar_top {
-                    bar_top.saturating_sub(15) // 15 pixels above bar top
-                } else {
-                    bar_top.saturating_sub(15) // For negative values, still above bar top
-                };
-                
+                let text_y = bar_top.saturating_sub(15);
+
                 // Only draw if text is within plot area bounds
-                if text_y >= plot_y_usize && text_y < plot_y_usize + plot_height_usize &&
-                   text_x < plot_x_usize + plot_width_usize {
+                if text_y >= plot_y_usize
+                    && text_y < plot_y_usize + plot_height_usize
+                    && text_x < plot_x_usize + plot_width_usize
+                {
                     Self::draw_text_improved(
                         &mut self.atlas,
                         self.font.as_ref(),
@@ -1772,15 +1856,17 @@ impl Renderer {
             };
             let label_x_center = plot_x_usize + i * slot_width + slot_width / 2;
             let text_width = Self::calculate_text_width(self.font.as_ref(), label, label_font_size);
-            let text_x = (label_x_center as f32 - text_width / 2.0).max(plot_x_usize as f32) as usize;
+            let text_x =
+                (label_x_center as f32 - text_width / 2.0).max(plot_x_usize as f32) as usize;
             let text_y = plot_y_usize + plot_height_usize + 20; // 20 pixels below plot area
-            
+
             // Truncate long labels if needed
             let display_label = if text_width > slot_width as f32 {
                 // Try to truncate label
                 let max_chars = (slot_width as f32 / (label_font_size * 0.6)) as usize;
                 if label.chars().count() > max_chars {
-                    let truncated: String = label.chars().take(max_chars.saturating_sub(3)).collect();
+                    let truncated: String =
+                        label.chars().take(max_chars.saturating_sub(3)).collect();
                     format!("{}...", truncated)
                 } else {
                     label.clone()
@@ -1788,7 +1874,7 @@ impl Renderer {
             } else {
                 label.clone()
             };
-            
+
             if text_y < buffer_height_usize {
                 Self::draw_text_improved(
                     &mut self.atlas,
@@ -1810,7 +1896,8 @@ impl Renderer {
 
         // X-axis label
         if let Some(xlabel_text) = xlabel {
-            let text_width = Self::calculate_text_width(self.font.as_ref(), xlabel_text, axis_label_font_size);
+            let text_width =
+                Self::calculate_text_width(self.font.as_ref(), xlabel_text, axis_label_font_size);
             let text_x = plot_x_usize + (plot_width_usize as f32 - text_width) as usize / 2;
             let text_y = buffer_height_usize - 50;
             if text_y < buffer_height_usize {
@@ -1832,11 +1919,13 @@ impl Renderer {
         // Y-axis label (rotated vertically)
         if let Some(ylabel_text) = ylabel {
             let char_height = axis_label_font_size as usize;
-            let start_y = plot_y_usize + (plot_height_usize - ylabel_text.chars().count() * char_height) / 2;
+            let start_y =
+                plot_y_usize + (plot_height_usize - ylabel_text.chars().count() * char_height) / 2;
             let mut current_y = start_y;
             for ch in ylabel_text.chars() {
                 let char_str = ch.to_string();
-                let text_width = Self::calculate_text_width(self.font.as_ref(), &char_str, axis_label_font_size);
+                let text_width =
+                    Self::calculate_text_width(self.font.as_ref(), &char_str, axis_label_font_size);
                 let text_x = (40.0 - text_width / 2.0).max(0.0) as usize;
                 if current_y < buffer_height_usize {
                     Self::draw_text_improved(
@@ -2056,7 +2145,7 @@ impl Renderer {
         // Draw pie slices
         // Start angle is rotation (default -π/2 = top, but can be rotated)
         let mut current_angle = rotation;
-        
+
         for (i, &value) in y_data.iter().enumerate() {
             if value <= 0.0 {
                 continue; // Skip zero or negative values
@@ -2086,14 +2175,14 @@ impl Renderer {
                     // Calculate angle for this pixel
                     // atan2(y, x) returns angle in [-π, π] range
                     let pixel_angle_raw = (y_offset as f64).atan2(x_offset as f64);
-                    
+
                     // Normalize to [0, 2π) range
                     let pixel_angle = if pixel_angle_raw < 0.0 {
                         pixel_angle_raw + 2.0 * std::f64::consts::PI
                     } else {
                         pixel_angle_raw
                     };
-                    
+
                     // Normalize start and end angles to [0, 2π) range
                     let normalized_start = if current_angle < 0.0 {
                         current_angle + 2.0 * std::f64::consts::PI
@@ -2102,7 +2191,7 @@ impl Renderer {
                     } else {
                         current_angle
                     };
-                    
+
                     let normalized_end = if end_angle < 0.0 {
                         end_angle + 2.0 * std::f64::consts::PI
                     } else if end_angle >= 2.0 * std::f64::consts::PI {
@@ -2124,7 +2213,7 @@ impl Renderer {
                     if in_slice {
                         let x = center_x_usize as i32 + x_offset;
                         let y = center_y_usize as i32 + y_offset;
-                        
+
                         if x >= 0 && x < buffer_width as i32 && y >= 0 && y < buffer_height as i32 {
                             let idx = (y as usize) * buffer_width_usize + (x as usize);
                             if idx < buffer.len() {
@@ -2137,8 +2226,10 @@ impl Renderer {
 
             // Draw slice border (white line)
             // Draw line from center to edge at start angle
-            let start_x = center_x_usize as i32 + (radius_usize as f64 * current_angle.cos()) as i32;
-            let start_y = center_y_usize as i32 + (radius_usize as f64 * current_angle.sin()) as i32;
+            let start_x =
+                center_x_usize as i32 + (radius_usize as f64 * current_angle.cos()) as i32;
+            let start_y =
+                center_y_usize as i32 + (radius_usize as f64 * current_angle.sin()) as i32;
             Self::draw_line_segment(
                 &mut buffer,
                 center_x_usize,
@@ -2172,8 +2263,12 @@ impl Renderer {
                 let angle = current_angle + (slice_angle * j as f64 / num_arc_points as f64);
                 let arc_x = center_x_usize as i32 + (radius_usize as f64 * angle.cos()) as i32;
                 let arc_y = center_y_usize as i32 + (radius_usize as f64 * angle.sin()) as i32;
-                
-                if arc_x >= 0 && arc_x < buffer_width as i32 && arc_y >= 0 && arc_y < buffer_height as i32 {
+
+                if arc_x >= 0
+                    && arc_x < buffer_width as i32
+                    && arc_y >= 0
+                    && arc_y < buffer_height as i32
+                {
                     let idx = (arc_y as usize) * buffer_width_usize + (arc_x as usize);
                     if idx < buffer.len() {
                         buffer[idx] = 0xFFFFFFFF; // White border
@@ -2183,7 +2278,11 @@ impl Renderer {
                         for dx in -1..=1 {
                             let px = arc_x + dx;
                             let py = arc_y + dy;
-                            if px >= 0 && px < buffer_width as i32 && py >= 0 && py < buffer_height as i32 {
+                            if px >= 0
+                                && px < buffer_width as i32
+                                && py >= 0
+                                && py < buffer_height as i32
+                            {
                                 let idx = (py as usize) * buffer_width_usize + (px as usize);
                                 if idx < buffer.len() {
                                     buffer[idx] = 0xFFFFFFFF; // White border
@@ -2210,7 +2309,8 @@ impl Renderer {
 
             // Draw label with contrasting color
             let label_font_size = 14.0 * self.scale_factor;
-            let text_width = Self::calculate_text_width(self.font.as_ref(), &label_text, label_font_size);
+            let text_width =
+                Self::calculate_text_width(self.font.as_ref(), &label_text, label_font_size);
             let text_x = (label_x - text_width / 2.0).max(0.0) as usize;
             let text_y = label_y as usize;
 
@@ -2234,7 +2334,7 @@ impl Renderer {
                             } else {
                                 text_y.saturating_add(dy as usize)
                             };
-                            
+
                             // Only draw if within bounds
                             if outline_x < buffer_width_usize && outline_y < buffer_height_usize {
                                 Self::draw_text_improved_with_color(
@@ -2254,7 +2354,7 @@ impl Renderer {
                         }
                     }
                 }
-                
+
                 // Draw main text with contrasting color
                 Self::draw_text_improved_with_color(
                     &mut self.atlas,
@@ -2289,10 +2389,10 @@ impl Renderer {
             scale: 40.0, // Default scale provides optimal hinting
             collection_index: 0,
         };
-        
+
         // Try to load system monospace fonts first (for uniform character width)
         // Monospace fonts ensure all symbols have the same width
-        
+
         // Try system monospace fonts on macOS
         #[cfg(target_os = "macos")]
         {
@@ -2303,7 +2403,7 @@ impl Renderer {
                 "/Library/Fonts/Courier New.ttf",
                 "/System/Library/Fonts/Supplemental/Courier New.ttf",
             ];
-            
+
             for path in &monospace_font_paths {
                 if let Ok(font_data) = std::fs::read(path) {
                     if let Ok(font) = Font::from_bytes(font_data, font_settings) {
@@ -2312,7 +2412,7 @@ impl Renderer {
                 }
             }
         }
-        
+
         // Try system monospace fonts on Linux
         #[cfg(target_os = "linux")]
         {
@@ -2324,7 +2424,7 @@ impl Renderer {
                 "/usr/share/fonts/truetype/liberation/LiberationMono-Bold.ttf",
                 "/usr/share/fonts/truetype/courier/Courier New.ttf",
             ];
-            
+
             for path in &monospace_font_paths {
                 if let Ok(font_data) = std::fs::read(path) {
                     if let Ok(font) = Font::from_bytes(font_data, font_settings) {
@@ -2333,7 +2433,7 @@ impl Renderer {
                 }
             }
         }
-        
+
         // Try system monospace fonts on Windows
         #[cfg(target_os = "windows")]
         {
@@ -2346,7 +2446,7 @@ impl Renderer {
                     format!("{}\\Fonts\\lucon.ttf", windows_dir),
                     format!("{}\\Fonts\\consolab.ttf", windows_dir),
                 ];
-                
+
                 for path in &monospace_font_paths {
                     if let Ok(font_data) = std::fs::read(path) {
                         if let Ok(font) = Font::from_bytes(font_data, font_settings) {
@@ -2356,7 +2456,7 @@ impl Renderer {
                 }
             }
         }
-        
+
         // Fallback to proportional fonts if monospace fonts are not available
         // Try to load embedded Inter font (supports Russian and English)
         // Inter is a modern, high-quality font optimized for UI
@@ -2364,27 +2464,29 @@ impl Renderer {
         if let Ok(font) = Font::from_bytes(INTER_FONT, font_settings) {
             return Some(font);
         }
-        
+
         // Fallback to Inter variable font if static version not available
-        const INTER_VARIABLE_FONT: &[u8] = include_bytes!("fonts/Inter/Inter-VariableFont_opsz,wght.ttf");
+        const INTER_VARIABLE_FONT: &[u8] =
+            include_bytes!("fonts/Inter/Inter-VariableFont_opsz,wght.ttf");
         if let Ok(font) = Font::from_bytes(INTER_VARIABLE_FONT, font_settings) {
             return Some(font);
         }
-        
+
         // Try Roboto as second choice (also supports Russian and English)
         const ROBOTO_FONT: &[u8] = include_bytes!("fonts/roboto/static/Roboto-Regular.ttf");
         if let Ok(font) = Font::from_bytes(ROBOTO_FONT, font_settings) {
             return Some(font);
         }
-        
+
         // Fallback to Roboto variable font
-        const ROBOTO_VARIABLE_FONT: &[u8] = include_bytes!("fonts/roboto/Roboto-VariableFont_wdth,wght.ttf");
+        const ROBOTO_VARIABLE_FONT: &[u8] =
+            include_bytes!("fonts/roboto/Roboto-VariableFont_wdth,wght.ttf");
         if let Ok(font) = Font::from_bytes(ROBOTO_VARIABLE_FONT, font_settings) {
             return Some(font);
         }
-        
+
         // Try to load system proportional fonts as last resort
-        
+
         // Try system fonts on macOS
         #[cfg(target_os = "macos")]
         {
@@ -2396,7 +2498,7 @@ impl Renderer {
                 "/Library/Fonts/Arial.ttf",
                 "/System/Library/Fonts/HelveticaNeue.ttc",
             ];
-            
+
             for path in &font_paths {
                 if let Ok(font_data) = std::fs::read(path) {
                     if let Ok(font) = Font::from_bytes(font_data, font_settings) {
@@ -2405,7 +2507,7 @@ impl Renderer {
                 }
             }
         }
-        
+
         // Try system fonts on Linux
         #[cfg(target_os = "linux")]
         {
@@ -2415,7 +2517,7 @@ impl Renderer {
                 "/usr/share/fonts/TTF/DejaVuSans.ttf",
                 "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
             ];
-            
+
             for path in &font_paths {
                 if let Ok(font_data) = std::fs::read(path) {
                     if let Ok(font) = Font::from_bytes(font_data, font_settings) {
@@ -2424,7 +2526,7 @@ impl Renderer {
                 }
             }
         }
-        
+
         // Try system fonts on Windows
         #[cfg(target_os = "windows")]
         {
@@ -2435,7 +2537,7 @@ impl Renderer {
                     format!("{}\\Fonts\\arial.ttf", windows_dir),
                     format!("{}\\Fonts\\calibri.ttf", windows_dir),
                 ];
-                
+
                 for path in &font_paths {
                     if let Ok(font_data) = std::fs::read(path) {
                         if let Ok(font) = Font::from_bytes(font_data, font_settings) {
@@ -2445,11 +2547,11 @@ impl Renderer {
                 }
             }
         }
-        
+
         // Fallback: return None to use bitmap font
         None
     }
-    
+
     /// Calculate exact text width using font metrics
     /// For monospace fonts, uses maximum character width for accurate calculation
     /// Returns the actual pixel width of the text
@@ -2458,7 +2560,7 @@ impl Renderer {
             // Calculate fixed character width using maximum width from sample characters
             // This ensures accurate width calculation matching the rendering
             let char_width = Self::calculate_max_char_width(font, font_size);
-            
+
             // Use fixed width for all characters to ensure uniform spacing
             text.chars().count() as f32 * char_width
         } else {
@@ -2467,8 +2569,7 @@ impl Renderer {
             text.chars().count() as f32 * avg_char_width
         }
     }
-    
-    
+
     /// Optimized integer-based alpha blending
     /// bg: background pixel in BGRA format (0xAABBGGRR)
     /// fg: foreground color components (r, g, b)
@@ -2477,21 +2578,21 @@ impl Renderer {
     fn blend(bg: u32, fg_r: u8, fg_g: u8, fg_b: u8, alpha: u8) -> u32 {
         let a = alpha as u32;
         let inv_a = 255 - a;
-        
+
         // Extract background components (BGRA format: 0xAABBGGRR)
         let bg_r = (bg >> 0) & 0xFF;
         let bg_g = (bg >> 8) & 0xFF;
         let bg_b = (bg >> 16) & 0xFF;
-        
+
         // Integer blending: (fg * a + bg * inv_a) / 255
         let r = ((fg_r as u32 * a + bg_r * inv_a) / 255) as u8;
         let g = ((fg_g as u32 * a + bg_g * inv_a) / 255) as u8;
         let b = ((fg_b as u32 * a + bg_b * inv_a) / 255) as u8;
-        
+
         // Format: 0xAABBGGRR
         (0xFF << 24) | ((b as u32) << 16) | ((g as u32) << 8) | (r as u32)
     }
-    
+
     /// Improved text rendering with fontdue for proper UTF-8 and Cyrillic support
     fn draw_text_improved(
         atlas: &mut FontAtlas,
@@ -2550,38 +2651,32 @@ impl Renderer {
             );
         } else {
             // Fallback to improved bitmap font
-            Self::draw_text_bitmap(
-                buffer,
-                x,
-                y,
-                text,
-                buffer_width,
-                buffer_height,
-            );
+            Self::draw_text_bitmap(buffer, x, y, text, buffer_width, buffer_height);
         }
     }
-    
+
     /// Calculate maximum character width from sample characters
     /// This ensures uniform spacing for all characters
     fn calculate_max_char_width(font: &Font, font_size: f32) -> f32 {
         // Test characters: digits, uppercase, lowercase, space, and common symbols
-        let test_chars = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz МеткаPredict:";
+        let test_chars =
+            "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz МеткаPredict:";
         let mut max_width = 0.0f32;
-        
+
         for ch in test_chars.chars() {
             let (metrics, _) = font.rasterize(ch, font_size);
             max_width = max_width.max(metrics.advance_width);
         }
-        
+
         // Ensure minimum width (fallback if all characters fail)
         if max_width <= 0.0 {
             let (space_metrics, _) = font.rasterize(' ', font_size);
             max_width = space_metrics.advance_width;
         }
-        
+
         max_width
     }
-    
+
     /// Draw text using fontdue font with DPI-aware rendering and atlas caching
     /// For monospace fonts, uses fixed character width for uniform spacing
     /// Uses proper fontdue coordinate model: baseline is a property of the line, not individual glyphs
@@ -2601,52 +2696,51 @@ impl Renderer {
     ) {
         // Use DPI-aware font size for rasterization
         let rasterize_size = font_size;
-        
+
         // Calculate fixed character width using maximum width from sample characters
         // This ensures all characters occupy the same horizontal space
         let char_width = Self::calculate_max_char_width(font, rasterize_size);
-        
+
         // In fontdue, y=0 is the baseline
         // The parameter 'y' represents the baseline position in buffer coordinates
         // Each glyph's ymin is relative to this baseline
         // Use integer baseline to prevent "sinking" of characters
         let baseline_y = (y as f32).floor();
-        
+
         // Round starting coordinates to avoid sub-pixel positioning (blur)
         // Note: x and y are already in buffer pixel coordinates, scale_factor is already in font_size
         let base_x = x as f32;
         let mut current_x = base_x;
-        
+
         // Pre-calculate minimum xmin for all characters in the text to ensure uniform alignment
         // This ensures all characters align consistently regardless of their individual xmin values
         // Use atlas to avoid re-rasterizing characters
-        let min_xmin = text.chars()
+        let min_xmin = text
+            .chars()
             .map(|ch| {
-                let (metrics, _) = atlas.get_or_rasterize(ch, rasterize_size, |c, size| {
-                    font.rasterize(c, size)
-                });
+                let (metrics, _) =
+                    atlas.get_or_rasterize(ch, rasterize_size, |c, size| font.rasterize(c, size));
                 metrics.xmin as f32
             })
             .fold(0.0f32, |acc, xmin| acc.min(xmin));
-        
+
         for ch in text.chars() {
             // Use atlas to cache glyphs
-            let (metrics, bitmap) = atlas.get_or_rasterize(ch, rasterize_size, |c, size| {
-                font.rasterize(c, size)
-            });
-            
+            let (metrics, bitmap) =
+                atlas.get_or_rasterize(ch, rasterize_size, |c, size| font.rasterize(c, size));
+
             // Calculate glyph position: normalize xmin to ensure uniform alignment
             // Subtract min_xmin from each character's xmin to align all characters consistently
             // This ensures all characters start at the same visual position within their cells
             let normalized_xmin = metrics.xmin as f32 - min_xmin;
             let glyph_x = (current_x + normalized_xmin).round() as i32;
-            
+
             // Proper fontdue coordinate model:
             // - baseline_y is the fixed baseline position for the entire line
             // - metrics.ymin is the glyph's bounding box minimum relative to baseline (can be negative for descenders)
             // - No normalization or offset calculation - just baseline + ymin
             let glyph_y = (baseline_y + metrics.ymin as f32).round() as i32;
-            
+
             // Draw the character bitmap
             if metrics.width > 0 {
                 for (row_idx, row) in bitmap.chunks(metrics.width).enumerate() {
@@ -2655,13 +2749,13 @@ impl Renderer {
                         continue;
                     }
                     let pixel_y = pixel_y as usize;
-                    
+
                     for (col_idx, &alpha) in row.iter().enumerate() {
                         let pixel_x = glyph_x.saturating_add(col_idx as i32);
                         if pixel_x < 0 || pixel_x as usize >= buffer_width {
                             continue;
                         }
-                        
+
                         if alpha > 0 {
                             // Blend text color with background using optimized integer blending
                             let idx = pixel_y * buffer_width + pixel_x as usize;
@@ -2683,17 +2777,17 @@ impl Renderer {
                     }
                 }
             }
-            
+
             // Advance to next character position using fixed width for uniform spacing
             // Always use fixed width regardless of individual character advance_width
             current_x += char_width;
-            
+
             if current_x.round() as usize >= buffer_width {
                 break;
             }
         }
     }
-    
+
     /// Fallback bitmap font rendering with improved patterns
     fn draw_text_bitmap(
         buffer: &mut [u32],
@@ -2707,9 +2801,9 @@ impl Renderer {
         let font_width = 16; // Increased from 14
         let font_height = 24; // Increased from 20
         let scale = 2; // Scale factor
-        
+
         let mut current_x = x;
-        
+
         for ch in text.chars().take(50) {
             if current_x + font_width * scale >= buffer_width {
                 break;
@@ -2730,11 +2824,11 @@ impl Renderer {
                 buffer_width,
                 buffer_height,
             );
-            
+
             current_x += font_width * scale + 2;
         }
     }
-    
+
     /// Draw a single character scaled up
     fn draw_char_scaled(
         buffer: &mut [u32],
@@ -2750,7 +2844,7 @@ impl Renderer {
     ) {
         // Simple bitmap patterns for common characters (Latin + Cyrillic + numbers)
         let pattern = Self::get_char_pattern(ch, base_width, base_height);
-        
+
         for (row_idx, row) in pattern.iter().enumerate() {
             for (col_idx, &pixel) in row.iter().enumerate() {
                 if pixel {
@@ -2759,7 +2853,7 @@ impl Renderer {
                         for sx in 0..scale {
                             let px = x + col_idx * scale + sx;
                             let py = y + row_idx * scale + sy;
-                            
+
                             if px < buffer_width && py < buffer_height {
                                 let idx = py * buffer_width + px;
                                 if idx < buffer.len() {
@@ -2772,95 +2866,130 @@ impl Renderer {
             }
         }
     }
-    
+
     /// Get bitmap pattern for a character with better Cyrillic support
     fn get_char_pattern(ch: char, width: usize, height: usize) -> Vec<Vec<bool>> {
         let mut pattern = vec![vec![false; width]; height];
-        
+
         // Helper to set pixel safely
         fn set(pattern: &mut Vec<Vec<bool>>, x: usize, y: usize, width: usize, height: usize) {
             if x < width && y < height {
                 pattern[y][x] = true;
             }
         }
-        
+
         // Helper to draw vertical line
-        fn vline(pattern: &mut Vec<Vec<bool>>, x: usize, y1: usize, y2: usize, width: usize, height: usize) {
-            for y in y1..=y2.min(height-1) {
+        fn vline(
+            pattern: &mut Vec<Vec<bool>>,
+            x: usize,
+            y1: usize,
+            y2: usize,
+            width: usize,
+            height: usize,
+        ) {
+            for y in y1..=y2.min(height - 1) {
                 set(pattern, x, y, width, height);
             }
         }
-        
+
         // Helper to draw horizontal line
-        fn hline(pattern: &mut Vec<Vec<bool>>, x1: usize, x2: usize, y: usize, width: usize, height: usize) {
-            for x in x1..=x2.min(width-1) {
+        fn hline(
+            pattern: &mut Vec<Vec<bool>>,
+            x1: usize,
+            x2: usize,
+            y: usize,
+            width: usize,
+            height: usize,
+        ) {
+            for x in x1..=x2.min(width - 1) {
                 set(pattern, x, y, width, height);
             }
         }
-        
+
         match ch {
             // Numbers
             '0' => {
-                for y in 1..height-1 {
+                for y in 1..height - 1 {
                     set(&mut pattern, 0, y, width, height);
-                    set(&mut pattern, width-1, y, width, height);
+                    set(&mut pattern, width - 1, y, width, height);
                 }
-                for x in 1..width-1 {
+                for x in 1..width - 1 {
                     set(&mut pattern, x, 0, width, height);
-                    set(&mut pattern, x, height-1, width, height);
+                    set(&mut pattern, x, height - 1, width, height);
                 }
             }
             '1' => {
                 // Number 1 - vertical line with small top
                 let mid_x = width / 2;
-                vline(&mut pattern, mid_x, 0, height-1, width, height);
+                vline(&mut pattern, mid_x, 0, height - 1, width, height);
                 if width > 2 {
-                    hline(&mut pattern, mid_x.saturating_sub(1), mid_x, 0, width, height);
+                    hline(
+                        &mut pattern,
+                        mid_x.saturating_sub(1),
+                        mid_x,
+                        0,
+                        width,
+                        height,
+                    );
                 }
             }
             '2' => {
                 // Number 2 - S-like shape
-                hline(&mut pattern, 1, width-2, 0, width, height);
-                hline(&mut pattern, 1, width-2, height/2, width, height);
-                hline(&mut pattern, 1, width-2, height-1, width, height);
-                set(&mut pattern, width-1, 0, width, height);
-                set(&mut pattern, 0, height/2, width, height);
-                set(&mut pattern, 0, height-1, width, height);
+                hline(&mut pattern, 1, width - 2, 0, width, height);
+                hline(&mut pattern, 1, width - 2, height / 2, width, height);
+                hline(&mut pattern, 1, width - 2, height - 1, width, height);
+                set(&mut pattern, width - 1, 0, width, height);
+                set(&mut pattern, 0, height / 2, width, height);
+                set(&mut pattern, 0, height - 1, width, height);
             }
             '3' => {
                 // Number 3 - two curves
-                hline(&mut pattern, 1, width-2, 0, width, height);
-                hline(&mut pattern, 1, width-2, height/2, width, height);
-                hline(&mut pattern, 1, width-2, height-1, width, height);
-                vline(&mut pattern, width-1, 0, height-1, width, height);
+                hline(&mut pattern, 1, width - 2, 0, width, height);
+                hline(&mut pattern, 1, width - 2, height / 2, width, height);
+                hline(&mut pattern, 1, width - 2, height - 1, width, height);
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
             }
             '4' => {
                 // Number 4
-                vline(&mut pattern, 0, 0, height/2, width, height);
-                hline(&mut pattern, 0, width-1, height/2, width, height);
-                vline(&mut pattern, width-1, 0, height-1, width, height);
+                vline(&mut pattern, 0, 0, height / 2, width, height);
+                hline(&mut pattern, 0, width - 1, height / 2, width, height);
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
             }
             '5' => {
                 // Number 5
-                hline(&mut pattern, 0, width-1, 0, width, height);
-                vline(&mut pattern, 0, 0, height/2, width, height);
-                hline(&mut pattern, 0, width-1, height/2, width, height);
-                vline(&mut pattern, width-1, height/2, height-1, width, height);
-                hline(&mut pattern, 0, width-1, height-1, width, height);
+                hline(&mut pattern, 0, width - 1, 0, width, height);
+                vline(&mut pattern, 0, 0, height / 2, width, height);
+                hline(&mut pattern, 0, width - 1, height / 2, width, height);
+                vline(
+                    &mut pattern,
+                    width - 1,
+                    height / 2,
+                    height - 1,
+                    width,
+                    height,
+                );
+                hline(&mut pattern, 0, width - 1, height - 1, width, height);
             }
             '6' => {
                 // Number 6
-                for y in 1..height-1 {
+                for y in 1..height - 1 {
                     set(&mut pattern, 0, y, width, height);
                 }
-                hline(&mut pattern, 1, width-2, 0, width, height);
-                hline(&mut pattern, 1, width-2, height/2, width, height);
-                hline(&mut pattern, 1, width-2, height-1, width, height);
-                vline(&mut pattern, width-1, height/2, height-1, width, height);
+                hline(&mut pattern, 1, width - 2, 0, width, height);
+                hline(&mut pattern, 1, width - 2, height / 2, width, height);
+                hline(&mut pattern, 1, width - 2, height - 1, width, height);
+                vline(
+                    &mut pattern,
+                    width - 1,
+                    height / 2,
+                    height - 1,
+                    width,
+                    height,
+                );
             }
             '7' => {
                 // Number 7
-                hline(&mut pattern, 0, width-1, 0, width, height);
+                hline(&mut pattern, 0, width - 1, 0, width, height);
                 for y in 1..height {
                     let x = width - 1 - ((y * (width - 1)) / height.max(1));
                     set(&mut pattern, x, y, width, height);
@@ -2868,51 +2997,51 @@ impl Renderer {
             }
             '8' => {
                 // Number 8 - two circles
-                for y in 1..height/2 {
+                for y in 1..height / 2 {
                     set(&mut pattern, 0, y, width, height);
-                    set(&mut pattern, width-1, y, width, height);
+                    set(&mut pattern, width - 1, y, width, height);
                 }
-                for y in height/2..height-1 {
+                for y in height / 2..height - 1 {
                     set(&mut pattern, 0, y, width, height);
-                    set(&mut pattern, width-1, y, width, height);
+                    set(&mut pattern, width - 1, y, width, height);
                 }
-                hline(&mut pattern, 1, width-2, 0, width, height);
-                hline(&mut pattern, 1, width-2, height/2, width, height);
-                hline(&mut pattern, 1, width-2, height-1, width, height);
+                hline(&mut pattern, 1, width - 2, 0, width, height);
+                hline(&mut pattern, 1, width - 2, height / 2, width, height);
+                hline(&mut pattern, 1, width - 2, height - 1, width, height);
             }
             '9' => {
                 // Number 9 - inverted 6
-                for y in 0..height/2 {
+                for y in 0..height / 2 {
                     set(&mut pattern, 0, y, width, height);
                 }
-                hline(&mut pattern, 1, width-2, 0, width, height);
-                hline(&mut pattern, 1, width-2, height/2, width, height);
-                hline(&mut pattern, 1, width-2, height-1, width, height);
-                vline(&mut pattern, width-1, 0, height-1, width, height);
+                hline(&mut pattern, 1, width - 2, 0, width, height);
+                hline(&mut pattern, 1, width - 2, height / 2, width, height);
+                hline(&mut pattern, 1, width - 2, height - 1, width, height);
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
             }
             // Latin letters
             'A'..='Z' | 'a'..='z' => {
-                for y in 1..height-1 {
+                for y in 1..height - 1 {
                     set(&mut pattern, 0, y, width, height);
-                    set(&mut pattern, width-1, y, width, height);
+                    set(&mut pattern, width - 1, y, width, height);
                 }
                 for x in 0..width {
                     set(&mut pattern, x, 0, width, height);
                 }
                 if height > 4 {
                     let mid = height / 2;
-                    hline(&mut pattern, 1, width-2, mid, width, height);
+                    hline(&mut pattern, 1, width - 2, mid, width, height);
                 }
             }
             // Cyrillic letters - detailed patterns
             'М' | 'м' => {
                 // M shape - two vertical lines with V in middle
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                vline(&mut pattern, width-1, 0, height-1, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
                 let mid_x = width / 2;
                 // Draw V shape in middle
-                for y in 0..height/2 {
-                    let offset = (y * mid_x) / (height/2).max(1);
+                for y in 0..height / 2 {
+                    let offset = (y * mid_x) / (height / 2).max(1);
                     if offset < mid_x && mid_x - offset < width && mid_x + offset < width {
                         set(&mut pattern, mid_x - offset, y, width, height);
                         set(&mut pattern, mid_x + offset, y, width, height);
@@ -2921,22 +3050,22 @@ impl Renderer {
             }
             'Е' | 'е' => {
                 // E shape - vertical line with three horizontals
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                hline(&mut pattern, 0, width-1, 0, width, height);
-                hline(&mut pattern, 0, width-1, height-1, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                hline(&mut pattern, 0, width - 1, 0, width, height);
+                hline(&mut pattern, 0, width - 1, height - 1, width, height);
                 if height > 4 {
-                    hline(&mut pattern, 0, width*3/4, height/2, width, height);
+                    hline(&mut pattern, 0, width * 3 / 4, height / 2, width, height);
                 }
             }
             'Т' | 'т' => {
                 // T shape - horizontal line on top, vertical in middle
-                hline(&mut pattern, 0, width-1, 0, width, height);
+                hline(&mut pattern, 0, width - 1, 0, width, height);
                 let mid_x = width / 2;
-                vline(&mut pattern, mid_x, 0, height-1, width, height);
+                vline(&mut pattern, mid_x, 0, height - 1, width, height);
             }
             'К' | 'к' => {
                 // K shape - vertical line, two diagonals
-                vline(&mut pattern, 0, 0, height-1, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
                 let mid_y = height / 2;
                 // Top diagonal
                 for y in 0..mid_y {
@@ -2966,33 +3095,33 @@ impl Renderer {
                 }
                 // Horizontal line in middle
                 if height > 4 {
-                    hline(&mut pattern, 1, width-2, height/2, width, height);
+                    hline(&mut pattern, 1, width - 2, height / 2, width, height);
                 }
             }
             // Other Cyrillic letters - use similar patterns
             'Б' | 'б' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                hline(&mut pattern, 0, width-1, 0, width, height);
-                hline(&mut pattern, 0, width*2/3, height/2, width, height);
-                hline(&mut pattern, 0, width-1, height-1, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                hline(&mut pattern, 0, width - 1, 0, width, height);
+                hline(&mut pattern, 0, width * 2 / 3, height / 2, width, height);
+                hline(&mut pattern, 0, width - 1, height - 1, width, height);
             }
             'В' | 'в' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                hline(&mut pattern, 0, width-1, 0, width, height);
-                hline(&mut pattern, 0, width*2/3, height/2, width, height);
-                hline(&mut pattern, 0, width-1, height-1, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                hline(&mut pattern, 0, width - 1, 0, width, height);
+                hline(&mut pattern, 0, width * 2 / 3, height / 2, width, height);
+                hline(&mut pattern, 0, width - 1, height - 1, width, height);
             }
             'Г' | 'г' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                hline(&mut pattern, 0, width-1, 0, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                hline(&mut pattern, 0, width - 1, 0, width, height);
             }
             'Д' | 'д' => {
                 for x in 0..width {
-                    set(&mut pattern, x, height-1, width, height);
+                    set(&mut pattern, x, height - 1, width, height);
                 }
                 let mid_x = width / 2;
-                for y in 0..height-1 {
-                    let offset = ((height-1-y) * mid_x) / height.max(1);
+                for y in 0..height - 1 {
+                    let offset = ((height - 1 - y) * mid_x) / height.max(1);
                     if offset < mid_x {
                         set(&mut pattern, mid_x - offset, y, width, height);
                         set(&mut pattern, mid_x + offset, y, width, height);
@@ -3002,45 +3131,45 @@ impl Renderer {
             'Ж' | 'ж' => {
                 let mid_x = width / 2;
                 let mid_y = height / 2;
-                vline(&mut pattern, mid_x, 0, height-1, width, height);
-                hline(&mut pattern, 0, width-1, mid_y, width, height);
+                vline(&mut pattern, mid_x, 0, height - 1, width, height);
+                hline(&mut pattern, 0, width - 1, mid_y, width, height);
                 for y in 0..mid_y {
                     if width > 2 {
                         set(&mut pattern, 0, y, width, height);
-                        set(&mut pattern, width-1, y, width, height);
+                        set(&mut pattern, width - 1, y, width, height);
                     }
                 }
             }
             'З' | 'з' => {
-                hline(&mut pattern, 1, width-2, 0, width, height);
-                hline(&mut pattern, 1, width-2, height-1, width, height);
-                hline(&mut pattern, 1, width*2/3, height/2, width, height);
-                set(&mut pattern, width-1, 0, width, height);
-                set(&mut pattern, width-1, height-1, width, height);
+                hline(&mut pattern, 1, width - 2, 0, width, height);
+                hline(&mut pattern, 1, width - 2, height - 1, width, height);
+                hline(&mut pattern, 1, width * 2 / 3, height / 2, width, height);
+                set(&mut pattern, width - 1, 0, width, height);
+                set(&mut pattern, width - 1, height - 1, width, height);
             }
             'И' | 'и' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                vline(&mut pattern, width-1, 0, height-1, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
                 for y in 0..height {
-                    let x = (y * (width-1)) / height.max(1);
+                    let x = (y * (width - 1)) / height.max(1);
                     set(&mut pattern, x, y, width, height);
                 }
             }
             'Й' | 'й' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                vline(&mut pattern, width-1, 0, height-1, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
                 for y in 0..height {
-                    let x = (y * (width-1)) / height.max(1);
+                    let x = (y * (width - 1)) / height.max(1);
                     set(&mut pattern, x, y, width, height);
                 }
                 if width > 2 && height > 2 {
-                    set(&mut pattern, width-2, 0, width, height);
+                    set(&mut pattern, width - 2, 0, width, height);
                 }
             }
             'Л' | 'л' => {
                 let mid_x = width / 2;
                 for y in 0..height {
-                    let offset = ((height-y) * mid_x) / height.max(1);
+                    let offset = ((height - y) * mid_x) / height.max(1);
                     if offset < mid_x {
                         set(&mut pattern, mid_x - offset, y, width, height);
                         set(&mut pattern, mid_x + offset, y, width, height);
@@ -3048,165 +3177,212 @@ impl Renderer {
                 }
             }
             'Н' | 'н' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                vline(&mut pattern, width-1, 0, height-1, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
                 if height > 4 {
-                    hline(&mut pattern, 1, width-2, height/2, width, height);
+                    hline(&mut pattern, 1, width - 2, height / 2, width, height);
                 }
             }
             'О' | 'о' => {
-                for y in 1..height-1 {
-                    set(&mut pattern, 0, y, width, height); set(&mut pattern, width-1, y, width, height);
+                for y in 1..height - 1 {
+                    set(&mut pattern, 0, y, width, height);
+                    set(&mut pattern, width - 1, y, width, height);
                 }
-                for x in 1..width-1 {
-                    set(&mut pattern, x, 0, width, height); set(&mut pattern, x, height-1, width, height);
+                for x in 1..width - 1 {
+                    set(&mut pattern, x, 0, width, height);
+                    set(&mut pattern, x, height - 1, width, height);
                 }
             }
             'П' | 'п' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                vline(&mut pattern, width-1, 0, height-1, width, height);
-                hline(&mut pattern, 0, width-1, 0, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
+                hline(&mut pattern, 0, width - 1, 0, width, height);
             }
             'Р' | 'р' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                hline(&mut pattern, 0, width-1, 0, width, height);
-                hline(&mut pattern, 0, width*2/3, height/2, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                hline(&mut pattern, 0, width - 1, 0, width, height);
+                hline(&mut pattern, 0, width * 2 / 3, height / 2, width, height);
             }
             'С' | 'с' => {
-                for y in 1..height-1 {
+                for y in 1..height - 1 {
                     set(&mut pattern, 0, y, width, height);
                 }
-                for x in 1..width-1 {
-                    set(&mut pattern, x, 0, width, height); set(&mut pattern, x, height-1, width, height);
+                for x in 1..width - 1 {
+                    set(&mut pattern, x, 0, width, height);
+                    set(&mut pattern, x, height - 1, width, height);
                 }
             }
             'У' | 'у' => {
                 let mid_x = width / 2;
-                for y in 0..height*2/3 {
-                    let offset = (y * mid_x) / (height*2/3).max(1);
+                for y in 0..height * 2 / 3 {
+                    let offset = (y * mid_x) / (height * 2 / 3).max(1);
                     if offset < mid_x {
                         set(&mut pattern, mid_x - offset, y, width, height);
                         set(&mut pattern, mid_x + offset, y, width, height);
                     }
                 }
-                vline(&mut pattern, mid_x, height*2/3, height-1, width, height);
+                vline(
+                    &mut pattern,
+                    mid_x,
+                    height * 2 / 3,
+                    height - 1,
+                    width,
+                    height,
+                );
             }
             'Ф' | 'ф' => {
                 let mid_x = width / 2;
-                vline(&mut pattern, mid_x, 0, height-1, width, height);
-                hline(&mut pattern, 0, width-1, 0, width, height);
-                hline(&mut pattern, 0, width-1, height-1, width, height);
+                vline(&mut pattern, mid_x, 0, height - 1, width, height);
+                hline(&mut pattern, 0, width - 1, 0, width, height);
+                hline(&mut pattern, 0, width - 1, height - 1, width, height);
                 if height > 4 {
-                    hline(&mut pattern, 0, width-1, height/2, width, height);
+                    hline(&mut pattern, 0, width - 1, height / 2, width, height);
                 }
             }
             'Х' | 'х' => {
                 for y in 0..height {
-                    let x1 = (y * (width-1)) / height.max(1);
+                    let x1 = (y * (width - 1)) / height.max(1);
                     let x2 = width - 1 - x1;
                     set(&mut pattern, x1, y, width, height);
                     set(&mut pattern, x2, y, width, height);
                 }
             }
             'Ц' | 'ц' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                vline(&mut pattern, width-1, 0, height-1, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
                 if width > 2 {
-                    vline(&mut pattern, width-2, height*3/4, height-1, width, height);
+                    vline(
+                        &mut pattern,
+                        width - 2,
+                        height * 3 / 4,
+                        height - 1,
+                        width,
+                        height,
+                    );
                 }
             }
             'Ч' | 'ч' => {
-                vline(&mut pattern, 0, 0, height*2/3, width, height);
-                vline(&mut pattern, width-1, 0, height-1, width, height);
+                vline(&mut pattern, 0, 0, height * 2 / 3, width, height);
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
                 if height > 4 {
-                    hline(&mut pattern, 0, width-1, height*2/3, width, height);
+                    hline(&mut pattern, 0, width - 1, height * 2 / 3, width, height);
                 }
             }
             'Ш' | 'ш' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                vline(&mut pattern, width/2, 0, height-1, width, height);
-                vline(&mut pattern, width-1, 0, height-1, width, height);
-                hline(&mut pattern, 0, width-1, 0, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                vline(&mut pattern, width / 2, 0, height - 1, width, height);
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
+                hline(&mut pattern, 0, width - 1, 0, width, height);
             }
             'Щ' | 'щ' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                vline(&mut pattern, width/2, 0, height-1, width, height);
-                vline(&mut pattern, width-1, 0, height-1, width, height);
-                hline(&mut pattern, 0, width-1, 0, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                vline(&mut pattern, width / 2, 0, height - 1, width, height);
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
+                hline(&mut pattern, 0, width - 1, 0, width, height);
                 if width > 2 {
-                    vline(&mut pattern, width-2, height*3/4, height-1, width, height);
+                    vline(
+                        &mut pattern,
+                        width - 2,
+                        height * 3 / 4,
+                        height - 1,
+                        width,
+                        height,
+                    );
                 }
             }
             'Ъ' | 'ъ' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                hline(&mut pattern, 0, width-1, height/2, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                hline(&mut pattern, 0, width - 1, height / 2, width, height);
                 if width > 2 {
-                    vline(&mut pattern, width-1, height/2, height-1, width, height);
+                    vline(
+                        &mut pattern,
+                        width - 1,
+                        height / 2,
+                        height - 1,
+                        width,
+                        height,
+                    );
                 }
             }
             'Ы' | 'ы' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
-                vline(&mut pattern, width-1, 0, height-1, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
                 if width > 2 {
-                    vline(&mut pattern, width-2, height/2, height-1, width, height);
+                    vline(
+                        &mut pattern,
+                        width - 2,
+                        height / 2,
+                        height - 1,
+                        width,
+                        height,
+                    );
                 }
             }
             'Ь' | 'ь' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
                 if width > 2 {
-                    vline(&mut pattern, width-1, 0, height/2, width, height);
+                    vline(&mut pattern, width - 1, 0, height / 2, width, height);
                 }
             }
             'Э' | 'э' => {
-                for y in 1..height-1 {
+                for y in 1..height - 1 {
                     set(&mut pattern, 0, y, width, height);
                 }
-                for x in 1..width-1 {
-                    set(&mut pattern, x, 0, width, height); set(&mut pattern, x, height-1, width, height);
+                for x in 1..width - 1 {
+                    set(&mut pattern, x, 0, width, height);
+                    set(&mut pattern, x, height - 1, width, height);
                 }
                 if width > 2 {
-                    set(&mut pattern, width-1, height/2, width, height);
+                    set(&mut pattern, width - 1, height / 2, width, height);
                 }
             }
             'Ю' | 'ю' => {
-                vline(&mut pattern, 0, 0, height-1, width, height);
+                vline(&mut pattern, 0, 0, height - 1, width, height);
                 let mid = width / 2;
-                for y in 1..height-1 {
+                for y in 1..height - 1 {
                     set(&mut pattern, mid, y, width, height);
                 }
-                for x in mid+1..width-1 {
-                    set(&mut pattern, x, 0, width, height); set(&mut pattern, x, height-1, width, height);
+                for x in mid + 1..width - 1 {
+                    set(&mut pattern, x, 0, width, height);
+                    set(&mut pattern, x, height - 1, width, height);
                 }
             }
             'Я' | 'я' => {
-                vline(&mut pattern, width-1, 0, height-1, width, height);
-                for y in 1..height-1 {
+                vline(&mut pattern, width - 1, 0, height - 1, width, height);
+                for y in 1..height - 1 {
                     set(&mut pattern, 0, y, width, height);
                 }
-                for x in 1..width-1 {
+                for x in 1..width - 1 {
                     set(&mut pattern, x, 0, width, height);
                 }
                 if height > 4 {
-                    hline(&mut pattern, 1, width-2, height/2, width, height);
+                    hline(&mut pattern, 1, width - 2, height / 2, width, height);
                 }
             }
             'Ё' | 'ё' => {
-                for y in 1..height-1 {
+                for y in 1..height - 1 {
                     set(&mut pattern, 0, y, width, height);
                 }
-                for x in 1..width-1 {
-                    set(&mut pattern, x, 0, width, height); set(&mut pattern, x, height-1, width, height);
+                for x in 1..width - 1 {
+                    set(&mut pattern, x, 0, width, height);
+                    set(&mut pattern, x, height - 1, width, height);
                 }
                 if height > 4 {
-                    hline(&mut pattern, 0, width*2/3, height/2, width, height);
+                    hline(&mut pattern, 0, width * 2 / 3, height / 2, width, height);
                 }
                 if width > 2 && height > 2 {
-                    set(&mut pattern, width-2, 0, width, height);
+                    set(&mut pattern, width - 2, 0, width, height);
                 }
             }
             // Other Cyrillic lowercase - handle individually or use uppercase
-            ch if ch.is_lowercase() && ('а'..='я').contains(&ch) && 
-                ch != 'а' && ch != 'е' && ch != 'к' && ch != 'м' && ch != 'т' => {
+            ch if ch.is_lowercase()
+                && ('а'..='я').contains(&ch)
+                && ch != 'а'
+                && ch != 'е'
+                && ch != 'к'
+                && ch != 'м'
+                && ch != 'т' =>
+            {
                 // Use uppercase pattern for lowercase
                 let upper = ch.to_uppercase().next().unwrap_or(ch);
                 pattern = Self::get_char_pattern(upper, width, height);
@@ -3222,13 +3398,31 @@ impl Renderer {
                 if dot_y1 < height && dot_y2 < height && dot_x < width {
                     for dy in -1..=1 {
                         for dx in -1..=1 {
-                            if (dot_x as i32 + dx) >= 0 && (dot_x as i32 + dx) < width as i32 &&
-                               (dot_y1 as i32 + dy) >= 0 && (dot_y1 as i32 + dy) < height as i32 {
-                                set(&mut pattern, (dot_x as i32 + dx) as usize, (dot_y1 as i32 + dy) as usize, width, height);
+                            if (dot_x as i32 + dx) >= 0
+                                && (dot_x as i32 + dx) < width as i32
+                                && (dot_y1 as i32 + dy) >= 0
+                                && (dot_y1 as i32 + dy) < height as i32
+                            {
+                                set(
+                                    &mut pattern,
+                                    (dot_x as i32 + dx) as usize,
+                                    (dot_y1 as i32 + dy) as usize,
+                                    width,
+                                    height,
+                                );
                             }
-                            if (dot_x as i32 + dx) >= 0 && (dot_x as i32 + dx) < width as i32 &&
-                               (dot_y2 as i32 + dy) >= 0 && (dot_y2 as i32 + dy) < height as i32 {
-                                set(&mut pattern, (dot_x as i32 + dx) as usize, (dot_y2 as i32 + dy) as usize, width, height);
+                            if (dot_x as i32 + dx) >= 0
+                                && (dot_x as i32 + dx) < width as i32
+                                && (dot_y2 as i32 + dy) >= 0
+                                && (dot_y2 as i32 + dy) < height as i32
+                            {
+                                set(
+                                    &mut pattern,
+                                    (dot_x as i32 + dx) as usize,
+                                    (dot_y2 as i32 + dy) as usize,
+                                    width,
+                                    height,
+                                );
                             }
                         }
                     }
@@ -3237,7 +3431,7 @@ impl Renderer {
             '-' => {
                 // Dash - horizontal line in middle
                 let mid_y = height / 2;
-                for x in 1..width-1 {
+                for x in 1..width - 1 {
                     set(&mut pattern, x, mid_y, width, height);
                 }
             }
@@ -3246,18 +3440,18 @@ impl Renderer {
                 for y in 0..height {
                     set(&mut pattern, 0, y, width, height);
                     if width > 1 {
-                        set(&mut pattern, width-1, y, width, height);
+                        set(&mut pattern, width - 1, y, width, height);
                     }
                 }
                 for x in 0..width {
                     set(&mut pattern, x, 0, width, height);
                     if height > 1 {
-                        set(&mut pattern, x, height-1, width, height);
+                        set(&mut pattern, x, height - 1, width, height);
                     }
                 }
             }
         }
-        
+
         pattern
     }
 
@@ -3266,7 +3460,7 @@ impl Renderer {
     fn get_color_from_palette(value: f64, palette: &str) -> u32 {
         // Clamp value to [0.0, 1.0]
         let t = value.max(0.0).min(1.0);
-        
+
         let (r, g, b) = match palette {
             "green" => {
                 // Cold → warm: blue → green → yellow
@@ -3322,7 +3516,7 @@ impl Renderer {
                 }
             }
         };
-        
+
         // Convert RGB to BGRA format: 0xAABBGGRR
         (0xFF << 24) | ((b as u32) << 16) | ((g as u32) << 8) | (r as u32)
     }
@@ -3397,10 +3591,14 @@ impl Renderer {
         };
 
         // Calculate plot area with adaptive margins (heatmap needs space for colorbar)
-        let left_margin = ((buffer_width as f32 * 0.12).max(150.0) * scale_factor).min(buffer_width as f32 * 0.25) as u32;
-        let right_margin = ((buffer_width as f32 * 0.08).max(70.0) * scale_factor).min(buffer_width as f32 * 0.15) as u32; // Space for colorbar
-        let top_margin = ((buffer_height as f32 * 0.05).max(50.0) * scale_factor).min(buffer_height as f32 * 0.15) as u32;
-        let bottom_margin = ((buffer_height as f32 * 0.08).max(70.0) * scale_factor).min(buffer_height as f32 * 0.2) as u32;
+        let left_margin = ((buffer_width as f32 * 0.12).max(150.0) * scale_factor)
+            .min(buffer_width as f32 * 0.25) as u32;
+        let right_margin = ((buffer_width as f32 * 0.08).max(70.0) * scale_factor)
+            .min(buffer_width as f32 * 0.15) as u32; // Space for colorbar
+        let top_margin = ((buffer_height as f32 * 0.05).max(50.0) * scale_factor)
+            .min(buffer_height as f32 * 0.15) as u32;
+        let bottom_margin = ((buffer_height as f32 * 0.08).max(70.0) * scale_factor)
+            .min(buffer_height as f32 * 0.2) as u32;
         let plot_width = buffer_width.saturating_sub(left_margin + right_margin);
         let plot_height = buffer_height.saturating_sub(top_margin + bottom_margin);
         let plot_x = left_margin;
@@ -3419,7 +3617,7 @@ impl Renderer {
 
         // Draw heatmap cells with borders
         let cell_border_color = 0xFF2A2A2A; // Slightly lighter than background for subtle borders
-        
+
         for (row_idx, row) in data.iter().enumerate() {
             for (col_idx, &value) in row.iter().enumerate() {
                 // Normalize value to [0.0, 1.0]
@@ -3441,11 +3639,13 @@ impl Renderer {
                     for x_offset in 0..cell_width {
                         let x = cell_x + x_offset;
                         let y = cell_y + y_offset;
-                        
+
                         // Draw border on edges
-                        let is_border = x_offset == 0 || x_offset == cell_width - 1 || 
-                                        y_offset == 0 || y_offset == cell_height - 1;
-                        
+                        let is_border = x_offset == 0
+                            || x_offset == cell_width - 1
+                            || y_offset == 0
+                            || y_offset == cell_height - 1;
+
                         if x < buffer_width_usize && y < buffer_height_usize {
                             let idx = y * buffer_width_usize + x;
                             if idx < buffer.len() {
@@ -3499,11 +3699,11 @@ impl Renderer {
             for y_offset in 0..colorbar_height {
                 let normalized = 1.0 - (y_offset as f64 / colorbar_height as f64);
                 let color = Self::get_color_from_palette(normalized, palette);
-                
+
                 for x_offset in 0..colorbar_width {
                     let x = colorbar_x + x_offset;
                     let y = plot_y_usize + y_offset;
-                    
+
                     if x < buffer_width_usize && y < buffer_height_usize {
                         let idx = y * buffer_width_usize + x;
                         if idx < buffer.len() {
@@ -3564,7 +3764,7 @@ impl Renderer {
         // Draw colorbar labels (min and max values)
         let label_font_size = 14.0 * self.scale_factor;
         let text_color = 0xFFFFFFFF; // White
-        
+
         // Format min and max values
         let min_label = if min_val.fract() == 0.0 {
             format!("{}", min_val as i64)
@@ -3576,10 +3776,12 @@ impl Renderer {
         } else {
             format!("{:.2}", max_val)
         };
-        
+
         // Draw min label (bottom of colorbar)
-        let min_text_width = Self::calculate_text_width(self.font.as_ref(), &min_label, label_font_size);
-        let min_text_x = (colorbar_x as f32 + (colorbar_width as f32 - min_text_width) / 2.0).round() as usize;
+        let min_text_width =
+            Self::calculate_text_width(self.font.as_ref(), &min_label, label_font_size);
+        let min_text_x =
+            (colorbar_x as f32 + (colorbar_width as f32 - min_text_width) / 2.0).round() as usize;
         let min_text_y = plot_y_usize + colorbar_height + 5; // 5 pixels below colorbar
         if min_text_y < buffer_height_usize && min_text_x < buffer_width_usize {
             Self::draw_text_improved_with_color(
@@ -3596,10 +3798,12 @@ impl Renderer {
                 Some(text_color),
             );
         }
-        
+
         // Draw max label (top of colorbar)
-        let max_text_width = Self::calculate_text_width(self.font.as_ref(), &max_label, label_font_size);
-        let max_text_x = (colorbar_x as f32 + (colorbar_width as f32 - max_text_width) / 2.0).round() as usize;
+        let max_text_width =
+            Self::calculate_text_width(self.font.as_ref(), &max_label, label_font_size);
+        let max_text_x =
+            (colorbar_x as f32 + (colorbar_width as f32 - max_text_width) / 2.0).round() as usize;
         // Position at top, accounting for font ascent
         let max_text_y = if let Some(font) = self.font.as_ref() {
             if let Some(line_metrics) = font.horizontal_line_metrics(label_font_size) {
@@ -3625,7 +3829,7 @@ impl Renderer {
                 Some(text_color),
             );
         }
-        
+
         // Draw middle label (optional, for better readability)
         let mid_val = min_val + (max_val - min_val) / 2.0;
         let mid_label = if mid_val.fract() == 0.0 {
@@ -3633,8 +3837,10 @@ impl Renderer {
         } else {
             format!("{:.2}", mid_val)
         };
-        let mid_text_width = Self::calculate_text_width(self.font.as_ref(), &mid_label, label_font_size);
-        let mid_text_x = (colorbar_x as f32 + (colorbar_width as f32 - mid_text_width) / 2.0).round() as usize;
+        let mid_text_width =
+            Self::calculate_text_width(self.font.as_ref(), &mid_label, label_font_size);
+        let mid_text_x =
+            (colorbar_x as f32 + (colorbar_width as f32 - mid_text_width) / 2.0).round() as usize;
         let mid_text_y = plot_y_usize + colorbar_height / 2;
         if mid_text_y < buffer_height_usize && mid_text_x < buffer_width_usize {
             Self::draw_text_improved_with_color(

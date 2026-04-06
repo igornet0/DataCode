@@ -4,16 +4,20 @@
 
 use std::collections::HashMap;
 
-use crate::common::{error::LangError, value::Value, value_store::{ValueCell, ValueId, ValueStore}};
-use crate::vm::store_convert::tagged_to_value_id;
-use crate::vm::native_loader::call_abi_native;
-use crate::vm::vm::{Vm, VM_CALL_CONTEXT};
+use crate::common::{
+    error::LangError,
+    value::Value,
+    value_store::{ValueCell, ValueId, ValueStore},
+};
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
+use crate::vm::native_loader::call_abi_native;
 use crate::vm::stack;
+use crate::vm::store_convert::tagged_to_value_id;
 use crate::vm::store_convert::{load_value, store_value};
 use crate::vm::types::VMStatus;
+use crate::vm::vm::{Vm, VM_CALL_CONTEXT};
 
 use super::helpers::pop_to_value_id;
 
@@ -55,7 +59,13 @@ pub fn op_make_array(
     let cap = if count == 0 { 16384 } else { count };
     let mut slots = Vec::with_capacity(cap);
     for _ in 0..count {
-        slots.push(stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?);
+        slots.push(stack::pop(
+            stack,
+            frames,
+            exception_handlers,
+            value_store,
+            heavy_store,
+        )?);
     }
     slots.reverse();
     let result_id = value_store.allocate_arena(ValueCell::Array(slots));
@@ -73,7 +83,13 @@ pub fn op_make_tuple(
 ) -> Result<VMStatus, LangError> {
     let mut element_ids = Vec::with_capacity(count);
     for _ in 0..count {
-        element_ids.push(pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?);
+        element_ids.push(pop_to_value_id(
+            stack,
+            frames,
+            exception_handlers,
+            value_store,
+            heavy_store,
+        )?);
     }
     element_ids.reverse();
     let result_id = value_store.allocate(ValueCell::Tuple(element_ids));
@@ -92,7 +108,8 @@ pub fn op_make_object(
 ) -> Result<VMStatus, LangError> {
     let mut map: HashMap<String, ValueId> = HashMap::with_capacity(pair_count);
     for _ in 0..pair_count {
-        let value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+        let value_id =
+            pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
         let key_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
         let key = match value_store.get(key_id) {
             Some(ValueCell::String(sid)) => value_store.get_string(*sid).map(|s| s.to_string()),
@@ -136,7 +153,10 @@ pub fn op_unpack_object(
         _ => {
             let val = load_value(obj_id, value_store, heavy_store);
             if let Value::Object(rc) = &val {
-                rc.borrow().iter().map(|(k, v)| (k.clone(), store_value(v.clone(), value_store, heavy_store))).collect()
+                rc.borrow()
+                    .iter()
+                    .map(|(k, v)| (k.clone(), store_value(v.clone(), value_store, heavy_store)))
+                    .collect()
             } else {
                 return Err(ExceptionHandler::runtime_error(
                     &frames,
@@ -216,7 +236,8 @@ pub fn op_make_object_dynamic(
     };
     let mut map: HashMap<String, ValueId> = HashMap::with_capacity(pair_count);
     for _ in 0..pair_count {
-        let value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+        let value_id =
+            pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
         let key_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
         let key = match value_store.get(key_id) {
             Some(ValueCell::String(sid)) => value_store.get_string(*sid).map(|s| s.to_string()),
@@ -245,7 +266,7 @@ pub fn op_make_object_dynamic(
     Ok(VMStatus::Continue)
 }
 
-pub fn op_get_array_length(
+pub(crate) fn op_get_array_length(
     line: usize,
     stack: &mut Vec<crate::common::TaggedValue>,
     frames: &mut Vec<CallFrame>,
@@ -268,22 +289,42 @@ pub fn op_get_array_length(
     let array = load_value(array_id, value_store, heavy_store);
     match array {
         Value::Array(arr) => {
-            stack::push_id(stack, store_value(Value::Number(arr.borrow().len() as f64), value_store, heavy_store));
+            stack::push_id(
+                stack,
+                store_value(
+                    Value::Number(arr.borrow().len() as f64),
+                    value_store,
+                    heavy_store,
+                ),
+            );
         }
         Value::ArrayView(av) => {
-            stack::push_id(stack, store_value(Value::Number(av.length as f64), value_store, heavy_store));
+            stack::push_id(
+                stack,
+                store_value(Value::Number(av.length as f64), value_store, heavy_store),
+            );
         }
         Value::ColumnReference { table, column_name } => {
             let t = table.borrow();
             if let Some(len) = crate::vm::table_ops::column_len(&*t, &column_name) {
-                stack::push_id(stack, store_value(Value::Number(len as f64), value_store, heavy_store));
+                stack::push_id(
+                    stack,
+                    store_value(Value::Number(len as f64), value_store, heavy_store),
+                );
             } else {
                 let error = ExceptionHandler::runtime_error(
                     &frames,
                     format!("Column '{}' not found", column_name),
                     line,
                 );
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
                     Ok(()) => return Ok(VMStatus::Continue),
                     Err(e) => return Err(e),
                 }
@@ -297,13 +338,30 @@ pub fn op_get_array_length(
             }
         }
         Value::Enumerate { data, .. } => {
-            stack::push_id(stack, store_value(Value::Number(data.borrow().len() as f64), value_store, heavy_store));
+            stack::push_id(
+                stack,
+                store_value(
+                    Value::Number(data.borrow().len() as f64),
+                    value_store,
+                    heavy_store,
+                ),
+            );
         }
         Value::ByteBuffer(b) => {
-            stack::push_id(stack, store_value(Value::Number(b.len as f64), value_store, heavy_store));
+            stack::push_id(
+                stack,
+                store_value(Value::Number(b.len as f64), value_store, heavy_store),
+            );
         }
         Value::Tuple(tuple) => {
-            stack::push_id(stack, store_value(Value::Number(tuple.borrow().len() as f64), value_store, heavy_store));
+            stack::push_id(
+                stack,
+                store_value(
+                    Value::Number(tuple.borrow().len() as f64),
+                    value_store,
+                    heavy_store,
+                ),
+            );
         }
         _ => {
             let got_type = crate::vm::calls::get_type_name_value(&array);
@@ -312,7 +370,14 @@ pub fn op_get_array_length(
                 format!("Expected array, column reference, dataset, enumerate, or tuple for GetArrayLength, got {}", got_type),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }
@@ -321,7 +386,7 @@ pub fn op_get_array_length(
     Ok(VMStatus::Continue)
 }
 
-pub fn op_table_filter(
+pub(crate) fn op_table_filter(
     line: usize,
     stack: &mut Vec<crate::common::TaggedValue>,
     frames: &mut Vec<CallFrame>,
@@ -350,7 +415,14 @@ pub fn op_table_filter(
                 "Table filter column must be a string".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }
@@ -364,7 +436,14 @@ pub fn op_table_filter(
                 "Table filter operator must be a string".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }
@@ -399,7 +478,14 @@ pub fn op_table_filter(
             format!("Table filter requires a table, got {}", got),
             line,
         );
-        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+        match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
             Ok(()) => {}
             Err(e) => return Err(e),
         }
@@ -439,7 +525,14 @@ pub fn op_make_array_dynamic(
                     "Array size must be non-negative".to_string(),
                     line,
                 );
-                return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                return match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
                     Ok(()) => Ok(VMStatus::Continue),
                     Err(e) => Err(e),
                 };
@@ -457,7 +550,14 @@ pub fn op_make_array_dynamic(
                             "Array size must be non-negative".to_string(),
                             line,
                         );
-                        return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                        return match ExceptionHandler::handle_exception(
+                            stack,
+                            frames,
+                            exception_handlers,
+                            error,
+                            value_store,
+                            heavy_store,
+                        ) {
                             Ok(()) => Ok(VMStatus::Continue),
                             Err(e) => Err(e),
                         };
@@ -470,7 +570,14 @@ pub fn op_make_array_dynamic(
                         "Array size must be a number".to_string(),
                         line,
                     );
-                    return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                    return match ExceptionHandler::handle_exception(
+                        stack,
+                        frames,
+                        exception_handlers,
+                        error,
+                        value_store,
+                        heavy_store,
+                    ) {
                         Ok(()) => Ok(VMStatus::Continue),
                         Err(e) => Err(e),
                     };
@@ -480,7 +587,13 @@ pub fn op_make_array_dynamic(
     };
     let mut slots = Vec::with_capacity(count);
     for _ in 0..count {
-        slots.push(stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?);
+        slots.push(stack::pop(
+            stack,
+            frames,
+            exception_handlers,
+            value_store,
+            heavy_store,
+        )?);
     }
     slots.reverse();
     let result_id = value_store.allocate_arena(ValueCell::Array(slots));

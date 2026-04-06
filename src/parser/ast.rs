@@ -23,7 +23,7 @@ pub enum TypePart {
 #[derive(Debug, Clone)]
 pub struct CatchBlock {
     pub error_type: Option<String>, // None для catch всех, Some("ValueError") для типизированного
-    pub error_var: Option<String>,   // None для catch без переменной
+    pub error_var: Option<String>,  // None для catch без переменной
     pub body: Vec<Stmt>,
     pub line: usize,
 }
@@ -33,15 +33,15 @@ pub struct CatchBlock {
 pub struct Param {
     pub name: String,
     pub type_annotation: Option<Vec<TypePart>>, // Типы параметра: union (TypeName + LiteralStr)
-    pub default_value: Option<Expr>, // None для обязательных параметров
+    pub default_value: Option<Expr>,            // None для обязательных параметров
 }
 
 /// Аргумент при вызове функции - позиционный, именованный или распаковка объекта
 #[derive(Debug, Clone)]
 pub enum Arg {
-    Positional(Expr),           // Позиционный аргумент
+    Positional(Expr),                    // Позиционный аргумент
     Named { name: String, value: Expr }, // Именованный аргумент
-    UnpackObject(Expr),         // **expr — распаковка объекта в kwargs
+    UnpackObject(Expr),                  // **expr — распаковка объекта в kwargs
 }
 
 /// Элемент объектного литерала: пара ключ-значение или spread **expr
@@ -64,16 +64,17 @@ pub enum UnpackPattern {
 /// Элемент импорта в from-import
 #[derive(Debug, Clone)]
 pub enum ImportItem {
-    Named(String),              // load_mnist
+    Named(String),                           // load_mnist
     Aliased { name: String, alias: String }, // window as wd
-    All,                       // *
+    All,                                     // *
 }
 
 /// Тип импорта
 #[derive(Debug, Clone)]
 pub enum ImportStmt {
-    Modules(Vec<String>),      // import plot
-    From {                     // from ... import load_mnist, *
+    Modules(Vec<String>), // import plot
+    From {
+        // from ... import load_mnist, *
         module: String,
         items: Vec<ImportItem>,
     },
@@ -84,7 +85,7 @@ pub enum ImportStmt {
 pub struct ClassField {
     pub name: String,
     pub type_annotation: Option<Vec<TypePart>>, // Типы поля: union (TypeName + LiteralStr)
-    pub default_value: Option<Expr>, // None для полей без значения по умолчанию
+    pub default_value: Option<Expr>,            // None для полей без значения по умолчанию
 }
 
 /// Переменная уровня класса (присваивание без аннотации типа): name = expression
@@ -277,7 +278,7 @@ pub enum IndexExpr {
 /// Сегмент интерполированной строки: литерал или выражение.
 #[derive(Debug, Clone)]
 pub enum InterpolatedSegment {
-    Literal(String),   // обычный текст (после замены "\\${" → "${" в литералах)
+    Literal(String), // обычный текст (после замены "\\${" → "${" в литералах)
     /// Выражение с опциональным префиксом "name=" и/или форматом (например .2f).
     Expr {
         expr: Box<Expr>,
@@ -453,4 +454,3 @@ pub fn import_module_names_from_stmts(stmts: &[Stmt]) -> Vec<String> {
     }
     names
 }
-

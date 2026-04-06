@@ -1,13 +1,13 @@
 // Figure structure for plot module
 
 use crate::plot::Axis;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Debug, Clone)]
 pub struct Figure {
     pub axes: Vec<Vec<Rc<RefCell<Axis>>>>, // 2D array of axes
-    pub figsize: (f64, f64), // (width, height) in figure units
+    pub figsize: (f64, f64),               // (width, height) in figure units
     pub tight_layout: bool,
     // Note: window is no longer stored here - it's in WindowState in GUI thread
 }
@@ -22,7 +22,7 @@ impl Figure {
             }
             axes.push(row);
         }
-        
+
         Self {
             axes,
             figsize,
@@ -30,4 +30,3 @@ impl Figure {
         }
     }
 }
-

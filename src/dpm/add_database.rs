@@ -27,7 +27,10 @@ fn colored_prompt(question: &str, bracket_content: &str) {
         bracket_content
     };
     if io::stdout().is_terminal() {
-        print!("{}{}{} [{}{}{}]: ", BLUE, question, RESET, GREEN, display, RESET);
+        print!(
+            "{}{}{} [{}{}{}]: ",
+            BLUE, question, RESET, GREEN, display, RESET
+        );
     } else {
         print!("{} [{}]: ", question, display);
     }
@@ -36,7 +39,9 @@ fn colored_prompt(question: &str, bracket_content: &str) {
 fn prompt(default: &str) -> Result<String, String> {
     io::stdout().flush().map_err(|e| e.to_string())?;
     let mut line = String::new();
-    io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
     let s = line.trim().to_string();
     if s.is_empty() {
         Ok(default.to_string())
@@ -48,10 +53,8 @@ fn prompt(default: &str) -> Result<String, String> {
 fn prompt_yes_no(default_yes: bool) -> Result<bool, String> {
     let default = if default_yes { "yes" } else { "no" };
     let s = prompt(default)?;
-    let y = s.is_empty()
-        || s.eq_ignore_ascii_case("y")
-        || s.eq_ignore_ascii_case("yes")
-        || s == "1";
+    let y =
+        s.is_empty() || s.eq_ignore_ascii_case("y") || s.eq_ignore_ascii_case("yes") || s == "1";
     Ok(y)
 }
 
@@ -64,7 +67,9 @@ fn prompt_password() -> Result<String, String> {
         io::stdout().flush().map_err(|e| e.to_string())?;
     }
     let mut line = String::new();
-    io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
     Ok(line.trim().to_string())
 }
 
@@ -109,7 +114,10 @@ pub fn run_add_database(project_root: &Path, _flags: &[String]) -> Result<(), St
     let adapters_dir = base.join("adapters");
     let dpm_adapters_path = adapters_dir.join(".dpm-adapters");
     if !dpm_adapters_path.exists() {
-        return Err("core/database/adapters/.dpm-adapters not found. Run `dpm init database` first.".to_string());
+        return Err(
+            "core/database/adapters/.dpm-adapters not found. Run `dpm init database` first."
+                .to_string(),
+        );
     }
 
     println!("Adding database connection...");
@@ -117,7 +125,10 @@ pub fn run_add_database(project_root: &Path, _flags: &[String]) -> Result<(), St
 
     // Step 1: database type
     let db_type_str = if io::stdout().is_terminal() {
-        let items: Vec<&str> = adapters_lib::DB_TYPE_LABELS.iter().map(|(label, _)| *label).collect();
+        let items: Vec<&str> = adapters_lib::DB_TYPE_LABELS
+            .iter()
+            .map(|(label, _)| *label)
+            .collect();
         let idx = Select::with_theme(&dialoguer::theme::ColorfulTheme::default())
             .with_prompt("? Select database type")
             .items(&items)
@@ -210,7 +221,10 @@ pub fn run_add_database(project_root: &Path, _flags: &[String]) -> Result<(), St
     vars.insert("port".to_string(), port.to_string());
     vars.insert("pool_enabled".to_string(), pool_enabled.to_string());
     vars.insert("pool_size".to_string(), pool_size.to_string());
-    vars.insert("pool_max_overflow".to_string(), pool_max_overflow.to_string());
+    vars.insert(
+        "pool_max_overflow".to_string(),
+        pool_max_overflow.to_string(),
+    );
     vars.insert("async".to_string(), async_support.to_string());
     vars.insert("connection_name".to_string(), connection_name.clone());
     vars.insert("connection_module".to_string(), connection_name.clone());
@@ -222,14 +236,26 @@ pub fn run_add_database(project_root: &Path, _flags: &[String]) -> Result<(), St
     let connection_tpl = embed_tpl!("/templates/database/connection_folder/connection.dc.tpl");
     let lib_tpl = embed_tpl!("/templates/database/connection_folder/__lib__.dc.tpl");
 
-    std::fs::write(connection_dir.join("config.dc"), render_template(config_tpl, &vars))
-        .map_err(|e| e.to_string())?;
-    std::fs::write(connection_dir.join("engine.dc"), render_template(engine_tpl, &vars))
-        .map_err(|e| e.to_string())?;
-    std::fs::write(connection_dir.join("connection.dc"), render_template(connection_tpl, &vars))
-        .map_err(|e| e.to_string())?;
-    std::fs::write(connection_dir.join("__lib__.dc"), render_template(lib_tpl, &vars))
-        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        connection_dir.join("config.dc"),
+        render_template(config_tpl, &vars),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::write(
+        connection_dir.join("engine.dc"),
+        render_template(engine_tpl, &vars),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::write(
+        connection_dir.join("connection.dc"),
+        render_template(connection_tpl, &vars),
+    )
+    .map_err(|e| e.to_string())?;
+    std::fs::write(
+        connection_dir.join("__lib__.dc"),
+        render_template(lib_tpl, &vars),
+    )
+    .map_err(|e| e.to_string())?;
 
     // Update .dpm-adapters and adapters/ if this type is new
     let current = std::fs::read_to_string(&dpm_adapters_path).unwrap_or_default();
@@ -262,7 +288,10 @@ pub fn run_add_database(project_root: &Path, _flags: &[String]) -> Result<(), St
     println!("Connection '{}' created.", connection_name);
     println!("  config: core/database/{}/config.dc", connection_name);
     println!();
-    println!("Usage: from core.database.{} import get_connection", connection_name);
+    println!(
+        "Usage: from core.database.{} import get_connection",
+        connection_name
+    );
 
     Ok(())
 }

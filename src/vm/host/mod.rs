@@ -1,8 +1,8 @@
 //! Host layer: abstraction for native (host) functions.
 //! VM invokes natives through this layer and does not depend on concrete implementations.
 
-use std::sync::Arc;
 use crate::common::{error::LangError, value::Value};
+use std::sync::Arc;
 
 /// Type alias for legacy function-pointer natives (used by Extended entry and modules).
 pub type NativeFn = fn(&[Value]) -> Value;

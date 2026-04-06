@@ -17,16 +17,11 @@ impl FontAtlas {
             cache: HashMap::new(),
         }
     }
-    
+
     /// Get cached glyph or rasterize and cache it
     /// Returns (metrics, bitmap) for the glyph
     /// font_size is rounded to nearest 0.5 for caching purposes
-    pub fn get_or_rasterize<F>(
-        &mut self,
-        ch: char,
-        font_size: f32,
-        rasterize_fn: F,
-    ) -> GlyphData
+    pub fn get_or_rasterize<F>(&mut self, ch: char, font_size: f32, rasterize_fn: F) -> GlyphData
     where
         F: FnOnce(char, f32) -> GlyphData,
     {
@@ -34,17 +29,17 @@ impl FontAtlas {
         // This reduces cache size while maintaining quality
         let rounded_size = (font_size * 2.0).round() as u32;
         let key = (ch, rounded_size);
-        
+
         if let Some(cached) = self.cache.get(&key) {
             // Clone the cached data
-            (cached.0.clone(), cached.1.clone())
+            (cached.0, cached.1.clone())
         } else {
             let result = rasterize_fn(ch, font_size);
             self.cache.insert(key, result.clone());
             result
         }
     }
-    
+
     /// Clear the cache (useful if memory becomes an issue)
     pub fn clear(&mut self) {
         self.cache.clear();
@@ -56,4 +51,3 @@ impl Default for FontAtlas {
         Self::new()
     }
 }
-

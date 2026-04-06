@@ -51,12 +51,15 @@ mod tests {
             let arr = [1, 2, 3]
             push(arr, 4)
         "#;
-        assert_array_result(source, &[
-            Value::Number(1.0),
-            Value::Number(2.0),
-            Value::Number(3.0),
-            Value::Number(4.0),
-        ]);
+        assert_array_result(
+            source,
+            &[
+                Value::Number(1.0),
+                Value::Number(2.0),
+                Value::Number(3.0),
+                Value::Number(4.0),
+            ],
+        );
     }
 
     #[test]
@@ -75,11 +78,10 @@ mod tests {
             push(arr, 2)
             push(arr, 3)
         "#;
-        assert_array_result(source, &[
-            Value::Number(1.0),
-            Value::Number(2.0),
-            Value::Number(3.0),
-        ]);
+        assert_array_result(
+            source,
+            &[Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)],
+        );
     }
 
     #[test]
@@ -88,11 +90,14 @@ mod tests {
             let arr = ["a", "b"]
             push(arr, "c")
         "#;
-        assert_array_result(source, &[
-            Value::String("a".to_string()),
-            Value::String("b".to_string()),
-            Value::String("c".to_string()),
-        ]);
+        assert_array_result(
+            source,
+            &[
+                Value::String("a".to_string()),
+                Value::String("b".to_string()),
+                Value::String("c".to_string()),
+            ],
+        );
     }
 
     // ========== Тесты для pop ==========
@@ -156,11 +161,10 @@ mod tests {
         let source = r#"
             unique([1, 2, 2, 3, 3, 3])
         "#;
-        assert_array_result(source, &[
-            Value::Number(1.0),
-            Value::Number(2.0),
-            Value::Number(3.0),
-        ]);
+        assert_array_result(
+            source,
+            &[Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)],
+        );
     }
 
     #[test]
@@ -168,11 +172,10 @@ mod tests {
         let source = r#"
             unique([1, 2, 3])
         "#;
-        assert_array_result(source, &[
-            Value::Number(1.0),
-            Value::Number(2.0),
-            Value::Number(3.0),
-        ]);
+        assert_array_result(
+            source,
+            &[Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)],
+        );
     }
 
     #[test]
@@ -188,11 +191,14 @@ mod tests {
         let source = r#"
             unique(["a", "b", "a", "c", "b"])
         "#;
-        assert_array_result(source, &[
-            Value::String("a".to_string()),
-            Value::String("b".to_string()),
-            Value::String("c".to_string()),
-        ]);
+        assert_array_result(
+            source,
+            &[
+                Value::String("a".to_string()),
+                Value::String("b".to_string()),
+                Value::String("c".to_string()),
+            ],
+        );
     }
 
     #[test]
@@ -201,11 +207,10 @@ mod tests {
             unique([3, 1, 3, 2, 1])
         "#;
         // Порядок должен сохраняться - первое вхождение каждого элемента
-        assert_array_result(source, &[
-            Value::Number(3.0),
-            Value::Number(1.0),
-            Value::Number(2.0),
-        ]);
+        assert_array_result(
+            source,
+            &[Value::Number(3.0), Value::Number(1.0), Value::Number(2.0)],
+        );
     }
 
     // ========== Тесты для reverse ==========
@@ -216,11 +221,10 @@ mod tests {
             let arr = [1, 2, 3]
             reverse(arr)
         "#;
-        assert_array_result(source, &[
-            Value::Number(3.0),
-            Value::Number(2.0),
-            Value::Number(1.0),
-        ]);
+        assert_array_result(
+            source,
+            &[Value::Number(3.0), Value::Number(2.0), Value::Number(1.0)],
+        );
     }
 
     #[test]
@@ -247,11 +251,14 @@ mod tests {
             let arr = ["a", "b", "c"]
             reverse(arr)
         "#;
-        assert_array_result(source, &[
-            Value::String("c".to_string()),
-            Value::String("b".to_string()),
-            Value::String("a".to_string()),
-        ]);
+        assert_array_result(
+            source,
+            &[
+                Value::String("c".to_string()),
+                Value::String("b".to_string()),
+                Value::String("a".to_string()),
+            ],
+        );
     }
 
     // ========== Тесты для sort ==========
@@ -262,13 +269,16 @@ mod tests {
             let arr = [3, 1, 4, 1, 5]
             sort(arr)
         "#;
-        assert_array_result(source, &[
-            Value::Number(1.0),
-            Value::Number(1.0),
-            Value::Number(3.0),
-            Value::Number(4.0),
-            Value::Number(5.0),
-        ]);
+        assert_array_result(
+            source,
+            &[
+                Value::Number(1.0),
+                Value::Number(1.0),
+                Value::Number(3.0),
+                Value::Number(4.0),
+                Value::Number(5.0),
+            ],
+        );
     }
 
     #[test]
@@ -277,11 +287,14 @@ mod tests {
             let arr = ["c", "a", "b"]
             sort(arr)
         "#;
-        assert_array_result(source, &[
-            Value::String("a".to_string()),
-            Value::String("b".to_string()),
-            Value::String("c".to_string()),
-        ]);
+        assert_array_result(
+            source,
+            &[
+                Value::String("a".to_string()),
+                Value::String("b".to_string()),
+                Value::String("c".to_string()),
+            ],
+        );
     }
 
     #[test]
@@ -299,11 +312,10 @@ mod tests {
             let arr = [1, 2, 3]
             sort(arr)
         "#;
-        assert_array_result(source, &[
-            Value::Number(1.0),
-            Value::Number(2.0),
-            Value::Number(3.0),
-        ]);
+        assert_array_result(
+            source,
+            &[Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)],
+        );
     }
 
     // ========== Тесты для sum ==========
@@ -477,11 +489,10 @@ mod tests {
             let unique_arr = unique(arr)
             sort(unique_arr)
         "#;
-        assert_array_result(source, &[
-            Value::Number(1.0),
-            Value::Number(2.0),
-            Value::Number(3.0),
-        ]);
+        assert_array_result(
+            source,
+            &[Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)],
+        );
     }
 
     /// Локализующий тест: sum изолированно должен возвращать 15 для [1,2,3,4,5].
@@ -514,11 +525,10 @@ mod tests {
             let arr2 = reverse(arr)
             reverse(arr2)
         "#;
-        assert_array_result(source, &[
-            Value::Number(1.0),
-            Value::Number(2.0),
-            Value::Number(3.0),
-        ]);
+        assert_array_result(
+            source,
+            &[Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)],
+        );
     }
 
     // ========== Тесты обработки ошибок ==========
@@ -867,4 +877,3 @@ mod tests {
         }
     }
 }
-

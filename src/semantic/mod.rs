@@ -1,6 +1,5 @@
-pub mod scope;
 pub mod resolver;
+pub mod scope;
 
-pub use scope::Scope;
 pub use resolver::Resolver;
-
+pub use scope::Scope;

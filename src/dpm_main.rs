@@ -5,8 +5,8 @@ use data_code::dpm::{
     clear_manifest_env_base, datacode_version_satisfies, env_root, find_project_root,
     install_package, load_lock, load_manifest, lock_file_name, packages_dir,
     resolve_registry_package, run_add_database, run_init_database, run_init_wizard,
-    run_setup_for_package, run_setup_if_present, set_manifest_env_base,
-    set_virtualenvs_in_project, virtualenvs_in_project, write_lock, LockPackage, ENV_DPM_ENV_BASE,
+    run_setup_for_package, run_setup_if_present, set_manifest_env_base, set_virtualenvs_in_project,
+    virtualenvs_in_project, write_lock, LockPackage, ENV_DPM_ENV_BASE,
 };
 use std::path::{Path, PathBuf};
 
@@ -15,9 +15,7 @@ fn resolve_env_base_flag(path: &str) -> Result<PathBuf, String> {
     let abs = if p.is_absolute() {
         p.to_path_buf()
     } else {
-        std::env::current_dir()
-            .map_err(|e| e.to_string())?
-            .join(p)
+        std::env::current_dir().map_err(|e| e.to_string())?.join(p)
     };
     Ok(abs)
 }
@@ -91,10 +89,14 @@ fn print_help() {
     println!("  dpm [--env-path <dir>] <command> ...");
     println!("  dpm init              Create dpm.toml interactively (if missing) or install deps from existing dpm.toml");
     println!("  dpm init database     Create core/database module interactively");
-    println!("  dpm add database       Add another database connection (new folder under core/database)");
+    println!(
+        "  dpm add database       Add another database connection (new folder under core/database)"
+    );
     println!("  dpm add <name> [<source>]  Add dependency; source from registry if omitted, or git+https://...");
     println!("  dpm setup <package_name>  Run setup.dcmodule in an installed package (see docs)");
-    println!("  dpm config virtualenvs.in-project <true|false>  Use .dpm in project (default: cache)");
+    println!(
+        "  dpm config virtualenvs.in-project <true|false>  Use .dpm in project (default: cache)"
+    );
     println!("  dpm config env-base <dir>|clear  Store env base in dpm.toml (or clear)");
     println!("  dpm pack <dir> [-o|--output <path.dcmodule>]  Zip dir (manifest.json + libs) → .dcmodule");
     println!();
@@ -105,15 +107,22 @@ fn print_help() {
     println!("  In-project: <project_root>/.dpm/  (set config or DPM_IN_PROJECT=1)");
     println!("  Custom base: dpm --env-path <dir> init  saves [dpm] env_base in dpm.toml;");
     println!("               later dpm/datacode use it without repeating the flag.");
-    println!("               One-off: {}=<dir> overrides manifest for that process.", ENV_DPM_ENV_BASE);
+    println!(
+        "               One-off: {}=<dir> overrides manifest for that process.",
+        ENV_DPM_ENV_BASE
+    );
     println!("  After `dpm add` / `dpm init`, if a package contains setup.dcmodule, DPM runs it.");
     println!("  Disable: DPM_SETUP_AUTO=0");
     println!();
     println!("Registry (package index JSON):");
     println!("  GET uses the raw GitHub URL (not the blob HTML page), e.g.:");
-    println!("  https://raw.githubusercontent.com/igornet0/Datacode-registry-index/main/config.json");
+    println!(
+        "  https://raw.githubusercontent.com/igornet0/Datacode-registry-index/main/config.json"
+    );
     println!("  Override: DATACODE_REGISTRY_URL=<url>");
-    println!("  Offline: last successful fetch is cached under <cache>/datacode/registry/config.json");
+    println!(
+        "  Offline: last successful fetch is cached under <cache>/datacode/registry/config.json"
+    );
 }
 
 fn cmd_init(args: &[String]) -> Result<(), String> {
@@ -174,7 +183,10 @@ fn cmd_init(args: &[String]) -> Result<(), String> {
         });
     }
     write_lock(&project_root, lock_file, &lock)?;
-    println!("Lock file written: {}", project_root.join(lock_file).display());
+    println!(
+        "Lock file written: {}",
+        project_root.join(lock_file).display()
+    );
     Ok(())
 }
 
@@ -212,14 +224,19 @@ fn cmd_add(args: &[String]) -> Result<(), String> {
         _ => return Err("Usage: dpm add <package_name> [<source>]".to_string()),
     };
     let source = source_owned.as_str();
-    let project_root = find_project_root(&cwd).ok_or("No dpm.toml found (run from project with dpm.toml)")?;
+    let project_root =
+        find_project_root(&cwd).ok_or("No dpm.toml found (run from project with dpm.toml)")?;
     let mut manifest = load_manifest(&project_root)?;
-    manifest.dependencies.insert(name.to_string(), source.to_string());
+    manifest
+        .dependencies
+        .insert(name.to_string(), source.to_string());
     // Write back dpm.toml (preserve other sections via raw edit or re-serialize; for simplicity we append to [dependencies])
     let manifest_path = project_root.join("dpm.toml");
     let content = std::fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
     let new_dep_line = format!("{} = \"{}\"", name, source);
-    let has_dep = content.lines().any(|l| l.trim().starts_with(&format!("{} = ", name)) || l.trim() == name);
+    let has_dep = content
+        .lines()
+        .any(|l| l.trim().starts_with(&format!("{} = ", name)) || l.trim() == name);
     if !has_dep {
         let new_content = if content.contains("[dependencies]") {
             let mut out = String::new();
@@ -232,7 +249,11 @@ fn cmd_add(args: &[String]) -> Result<(), String> {
             }
             out
         } else {
-            format!("{}\n\n[dependencies]\n{}\n", content.trim_end(), new_dep_line)
+            format!(
+                "{}\n\n[dependencies]\n{}\n",
+                content.trim_end(),
+                new_dep_line
+            )
         };
         std::fs::write(&manifest_path, new_content).map_err(|e| e.to_string())?;
     }
@@ -306,9 +327,8 @@ fn cmd_pack(args: &[String]) -> Result<(), String> {
             s => return Err(format!("unexpected argument: {}", s)),
         }
     }
-    let dir = dir.ok_or_else(|| {
-        "Usage: dpm pack <directory> [-o|--output <path.dcmodule>]".to_string()
-    })?;
+    let dir =
+        dir.ok_or_else(|| "Usage: dpm pack <directory> [-o|--output <path.dcmodule>]".to_string())?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     let dir_abs = if dir.is_absolute() {
         dir
@@ -343,7 +363,10 @@ fn cmd_config(args: &[String]) -> Result<(), String> {
             find_project_root(&cwd).ok_or("No dpm.toml found (run from project with dpm.toml)")?;
         if args[1].eq_ignore_ascii_case("clear") {
             clear_manifest_env_base(&project_root)?;
-            println!("Cleared [dpm] env_base in {}", project_root.join("dpm.toml").display());
+            println!(
+                "Cleared [dpm] env_base in {}",
+                project_root.join("dpm.toml").display()
+            );
             return Ok(());
         }
         let abs = resolve_env_base_flag(&args[1])?;
@@ -355,5 +378,8 @@ fn cmd_config(args: &[String]) -> Result<(), String> {
         );
         return Ok(());
     }
-    Err("Usage: dpm config virtualenvs.in-project true|false | dpm config env-base <dir>|clear".to_string())
+    Err(
+        "Usage: dpm config virtualenvs.in-project true|false | dpm config env-base <dir>|clear"
+            .to_string(),
+    )
 }

@@ -1,22 +1,92 @@
 // Global variables operations for VM (globals as Vec<GlobalSlot>)
 
-use crate::common::value_store::{ValueStore, ValueCell};
-use crate::vm::global_slot::{GlobalSlot, default_global_slot};
+use crate::common::value_store::{ValueCell, ValueStore};
+use crate::vm::global_slot::{default_global_slot, GlobalSlot};
 
 /// Количество встроенных глобалов (индексы `0..BUILTIN_GLOBAL_COUNT`).
 pub const BUILTIN_GLOBAL_COUNT: usize = 79;
 
 /// Канонические имена встроенных глобалов по индексу `0..BUILTIN_GLOBAL_COUNT` (для merge_globals_from: не перезаписывать правильное значение ошибочным).
 pub const BUILTIN_GLOBAL_NAMES: [&str; BUILTIN_GLOBAL_COUNT] = [
-    "print", "len", "range", "int", "float", "bool", "str", "array", "typeof", "isinstance",
-    "date", "money", "path", "path_name", "path_parent", "path_exists", "path_is_file", "path_is_dir",
-    "path_extension", "path_stem", "path_len", "abs", "sqrt", "pow", "min", "max", "round",
-    "upper", "lower", "trim", "split", "join", "contains", "isupper", "islower", "push", "pop", "unique", "reverse",
-    "sort", "sum", "average", "count", "any", "all", "table", "read_file", "read_file_bin", "table_info", "table_head",
-    "table_tail", "table_select", "table_sort", "table_where", "show_table", "merge_tables", "now",
-    "getcwd", "list_files", "inner_join", "left_join", "right_join", "full_join", "cross_join",
-    "semi_join", "anti_join", "zip_join", "asof_join", "apply_join", "join_on", "table_suffixes",
-    "relate", "primary_key", "enum", "Table", "array_with_capacity", "map", "filter", "reduce",
+    "print",
+    "len",
+    "range",
+    "int",
+    "float",
+    "bool",
+    "str",
+    "array",
+    "typeof",
+    "isinstance",
+    "date",
+    "money",
+    "path",
+    "path_name",
+    "path_parent",
+    "path_exists",
+    "path_is_file",
+    "path_is_dir",
+    "path_extension",
+    "path_stem",
+    "path_len",
+    "abs",
+    "sqrt",
+    "pow",
+    "min",
+    "max",
+    "round",
+    "upper",
+    "lower",
+    "trim",
+    "split",
+    "join",
+    "contains",
+    "isupper",
+    "islower",
+    "push",
+    "pop",
+    "unique",
+    "reverse",
+    "sort",
+    "sum",
+    "average",
+    "count",
+    "any",
+    "all",
+    "table",
+    "read_file",
+    "read_file_bin",
+    "table_info",
+    "table_head",
+    "table_tail",
+    "table_select",
+    "table_sort",
+    "table_where",
+    "show_table",
+    "merge_tables",
+    "now",
+    "getcwd",
+    "list_files",
+    "inner_join",
+    "left_join",
+    "right_join",
+    "full_join",
+    "cross_join",
+    "semi_join",
+    "anti_join",
+    "zip_join",
+    "asof_join",
+    "apply_join",
+    "join_on",
+    "table_suffixes",
+    "relate",
+    "primary_key",
+    "enum",
+    "Table",
+    "array_with_capacity",
+    "map",
+    "filter",
+    "reduce",
 ];
 
 /// Возвращает каноническое имя встроенной глобальной переменной по индексу (`0..BUILTIN_GLOBAL_COUNT`).
@@ -26,9 +96,7 @@ pub fn builtin_global_name(index: usize) -> Option<&'static str> {
 
 /// Возвращает канонический индекс встроенной глобальной переменной по имени (для set_functions).
 pub fn builtin_global_index(name: &str) -> Option<usize> {
-    BUILTIN_GLOBAL_NAMES
-        .iter()
-        .position(|&n| n == name)
+    BUILTIN_GLOBAL_NAMES.iter().position(|&n| n == name)
 }
 
 /// Регистрирует нативные функции в глобальных переменных (GlobalSlot::Heap(ValueId))
@@ -37,15 +105,19 @@ pub fn register_native_globals(
     global_names: &mut std::collections::BTreeMap<usize, String>,
     store: &mut ValueStore,
 ) {
-    let max_global_index = global_names.keys().max().copied().unwrap_or(BUILTIN_GLOBAL_COUNT - 1);
+    let max_global_index = global_names
+        .keys()
+        .max()
+        .copied()
+        .unwrap_or(BUILTIN_GLOBAL_COUNT - 1);
     let min_size = (BUILTIN_GLOBAL_COUNT).max(max_global_index + 1);
     globals.resize(min_size, default_global_slot());
 
     for (index, name) in BUILTIN_GLOBAL_NAMES.iter().enumerate() {
         globals[index] = GlobalSlot::Heap(store.allocate(ValueCell::NativeFunction(index)));
-        if !global_names.contains_key(&index) {
-            global_names.insert(index, (*name).to_string());
-        }
+        global_names
+            .entry(index)
+            .or_insert_with(|| (*name).to_string());
     }
 }
 

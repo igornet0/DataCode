@@ -15,7 +15,12 @@ mod tests {
 
     fn assert_number(result: Result<Value, data_code::LangError>, expected: f64) {
         match result {
-            Ok(Value::Number(n)) => assert!((n - expected).abs() < 1e-10, "expected {}, got {}", expected, n),
+            Ok(Value::Number(n)) => assert!(
+                (n - expected).abs() < 1e-10,
+                "expected {}, got {}",
+                expected,
+                n
+            ),
             Ok(v) => panic!("expected Number({}), got {:?}", expected, v),
             Err(e) => panic!("error: {:?}", e),
         }
@@ -177,7 +182,11 @@ two()"#,
         );
         assert!(result.is_err());
         let msg = format!("{:?}", result.unwrap_err());
-        assert!(msg.contains("not loaded") || msg.contains("Settings") || msg.contains("load_settings"), "msg: {}", msg);
+        assert!(
+            msg.contains("not loaded") || msg.contains("Settings") || msg.contains("load_settings"),
+            "msg: {}",
+            msg
+        );
     }
 
     #[test]
@@ -192,7 +201,11 @@ two()"#,
         );
         assert!(result.is_err());
         let msg = format!("{:?}", result.unwrap_err());
-        assert!(msg.contains("Invalid") || msg.contains("staging"), "msg: {}", msg);
+        assert!(
+            msg.contains("Invalid") || msg.contains("staging"),
+            "msg: {}",
+            msg
+        );
     }
 
     // ========== core.database (импортирует core.config) ==========
@@ -242,7 +255,7 @@ two()"#,
             "#,
             base.as_path(),
         );
-        
+
         // 42 + len("dev") = 42 + 3 = 45
         assert_number(result, 45.0);
     }

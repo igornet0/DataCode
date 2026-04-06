@@ -506,13 +506,14 @@ impl Lexer {
             TokenKind::PercentEqual => "%=".to_string(),
             TokenKind::Ellipsis => "...".to_string(),
             _ => {
-                let start = if self.current > 0 { self.current - 1 } else { 0 };
-                self.source[start..self.current]
-                    .iter()
-                    .collect()
+                let start = if self.current > 0 {
+                    self.current - 1
+                } else {
+                    0
+                };
+                self.source[start..self.current].iter().collect()
             }
         };
         Token::new(kind, lexeme, self.line)
     }
 }
-

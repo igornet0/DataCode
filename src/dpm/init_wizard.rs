@@ -12,9 +12,16 @@ const GREEN: &str = "\x1b[32m";
 const RESET: &str = "\x1b[0m";
 
 fn colored_prompt(question: &str, bracket_content: &str) {
-    let display = if bracket_content.is_empty() { "" } else { bracket_content };
+    let display = if bracket_content.is_empty() {
+        ""
+    } else {
+        bracket_content
+    };
     if io::stdout().is_terminal() {
-        print!("{}{}{} [{}{}{}]: ", BLUE, question, RESET, GREEN, display, RESET);
+        print!(
+            "{}{}{} [{}{}{}]: ",
+            BLUE, question, RESET, GREEN, display, RESET
+        );
     } else {
         print!("{} [{}]: ", question, display);
     }
@@ -42,8 +49,8 @@ pub fn default_author() -> String {
             Some(s)
         }
     };
-    let name = run_git(&["config", "user.name"])
-        .or_else(|| run_git(&["config", "--global", "user.name"]));
+    let name =
+        run_git(&["config", "user.name"]).or_else(|| run_git(&["config", "--global", "user.name"]));
     let email = run_git(&["config", "user.email"])
         .or_else(|| run_git(&["config", "--global", "user.email"]));
     if let Some(n) = name {
@@ -71,7 +78,9 @@ pub fn default_author() -> String {
 fn prompt(default: &str) -> Result<String, String> {
     io::stdout().flush().map_err(|e| e.to_string())?;
     let mut line = String::new();
-    io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
     let s = line.trim().to_string();
     if s.is_empty() {
         Ok(default.to_string())
@@ -83,10 +92,8 @@ fn prompt(default: &str) -> Result<String, String> {
 fn prompt_yes_no(default_yes: bool) -> Result<bool, String> {
     let default = if default_yes { "yes" } else { "no" };
     let s = prompt(default)?;
-    let y = s.is_empty()
-        || s.eq_ignore_ascii_case("y")
-        || s.eq_ignore_ascii_case("yes")
-        || s == "1";
+    let y =
+        s.is_empty() || s.eq_ignore_ascii_case("y") || s.eq_ignore_ascii_case("yes") || s == "1";
     Ok(y)
 }
 
@@ -147,7 +154,14 @@ pub fn run_init_wizard(project_root: &Path) -> Result<(), String> {
     let description = prompt("")?;
 
     let author_default = default_author();
-    colored_prompt("Author", if author_default.is_empty() { "" } else { &author_default });
+    colored_prompt(
+        "Author",
+        if author_default.is_empty() {
+            ""
+        } else {
+            &author_default
+        },
+    );
     let author = prompt(&author_default)?;
 
     colored_prompt("License", "");
@@ -159,7 +173,10 @@ pub fn run_init_wizard(project_root: &Path) -> Result<(), String> {
     colored_prompt("Entry point (e.g. main.dc or src/main.dc)", "");
     let entry = prompt("")?;
 
-    colored_prompt("Would you like to define your main dependencies interactively? (yes/no)", "yes");
+    colored_prompt(
+        "Would you like to define your main dependencies interactively? (yes/no)",
+        "yes",
+    );
     let deps_interactive = prompt_yes_no(true)?;
 
     let mut dependencies: Vec<(String, String)> = Vec::new();
@@ -172,7 +189,9 @@ pub fn run_init_wizard(project_root: &Path) -> Result<(), String> {
             print_question("Package to add or search for (leave blank to skip)");
             io::stdout().flush().map_err(|e| e.to_string())?;
             let mut line = String::new();
-            io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+            io::stdin()
+                .read_line(&mut line)
+                .map_err(|e| e.to_string())?;
             let spec = line.trim().to_string();
             if spec.is_empty() {
                 break;
@@ -192,7 +211,16 @@ pub fn run_init_wizard(project_root: &Path) -> Result<(), String> {
         }
     }
 
-    let toml_content = build_toml(&name, &version, &description, &author, &license, &datacode, &entry, &dependencies);
+    let toml_content = build_toml(
+        &name,
+        &version,
+        &description,
+        &author,
+        &license,
+        &datacode,
+        &entry,
+        &dependencies,
+    );
 
     println!();
     println!("Generated file");
@@ -208,7 +236,8 @@ pub fn run_init_wizard(project_root: &Path) -> Result<(), String> {
     }
 
     let manifest_path = project_root.join("dpm.toml");
-    std::fs::write(&manifest_path, toml_content).map_err(|e| format!("Write {}: {}", manifest_path.display(), e))?;
+    std::fs::write(&manifest_path, toml_content)
+        .map_err(|e| format!("Write {}: {}", manifest_path.display(), e))?;
     println!("Created {}", manifest_path.display());
 
     Ok(())

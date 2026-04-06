@@ -1,29 +1,28 @@
 // Native functions module
 // Re-exports all native functions in the correct order for registration
 
-pub mod basic;
-pub mod path;
-pub mod math;
-pub mod string;
 pub mod array;
-pub mod table;
-pub mod join;
-pub mod file;
-pub mod relations;
-pub mod utils;
+pub mod basic;
 pub mod debug;
+pub mod file;
 pub mod higher_order;
+pub mod join;
+pub mod math;
+pub mod path;
+pub mod relations;
+pub mod string;
+pub mod table;
+pub mod utils;
 
 // Re-export all native functions in registration order
-pub use basic::*;
-pub use path::*;
-pub use math::*;
-pub use string::*;
 pub use array::*;
-pub use table::*;
-pub use join::*;
-pub use file::*;
-pub use relations::*;
-pub use utils::*;
+pub use basic::*;
 pub use debug::*;
-
+pub use file::*;
+pub use join::*;
+pub use math::*;
+pub use path::*;
+pub use relations::*;
+pub use string::*;
+pub use table::*;
+pub use utils::*;

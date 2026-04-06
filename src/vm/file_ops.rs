@@ -3,8 +3,8 @@
 // SMB_MANAGER is thread-local RefCell<Option<Arc<Mutex<SmbManager>>>>. Lock is held only for
 // the duration of a single SMB op (e.g. read_file/list_files). See docs/gil_bottlenecks.md.
 
-use std::sync::{Arc, Mutex};
 use crate::websocket::smb::SmbManager;
+use std::sync::{Arc, Mutex};
 
 thread_local! {
     static SMB_MANAGER: std::cell::RefCell<Option<Arc<Mutex<SmbManager>>>> = std::cell::RefCell::new(None);
@@ -33,4 +33,3 @@ pub fn get_smb_manager() -> Option<Arc<Mutex<SmbManager>>> {
     }
     SMB_MANAGER.with(|m| m.borrow().clone())
 }
-

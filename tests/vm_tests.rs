@@ -305,7 +305,7 @@ mod tests {
     fn test_boolean_literals() {
         let source = "true";
         assert_bool_result(source, true);
-        
+
         let source = "false";
         assert_bool_result(source, false);
     }
@@ -653,7 +653,11 @@ mod tests {
         "#;
         let result = run(source_arrays).expect("run");
         if let Value::Number(x) = result {
-            assert!(x >= 1.0 && x <= 200.0, "expected reasonable sum, got {}", x);
+            assert!(
+                (1.0..=200.0).contains(&x),
+                "expected reasonable sum, got {}",
+                x
+            );
         } else {
             panic!("expected Number, got {:?}", result);
         }
@@ -667,7 +671,8 @@ mod tests {
         let (_val, mut vm) = run_with_vm_and_path(source_with_globals, None, None).expect("run");
         const CYCLES: usize = 30;
         for _ in 0..CYCLES {
-            let (v, _) = run_with_vm_and_path(source_with_globals, None, Some(&mut vm)).expect("run");
+            let (v, _) =
+                run_with_vm_and_path(source_with_globals, None, Some(&mut vm)).expect("run");
             if let Value::Number(n) = v {
                 assert_eq!(n, 40.0, "g[0]+h[0] = 10+30");
             }
@@ -854,7 +859,10 @@ export_data(data)
             .iter()
             .filter(|op| matches!(op, OpCode::Call(2)))
             .count();
-        assert_eq!(call2, 3, "data.chunk(5) is Call(2); loop body has 2× push → 3 total Call(2) in chunk");
+        assert_eq!(
+            call2, 3,
+            "data.chunk(5) is Call(2); loop body has 2× push → 3 total Call(2) in chunk"
+        );
     }
 
     /// How many for-loop iterations run inside export_data (expect 3 chunks).
@@ -910,4 +918,3 @@ score
         assert_number_result(source, 3.0);
     }
 }
-

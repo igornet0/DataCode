@@ -1,20 +1,19 @@
-/// Модуль компиляции statements
-
-pub mod import;
-pub mod let_stmt;
-pub mod if_stmt;
-pub mod while_stmt;
+pub mod break_continue;
+pub mod class;
 pub mod for_stmt;
 pub mod function;
+pub mod if_stmt;
+/// Модуль компиляции statements
+pub mod import;
+pub mod let_stmt;
 pub mod return_stmt;
-pub mod break_continue;
 pub mod throw;
 pub mod try_catch;
-pub mod class;
+pub mod while_stmt;
 
-use crate::parser::ast::Stmt;
 use crate::common::error::LangError;
 use crate::compiler::context::CompilationContext;
+use crate::parser::ast::Stmt;
 
 /// Диспетчеризация компиляции statements
 pub fn compile_stmt(
@@ -24,7 +23,7 @@ pub fn compile_stmt(
 ) -> Result<(), LangError> {
     let stmt_line = stmt.line();
     *ctx.current_line = stmt_line;
-    
+
     match stmt {
         Stmt::Import { .. } => import::compile_import(ctx, stmt),
         Stmt::Let { .. } => let_stmt::compile_let(ctx, stmt, pop_value),
@@ -32,7 +31,8 @@ pub fn compile_stmt(
             if let Stmt::Expr { expr, line } = stmt {
                 crate::compiler::expr::compile_expr(ctx, expr)?;
                 if pop_value {
-                    ctx.chunk.write_with_line(crate::bytecode::OpCode::Pop, *line);
+                    ctx.chunk
+                        .write_with_line(crate::bytecode::OpCode::Pop, *line);
                 }
                 Ok(())
             } else {
@@ -57,4 +57,3 @@ pub fn compile_stmt(
         Stmt::Class { .. } => class::compile_class(ctx, stmt, pop_value),
     }
 }
-

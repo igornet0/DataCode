@@ -761,10 +761,18 @@ mod tests {
             a["x" = 1]
         "#;
         let result = run_and_get_result(source);
-        assert!(result.is_err(), "Expected runtime error for table filter on array, got {:?}", result);
+        assert!(
+            result.is_err(),
+            "Expected runtime error for table filter on array, got {:?}",
+            result
+        );
         let err = result.unwrap_err();
         let err_str = format!("{:?}", err);
-        assert!(err_str.contains("Table filter") && err_str.contains("Array"), "Expected 'Table filter requires a table, got Array', got: {}", err_str);
+        assert!(
+            err_str.contains("Table filter") && err_str.contains("Array"),
+            "Expected 'Table filter requires a table, got Array', got: {}",
+            err_str
+        );
     }
 
     #[test]
@@ -1187,7 +1195,9 @@ mod tests {
         // Должно быть 6 строк: все пользователи и все заказы
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 6.0, "Expected 6 rows in full join with two string args"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 6.0, "Expected 6 rows in full join with two string args")
+            }
             Ok(v) => panic!("Expected Number(6), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1205,7 +1215,9 @@ mod tests {
         // Должно быть 3 строки: Alice с двумя заказами, Charlie с одним
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 3.0, "Expected 3 rows in universal join with array"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 3.0, "Expected 3 rows in universal join with array")
+            }
             Ok(v) => panic!("Expected Number(3), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1223,7 +1235,9 @@ mod tests {
         // Должно быть 3 строки: все пользователи, Bob без заказов
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 3.0, "Expected 3 rows in universal join with left type"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 3.0, "Expected 3 rows in universal join with left type")
+            }
             Ok(v) => panic!("Expected Number(3), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1241,7 +1255,9 @@ mod tests {
         // Должно быть 4 строки: все пользователи и все заказы
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 4.0, "Expected 4 rows in universal join with full type"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 4.0, "Expected 4 rows in universal join with full type")
+            }
             Ok(v) => panic!("Expected Number(4), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1259,7 +1275,9 @@ mod tests {
         // Должно быть 3 строки: все заказы, заказ с user_id=5 без пользователя
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 3.0, "Expected 3 rows in universal join with right type"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 3.0, "Expected 3 rows in universal join with right type")
+            }
             Ok(v) => panic!("Expected Number(3), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1277,7 +1295,9 @@ mod tests {
         // Должно быть 4 строки: все заказы
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 4.0, "Expected 4 rows in right join with two string args"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 4.0, "Expected 4 rows in right join with two string args")
+            }
             Ok(v) => panic!("Expected Number(4), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1381,7 +1401,10 @@ mod tests {
 
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 0.0, "Expected 0 rows in inner join with empty right table"),
+            Ok(Value::Number(n)) => assert_eq!(
+                n, 0.0,
+                "Expected 0 rows in inner join with empty right table"
+            ),
             Ok(v) => panic!("Expected Number(0), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1398,7 +1421,10 @@ mod tests {
 
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 2.0, "Expected 2 rows in left join with empty right table"),
+            Ok(Value::Number(n)) => assert_eq!(
+                n, 2.0,
+                "Expected 2 rows in left join with empty right table"
+            ),
             Ok(v) => panic!("Expected Number(2), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1415,7 +1441,9 @@ mod tests {
 
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 1.0, "Expected 1 row in right join with empty left table"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 1.0, "Expected 1 row in right join with empty left table")
+            }
             Ok(v) => panic!("Expected Number(1), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1434,7 +1462,9 @@ mod tests {
 
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 0.0, "Expected 0 rows in inner join with no matches"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 0.0, "Expected 0 rows in inner join with no matches")
+            }
             Ok(v) => panic!("Expected Number(0), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1451,7 +1481,9 @@ mod tests {
 
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 2.0, "Expected 2 rows in anti join when no matches"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 2.0, "Expected 2 rows in anti join when no matches")
+            }
             Ok(v) => panic!("Expected Number(2), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1471,7 +1503,10 @@ mod tests {
         // 2 * 3 = 6
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 6.0, "Expected 6 rows in inner join with duplicates (2*3)"),
+            Ok(Value::Number(n)) => assert_eq!(
+                n, 6.0,
+                "Expected 6 rows in inner join with duplicates (2*3)"
+            ),
             Ok(v) => panic!("Expected Number(6), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1489,7 +1524,10 @@ mod tests {
         // id=1 есть → берём ВСЕ строки t1 с id=1
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 2.0, "Expected 2 rows in semi join (all rows with matching id)"),
+            Ok(Value::Number(n)) => assert_eq!(
+                n, 2.0,
+                "Expected 2 rows in semi join (all rows with matching id)"
+            ),
             Ok(v) => panic!("Expected Number(2), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1509,7 +1547,10 @@ mod tests {
         // NULL != NULL
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 1.0, "Expected 1 row in inner join with null (NULL != NULL)"),
+            Ok(Value::Number(n)) => assert_eq!(
+                n, 1.0,
+                "Expected 1 row in inner join with null (NULL != NULL)"
+            ),
             Ok(v) => panic!("Expected Number(1), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1565,7 +1606,10 @@ mod tests {
 
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 1.0, "Expected 1 row in zip join with different lengths (min)"),
+            Ok(Value::Number(n)) => assert_eq!(
+                n, 1.0,
+                "Expected 1 row in zip join with different lengths (min)"
+            ),
             Ok(v) => panic!("Expected Number(1), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1627,7 +1671,9 @@ mod tests {
         "#;
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 2.0, "Table should have 2 rows before apply_join"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 2.0, "Table should have 2 rows before apply_join")
+            }
             Ok(v) => panic!("Expected Number(2), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1670,7 +1716,9 @@ mod tests {
         // Должно быть 0 строк
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 0.0, "Expected 0 rows when function returns empty table"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 0.0, "Expected 0 rows when function returns empty table")
+            }
             Ok(v) => panic!("Expected Number(0), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1735,7 +1783,10 @@ mod tests {
         // Должно быть 2 строки
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 2.0, "Expected 2 rows in asof_join with multiple by columns"),
+            Ok(Value::Number(n)) => assert_eq!(
+                n, 2.0,
+                "Expected 2 rows in asof_join with multiple by columns"
+            ),
             Ok(v) => panic!("Expected Number(2), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1753,7 +1804,9 @@ mod tests {
         // Должно быть 2 строки (обе из left, вторая с NULLs справа)
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 2.0, "Expected 2 rows (one matched, one with NULLs)"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 2.0, "Expected 2 rows (one matched, one with NULLs)")
+            }
             Ok(v) => panic!("Expected Number(2), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1795,7 +1848,11 @@ mod tests {
         let result = run_and_get_result(source);
         match result {
             Ok(Value::String(s)) => {
-                assert!(s.contains("_o") || s == "id_o", "Expected column name with _o suffix, got {}", s);
+                assert!(
+                    s.contains("_o") || s == "id_o",
+                    "Expected column name with _o suffix, got {}",
+                    s
+                );
             }
             Ok(v) => panic!("Expected String, got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
@@ -1814,7 +1871,9 @@ mod tests {
 
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 1.0, "Expected 1 row after left join with suffixes"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 1.0, "Expected 1 row after left join with suffixes")
+            }
             Ok(v) => panic!("Expected Number(1), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1832,7 +1891,9 @@ mod tests {
 
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 2.0, "Expected 2 rows after inner join with suffixes"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 2.0, "Expected 2 rows after inner join with suffixes")
+            }
             Ok(v) => panic!("Expected Number(2), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1910,7 +1971,9 @@ mod tests {
         // Должно быть 6 колонок: id_left, name_left, value_left, id_right, name_right, value_right
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 6.0, "Expected 6 columns with multiple conflicts"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 6.0, "Expected 6 columns with multiple conflicts")
+            }
             Ok(v) => panic!("Expected Number(6), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1928,7 +1991,9 @@ mod tests {
 
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 2.0, "Expected 2 rows after right join with suffixes"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 2.0, "Expected 2 rows after right join with suffixes")
+            }
             Ok(v) => panic!("Expected Number(2), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -1946,7 +2011,9 @@ mod tests {
 
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => assert_eq!(n, 3.0, "Expected 3 rows after full join with suffixes"),
+            Ok(Value::Number(n)) => {
+                assert_eq!(n, 3.0, "Expected 3 rows after full join with suffixes")
+            }
             Ok(v) => panic!("Expected Number(3), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
@@ -2108,4 +2175,3 @@ mod tests {
         assert_number_result(source, 40.0);
     }
 }
-

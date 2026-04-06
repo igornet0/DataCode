@@ -15,9 +15,8 @@ impl PlotWindowHandle {
     pub fn new(id: WindowId) -> Self {
         Self { id }
     }
-    
+
     pub fn id(&self) -> WindowId {
         self.id
     }
 }
-

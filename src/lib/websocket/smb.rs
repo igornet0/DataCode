@@ -1,11 +1,11 @@
+use regex::Regex;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
-use std::process::Command;
 use std::fs;
 #[cfg(not(target_os = "windows"))]
 use std::io::Write as _;
-use serde::{Deserialize, Serialize};
-use regex::Regex;
+use std::path::PathBuf;
+use std::process::Command;
 
 /// Параметры подключения к SMB
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -18,7 +18,13 @@ pub struct SmbConnection {
 }
 
 impl SmbConnection {
-    pub fn new(ip: String, login: String, password: String, domain: String, share_name: String) -> Self {
+    pub fn new(
+        ip: String,
+        login: String,
+        password: String,
+        domain: String,
+        share_name: String,
+    ) -> Self {
         Self {
             ip,
             login,
@@ -54,7 +60,7 @@ impl SmbManager {
         let mount_base = std::env::temp_dir().join("datacode_smb");
         // Создаем директорию если её нет
         let _ = fs::create_dir_all(&mount_base);
-        
+
         Self {
             connections: HashMap::new(),
             mount_base,
@@ -64,7 +70,7 @@ impl SmbManager {
     /// Подключиться к SMB шаре
     pub fn connect(&mut self, connection: SmbConnection) -> Result<String, String> {
         let share_name = connection.share_name.clone();
-        
+
         // Проверяем, не подключены ли уже
         if self.connections.contains_key(&share_name) {
             return Err(format!("SMB share '{}' уже подключена", share_name));
@@ -79,7 +85,12 @@ impl SmbManager {
             // Windows: используем net use
             let unc_path = connection.get_unc_path();
             let output = Command::new("net")
-                .args(&["use", &unc_path, &format!("/user:{}\\{}", connection.domain, connection.login), &connection.password])
+                .args(&[
+                    "use",
+                    &unc_path,
+                    &format!("/user:{}\\{}", connection.domain, connection.login),
+                    &connection.password,
+                ])
                 .output()
                 .map_err(|e| format!("Ошибка выполнения net use: {}", e))?;
 
@@ -93,9 +104,7 @@ impl SmbManager {
         {
             // Linux/Mac: используем smbclient или mount.cifs
             // Сначала проверяем доступность smbclient
-            let smbclient_check = Command::new("which")
-                .arg("smbclient")
-                .output();
+            let smbclient_check = Command::new("which").arg("smbclient").output();
 
             if smbclient_check.is_ok() && smbclient_check.unwrap().status.success() {
                 // Пытаемся проверить подключение, но не строго
@@ -106,33 +115,34 @@ impl SmbManager {
                 } else {
                     format!("{}\\{}", connection.domain, connection.login)
                 };
-                
+
                 let mut args = vec![
                     "-L".to_string(),
                     connection.ip.clone(),
                     "-U".to_string(),
                     user_string.clone(),
                 ];
-                
+
                 // Добавляем -W только если домен не пустой
                 if !connection.domain.is_empty() {
                     args.push("-W".to_string());
                     args.push(connection.domain.clone());
                 }
-                
+
                 // Пробуем передать пароль через stdin
                 let mut cmd = Command::new("smbclient");
                 cmd.args(&args);
-                let child = cmd.stdin(std::process::Stdio::piped())
+                let child = cmd
+                    .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped())
                     .spawn();
-                
+
                 if let Ok(mut child_process) = child {
                     if let Some(mut stdin) = child_process.stdin.take() {
                         let _ = writeln!(stdin, "{}", connection.password);
                     }
-                    
+
                     let output = child_process.wait_with_output();
                     if let Ok(out) = output {
                         if !out.status.success() {
@@ -140,23 +150,24 @@ impl SmbManager {
                             // Сохраняем подключение и проверим при реальных операциях
                             let error_msg = String::from_utf8_lossy(&out.stderr);
                             // Не возвращаем ошибку, просто логируем (если нужно)
-                            eprintln!("Предупреждение: проверка подключения не удалась: {}", error_msg);
+                            eprintln!(
+                                "Предупреждение: проверка подключения не удалась: {}",
+                                error_msg
+                            );
                         }
                     }
                 }
                 // В любом случае продолжаем и сохраняем подключение
             } else {
                 // Пытаемся использовать mount.cifs если доступен
-                let mount_check = Command::new("which")
-                    .arg("mount.cifs")
-                    .output();
+                let mount_check = Command::new("which").arg("mount.cifs").output();
 
                 if mount_check.is_ok() && mount_check.unwrap().status.success() {
                     // Создаем credentials файл
                     let creds_file = self.mount_base.join(format!("{}.creds", share_name));
                     let mut creds = fs::File::create(&creds_file)
                         .map_err(|e| format!("Не удалось создать файл credentials: {}", e))?;
-                    
+
                     writeln!(creds, "username={}", connection.login)
                         .map_err(|e| format!("Ошибка записи в credentials файл: {}", e))?;
                     writeln!(creds, "password={}", connection.password)
@@ -177,15 +188,19 @@ impl SmbManager {
                         .unwrap_or(1000);
 
                     let output = Command::new("sudo")
-                        .args(&[
+                        .args([
                             "mount",
-                            "-t", "cifs",
+                            "-t",
+                            "cifs",
                             &unc_path,
                             &mount_path.to_string_lossy(),
-                            "-o", &format!("credentials={},uid={},gid={}", 
+                            "-o",
+                            &format!(
+                                "credentials={},uid={},gid={}",
                                 creds_file.to_string_lossy(),
                                 uid,
-                                gid),
+                                gid
+                            ),
                         ])
                         .output()
                         .map_err(|e| format!("Ошибка выполнения mount: {}", e))?;
@@ -230,7 +245,7 @@ impl SmbManager {
                 .collect();
             return format!("^({})$", regex_alternatives.join("|"));
         }
-        
+
         // Для одиночного паттерна добавляем якоря
         format!("^{}$", Self::glob_to_regex_smb_single(glob))
     }
@@ -240,7 +255,7 @@ impl SmbManager {
     fn glob_to_regex_smb_single(glob: &str) -> String {
         let mut regex = String::new();
         let mut chars = glob.chars().peekable();
-        
+
         while let Some(ch) = chars.next() {
             match ch {
                 '*' => {
@@ -264,7 +279,7 @@ impl SmbManager {
                 }
             }
         }
-        
+
         regex
     }
 
@@ -278,7 +293,7 @@ impl SmbManager {
     ) -> Result<Vec<String>, String> {
         let mut all_files = Vec::new();
         let mut dirs_to_process = vec![base_path.to_string()];
-        
+
         while let Some(current_dir) = dirs_to_process.pop() {
             // Формируем команду для smbclient
             let smb_command = if current_dir.is_empty() || current_dir == "/" {
@@ -302,17 +317,18 @@ impl SmbManager {
                 "-c".to_string(),
                 smb_command,
             ];
-            
+
             // Добавляем -W только если домен не пустой
             if !connection.domain.is_empty() {
                 args.push("-W".to_string());
                 args.push(connection.domain.clone());
             }
-            
+
             cmd.args(&args);
 
             // Используем stdin для передачи пароля
-            let mut child = cmd.stdin(std::process::Stdio::piped())
+            let mut child = cmd
+                .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
@@ -322,7 +338,8 @@ impl SmbManager {
                 let _ = writeln!(stdin, "{}", connection.password);
             }
 
-            let output = child.wait_with_output()
+            let output = child
+                .wait_with_output()
                 .map_err(|e| format!("Ошибка выполнения smbclient: {}", e))?;
 
             if output.status.success() {
@@ -330,29 +347,34 @@ impl SmbManager {
                 for line in stdout.lines() {
                     let original_line = line;
                     let trimmed = original_line.trim();
-                    
+
                     // Пропускаем служебные строки
-                    if trimmed.is_empty() 
-                        || trimmed.starts_with('[') 
+                    if trimmed.is_empty()
+                        || trimmed.starts_with('[')
                         || trimmed.contains("blocks")
                         || trimmed.starts_with("Password")
                         || trimmed.starts_with("Can't")
                         || trimmed.starts_with("Try \"")
-                        || trimmed == "." 
+                        || trimmed == "."
                         || trimmed == ".."
-                        || original_line.starts_with("\t") {
+                        || original_line.starts_with("\t")
+                    {
                         continue;
                     }
-                    
+
                     // Парсим вывод smbclient
                     if original_line.starts_with(' ') {
                         let mut type_char_pos = None;
                         let chars: Vec<char> = original_line.chars().collect();
-                        
+
                         for i in 2..chars.len().saturating_sub(2) {
-                            if (chars[i] == 'A' || chars[i] == 'D') && chars[i-1] == ' ' {
-                                if i > 10 && (chars.get(i+1) == Some(&' ') || chars.get(i+1) == Some(&'H')) {
-                                    let spaces_before = (0..i).rev().take_while(|&j| chars[j] == ' ').count();
+                            if (chars[i] == 'A' || chars[i] == 'D') && chars[i - 1] == ' ' {
+                                if i > 10
+                                    && (chars.get(i + 1) == Some(&' ')
+                                        || chars.get(i + 1) == Some(&'H'))
+                                {
+                                    let spaces_before =
+                                        (0..i).rev().take_while(|&j| chars[j] == ' ').count();
                                     if spaces_before >= 5 {
                                         type_char_pos = Some(i);
                                         break;
@@ -360,14 +382,14 @@ impl SmbManager {
                                 }
                             }
                         }
-                        
+
                         if let Some(char_pos) = type_char_pos {
                             let byte_pos = original_line
                                 .char_indices()
                                 .nth(char_pos)
                                 .map(|(idx, _)| idx)
                                 .unwrap_or(original_line.len());
-                            
+
                             let file_name = original_line
                                 .char_indices()
                                 .take_while(|(idx, _)| *idx < byte_pos)
@@ -375,23 +397,27 @@ impl SmbManager {
                                 .collect::<String>()
                                 .trim()
                                 .to_string();
-                            
-                            let file_type: String = chars.iter().skip(char_pos).take_while(|c| **c != ' ').collect();
+
+                            let file_type: String = chars
+                                .iter()
+                                .skip(char_pos)
+                                .take_while(|c| **c != ' ')
+                                .collect();
                             let is_directory = file_type == "D";
-                            
-                            if !file_name.is_empty() 
-                                && file_name != "." 
+
+                            if !file_name.is_empty()
+                                && file_name != "."
                                 && file_name != ".."
                                 && !file_name.starts_with("._")
-                                && file_name != ".DS_Store" {
-                                
+                                && file_name != ".DS_Store"
+                            {
                                 // Формируем полный путь
                                 let full_path = if current_dir.is_empty() || current_dir == "/" {
                                     file_name.clone()
                                 } else {
                                     format!("{}/{}", current_dir, file_name)
                                 };
-                                
+
                                 if is_directory {
                                     // Добавляем директорию в очередь для обработки
                                     dirs_to_process.push(full_path);
@@ -410,19 +436,27 @@ impl SmbManager {
                 }
             }
         }
-        
+
         Ok(all_files)
     }
 
     /// Получить список файлов из SMB шары
-    /// 
+    ///
     /// # Arguments
     /// * `share_name` - Имя подключенной SMB шары
     /// * `path` - Путь к директории на шаре
     /// * `regex` - Опциональный regex паттерн для фильтрации имен файлов
     /// * `recursive` - Если true, рекурсивно обходит поддиректории
-    pub fn list_files(&self, share_name: &str, path: &str, regex: Option<&str>, recursive: bool) -> Result<Vec<String>, String> {
-        let connection = self.connections.get(share_name)
+    pub fn list_files(
+        &self,
+        share_name: &str,
+        path: &str,
+        regex: Option<&str>,
+        recursive: bool,
+    ) -> Result<Vec<String>, String> {
+        let connection = self
+            .connections
+            .get(share_name)
             .ok_or_else(|| format!("SMB share '{}' не подключена", share_name))?;
 
         // Компилируем regex, если он задан
@@ -433,7 +467,7 @@ impl SmbManager {
             } else {
                 pattern.to_string()
             };
-            
+
             match Regex::new(&regex_pattern_str) {
                 Ok(re) => Some(re),
                 Err(e) => return Err(format!("Invalid regex pattern '{}': {}", pattern, e)),
@@ -468,7 +502,7 @@ impl SmbManager {
             if output.status.success() {
                 let stdout = String::from_utf8_lossy(&output.stdout);
                 let base_unc_path = connection.get_unc_path();
-                
+
                 for line in stdout.lines() {
                     let trimmed = line.trim();
                     if !trimmed.is_empty() {
@@ -478,39 +512,41 @@ impl SmbManager {
                             let relative_path = if trimmed.starts_with(&base_unc_path) {
                                 // Убираем базовый UNC путь и начальный слеш
                                 let path_part = &trimmed[base_unc_path.len()..];
-                                path_part.trim_start_matches(|c| c == '\\' || c == '/').to_string()
+                                path_part
+                                    .trim_start_matches(|c| c == '\\' || c == '/')
+                                    .to_string()
                             } else {
                                 // Если путь не начинается с базового, используем как есть
                                 trimmed.to_string()
                             };
-                            
+
                             // Извлекаем имя файла для regex фильтрации
                             let file_name = PathBuf::from(&relative_path)
                                 .file_name()
                                 .and_then(|n| n.to_str())
                                 .unwrap_or(&relative_path)
                                 .to_string();
-                            
+
                             // Применяем regex фильтрацию, если задана
                             if let Some(ref re) = regex {
                                 if !re.is_match(&file_name) {
                                     continue;
                                 }
                             }
-                            
+
                             // Возвращаем относительный путь
                             files.push(relative_path);
                         } else {
                             // Для нерекурсивного обхода просто имя файла
                             let file_name = trimmed.to_string();
-                            
+
                             // Применяем regex фильтрацию, если задана
                             if let Some(ref re) = regex {
                                 if !re.is_match(&file_name) {
                                     continue;
                                 }
                             }
-                            
+
                             files.push(file_name);
                         }
                     }
@@ -525,19 +561,19 @@ impl SmbManager {
         {
             // Linux/Mac: используем smbclient
             // Проверяем наличие smbclient
-            let smbclient_check = Command::new("which")
-                .arg("smbclient")
-                .output();
-            
+            let smbclient_check = Command::new("which").arg("smbclient").output();
+
             if smbclient_check.is_err() || !smbclient_check.unwrap().status.success() {
-                return Err(format!("smbclient не найден. Установите его через: brew install samba"));
+                return Err(format!(
+                    "smbclient не найден. Установите его через: brew install samba"
+                ));
             }
-            
+
             // Для рекурсивного обхода используем рекурсивную функцию
             if recursive {
                 return self.list_files_recursive_smb(connection, path, &regex);
             }
-            
+
             // Формируем команду для smbclient
             // Если путь не пустой, сначала переходим в директорию, затем выполняем ls
             let smb_command = if path.is_empty() || path == "/" {
@@ -562,17 +598,18 @@ impl SmbManager {
                 "-c".to_string(),
                 smb_command,
             ];
-            
+
             // Добавляем -W только если домен не пустой
             if !connection.domain.is_empty() {
                 args.push("-W".to_string());
                 args.push(connection.domain.clone());
             }
-            
+
             cmd.args(&args);
 
             // Используем stdin для передачи пароля (переменная окружения не работает)
-            let mut child = cmd.stdin(std::process::Stdio::piped())
+            let mut child = cmd
+                .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
@@ -582,7 +619,8 @@ impl SmbManager {
                 let _ = writeln!(stdin, "{}", connection.password);
             }
 
-            let output = child.wait_with_output()
+            let output = child
+                .wait_with_output()
                 .map_err(|e| format!("Ошибка выполнения smbclient: {}", e))?;
 
             if output.status.success() {
@@ -591,20 +629,21 @@ impl SmbManager {
                     // Проверяем исходную строку до trim для определения формата
                     let original_line = line;
                     let trimmed = original_line.trim();
-                    
+
                     // Пропускаем служебные строки
-                    if trimmed.is_empty() 
-                        || trimmed.starts_with('[') 
+                    if trimmed.is_empty()
+                        || trimmed.starts_with('[')
                         || trimmed.contains("blocks")
                         || trimmed.starts_with("Password")
                         || trimmed.starts_with("Can't")
                         || trimmed.starts_with("Try \"")
-                        || trimmed == "." 
+                        || trimmed == "."
                         || trimmed == ".."
-                        || original_line.starts_with("\t") {
+                        || original_line.starts_with("\t")
+                    {
                         continue;
                     }
-                    
+
                     // Парсим вывод smbclient
                     // Формат: "  filename with spaces                    A    size  date time" (файл)
                     // или:    "  dirname                    D        0  date time" (директория)
@@ -616,15 +655,19 @@ impl SmbManager {
                         // Ищем паттерн: пробелы, затем A или D, затем пробел или H
                         let mut type_char_pos = None;
                         let chars: Vec<char> = original_line.chars().collect();
-                        
+
                         for i in 2..chars.len().saturating_sub(2) {
                             // Ищем последовательность: пробел(ы) + A/D + пробел/H
-                            if (chars[i] == 'A' || chars[i] == 'D') && chars[i-1] == ' ' {
+                            if (chars[i] == 'A' || chars[i] == 'D') && chars[i - 1] == ' ' {
                                 // Проверяем, что перед этим было достаточно пробелов (имя файла закончилось)
                                 // И что после типа идет пробел или H
-                                if i > 10 && (chars.get(i+1) == Some(&' ') || chars.get(i+1) == Some(&'H')) {
+                                if i > 10
+                                    && (chars.get(i + 1) == Some(&' ')
+                                        || chars.get(i + 1) == Some(&'H'))
+                                {
                                     // Проверяем, что перед типом было много пробелов (минимум 5)
-                                    let spaces_before = (0..i).rev().take_while(|&j| chars[j] == ' ').count();
+                                    let spaces_before =
+                                        (0..i).rev().take_while(|&j| chars[j] == ' ').count();
                                     if spaces_before >= 5 {
                                         type_char_pos = Some(i);
                                         break;
@@ -632,7 +675,7 @@ impl SmbManager {
                                 }
                             }
                         }
-                        
+
                         if let Some(char_pos) = type_char_pos {
                             // Находим позицию в байтах для char_pos-го символа
                             let byte_pos = original_line
@@ -640,7 +683,7 @@ impl SmbManager {
                                 .nth(char_pos)
                                 .map(|(idx, _)| idx)
                                 .unwrap_or(original_line.len());
-                            
+
                             // Извлекаем имя файла до позиции типа, используя безопасную индексацию
                             let file_name = original_line
                                 .char_indices()
@@ -649,18 +692,23 @@ impl SmbManager {
                                 .collect::<String>()
                                 .trim()
                                 .to_string();
-                            
+
                             // Определяем тип файла
-                            let file_type: String = chars.iter().skip(char_pos).take_while(|c| **c != ' ').collect();
+                            let file_type: String = chars
+                                .iter()
+                                .skip(char_pos)
+                                .take_while(|c| **c != ' ')
+                                .collect();
                             let _is_directory = file_type == "D";
-                            
+
                             // Возвращаем и файлы, и директории (кроме служебных)
                             // Пропускаем скрытые файлы (начинающиеся с точки) и служебные
-                            if !file_name.is_empty() 
-                                && file_name != "." 
+                            if !file_name.is_empty()
+                                && file_name != "."
                                 && file_name != ".."
                                 && !file_name.starts_with("._")
-                                && file_name != ".DS_Store" {
+                                && file_name != ".DS_Store"
+                            {
                                 // Применяем regex фильтрацию, если задана
                                 if let Some(ref re) = regex {
                                     if !re.is_match(&file_name) {
@@ -679,14 +727,14 @@ impl SmbManager {
                 } else {
                     format!("{}\\{}", connection.domain, connection.login)
                 };
-                
+
                 // Формируем команду для smbclient
                 let smb_command = if path.is_empty() || path == "/" {
                     "ls".to_string()
                 } else {
                     format!("cd {}; ls", path)
                 };
-                
+
                 let mut cmd = Command::new("smbclient");
                 let mut args = vec![
                     format!("//{}/{}", connection.ip, connection.share_name),
@@ -695,16 +743,17 @@ impl SmbManager {
                     "-c".to_string(),
                     smb_command,
                 ];
-                
+
                 // Добавляем -W только если домен не пустой
                 if !connection.domain.is_empty() {
                     args.push("-W".to_string());
                     args.push(connection.domain.clone());
                 }
-                
+
                 cmd.args(&args);
 
-                let mut child = cmd.stdin(std::process::Stdio::piped())
+                let mut child = cmd
+                    .stdin(std::process::Stdio::piped())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped())
                     .spawn()
@@ -714,7 +763,8 @@ impl SmbManager {
                     let _ = writeln!(stdin, "{}", connection.password);
                 }
 
-                let output = child.wait_with_output()
+                let output = child
+                    .wait_with_output()
                     .map_err(|e| format!("Ошибка выполнения smbclient: {}", e))?;
 
                 if output.status.success() {
@@ -723,20 +773,21 @@ impl SmbManager {
                         // Проверяем исходную строку до trim для определения формата
                         let original_line = line;
                         let trimmed = original_line.trim();
-                        
+
                         // Пропускаем служебные строки
-                        if trimmed.is_empty() 
-                            || trimmed.starts_with('[') 
+                        if trimmed.is_empty()
+                            || trimmed.starts_with('[')
                             || trimmed.contains("blocks")
                             || trimmed.starts_with("Password")
                             || trimmed.starts_with("Can't")
                             || trimmed.starts_with("Try \"")
-                            || trimmed == "." 
+                            || trimmed == "."
                             || trimmed == ".."
-                            || original_line.starts_with("\t") {
+                            || original_line.starts_with("\t")
+                        {
                             continue;
                         }
-                        
+
                         // Парсим вывод smbclient
                         // Формат: "  filename with spaces                    A    size  date time" (файл)
                         // или:    "  dirname                    D        0  date time" (директория)
@@ -748,15 +799,19 @@ impl SmbManager {
                             // Ищем паттерн: пробелы, затем A или D, затем пробел или H
                             let mut type_char_pos = None;
                             let chars: Vec<char> = original_line.chars().collect();
-                            
+
                             for i in 2..chars.len().saturating_sub(2) {
                                 // Ищем последовательность: пробел(ы) + A/D + пробел/H
-                                if (chars[i] == 'A' || chars[i] == 'D') && chars[i-1] == ' ' {
+                                if (chars[i] == 'A' || chars[i] == 'D') && chars[i - 1] == ' ' {
                                     // Проверяем, что перед этим было достаточно пробелов (имя файла закончилось)
                                     // И что после типа идет пробел или H
-                                    if i > 10 && (chars.get(i+1) == Some(&' ') || chars.get(i+1) == Some(&'H')) {
+                                    if i > 10
+                                        && (chars.get(i + 1) == Some(&' ')
+                                            || chars.get(i + 1) == Some(&'H'))
+                                    {
                                         // Проверяем, что перед типом было много пробелов (минимум 5)
-                                        let spaces_before = (0..i).rev().take_while(|&j| chars[j] == ' ').count();
+                                        let spaces_before =
+                                            (0..i).rev().take_while(|&j| chars[j] == ' ').count();
                                         if spaces_before >= 5 {
                                             type_char_pos = Some(i);
                                             break;
@@ -764,7 +819,7 @@ impl SmbManager {
                                     }
                                 }
                             }
-                            
+
                             if let Some(char_pos) = type_char_pos {
                                 // Находим позицию в байтах для char_pos-го символа
                                 let byte_pos = original_line
@@ -772,7 +827,7 @@ impl SmbManager {
                                     .nth(char_pos)
                                     .map(|(idx, _)| idx)
                                     .unwrap_or(original_line.len());
-                                
+
                                 // Извлекаем имя файла до позиции типа, используя безопасную индексацию
                                 let file_name = original_line
                                     .char_indices()
@@ -781,18 +836,23 @@ impl SmbManager {
                                     .collect::<String>()
                                     .trim()
                                     .to_string();
-                                
+
                                 // Определяем тип файла
-                                let file_type: String = chars.iter().skip(char_pos).take_while(|c| **c != ' ').collect();
+                                let file_type: String = chars
+                                    .iter()
+                                    .skip(char_pos)
+                                    .take_while(|c| **c != ' ')
+                                    .collect();
                                 let _is_directory = file_type == "D";
-                                
+
                                 // Возвращаем и файлы, и директории (кроме служебных)
                                 // Пропускаем скрытые файлы (начинающиеся с точки) и служебные
-                                if !file_name.is_empty() 
-                                    && file_name != "." 
+                                if !file_name.is_empty()
+                                    && file_name != "."
                                     && file_name != ".."
                                     && !file_name.starts_with("._")
-                                    && file_name != ".DS_Store" {
+                                    && file_name != ".DS_Store"
+                                {
                                     files.push(file_name);
                                 }
                             }
@@ -810,35 +870,40 @@ impl SmbManager {
 
     /// Прочитать файл из SMB шары
     pub fn read_file(&self, share_name: &str, file_path: &str) -> Result<Vec<u8>, String> {
-        let connection = self.connections.get(share_name)
+        let connection = self
+            .connections
+            .get(share_name)
             .ok_or_else(|| format!("SMB share '{}' не подключена", share_name))?;
 
         #[cfg(target_os = "windows")]
         {
             // Windows: читаем через UNC путь
-            let full_path = format!("{}\\{}", connection.get_unc_path(), file_path.replace("/", "\\"));
-            fs::read(&full_path)
-                .map_err(|e| format!("Ошибка чтения файла: {}", e))
+            let full_path = format!(
+                "{}\\{}",
+                connection.get_unc_path(),
+                file_path.replace("/", "\\")
+            );
+            fs::read(&full_path).map_err(|e| format!("Ошибка чтения файла: {}", e))
         }
 
         #[cfg(not(target_os = "windows"))]
         {
             // Linux/Mac: используем smbclient get
             // Проверяем наличие smbclient
-            let smbclient_check = Command::new("which")
-                .arg("smbclient")
-                .output();
-            
+            let smbclient_check = Command::new("which").arg("smbclient").output();
+
             if smbclient_check.is_err() || !smbclient_check.unwrap().status.success() {
-                return Err(format!("smbclient не найден. Установите его через: brew install samba"));
+                return Err(format!(
+                    "smbclient не найден. Установите его через: brew install samba"
+                ));
             }
-            
+
             let user_string = if connection.domain.is_empty() {
                 connection.login.clone()
             } else {
                 format!("{}\\{}", connection.domain, connection.login)
             };
-            
+
             let mut cmd = Command::new("smbclient");
             let mut args = vec![
                 format!("//{}/{}", connection.ip, connection.share_name),
@@ -847,16 +912,17 @@ impl SmbManager {
                 "-c".to_string(),
                 format!("get \"{}\" -", file_path),
             ];
-            
+
             // Добавляем -W только если домен не пустой
             if !connection.domain.is_empty() {
                 args.push("-W".to_string());
                 args.push(connection.domain.clone());
             }
-            
+
             cmd.args(&args);
 
-            let mut child = cmd.stdin(std::process::Stdio::piped())
+            let mut child = cmd
+                .stdin(std::process::Stdio::piped())
                 .stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
@@ -866,7 +932,8 @@ impl SmbManager {
                 let _ = writeln!(stdin, "{}", connection.password);
             }
 
-            let output = child.wait_with_output()
+            let output = child
+                .wait_with_output()
                 .map_err(|e| format!("Ошибка выполнения smbclient: {}", e))?;
 
             if output.status.success() {
@@ -898,7 +965,7 @@ impl SmbManager {
             let mount_path = self.mount_base.join(share_name);
             if mount_path.exists() {
                 let _ = Command::new("sudo")
-                    .args(&["umount", &mount_path.to_string_lossy()])
+                    .args(["umount", &mount_path.to_string_lossy()])
                     .output();
             }
         }
@@ -918,4 +985,3 @@ impl Default for SmbManager {
         Self::new()
     }
 }
-

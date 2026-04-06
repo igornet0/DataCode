@@ -5,25 +5,21 @@
 use crate::common::value::Value;
 use crate::infra::cli::HttpServerConfig;
 use axum::{
-    body::Body,
-    extract::connect_info::ConnectInfo,
-    extract::Request,
-    http::StatusCode,
-    response::IntoResponse,
-    Router,
+    body::Body, extract::connect_info::ConnectInfo, extract::Request, http::StatusCode,
+    response::IntoResponse, Router,
 };
-use tower::util::MapRequestLayer;
 use hyper::server::conn::http1::Builder as Http1Builder;
 use hyper_util::rt::TokioIo;
 use hyper_util::service::TowerToHyperService;
-use tokio::net::TcpListener;
-use tokio::task::LocalSet;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::Path;
 use std::rc::Rc;
-use std::cell::RefCell;
+use tokio::net::TcpListener;
 use tokio::runtime::Builder;
+use tokio::task::LocalSet;
+use tower::util::MapRequestLayer;
 
 /// Route entry: (method, path_template, handler_index). Path template may contain {name} segments.
 type RouteEntry = (String, String, usize);
@@ -192,7 +188,7 @@ fn format_size(bytes: usize) -> String {
 
 fn body_preview(body: &[u8], max_len: usize) -> String {
     let s = String::from_utf8_lossy(body);
-    let one_line: String = s.replace('\n', " ").replace('\r', " ").chars().take(max_len).collect();
+    let one_line: String = s.replace(['\n', '\r'], " ").chars().take(max_len).collect();
     if body.len() > max_len {
         format!("{}...", one_line.trim())
     } else {
@@ -296,7 +292,12 @@ fn client_ip_from_headers(headers: &axum::http::HeaderMap) -> String {
     }
     if let Some(v) = headers.get("x-forwarded-for") {
         if let Ok(s) = v.to_str() {
-            return s.split(',').next().map(|x| x.trim()).unwrap_or("-").to_string();
+            return s
+                .split(',')
+                .next()
+                .map(|x| x.trim())
+                .unwrap_or("-")
+                .to_string();
         }
     }
     "-".to_string()
@@ -327,7 +328,10 @@ async fn root_handler_with_log(
     body.into_response()
 }
 
-async fn vm_handler(ConnectInfo(peer_addr): ConnectInfo<SocketAddr>, req: Request) -> impl IntoResponse {
+async fn vm_handler(
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    req: Request,
+) -> impl IntoResponse {
     let start = std::time::Instant::now();
     let method = req.method().to_string();
     let path = req.uri().path().to_string();
@@ -341,12 +345,7 @@ async fn vm_handler(ConnectInfo(peer_addr): ConnectInfo<SocketAddr>, req: Reques
     let headers_vec: Vec<(String, String)> = req
         .headers()
         .iter()
-        .map(|(k, v)| {
-            (
-                k.as_str().to_string(),
-                v.to_str().unwrap_or("").to_string(),
-            )
-        })
+        .map(|(k, v)| (k.as_str().to_string(), v.to_str().unwrap_or("").to_string()))
         .collect();
     let body = axum::body::to_bytes(req.into_body(), 1024 * 1024)
         .await
@@ -373,14 +372,8 @@ async fn vm_handler(ConnectInfo(peer_addr): ConnectInfo<SocketAddr>, req: Reques
                     })
                 })
                 .ok_or_else(|| format!("No route for {} {}", method, path))?;
-            let request_value = build_request_value(
-                &method,
-                &path,
-                &headers_vec,
-                &query,
-                &body,
-                &params,
-            );
+            let request_value =
+                build_request_value(&method, &path, &headers_vec, &query, &body, &params);
             vm.call_function_by_index(handler_idx, &[request_value])
                 .map(value_to_http_response)
                 .map_err(|e| e.to_string())
@@ -525,16 +518,12 @@ pub fn start_http_server(config: HttpServerConfig) -> Result<(), String> {
                             .accept()
                             .await
                             .map_err(|e| format!("Accept error: {}", e))?;
-                        let layer = MapRequestLayer::new(
-                            move |mut req: hyper::Request<Body>| {
-                                req.extensions_mut()
-                                    .insert(ConnectInfo(peer_addr));
-                                req
-                            },
-                        );
-                        let app = TowerToHyperService::new(
-                            router.clone().layer(layer).with_state(()),
-                        );
+                        let layer = MapRequestLayer::new(move |mut req: hyper::Request<Body>| {
+                            req.extensions_mut().insert(ConnectInfo(peer_addr));
+                            req
+                        });
+                        let app =
+                            TowerToHyperService::new(router.clone().layer(layer).with_state(()));
                         local_set_clone.spawn_local(async move {
                             let io = TokioIo::new(stream);
                             if let Err(e) = Http1Builder::new().serve_connection(io, app).await {
@@ -569,16 +558,11 @@ pub fn start_http_server(config: HttpServerConfig) -> Result<(), String> {
                     .accept()
                     .await
                     .map_err(|e| format!("Accept error: {}", e))?;
-                let layer = MapRequestLayer::new(
-                    move |mut req: hyper::Request<Body>| {
-                        req.extensions_mut()
-                            .insert(ConnectInfo(peer_addr));
-                        req
-                    },
-                );
-                let app = TowerToHyperService::new(
-                    router.clone().layer(layer).with_state(()),
-                );
+                let layer = MapRequestLayer::new(move |mut req: hyper::Request<Body>| {
+                    req.extensions_mut().insert(ConnectInfo(peer_addr));
+                    req
+                });
+                let app = TowerToHyperService::new(router.clone().layer(layer).with_state(()));
                 tokio::spawn(async move {
                     let io = TokioIo::new(stream);
                     if let Err(e) = Http1Builder::new().serve_connection(io, app).await {

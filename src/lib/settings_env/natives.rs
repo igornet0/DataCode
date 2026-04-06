@@ -1,11 +1,11 @@
 // Native functions for settings_env module
 
 use crate::common::value::Value;
+use regex::Regex;
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
-use std::cell::RefCell;
-use regex::Regex;
 
 /// Parse a single .env line; returns (key_lowercase, value) or None if line should be skipped.
 fn parse_env_line(line: &str) -> Option<(String, String)> {
@@ -13,9 +13,7 @@ fn parse_env_line(line: &str) -> Option<(String, String)> {
     if line.is_empty() || line.starts_with('#') {
         return None;
     }
-    let Some(eq_pos) = line.find('=') else {
-        return None;
-    };
+    let eq_pos = line.find('=')?;
     let key = line[..eq_pos].trim().to_string();
     let value = line[eq_pos + 1..].trim_start();
     // Remove optional surrounding quotes from value
@@ -71,14 +69,14 @@ fn resolve_env_path(path_str: &str) -> std::path::PathBuf {
     if let Some(base) = crate::vm::file_import::get_base_path() {
         return base.join(path);
     }
-    if let Some(base) = crate::vm::vm::VM_CALL_CONTEXT.with(|ctx| {
-        (*ctx.borrow()).and_then(|ptr| unsafe { (*ptr).get_base_path().clone() })
-    }) {
+    if let Some(base) = crate::vm::vm::VM_CALL_CONTEXT
+        .with(|ctx| (*ctx.borrow()).and_then(|ptr| unsafe { (*ptr).get_base_path().clone() }))
+    {
         return base.join(path);
     }
-    if let Some(base) = crate::vm::vm::VM_CALL_CONTEXT.with(|ctx| {
-        (*ctx.borrow()).and_then(|ptr| unsafe { (*ptr).get_project_root().clone() })
-    }) {
+    if let Some(base) = crate::vm::vm::VM_CALL_CONTEXT
+        .with(|ctx| (*ctx.borrow()).and_then(|ptr| unsafe { (*ptr).get_project_root().clone() }))
+    {
         return base.join(path);
     }
     // Last resort: relative to cwd (e.g. test sets cwd to project base so settings/dev.env is found).
@@ -125,7 +123,13 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
     }
     // Optional last arg: parent_field_name (string) for nested Settings; used in error message as prefix (e.g. "secret__code").
     let parent_field_name: Option<String> = if args.len() >= 4 {
-        args.last().and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+        args.last().and_then(|v| {
+            if let Value::String(s) = v {
+                Some(s.clone())
+            } else {
+                None
+            }
+        })
     } else {
         None
     };
@@ -155,7 +159,10 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
                     Value::Function(_) | Value::ModuleFunction { .. } => "Function",
                     _ => "Other",
                 };
-                eprintln!("[settings_env load_env] args[2] (model_config) is {} (path_str={:?})", ty, path_str);
+                eprintln!(
+                    "[settings_env load_env] args[2] (model_config) is {} (path_str={:?})",
+                    ty, path_str
+                );
             }
             None
         }
@@ -188,7 +195,15 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
         let required_keys = match &args[1] {
             Value::Array(arr_rc) => {
                 let arr = arr_rc.borrow();
-                arr.iter().filter_map(|v| if let Value::String(s) = v { Some(s.clone()) } else { None }).collect::<Vec<_>>()
+                arr.iter()
+                    .filter_map(|v| {
+                        if let Value::String(s) = v {
+                            Some(s.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect::<Vec<_>>()
             }
             _ => vec![],
         };
@@ -215,7 +230,11 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
                             let v = crate::vm::store_convert::load_value(id, store, heap);
                             if let Value::Array(arr_rc) = &v {
                                 arr_rc.borrow().first().and_then(|e| {
-                                    if let Value::String(s) = e { Some(s.clone()) } else { None }
+                                    if let Value::String(s) = e {
+                                        Some(s.clone())
+                                    } else {
+                                        None
+                                    }
                                 })
                             } else {
                                 None
@@ -253,14 +272,20 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
             };
             if !required_keys.is_empty() {
                 let first_key = &required_keys[0];
-                let display_key = parent_field_name.as_ref()
+                let display_key = parent_field_name
+                    .as_ref()
                     .map(|p| format!("{}__{}", p.to_lowercase(), first_key))
-                    .unwrap_or_else(|| if env_prefix.is_empty() {
-                        first_key.clone()
-                    } else {
-                        format!("{}{}", env_prefix.to_lowercase(), first_key)
+                    .unwrap_or_else(|| {
+                        if env_prefix.is_empty() {
+                            first_key.clone()
+                        } else {
+                            format!("{}{}", env_prefix.to_lowercase(), first_key)
+                        }
                     });
-                crate::websocket::set_native_error(format!("Missing required env variable: {}", display_key));
+                crate::websocket::set_native_error(format!(
+                    "Missing required env variable: {}",
+                    display_key
+                ));
                 return Value::Null;
             }
         }
@@ -279,7 +304,11 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
     }
 
     let resolved = resolve_env_path(&effective_path);
-    crate::debug_println!("[datacode load_env] path = {:?}, resolved = {:?}", effective_path, resolved);
+    crate::debug_println!(
+        "[datacode load_env] path = {:?}, resolved = {:?}",
+        effective_path,
+        resolved
+    );
     let content = match std::fs::read_to_string(&resolved) {
         Ok(c) => c,
         Err(_) => {
@@ -345,20 +374,30 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
         }
         for key in &required_keys {
             if !map.contains_key(key) {
-                let display_key = parent_field_name.as_ref()
+                let display_key = parent_field_name
+                    .as_ref()
                     .map(|p| format!("{}__{}", p.to_lowercase(), key))
-                    .unwrap_or_else(|| if prefix_lower.is_empty() {
-                        key.clone()
-                    } else {
-                        format!("{}{}", prefix_lower, key)
+                    .unwrap_or_else(|| {
+                        if prefix_lower.is_empty() {
+                            key.clone()
+                        } else {
+                            format!("{}{}", prefix_lower, key)
+                        }
                     });
-                crate::websocket::set_native_error(format!("Missing required env variable: {}", display_key));
+                crate::websocket::set_native_error(format!(
+                    "Missing required env variable: {}",
+                    display_key
+                ));
                 return Value::Null;
             }
         }
         // Опциональная отладка: если model_config с префиксом DB__ вернул только "url", а required_keys больше —
         // возможно в конструктор Config подставился класс DatabaseConfig (ошибка разрешения sentinel).
-        if env_prefix == "DB__" && map.len() == 1 && map.contains_key("url") && required_keys.len() > 1 {
+        if env_prefix == "DB__"
+            && map.len() == 1
+            && map.contains_key("url")
+            && required_keys.len() > 1
+        {
             crate::debug_println!(
                 "[settings_env load_env] DB__ prefix returned only 'url' but required_keys has {} keys; \
                  if caller was Config constructor, check model_config class resolution (sentinel should map to Config)",
@@ -415,7 +454,10 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
                     for k in keys_to_remove {
                         map.remove(&k);
                     }
-                    nested_map.insert("__class_name".to_string(), Value::String(class_name.clone()));
+                    nested_map.insert(
+                        "__class_name".to_string(),
+                        Value::String(class_name.clone()),
+                    );
                     // If no env keys had the nested prefix, nested_map only has __class_name. Insert Null so the parent constructor's default_factory runs and builds the nested Settings (e.g. Config.db = DatabaseConfig(path, ...)) with __constructing_class__ set.
                     let nested_value = if nested_map.len() == 1 {
                         Value::Null
@@ -425,7 +467,10 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
                             nested_map.insert("__private_fields".to_string(), priv_f.clone());
                         }
                         if let Some(priv_def) = spec.get("private_field_defining_class") {
-                            nested_map.insert("__private_field_defining_class".to_string(), priv_def.clone());
+                            nested_map.insert(
+                                "__private_field_defining_class".to_string(),
+                                priv_def.clone(),
+                            );
                         }
                         Value::Object(Rc::new(RefCell::new(nested_map)))
                     };
@@ -474,34 +519,70 @@ pub fn native_settings_env_config(args: &[Value]) -> Value {
     }
     let env_prefix = args
         .get(0)
-        .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+        .and_then(|v| {
+            if let Value::String(s) = v {
+                Some(s.clone())
+            } else {
+                None
+            }
+        })
         .unwrap_or_default();
     let extra = args
         .get(1)
-        .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+        .and_then(|v| {
+            if let Value::String(s) = v {
+                Some(s.clone())
+            } else {
+                None
+            }
+        })
         .unwrap_or_else(|| "ignore".to_string());
     let env_file = args.get(2).cloned().filter(|v| !matches!(v, Value::Null));
     let env_file_val = env_file.unwrap_or(Value::Null);
     let env_file_encoding = args
         .get(3)
-        .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+        .and_then(|v| {
+            if let Value::String(s) = v {
+                Some(s.clone())
+            } else {
+                None
+            }
+        })
         .unwrap_or_else(|| "utf-8".to_string());
     let case_sensitive = args
         .get(4)
-        .and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None })
+        .and_then(|v| {
+            if let Value::Bool(b) = v {
+                Some(*b)
+            } else {
+                None
+            }
+        })
         .unwrap_or(false);
     let env_nested_delimiter = args
         .get(5)
-        .and_then(|v| if let Value::String(s) = v { Some(s.clone()) } else { None })
+        .and_then(|v| {
+            if let Value::String(s) = v {
+                Some(s.clone())
+            } else {
+                None
+            }
+        })
         .unwrap_or_else(|| "__".to_string());
 
     let mut map = HashMap::new();
     map.insert("env_prefix".to_string(), Value::String(env_prefix));
     map.insert("extra".to_string(), Value::String(extra));
     map.insert("env_file".to_string(), env_file_val);
-    map.insert("env_file_encoding".to_string(), Value::String(env_file_encoding));
+    map.insert(
+        "env_file_encoding".to_string(),
+        Value::String(env_file_encoding),
+    );
     map.insert("case_sensitive".to_string(), Value::Bool(case_sensitive));
-    map.insert("env_nested_delimiter".to_string(), Value::String(env_nested_delimiter));
+    map.insert(
+        "env_nested_delimiter".to_string(),
+        Value::String(env_nested_delimiter),
+    );
     Value::Object(Rc::new(RefCell::new(map)))
 }
 
@@ -518,10 +599,17 @@ pub fn native_settings_env_settings(args: &[Value]) -> Value {
         }
         if let Value::Object(config_rc) = &args[0] {
             let config = config_rc.borrow();
-            if config.contains_key("env_file") || config.contains_key("env_prefix") || config.contains_key("extra") {
+            if config.contains_key("env_file")
+                || config.contains_key("env_prefix")
+                || config.contains_key("extra")
+            {
                 let path = get_config_str(&config, "env_file", "");
                 let required = Value::Array(Rc::new(RefCell::new(vec![])));
-                return native_settings_env_load_env(&[Value::String(path), required, args[0].clone()]);
+                return native_settings_env_load_env(&[
+                    Value::String(path),
+                    required,
+                    args[0].clone(),
+                ]);
             }
         }
     }
@@ -573,9 +661,8 @@ pub fn native_settings_env_field(args: &[Value]) -> Value {
             Value::Object(map_rc) => {
                 let obj = map_rc.borrow();
                 // If it looks like a descriptor (has known keys), use as full descriptor
-                let has_descriptor_keys = obj.keys().any(|k| {
-                    FIELD_PARAM_NAMES.contains(&k.as_str())
-                });
+                let has_descriptor_keys =
+                    obj.keys().any(|k| FIELD_PARAM_NAMES.contains(&k.as_str()));
                 if has_descriptor_keys {
                     for (k, v) in obj.iter() {
                         if !matches!(v, Value::Null) {

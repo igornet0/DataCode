@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod tests {
-    use data_code::{run, Value, LangError};
+    use data_code::{run, LangError, Value};
 
     // Вспомогательная функция для проверки результата выполнения
     fn run_and_get_result(source: &str) -> Result<Value, LangError> {
@@ -1079,4 +1079,3 @@ mod tests {
         assert_number_result(source, 1300.0);
     }
 }
-

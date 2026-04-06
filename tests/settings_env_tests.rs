@@ -15,7 +15,9 @@ mod tests {
     /// Path to a fixture .env file, escaped for use inside .dc string literal.
     fn fixture_path(name: &str) -> String {
         let path = fixtures_dir().join(name);
-        path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+        path.to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
     }
 
     fn run_plain(source: &str) -> Result<Value, data_code::LangError> {
@@ -34,7 +36,12 @@ mod tests {
     fn assert_number_result(source: &str, expected: f64) {
         let result = run_plain(source);
         match result {
-            Ok(Value::Number(n)) => assert!((n - expected).abs() < 1e-10, "expected {}, got {}", expected, n),
+            Ok(Value::Number(n)) => assert!(
+                (n - expected).abs() < 1e-10,
+                "expected {}, got {}",
+                expected,
+                n
+            ),
             Ok(v) => panic!("expected Number({}), got {:?}", expected, v),
             Err(e) => panic!("error: {:?}", e),
         }
@@ -604,7 +611,11 @@ mod tests {
                 let ok = msg.contains("Missing required env variable")
                     || msg.contains("base path not set")
                     || msg.contains("Relative path");
-                assert!(ok, "expected error about missing required env or base path, got: {}", msg);
+                assert!(
+                    ok,
+                    "expected error about missing required env or base path, got: {}",
+                    msg
+                );
             }
         }
     }
@@ -737,19 +748,20 @@ mod tests {
         );
 
         match run_plain(&source) {
-            Ok(Value::Object(_)) => panic!("expected error for missing required field 'secret.code'"),
+            Ok(Value::Object(_)) => {
+                panic!("expected error for missing required field 'secret.code'")
+            }
             Ok(v) => panic!("expected Object, got {:?}", v),
             Err(e) => {
                 let msg = e.to_string();
                 assert!(
-                    msg.contains("Missing required env variable") && msg.contains("secret__code") ,
+                    msg.contains("Missing required env variable") && msg.contains("secret__code"),
                     "error for missing required field 'secret__code' (got: {})",
                     e
                 );
             }
         }
     }
-
 
     #[test]
     fn test_missing_required_field_in_default_factory_with_path() {
@@ -797,7 +809,11 @@ mod tests {
         match run_plain(&source) {
             Ok(Value::Object(_)) => panic!("expected error for missing required field 'db.url'"),
             Ok(v) => panic!("expected Object, got {:?}", v),
-            Err(e) => assert!(e.to_string().contains("Missing required env variable: db__url"), "error for missing required field 'db.url'"),
+            Err(e) => assert!(
+                e.to_string()
+                    .contains("Missing required env variable: db__url"),
+                "error for missing required field 'db.url'"
+            ),
         }
     }
 
@@ -808,7 +824,10 @@ mod tests {
     #[test]
     fn test_load_env_nonexistent_file_returns_null() {
         let path = fixtures_dir().join("nonexistent_file_123.env");
-        let path_str = path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"");
+        let path_str = path
+            .to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"");
         let source = format!(
             r#"
             from settings_env import load_env
@@ -878,7 +897,9 @@ mod tests {
                 _ => panic!("cfg.db expected Object, got {:?}", db),
             };
             match db_obj.get("url") {
-                Some(Value::String(s)) => assert_eq!(s, "postgresql://dev.server/dev", "cfg.db.url"),
+                Some(Value::String(s)) => {
+                    assert_eq!(s, "postgresql://dev.server/dev", "cfg.db.url")
+                }
                 Some(v) => panic!("cfg.db.url expected String, got {:?}", v),
                 None => panic!("cfg.db.url missing"),
             }
@@ -945,7 +966,9 @@ cfg
             };
             match obj.get("env") {
                 Some(Value::String(s)) => assert_eq!(s, "dev", "cfg.env"),
-                Some(Value::Null) => panic!("cfg.env must not be null (base_path should resolve settings/dev.env)"),
+                Some(Value::Null) => {
+                    panic!("cfg.env must not be null (base_path should resolve settings/dev.env)")
+                }
                 Some(v) => panic!("cfg.env expected String(\"dev\"), got {:?}", v),
                 None => panic!("cfg.env missing"),
             }
@@ -961,7 +984,9 @@ cfg
                 _ => panic!("cfg.db expected Object, got {:?}", db),
             };
             match db_obj.get("url") {
-                Some(Value::String(s)) => assert_eq!(s, "postgresql://dev.server/dev", "cfg.db.url"),
+                Some(Value::String(s)) => {
+                    assert_eq!(s, "postgresql://dev.server/dev", "cfg.db.url")
+                }
                 Some(Value::Null) => panic!("cfg.db.url must not be null"),
                 Some(v) => panic!("cfg.db.url expected String, got {:?}", v),
                 None => panic!("cfg.db.url missing"),
@@ -986,14 +1011,19 @@ from config import ConfigApp
         match result {
             Ok(Value::Number(n)) => assert!((n - 1.0).abs() < 1e-10, "expected 1"),
             Ok(v) => panic!("expected Number(1), got {:?}", v),
-            Err(e) => panic!("run_with_base_path failed (local module should load with base_path): {:?}", e),
+            Err(e) => panic!(
+                "run_with_base_path failed (local module should load with base_path): {:?}",
+                e
+            ),
         }
     }
 
     /// Module isolation: importing get_settings, load_settings does NOT make "settings" visible. Must get NameError.
     #[test]
     fn test_module_isolation_settings_not_visible_without_import() {
-        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sandbox").join("web_api");
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("sandbox")
+            .join("web_api");
         if !base.join("core").join("config").join("__lib__.dc").exists() {
             return; // skip if sandbox layout not present
         }
@@ -1002,17 +1032,26 @@ from core.config import get_settings, load_settings
 print(settings)
 "#;
         let result = run_with_base_path(source, base.as_path());
-        assert!(result.is_err(), "expected NameError (settings is not defined), got {:?}", result);
+        assert!(
+            result.is_err(),
+            "expected NameError (settings is not defined), got {:?}",
+            result
+        );
         let err = result.unwrap_err();
         let msg = format!("{:?}", err);
-        assert!(msg.contains("settings") || msg.contains("Undefined") || msg.contains("not defined"),
-            "error should mention settings or undefined: {}", msg);
+        assert!(
+            msg.contains("settings") || msg.contains("Undefined") || msg.contains("not defined"),
+            "error should mention settings or undefined: {}",
+            msg
+        );
     }
 
     /// Module isolation: from core.config import settings and use it (should work).
     #[test]
     fn test_module_isolation_from_import_single_name_succeeds() {
-        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sandbox").join("web_api");
+        let base = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("sandbox")
+            .join("web_api");
         if !base.join("core").join("config").join("__lib__.dc").exists() {
             return; // skip if sandbox layout not present
         }
@@ -1027,5 +1066,4 @@ settings == null
             Err(e) => panic!("from core.config import settings should work: {:?}", e),
         }
     }
-
 }

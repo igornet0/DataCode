@@ -2,9 +2,9 @@
 
 use crate::common::value::Value;
 use crate::common::value_store::ValueStore;
-use crate::vm::store_convert::{store_value};
-use crate::vm::heavy_store::HeavyStore;
 use crate::common::TaggedValue;
+use crate::vm::heavy_store::HeavyStore;
+use crate::vm::store_convert::store_value;
 
 /// Prepare arguments for a method or module-style call:
 /// - Inject @class from args[0].__class when the second parameter is declared as @class.

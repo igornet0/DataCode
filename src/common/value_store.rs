@@ -188,17 +188,29 @@ pub enum ValueCell {
     Tuple(Vec<ValueId>),
     Object(HashMap<String, ValueId>),
     Function(usize),
-    ModuleFunction { module_uid: u64, local_index: usize },
+    ModuleFunction {
+        module_uid: u64,
+        local_index: usize,
+    },
     NativeFunction(usize),
     Path(PathBuf),
     Uuid(u64, u64),
     /// Index into HeavyStore (Table, Image, etc.)
     Heavy(usize),
-    ColumnReference { table_handle: usize, column_name: String },
+    ColumnReference {
+        table_handle: usize,
+        column_name: String,
+    },
     /// Opaque plugin object (tag + id)
-    PluginOpaque { tag: u8, id: u64 },
+    PluginOpaque {
+        tag: u8,
+        id: u64,
+    },
     Window(crate::plot::PlotWindowHandle),
-    Enumerate { data_id: ValueId, start: i64 },
+    Enumerate {
+        data_id: ValueId,
+        start: i64,
+    },
     Ellipsis,
 }
 
@@ -235,7 +247,7 @@ impl ValueStore {
     /// Ensure capacity for at least `min_capacity` cells (adds chunks if needed).
     /// Call before bulk allocations (e.g. before loading a large table) to avoid repeated chunk growth.
     pub fn reserve_min(&mut self, min_capacity: usize) {
-        let required_chunks = (min_capacity + CHUNK_SIZE - 1) / CHUNK_SIZE;
+        let required_chunks = min_capacity.div_ceil(CHUNK_SIZE);
         while self.chunks.len() < required_chunks {
             self.chunks.push(Vec::with_capacity(CHUNK_SIZE));
         }
@@ -258,7 +270,11 @@ impl ValueStore {
     pub fn allocate(&mut self, cell: ValueCell) -> ValueId {
         #[cfg(feature = "profile")]
         crate::vm::profile::record_allocate();
-        let need_new = self.chunks.last().map(|c| c.len() >= CHUNK_SIZE).unwrap_or(false);
+        let need_new = self
+            .chunks
+            .last()
+            .map(|c| c.len() >= CHUNK_SIZE)
+            .unwrap_or(false);
         if need_new {
             let mut new_chunk = Vec::with_capacity(CHUNK_SIZE);
             new_chunk.push(cell);
@@ -313,6 +329,11 @@ impl ValueStore {
         } else {
             (n - 1) * CHUNK_SIZE + self.chunks[n - 1].len()
         }
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 
     /// Clear all cells and reset to initial state (single Null at index 0).

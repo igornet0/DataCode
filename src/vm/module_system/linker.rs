@@ -5,9 +5,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use crate::debug_println;
 use crate::common::value::Value;
-use crate::common::value_store::{ValueStore, ValueCell};
+use crate::common::value_store::{ValueCell, ValueStore};
+use crate::debug_println;
 use crate::vm::global_slot::{self, GlobalSlot};
 use crate::vm::globals;
 use crate::vm::heavy_store::HeavyStore;
@@ -36,9 +36,17 @@ pub fn ensure_globals_from_chunk(
         let new_idx = globals.len();
         globals.push(global_slot::default_global_slot());
         global_names.insert(new_idx, name.clone());
-        debug_println!("[DEBUG ensure_globals_from_chunk] Добавлен слот для '{}' в globals[{}]", name, new_idx);
+        debug_println!(
+            "[DEBUG ensure_globals_from_chunk] Добавлен слот для '{}' в globals[{}]",
+            name,
+            new_idx
+        );
         if name == "Config" || name == "DatabaseConfig" {
-            debug_println!("[DEBUG ensure_globals_from_chunk] Config/DatabaseConfig: '{}' -> слот {}", name, new_idx);
+            debug_println!(
+                "[DEBUG ensure_globals_from_chunk] Config/DatabaseConfig: '{}' -> слот {}",
+                name,
+                new_idx
+            );
         }
     }
 }
@@ -60,7 +68,10 @@ pub fn ensure_globals_from_chunk_preserve_indices(
     for (idx, name) in entries {
         let existing_name = global_names.get(&idx).map(|s| s.as_str());
         if std::env::var("DATACODE_DEBUG").is_ok() {
-            eprintln!("ENSURE idx={} name={} existing_name={:?}", idx, name, existing_name);
+            eprintln!(
+                "ENSURE idx={} name={} existing_name={:?}",
+                idx, name, existing_name
+            );
         }
         if idx >= globals.len() {
             globals.resize(idx + 1, global_slot::default_global_slot());
@@ -73,7 +84,9 @@ pub fn ensure_globals_from_chunk_preserve_indices(
     }
     debug_println!(
         "[DEBUG ensure_globals_from_chunk_preserve_indices] после: global_names 75..80: {:?}",
-        (75..80).filter_map(|i| global_names.get(&i).map(|n| (i, n.as_str()))).collect::<Vec<_>>()
+        (75..80)
+            .filter_map(|i| global_names.get(&i).map(|n| (i, n.as_str())))
+            .collect::<Vec<_>>()
     );
 }
 
@@ -112,7 +125,11 @@ pub fn ensure_exception_constructors(
     heavy_store: &crate::vm::heavy_store::HeavyStore,
 ) {
     const NAME: &str = "ValueError::new_1";
-    let idx = match global_names.iter().find(|(_, n)| n.as_str() == NAME).map(|(i, _)| *i) {
+    let idx = match global_names
+        .iter()
+        .find(|(_, n)| n.as_str() == NAME)
+        .map(|(i, _)| *i)
+    {
         Some(i) => i,
         None => return,
     };
@@ -124,11 +141,18 @@ pub fn ensure_exception_constructors(
     if matches!(current, Value::Null) {
         let id = value_store.allocate(ValueCell::NativeFunction(VALUE_ERROR_NATIVE_INDEX));
         globals[idx] = GlobalSlot::Heap(id);
-        debug_println!("[DEBUG ensure_exception_constructors] Injected {} at globals[{}]", NAME, idx);
+        debug_println!(
+            "[DEBUG ensure_exception_constructors] Injected {} at globals[{}]",
+            NAME,
+            idx
+        );
     }
 }
 
-fn find_function_index_by_name(functions: &[crate::bytecode::Function], function_name: &str) -> Option<usize> {
+fn find_function_index_by_name(
+    functions: &[crate::bytecode::Function],
+    function_name: &str,
+) -> Option<usize> {
     functions.iter().position(|f| f.name == function_name)
 }
 
@@ -164,24 +188,34 @@ pub fn set_functions(
     unique_names.dedup();
 
     const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
-    let mut name_to_new_idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    let mut constructor_slots_used: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut name_to_new_idx: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
+    let mut constructor_slots_used: std::collections::HashSet<usize> =
+        std::collections::HashSet::new();
     for name in &unique_names {
-        let only_sentinel = all_pairs.iter()
+        let only_sentinel = all_pairs
+            .iter()
             .filter(|(_, n)| n == name)
             .all(|(idx, _)| *idx == UNDEFINED_GLOBAL_SENTINEL);
         if only_sentinel {
             continue;
         }
         let new_idx = if let Some(builtin_idx) = globals::builtin_global_index(name) {
-            debug_println!("[DEBUG set_functions] Встроенное имя '{}' -> канонический индекс {}", name, builtin_idx);
+            debug_println!(
+                "[DEBUG set_functions] Встроенное имя '{}' -> канонический индекс {}",
+                name,
+                builtin_idx
+            );
             builtin_idx
-        } else if name == "argv" && argv_slot_index.is_some() {
-            let slot = argv_slot_index.unwrap();
-            debug_println!("[DEBUG set_functions] argv -> слот {} (argv_slot_index)", slot);
+        } else if let (true, Some(slot)) = (name == "argv", argv_slot_index) {
+            debug_println!(
+                "[DEBUG set_functions] argv -> слот {} (argv_slot_index)",
+                slot
+            );
             slot
         } else {
-            let matching_indices: Vec<usize> = global_names.iter()
+            let matching_indices: Vec<usize> = global_names
+                .iter()
                 .filter(|(_, n)| *n == name)
                 .map(|(idx, _)| *idx)
                 .collect();
@@ -196,7 +230,11 @@ pub fn set_functions(
                         globals.push(global_slot::default_global_slot());
                         global_names.insert(fresh, name.clone());
                         constructor_slots_used.insert(fresh);
-                        debug_println!("[DEBUG set_functions] Конструктор '{}' -> новый слот {} (конфликт)", name, fresh);
+                        debug_println!(
+                            "[DEBUG set_functions] Конструктор '{}' -> новый слот {} (конфликт)",
+                            name,
+                            fresh
+                        );
                         fresh
                     }
                 } else {
@@ -204,7 +242,11 @@ pub fn set_functions(
                     globals.push(global_slot::default_global_slot());
                     global_names.insert(fresh, name.clone());
                     constructor_slots_used.insert(fresh);
-                    debug_println!("[DEBUG set_functions] Конструктор '{}' не найден в VM, слот {}", name, fresh);
+                    debug_println!(
+                        "[DEBUG set_functions] Конструктор '{}' не найден в VM, слот {}",
+                        name,
+                        fresh
+                    );
                     fresh
                 }
             } else if let Some(real_idx) = candidate {
@@ -240,7 +282,12 @@ pub fn set_functions(
         .unwrap_or_else(|| {
             main_chunk
                 .as_ref()
-                .map(|mc| mc.global_names.iter().map(|(i, n)| (*i, n.clone())).collect())
+                .map(|mc| {
+                    mc.global_names
+                        .iter()
+                        .map(|(i, n)| (*i, n.clone()))
+                        .collect()
+                })
                 .unwrap_or_default()
         });
 
@@ -250,7 +297,11 @@ pub fn set_functions(
             .iter()
             .filter_map(|(old_idx, name)| {
                 name_to_new_idx.get(name).and_then(|&new_idx| {
-                    if *old_idx != new_idx { Some((*old_idx, new_idx)) } else { None }
+                    if *old_idx != new_idx {
+                        Some((*old_idx, new_idx))
+                    } else {
+                        None
+                    }
                 })
             })
             .collect();
@@ -272,7 +323,9 @@ pub fn set_functions(
         let to_insert: Vec<_> = old_to_new
             .iter()
             .filter_map(|(old_idx, new_idx)| {
-                mc.global_names.get(old_idx).map(|name| (*old_idx, *new_idx, name.clone()))
+                mc.global_names
+                    .get(old_idx)
+                    .map(|name| (*old_idx, *new_idx, name.clone()))
             })
             .collect();
         for (old_idx, _, _) in &to_insert {
@@ -320,13 +373,17 @@ pub fn set_functions(
             .collect();
         for (_op_index, opcode) in function.chunk.code.iter().enumerate() {
             let idx = match opcode {
-                crate::bytecode::OpCode::LoadGlobal(i) | crate::bytecode::OpCode::StoreGlobal(i) => *i,
+                crate::bytecode::OpCode::LoadGlobal(i)
+                | crate::bytecode::OpCode::StoreGlobal(i) => *i,
                 _ => continue,
             };
             if old_to_new.contains_key(&idx) {
                 continue;
             }
-            let name = function.chunk.global_names.get(&idx)
+            let name = function
+                .chunk
+                .global_names
+                .get(&idx)
                 .or_else(|| main_old_idx_to_name.get(&idx));
             if let Some(name) = name {
                 if let Some(&new_idx) = name_to_new_idx.get(name) {
@@ -354,7 +411,11 @@ pub fn set_functions(
         let to_insert: Vec<_> = old_to_new
             .iter()
             .filter_map(|(old_idx, new_idx)| {
-                function.chunk.global_names.get(old_idx).map(|name| (*old_idx, *new_idx, name.clone()))
+                function
+                    .chunk
+                    .global_names
+                    .get(old_idx)
+                    .map(|name| (*old_idx, *new_idx, name.clone()))
             })
             .collect();
         for (old_idx, _, _) in &to_insert {
@@ -365,9 +426,16 @@ pub fn set_functions(
         }
     }
 
-    debug_println!("[DEBUG set_functions] Добавляем {} новых функций к существующим {} функциям", updated_functions.len(), existing_functions_count);
+    debug_println!(
+        "[DEBUG set_functions] Добавляем {} новых функций к существующим {} функциям",
+        updated_functions.len(),
+        existing_functions_count
+    );
     for function in &updated_functions {
-        debug_println!("[DEBUG set_functions] Проверка Call инструкций в функции '{}':", function.name);
+        debug_println!(
+            "[DEBUG set_functions] Проверка Call инструкций в функции '{}':",
+            function.name
+        );
         for (ip, opcode) in function.chunk.code.iter().enumerate() {
             if let crate::bytecode::OpCode::Call(arity) = opcode {
                 debug_println!("[DEBUG set_functions]   IP {}: Call({})", ip, arity);
@@ -377,7 +445,7 @@ pub fn set_functions(
 
     let mut names_from_chunks: std::collections::HashSet<String> = std::collections::HashSet::new();
     for function in &updated_functions {
-        for (_, name) in &function.chunk.global_names {
+        for name in function.chunk.global_names.values() {
             names_from_chunks.insert(name.clone());
         }
     }
@@ -393,7 +461,11 @@ pub fn set_functions(
     debug_println!("[DEBUG set_functions] Начинаем обновление индексов функций в globals. Всего глобальных переменных в VM: {}, имён из chunk: {}", global_names.len(), chunk_global_names.len());
 
     for (real_global_idx, name) in &chunk_global_names {
-        debug_println!("[DEBUG set_functions] Обрабатываем '{}' из chunk -> слот {}", name, real_global_idx);
+        debug_println!(
+            "[DEBUG set_functions] Обрабатываем '{}' из chunk -> слот {}",
+            name,
+            real_global_idx
+        );
         if Some(*real_global_idx) == argv_slot_index {
             continue;
         }
@@ -401,7 +473,9 @@ pub fn set_functions(
             if let Some(canonical) = globals::builtin_global_name(*real_global_idx) {
                 if canonical == name.as_str() {
                     if let Some(fn_idx) = find_function_index_by_name(functions, name) {
-                        globals[*real_global_idx] = GlobalSlot::Heap(value_store.allocate_arena(ValueCell::Function(fn_idx)));
+                        globals[*real_global_idx] = GlobalSlot::Heap(
+                            value_store.allocate_arena(ValueCell::Function(fn_idx)),
+                        );
                         debug_println!("[DEBUG set_functions] Перезапись встроенного натива '{}' в слоте {} пользовательской функцией", name, real_global_idx);
                     } else {
                         debug_println!("[DEBUG set_functions] Пропуск перезаписи встроенного натива '{}' в слоте {}", name, real_global_idx);
@@ -411,32 +485,56 @@ pub fn set_functions(
             }
         }
         if *real_global_idx < globals.len() {
-            debug_println!("[DEBUG set_functions] Проверяем globals[{}] для '{}'", real_global_idx, name);
+            debug_println!(
+                "[DEBUG set_functions] Проверяем globals[{}] для '{}'",
+                real_global_idx,
+                name
+            );
             let id = globals[*real_global_idx].resolve_to_value_id(value_store);
-            let old_fn_idx_opt = value_store.get(id)
-                .and_then(|c| if let ValueCell::Function(i) = c { Some(*i) } else { None });
+            let old_fn_idx_opt = value_store.get(id).and_then(|c| {
+                if let ValueCell::Function(i) = c {
+                    Some(*i)
+                } else {
+                    None
+                }
+            });
             if let Some(old_fn_idx) = old_fn_idx_opt {
                 debug_println!("[DEBUG set_functions] Найдена функция '{}' в globals[{}] (из chunk) с индексом функции {}", name, real_global_idx, old_fn_idx);
                 if let Some(new_fn_idx) = find_function_index_by_name(functions, name) {
                     if old_fn_idx != new_fn_idx {
                         debug_println!("[DEBUG set_functions] Обновляем индекс функции для '{}' в globals[{}]: {} -> {}", name, real_global_idx, old_fn_idx, new_fn_idx);
-                        globals[*real_global_idx] = GlobalSlot::Heap(value_store.allocate_arena(ValueCell::Function(new_fn_idx)));
+                        globals[*real_global_idx] = GlobalSlot::Heap(
+                            value_store.allocate_arena(ValueCell::Function(new_fn_idx)),
+                        );
                     } else {
-                        debug_println!("[DEBUG set_functions] Индекс функции для '{}' уже правильный: {}", name, new_fn_idx);
+                        debug_println!(
+                            "[DEBUG set_functions] Индекс функции для '{}' уже правильный: {}",
+                            name,
+                            new_fn_idx
+                        );
                     }
                 } else {
                     debug_println!("[DEBUG set_functions] WARNING: Функция '{}' не найдена в списке функций VM", name);
                 }
             } else {
                 if let Some(fn_idx) = find_function_index_by_name(functions, name) {
-                    globals[*real_global_idx] = GlobalSlot::Heap(value_store.allocate_arena(ValueCell::Function(fn_idx)));
+                    globals[*real_global_idx] =
+                        GlobalSlot::Heap(value_store.allocate_arena(ValueCell::Function(fn_idx)));
                     debug_println!("[DEBUG set_functions] Установлена функция '{}' в globals[{}] = Value::Function({}) (слот был Null/другой)", name, real_global_idx, fn_idx);
                 } else {
-                    debug_println!("[DEBUG set_functions] globals[{}] для '{}' не является функцией", real_global_idx, name);
+                    debug_println!(
+                        "[DEBUG set_functions] globals[{}] для '{}' не является функцией",
+                        real_global_idx,
+                        name
+                    );
                 }
             }
         } else {
-            debug_println!("[DEBUG set_functions] WARNING: Индекс {} выходит за границы globals (всего: {})", real_global_idx, globals.len());
+            debug_println!(
+                "[DEBUG set_functions] WARNING: Индекс {} выходит за границы globals (всего: {})",
+                real_global_idx,
+                globals.len()
+            );
         }
     }
 
@@ -447,14 +545,20 @@ pub fn set_functions(
         let compiler_fn_idx = new_fn_idx - existing_functions_count;
         let mut found_in_chunk = false;
         for function in &functions[start_fn_idx..] {
-            if let Some(global_idx) = function.chunk.global_names.iter()
+            if let Some(global_idx) = function
+                .chunk
+                .global_names
+                .iter()
                 .find(|(_, name)| *name == function_name)
-                .map(|(idx, _)| *idx) {
+                .map(|(idx, _)| *idx)
+            {
                 let real_global_idx = global_idx;
                 if real_global_idx < globals::BUILTIN_GLOBAL_NAMES.len() {
                     if let Some(canonical) = globals::builtin_global_name(real_global_idx) {
                         if canonical == function_name.as_str() {
-                            globals[real_global_idx] = GlobalSlot::Heap(value_store.allocate_arena(ValueCell::Function(new_fn_idx)));
+                            globals[real_global_idx] = GlobalSlot::Heap(
+                                value_store.allocate_arena(ValueCell::Function(new_fn_idx)),
+                            );
                             debug_println!("[DEBUG set_functions] Перезапись встроенного натива '{}' в слоте {} пользовательской функцией (второй цикл)", function_name, real_global_idx);
                             found_in_chunk = true;
                             break;
@@ -463,12 +567,19 @@ pub fn set_functions(
                 }
                 if real_global_idx < globals.len() {
                     let rid = globals[real_global_idx].resolve_to_value_id(value_store);
-                    let old_opt = value_store.get(rid)
-                        .and_then(|c| if let ValueCell::Function(i) = c { Some(*i) } else { None });
+                    let old_opt = value_store.get(rid).and_then(|c| {
+                        if let ValueCell::Function(i) = c {
+                            Some(*i)
+                        } else {
+                            None
+                        }
+                    });
                     if let Some(old_fn_idx) = old_opt {
                         if old_fn_idx != new_fn_idx {
                             debug_println!("[DEBUG set_functions] Найдена функция '{}' в globals[{}] через chunk global_names: {} -> {}", function_name, real_global_idx, old_fn_idx, new_fn_idx);
-                            globals[real_global_idx] = GlobalSlot::Heap(value_store.allocate_arena(ValueCell::Function(new_fn_idx)));
+                            globals[real_global_idx] = GlobalSlot::Heap(
+                                value_store.allocate_arena(ValueCell::Function(new_fn_idx)),
+                            );
                             found_in_chunk = true;
                             break;
                         }
@@ -478,13 +589,23 @@ pub fn set_functions(
         }
 
         if !found_in_chunk {
-            debug_println!("[DEBUG set_functions] Ищем функцию '{}' во всех globals (compiler_idx: {})", function_name, compiler_fn_idx);
+            debug_println!(
+                "[DEBUG set_functions] Ищем функцию '{}' во всех globals (compiler_idx: {})",
+                function_name,
+                compiler_fn_idx
+            );
             for global_idx in 0..globals.len() {
                 let gid = globals[global_idx].resolve_to_value_id(value_store);
-                let old_fn_idx_opt = value_store.get(gid)
-                    .and_then(|c| if let ValueCell::Function(i) = c { Some(*i) } else { None });
+                let old_fn_idx_opt = value_store.get(gid).and_then(|c| {
+                    if let ValueCell::Function(i) = c {
+                        Some(*i)
+                    } else {
+                        None
+                    }
+                });
                 if let Some(old_fn_idx) = old_fn_idx_opt {
-                    let already_processed = global_names.get(&global_idx)
+                    let already_processed = global_names
+                        .get(&global_idx)
                         .map(|name| name == function_name)
                         .unwrap_or(false);
                     if !already_processed && old_fn_idx == compiler_fn_idx {
@@ -507,7 +628,9 @@ pub fn set_functions(
                         };
                         if should_update {
                             debug_println!("[DEBUG set_functions] Найдена функция '{}' в globals[{}] с индексом {} -> {} (compiler_idx: {}, old_fn_name: '{}')", function_name, global_idx, old_fn_idx, new_fn_idx, compiler_fn_idx, if old_fn_idx < functions.len() { &functions[old_fn_idx].name } else { "OUT_OF_BOUNDS" });
-                            globals[global_idx] = GlobalSlot::Heap(value_store.allocate_arena(ValueCell::Function(new_fn_idx)));
+                            globals[global_idx] = GlobalSlot::Heap(
+                                value_store.allocate_arena(ValueCell::Function(new_fn_idx)),
+                            );
                             break;
                         }
                     }
@@ -522,8 +645,13 @@ pub fn set_functions(
         }
         if *global_idx < globals.len() {
             let gid = globals[*global_idx].resolve_to_value_id(value_store);
-            let old_fn_idx_opt = value_store.get(gid)
-                .and_then(|c| if let ValueCell::Function(i) = c { Some(*i) } else { None });
+            let old_fn_idx_opt = value_store.get(gid).and_then(|c| {
+                if let ValueCell::Function(i) = c {
+                    Some(*i)
+                } else {
+                    None
+                }
+            });
             if let Some(old_fn_idx) = old_fn_idx_opt {
                 debug_println!("[DEBUG set_functions] Найдена функция '{}' в globals[{}] с индексом функции {}", name, global_idx, old_fn_idx);
                 let old_fn_name_matches = if old_fn_idx < functions.len() {
@@ -535,13 +663,23 @@ pub fn set_functions(
                     false
                 };
                 if let Some(new_fn_idx) = find_function_index_by_name(functions, name) {
-                    debug_println!("[DEBUG set_functions] Найдена функция '{}' в VM с индексом {}", name, new_fn_idx);
+                    debug_println!(
+                        "[DEBUG set_functions] Найдена функция '{}' в VM с индексом {}",
+                        name,
+                        new_fn_idx
+                    );
                     if new_fn_idx < functions.len() && functions[new_fn_idx].name == *name {
                         if old_fn_idx != new_fn_idx {
                             debug_println!("[DEBUG set_functions] Обновляем индекс функции для '{}' в globals[{}]: {} -> {} (старое имя совпадает: {})", name, global_idx, old_fn_idx, new_fn_idx, old_fn_name_matches);
-                            globals[*global_idx] = GlobalSlot::Heap(value_store.allocate_arena(ValueCell::Function(new_fn_idx)));
+                            globals[*global_idx] = GlobalSlot::Heap(
+                                value_store.allocate_arena(ValueCell::Function(new_fn_idx)),
+                            );
                         } else {
-                            debug_println!("[DEBUG set_functions] Индекс функции для '{}' уже правильный: {}", name, new_fn_idx);
+                            debug_println!(
+                                "[DEBUG set_functions] Индекс функции для '{}' уже правильный: {}",
+                                name,
+                                new_fn_idx
+                            );
                         }
                     } else {
                         debug_println!("[DEBUG set_functions] WARNING: Имя функции в новом индексе {} не совпадает с именем глобальной переменной '{}' (имя функции: '{}')", new_fn_idx, name, if new_fn_idx < functions.len() { &functions[new_fn_idx].name } else { "OUT OF BOUNDS" });
@@ -558,7 +696,8 @@ pub fn set_functions(
     if let Some((&global_idx, _)) = global_names.iter().find(|(_, n)| *n == "__main__") {
         if let Some(fn_idx) = find_function_index_by_name(functions, "__main__") {
             if global_idx < globals.len() && Some(global_idx) != argv_slot {
-                globals[global_idx] = GlobalSlot::Heap(value_store.allocate_arena(ValueCell::Function(fn_idx)));
+                globals[global_idx] =
+                    GlobalSlot::Heap(value_store.allocate_arena(ValueCell::Function(fn_idx)));
                 debug_println!("[DEBUG set_functions] Установлен слот __main__ в globals[{}] = Value::Function({})", global_idx, fn_idx);
             }
         }
@@ -566,7 +705,8 @@ pub fn set_functions(
     if let Some((&global_idx, _)) = global_names.iter().find(|(_, n)| *n == "main") {
         if let Some(fn_idx) = find_function_index_by_name(functions, "main") {
             if global_idx < globals.len() && Some(global_idx) != argv_slot {
-                globals[global_idx] = GlobalSlot::Heap(value_store.allocate_arena(ValueCell::Function(fn_idx)));
+                globals[global_idx] =
+                    GlobalSlot::Heap(value_store.allocate_arena(ValueCell::Function(fn_idx)));
                 debug_println!("[DEBUG set_functions] Установлен слот main в globals[{}] = Value::Function({})", global_idx, fn_idx);
             }
         }
@@ -601,10 +741,15 @@ pub fn ensure_entry_point_slots(
     store: &mut ValueStore,
 ) {
     for name in ["__main__", "main"] {
-        if let Some(&slot) = target_global_names.iter().find(|(_, n)| n.as_str() == name).map(|(idx, _)| idx) {
+        if let Some(&slot) = target_global_names
+            .iter()
+            .find(|(_, n)| n.as_str() == name)
+            .map(|(idx, _)| idx)
+        {
             if let Some(fn_idx) = target_functions.iter().position(|f| f.name == name) {
                 if slot < target_globals.len() {
-                    target_globals[slot] = GlobalSlot::Heap(store.allocate_arena(ValueCell::Function(fn_idx)));
+                    target_globals[slot] =
+                        GlobalSlot::Heap(store.allocate_arena(ValueCell::Function(fn_idx)));
                     debug_println!("[DEBUG ensure_entry_point_slots] Установлен слот '{}' в globals[{}] = Function({})", name, slot, fn_idx);
                 }
             }
@@ -616,14 +761,26 @@ pub fn ensure_entry_point_slots(
 pub fn remap_module_export_value(value: &Value, start_fn: usize) -> Value {
     match value {
         Value::Function(fn_idx) => Value::Function(start_fn + fn_idx),
-        Value::ModuleFunction { module_uid, local_index } => Value::ModuleFunction { module_uid: *module_uid, local_index: *local_index },
+        Value::ModuleFunction {
+            module_uid,
+            local_index,
+        } => Value::ModuleFunction {
+            module_uid: *module_uid,
+            local_index: *local_index,
+        },
         Value::Object(obj_rc) => {
             let obj = obj_rc.borrow();
             let mut new_obj = HashMap::new();
             for (k, v) in obj.iter() {
                 let inner = match v {
                     Value::Function(i) => Value::Function(start_fn + i),
-                    Value::ModuleFunction { module_uid, local_index } => Value::ModuleFunction { module_uid: *module_uid, local_index: *local_index },
+                    Value::ModuleFunction {
+                        module_uid,
+                        local_index,
+                    } => Value::ModuleFunction {
+                        module_uid: *module_uid,
+                        local_index: *local_index,
+                    },
                     _ => v.clone(),
                 };
                 new_obj.insert(k.clone(), inner);
@@ -676,7 +833,10 @@ pub fn merge_module_exports_into_globals_into(
                     GlobalSlot::Inline(tv) => slot_to_value(*tv, store, heap),
                     GlobalSlot::Heap(id) => load_value(*id, store, heap),
                 };
-                if matches!(existing_val, Value::Function(_) | Value::ModuleFunction { .. }) {
+                if matches!(
+                    existing_val,
+                    Value::Function(_) | Value::ModuleFunction { .. }
+                ) {
                     continue;
                 }
                 if matches!(existing_val, Value::Object(_)) {
@@ -686,7 +846,16 @@ pub fn merge_module_exports_into_globals_into(
                     continue;
                 }
             }
-            let start_fn = obj.get("__start_function_index").and_then(|v| if let Value::Number(s) = v { Some(*s as usize) } else { None }).unwrap_or(0);
+            let start_fn = obj
+                .get("__start_function_index")
+                .and_then(|v| {
+                    if let Value::Number(s) = v {
+                        Some(*s as usize)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
             let value_to_store = remap_module_export_value(&value, start_fn);
             let id = store_value_arena(value_to_store, store, heap);
             for &idx in &existing_indices {
@@ -698,7 +867,16 @@ pub fn merge_module_exports_into_globals_into(
                 }
             }
         } else {
-            let start_fn = obj.get("__start_function_index").and_then(|v| if let Value::Number(s) = v { Some(*s as usize) } else { None }).unwrap_or(0);
+            let start_fn = obj
+                .get("__start_function_index")
+                .and_then(|v| {
+                    if let Value::Number(s) = v {
+                        Some(*s as usize)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(0);
             let value_to_store = remap_module_export_value(&value, start_fn);
             if let Value::NativeFunction(native_idx) = &value_to_store {
                 if *native_idx < BUILTIN_COUNT {
@@ -710,7 +888,11 @@ pub fn merge_module_exports_into_globals_into(
                 }
             }
             let new_index = target_globals.len();
-            target_globals.push(GlobalSlot::Heap(store_value_arena(value_to_store, store, heap)));
+            target_globals.push(GlobalSlot::Heap(store_value_arena(
+                value_to_store,
+                store,
+                heap,
+            )));
             target_global_names.insert(new_index, name);
         }
     }
@@ -735,16 +917,29 @@ pub fn merge_globals_from_into(
     const BUILTIN_COUNT: usize = globals::BUILTIN_GLOBAL_COUNT;
     if other_natives.len() > BUILTIN_COUNT {
         target_natives.extend_from_slice(&other_natives[BUILTIN_COUNT..]);
-        debug_println!("[DEBUG merge_globals_from_into] Добавлено нативов из модуля: {}", other_natives.len() - BUILTIN_COUNT);
+        debug_println!(
+            "[DEBUG merge_globals_from_into] Добавлено нативов из модуля: {}",
+            other_natives.len() - BUILTIN_COUNT
+        );
     }
-    debug_println!("[DEBUG merge_globals_from_into] Объединяем глобальные переменные из другого VM");
+    debug_println!(
+        "[DEBUG merge_globals_from_into] Объединяем глобальные переменные из другого VM"
+    );
     let start_function_index = target_functions.len();
     target_functions.extend(other_functions.iter().cloned());
-    debug_println!("[DEBUG merge_globals_from_into] start_function_index: {}, всего функций: {}", start_function_index, target_functions.len());
+    debug_println!(
+        "[DEBUG merge_globals_from_into] start_function_index: {}, всего функций: {}",
+        start_function_index,
+        target_functions.len()
+    );
 
-    let mut pairs: Vec<_> = other_global_names.iter().map(|(i, n)| (*i, n.clone())).collect();
+    let mut pairs: Vec<_> = other_global_names
+        .iter()
+        .map(|(i, n)| (*i, n.clone()))
+        .collect();
     pairs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-    let mut by_name: std::collections::HashMap<String, (usize, Value)> = std::collections::HashMap::new();
+    let mut by_name: std::collections::HashMap<String, (usize, Value)> =
+        std::collections::HashMap::new();
     for (index, name) in &pairs {
         if name == "argv" {
             continue;
@@ -786,15 +981,23 @@ pub fn merge_globals_from_into(
     names_sorted.sort();
     for name in names_sorted {
         let (index, value) = by_name.get(&name).unwrap().clone();
-        debug_println!("[DEBUG merge_globals_from_into] Объединяем '{}' (index: {})", name, index);
+        debug_println!(
+            "[DEBUG merge_globals_from_into] Объединяем '{}' (index: {})",
+            name,
+            index
+        );
         let value_to_store = match value {
-            Value::Function(function_index) => Value::Function(start_function_index + function_index),
+            Value::Function(function_index) => {
+                Value::Function(start_function_index + function_index)
+            }
             Value::Object(obj_rc) => {
                 let obj = obj_rc.borrow();
                 let mut new_obj = HashMap::new();
                 for (key, val) in obj.iter() {
                     let updated_val = match val {
-                        Value::Function(function_index) => Value::Function(start_function_index + *function_index),
+                        Value::Function(function_index) => {
+                            Value::Function(start_function_index + *function_index)
+                        }
                         Value::NativeFunction(i) => {
                             if *i >= other_natives.len() {
                                 val.clone()
@@ -884,7 +1087,8 @@ pub fn merge_globals_from_into(
             if let Some(canonical_slot) = any_existing {
                 if canonical_slot >= BUILTIN_COUNT {
                     if canonical_slot >= target_globals.len() {
-                        target_globals.resize(canonical_slot + 1, global_slot::default_global_slot());
+                        target_globals
+                            .resize(canonical_slot + 1, global_slot::default_global_slot());
                     }
                     let id = store_value_arena(value_to_store.clone(), store, heap);
                     target_globals[canonical_slot] = GlobalSlot::Heap(id);
@@ -901,11 +1105,18 @@ pub fn merge_globals_from_into(
                 }
             }
             let new_index = target_globals.len();
-            target_globals.push(GlobalSlot::Heap(store_value_arena(value_to_store, store, heap)));
+            target_globals.push(GlobalSlot::Heap(store_value_arena(
+                value_to_store,
+                store,
+                heap,
+            )));
             target_global_names.insert(new_index, name.clone());
         }
     }
-    debug_println!("[DEBUG merge_globals_from_into] Объединение завершено. Всего глобальных переменных: {}", target_global_names.len());
+    debug_println!(
+        "[DEBUG merge_globals_from_into] Объединение завершено. Всего глобальных переменных: {}",
+        target_global_names.len()
+    );
 }
 
 /// Legacy: merges another VM's globals into target (self). Different prefer logic than merge_globals_from_into.
@@ -927,20 +1138,43 @@ pub fn merge_globals_from(
     const BUILTIN_COUNT: usize = globals::BUILTIN_GLOBAL_COUNT;
     if other_natives.len() > BUILTIN_COUNT {
         target_natives.extend_from_slice(&other_natives[BUILTIN_COUNT..]);
-        debug_println!("[DEBUG merge_globals_from] Добавлено нативов из модуля: {}", other_natives.len() - BUILTIN_COUNT);
+        debug_println!(
+            "[DEBUG merge_globals_from] Добавлено нативов из модуля: {}",
+            other_natives.len() - BUILTIN_COUNT
+        );
     }
     debug_println!("[DEBUG merge_globals_from] Объединяем глобальные переменные из другого VM");
-    debug_println!("[DEBUG merge_globals_from] Функций в текущем VM: {}", target_functions.len() - other_functions.len());
-    debug_println!("[DEBUG merge_globals_from] Функций в другом VM: {}", other_functions.len());
-    debug_println!("[DEBUG merge_globals_from] Глобальных переменных в другом VM: {}", other_global_names.len());
+    debug_println!(
+        "[DEBUG merge_globals_from] Функций в текущем VM: {}",
+        target_functions.len() - other_functions.len()
+    );
+    debug_println!(
+        "[DEBUG merge_globals_from] Функций в другом VM: {}",
+        other_functions.len()
+    );
+    debug_println!(
+        "[DEBUG merge_globals_from] Глобальных переменных в другом VM: {}",
+        other_global_names.len()
+    );
     let start_function_index = target_functions.len();
     target_functions.extend(other_functions.iter().cloned());
-    debug_println!("[DEBUG merge_globals_from] Начальный индекс функций: {} (функций в текущем VM: {})", start_function_index, target_functions.len() - other_functions.len());
-    debug_println!("[DEBUG merge_globals_from] Всего функций после объединения: {}", target_functions.len());
+    debug_println!(
+        "[DEBUG merge_globals_from] Начальный индекс функций: {} (функций в текущем VM: {})",
+        start_function_index,
+        target_functions.len() - other_functions.len()
+    );
+    debug_println!(
+        "[DEBUG merge_globals_from] Всего функций после объединения: {}",
+        target_functions.len()
+    );
 
-    let mut pairs: Vec<_> = other_global_names.iter().map(|(i, n)| (*i, n.clone())).collect();
+    let mut pairs: Vec<_> = other_global_names
+        .iter()
+        .map(|(i, n)| (*i, n.clone()))
+        .collect();
     pairs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
-    let mut by_name: std::collections::HashMap<String, (usize, Value)> = std::collections::HashMap::new();
+    let mut by_name: std::collections::HashMap<String, (usize, Value)> =
+        std::collections::HashMap::new();
     for (index, name) in &pairs {
         if name == "argv" {
             continue;
@@ -974,11 +1208,20 @@ pub fn merge_globals_from(
     names_sorted.sort();
     for name in names_sorted {
         let (index, value) = by_name.get(&name).unwrap().clone();
-        debug_println!("[DEBUG merge_globals_from] Объединяем '{}' (index: {})", name, index);
+        debug_println!(
+            "[DEBUG merge_globals_from] Объединяем '{}' (index: {})",
+            name,
+            index
+        );
         let value_to_store = match value {
             Value::Function(function_index) => {
                 let new_function_index = start_function_index + function_index;
-                debug_println!("[DEBUG merge_globals_from] Обновляем индекс функции для '{}': {} -> {}", name, function_index, new_function_index);
+                debug_println!(
+                    "[DEBUG merge_globals_from] Обновляем индекс функции для '{}': {} -> {}",
+                    name,
+                    function_index,
+                    new_function_index
+                );
                 Value::Function(new_function_index)
             }
             Value::Object(obj_rc) => {
@@ -986,7 +1229,9 @@ pub fn merge_globals_from(
                 let mut new_obj = HashMap::new();
                 for (key, val) in obj.iter() {
                     let updated_val = match val {
-                        Value::Function(function_index) => Value::Function(start_function_index + *function_index),
+                        Value::Function(function_index) => {
+                            Value::Function(start_function_index + *function_index)
+                        }
                         Value::NativeFunction(i) => {
                             if *i >= other_natives.len() {
                                 val.clone()
@@ -1064,7 +1309,10 @@ pub fn merge_globals_from(
                 }
             }
             if crate::vm::modules::is_known_module(name.as_str()) {
-                debug_println!("[DEBUG merge_globals_from] Пропуск перезаписи '{}' (встроенный модуль)", name);
+                debug_println!(
+                    "[DEBUG merge_globals_from] Пропуск перезаписи '{}' (встроенный модуль)",
+                    name
+                );
                 continue;
             }
             if let Value::NativeFunction(i) = &value_to_store {
@@ -1082,9 +1330,19 @@ pub fn merge_globals_from(
                 Value::Function(_) => "Function",
                 _ => "Other",
             };
-            debug_println!("[DEBUG merge_globals_from] '{}' уже существует, перезаписываем globals[{}] ({})", name, existing_index, val_type);
+            debug_println!(
+                "[DEBUG merge_globals_from] '{}' уже существует, перезаписываем globals[{}] ({})",
+                name,
+                existing_index,
+                val_type
+            );
             if name == "Config" || name == "DatabaseConfig" {
-                debug_println!("[DEBUG merge_globals_from] Config/DatabaseConfig: '{}' -> слот {} ({})", name, existing_index, val_type);
+                debug_println!(
+                    "[DEBUG merge_globals_from] Config/DatabaseConfig: '{}' -> слот {} ({})",
+                    name,
+                    existing_index,
+                    val_type
+                );
             }
             let id = store_value_arena(value_to_store.clone(), store, heap);
             if existing_index < target_globals.len() {
@@ -1110,13 +1368,25 @@ pub fn merge_globals_from(
                 Value::Function(_) => "Function",
                 _ => "Other",
             };
-            target_globals.push(GlobalSlot::Heap(store_value_arena(value_to_store, store, heap)));
+            target_globals.push(GlobalSlot::Heap(store_value_arena(
+                value_to_store,
+                store,
+                heap,
+            )));
             target_global_names.insert(new_index, name.clone());
             debug_println!("[DEBUG merge_globals_from] Создана новая глобальная переменная '{}' в globals[{}] ({})", name, new_index, val_type);
             if name == "Config" || name == "DatabaseConfig" {
-                debug_println!("[DEBUG merge_globals_from] Config/DatabaseConfig: '{}' -> новый слот {} ({})", name, new_index, val_type);
+                debug_println!(
+                    "[DEBUG merge_globals_from] Config/DatabaseConfig: '{}' -> новый слот {} ({})",
+                    name,
+                    new_index,
+                    val_type
+                );
             }
         }
     }
-    debug_println!("[DEBUG merge_globals_from] Объединение завершено. Всего глобальных переменных: {}", target_global_names.len());
+    debug_println!(
+        "[DEBUG merge_globals_from] Объединение завершено. Всего глобальных переменных: {}",
+        target_global_names.len()
+    );
 }

@@ -1,9 +1,11 @@
 /// Работа с замыканиями: поиск захваченных переменных
-
 use crate::parser::ast::{Expr, IndexExpr, InterpolatedSegment, Stmt, UnpackPattern};
 
 /// Собирает имена переменных из паттерна распаковки
-pub fn collect_unpack_pattern_variables(pattern: &[UnpackPattern], vars: &mut std::collections::HashSet<String>) {
+pub fn collect_unpack_pattern_variables(
+    pattern: &[UnpackPattern],
+    vars: &mut std::collections::HashSet<String>,
+) {
     for pat in pattern {
         match pat {
             UnpackPattern::Variable(name) => {
@@ -87,12 +89,22 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
             vars.extend(find_used_variables_in_expr(array));
             vars.extend(find_used_variables_in_index_expr(index));
         }
-        Expr::AssignArray { array, index, value, .. } => {
+        Expr::AssignArray {
+            array,
+            index,
+            value,
+            ..
+        } => {
             vars.extend(find_used_variables_in_expr(array));
             vars.extend(find_used_variables_in_index_expr(index));
             vars.extend(find_used_variables_in_expr(value));
         }
-        Expr::AssignArrayOp { array, index, value, .. } => {
+        Expr::AssignArrayOp {
+            array,
+            index,
+            value,
+            ..
+        } => {
             vars.extend(find_used_variables_in_expr(array));
             vars.extend(find_used_variables_in_index_expr(index));
             vars.extend(find_used_variables_in_expr(value));
@@ -172,11 +184,11 @@ fn find_used_variables_in_index_expr(index: &IndexExpr) -> std::collections::Has
         IndexExpr::Scalar(e) => {
             vars.extend(find_used_variables_in_expr(e));
         }
-        IndexExpr::Slice { start, stop, step, .. } => {
-            for o in [start, stop, step] {
-                if let Some(e) = o {
-                    vars.extend(find_used_variables_in_expr(e));
-                }
+        IndexExpr::Slice {
+            start, stop, step, ..
+        } => {
+            for e in [start, stop, step].into_iter().flatten() {
+                vars.extend(find_used_variables_in_expr(e));
             }
         }
     }
@@ -196,7 +208,12 @@ pub fn find_used_variables_in_stmt(stmt: &Stmt) -> std::collections::HashSet<Str
         Stmt::Expr { expr, .. } => {
             vars.extend(find_used_variables_in_expr(expr));
         }
-        Stmt::If { condition, then_branch, else_branch, .. } => {
+        Stmt::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
             vars.extend(find_used_variables_in_expr(condition));
             for stmt in then_branch {
                 vars.extend(find_used_variables_in_stmt(stmt));
@@ -207,7 +224,9 @@ pub fn find_used_variables_in_stmt(stmt: &Stmt) -> std::collections::HashSet<Str
                 }
             }
         }
-        Stmt::While { condition, body, .. } => {
+        Stmt::While {
+            condition, body, ..
+        } => {
             vars.extend(find_used_variables_in_expr(condition));
             for stmt in body {
                 vars.extend(find_used_variables_in_stmt(stmt));
@@ -235,7 +254,12 @@ pub fn find_used_variables_in_stmt(stmt: &Stmt) -> std::collections::HashSet<Str
         Stmt::Continue { .. } => {
             // continue не использует переменные
         }
-        Stmt::Try { try_block, catch_blocks, else_block, .. } => {
+        Stmt::Try {
+            try_block,
+            catch_blocks,
+            else_block,
+            ..
+        } => {
             // Находим переменные в try блоке
             for stmt in try_block {
                 vars.extend(find_used_variables_in_stmt(stmt));
@@ -257,15 +281,33 @@ pub fn find_used_variables_in_stmt(stmt: &Stmt) -> std::collections::HashSet<Str
             // Находим переменные в выражении throw
             vars.extend(find_used_variables_in_expr(value));
         }
-        Stmt::Class { private_fields, protected_fields, public_fields, private_variables, protected_variables, public_variables, constructors, methods, .. } => {
+        Stmt::Class {
+            private_fields,
+            protected_fields,
+            public_fields,
+            private_variables,
+            protected_variables,
+            public_variables,
+            constructors,
+            methods,
+            ..
+        } => {
             // Находим переменные в значениях по умолчанию полей
-            for field in private_fields.iter().chain(protected_fields.iter()).chain(public_fields.iter()) {
+            for field in private_fields
+                .iter()
+                .chain(protected_fields.iter())
+                .chain(public_fields.iter())
+            {
                 if let Some(ref default_expr) = field.default_value {
                     vars.extend(find_used_variables_in_expr(default_expr));
                 }
             }
             // Находим переменные в выражениях переменных уровня класса
-            for var in private_variables.iter().chain(protected_variables.iter()).chain(public_variables.iter()) {
+            for var in private_variables
+                .iter()
+                .chain(protected_variables.iter())
+                .chain(public_variables.iter())
+            {
                 vars.extend(find_used_variables_in_expr(&var.value));
             }
             // Находим переменные в конструкторах и методах
@@ -298,10 +340,12 @@ pub fn find_used_variables_in_stmt(stmt: &Stmt) -> std::collections::HashSet<Str
 /// (через let и for, рекурсивно проверяя вложенные блоки)
 pub fn find_locally_declared_variables(body: &[Stmt]) -> std::collections::HashSet<String> {
     let mut declared_vars = std::collections::HashSet::new();
-    
+
     for stmt in body {
         match stmt {
-            Stmt::Let { name, is_global, .. } => {
+            Stmt::Let {
+                name, is_global, ..
+            } => {
                 // Добавляем только локальные переменные (не глобальные)
                 if !is_global {
                     declared_vars.insert(name.clone());
@@ -313,7 +357,11 @@ pub fn find_locally_declared_variables(body: &[Stmt]) -> std::collections::HashS
                 // Рекурсивно проверяем тело цикла
                 declared_vars.extend(find_locally_declared_variables(body));
             }
-            Stmt::If { then_branch, else_branch, .. } => {
+            Stmt::If {
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 // Рекурсивно проверяем ветки if
                 declared_vars.extend(find_locally_declared_variables(then_branch));
                 if let Some(else_branch) = else_branch {
@@ -328,7 +376,12 @@ pub fn find_locally_declared_variables(body: &[Stmt]) -> std::collections::HashS
                 // Рекурсивно проверяем тело вложенной функции
                 declared_vars.extend(find_locally_declared_variables(body));
             }
-            Stmt::Try { try_block, catch_blocks, else_block, .. } => {
+            Stmt::Try {
+                try_block,
+                catch_blocks,
+                else_block,
+                ..
+            } => {
                 // Рекурсивно проверяем try блок
                 declared_vars.extend(find_locally_declared_variables(try_block));
                 // Рекурсивно проверяем catch блоки
@@ -340,7 +393,11 @@ pub fn find_locally_declared_variables(body: &[Stmt]) -> std::collections::HashS
                     declared_vars.extend(find_locally_declared_variables(else_block));
                 }
             }
-            Stmt::Class { constructors, methods, .. } => {
+            Stmt::Class {
+                constructors,
+                methods,
+                ..
+            } => {
                 // Классы не объявляют переменные в текущей области, но их конструкторы и методы могут
                 for constructor in constructors {
                     declared_vars.extend(find_locally_declared_variables(&constructor.body));
@@ -354,7 +411,7 @@ pub fn find_locally_declared_variables(body: &[Stmt]) -> std::collections::HashS
             }
         }
     }
-    
+
     declared_vars
 }
 
@@ -370,38 +427,40 @@ pub fn find_captured_variables(
     for stmt in body {
         used_vars.extend(find_used_variables_in_stmt(stmt));
     }
-    
+
     // Исключаем параметры функции
     let param_set: std::collections::HashSet<String> = params.iter().cloned().collect();
     used_vars.retain(|v| !param_set.contains(v));
-    
+
     // Находим все переменные, объявленные локально в теле функции
     let locally_declared = find_locally_declared_variables(body);
-    
+
     // Исключаем локально объявленные переменные из проверки захвата
     // Они локальные, не требуют захвата из родительских областей
     used_vars.retain(|v| !locally_declared.contains(v));
-    
+
     // Ищем переменные, которые используются, но не найдены в текущих областях видимости
     // но найдены в родительских областях видимости
     let mut captured = Vec::new();
-    
+
     for var_name in &used_vars {
         // Проверяем, найдена ли переменная в текущей области видимости функции
         // (только в последней области, которая была создана для этой функции)
         // НЕ проверяем в родительских областях, которые все еще в self.scope.locals
         let found_in_current_scope = current_scope_locals.contains_key(var_name);
-        
+
         if !found_in_current_scope {
             // Проверяем, найдена ли переменная в родительских областях видимости
-            let found_in_parent = parent_locals.iter().any(|scope| scope.contains_key(var_name));
-        
+            let found_in_parent = parent_locals
+                .iter()
+                .any(|scope| scope.contains_key(var_name));
+
             if found_in_parent {
                 captured.push(var_name.clone());
             }
         }
     }
-    
+
     captured
 }
 
@@ -419,7 +478,8 @@ pub fn find_captured_variables_lambda(
         }
     }
 
-    let param_set: std::collections::HashSet<String> = params.iter().map(|p| p.name.clone()).collect();
+    let param_set: std::collections::HashSet<String> =
+        params.iter().map(|p| p.name.clone()).collect();
     used_vars.retain(|v| !param_set.contains(v));
 
     let locally_declared: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -429,7 +489,9 @@ pub fn find_captured_variables_lambda(
     for var_name in &used_vars {
         let found_in_current_scope = current_scope_locals.contains_key(var_name);
         if !found_in_current_scope {
-            let found_in_parent = parent_locals.iter().any(|scope| scope.contains_key(var_name));
+            let found_in_parent = parent_locals
+                .iter()
+                .any(|scope| scope.contains_key(var_name));
             if found_in_parent {
                 captured.push(var_name.clone());
             }
@@ -437,4 +499,3 @@ pub fn find_captured_variables_lambda(
     }
     captured
 }
-

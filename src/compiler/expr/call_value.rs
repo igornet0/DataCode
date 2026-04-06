@@ -1,5 +1,4 @@
 /// Вызов выражения-калли: `(fn(x) => x)(1)`
-
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
 use crate::compiler::context::CompilationContext;

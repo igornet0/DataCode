@@ -1,16 +1,18 @@
 // Native functions for plot module
 
 use crate::common::value::Value;
-use crate::plot::{Image, Window, Figure, GuiCommand, system, PlotContext, PlotWindowHandle};
-use crate::plot::command::{ChartData as CommandChartData, ChartType as CommandChartType, FigureData, AxisData};
+use crate::plot::command::{
+    AxisData, ChartData as CommandChartData, ChartType as CommandChartType, FigureData,
+};
+use crate::plot::{system, Figure, GuiCommand, Image, PlotContext, PlotWindowHandle, Window};
 use crate::vm::native_loader::call_abi_native;
 use crate::vm::vm::VM_CALL_CONTEXT;
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use winit::window::{WindowId, Icon};
 use std::path::Path;
-use std::sync::{Arc, Mutex, Condvar, mpsc};
+use std::rc::Rc;
+use std::sync::{mpsc, Arc, Condvar, Mutex};
+use winit::window::{Icon, WindowId};
 
 // Plot state is in PlotContext (VM-owned, set thread-local at run()). No global RefCells.
 
@@ -39,23 +41,41 @@ where
 pub fn load_window_icon() -> Option<Icon> {
     // Try different possible paths for the icon
     let mut icon_paths = Vec::new();
-    
+
     // Try relative to current working directory first (most common case)
     if let Ok(cwd) = std::env::current_dir() {
-        icon_paths.push(cwd.join("src/lib/plot/icon/datacode-plot.png").to_string_lossy().to_string());
-        icon_paths.push(cwd.join("icon/datacode-plot.png").to_string_lossy().to_string());
+        icon_paths.push(
+            cwd.join("src/lib/plot/icon/datacode-plot.png")
+                .to_string_lossy()
+                .to_string(),
+        );
+        icon_paths.push(
+            cwd.join("icon/datacode-plot.png")
+                .to_string_lossy()
+                .to_string(),
+        );
     }
-    
+
     // Relative to project root (for development)
     icon_paths.push("src/lib/plot/icon/datacode-plot.png".to_string());
     icon_paths.push("./src/lib/plot/icon/datacode-plot.png".to_string());
-    
+
     // Relative to executable (for installed version)
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
             // Try relative to executable directory
-            icon_paths.push(exe_dir.join("icon/datacode-plot.png").to_string_lossy().to_string());
-            icon_paths.push(exe_dir.join("src/lib/plot/icon/datacode-plot.png").to_string_lossy().to_string());
+            icon_paths.push(
+                exe_dir
+                    .join("icon/datacode-plot.png")
+                    .to_string_lossy()
+                    .to_string(),
+            );
+            icon_paths.push(
+                exe_dir
+                    .join("src/lib/plot/icon/datacode-plot.png")
+                    .to_string_lossy()
+                    .to_string(),
+            );
         }
     }
 
@@ -67,7 +87,7 @@ pub fn load_window_icon() -> Option<Icon> {
                 // Convert to RGBA8
                 let rgba_img = img.to_rgba8();
                 let (width, height) = rgba_img.dimensions();
-                
+
                 // Resize icon to appropriate size for window icon
                 // macOS requires square icons, preferably powers of 2: 16, 32, 64, 128, 256, 512
                 // Use 512x512 for best quality on macOS (retina displays)
@@ -83,31 +103,41 @@ pub fn load_window_icon() -> Option<Icon> {
                     // Ensure minimum size of 32x32
                     32.max(width.max(height))
                 };
-                
+
                 // Resize to square maintaining aspect ratio, then center on square canvas
                 let scale = (target_size as f32 / width.max(height) as f32).min(1.0);
                 let new_width = (width as f32 * scale) as u32;
                 let new_height = (height as f32 * scale) as u32;
-                
+
                 // Resize image
-                let resized = image::imageops::resize(&rgba_img, new_width, new_height, image::imageops::FilterType::Lanczos3);
-                
+                let resized = image::imageops::resize(
+                    &rgba_img,
+                    new_width,
+                    new_height,
+                    image::imageops::FilterType::Lanczos3,
+                );
+
                 // Create square canvas and center the resized image
                 let mut square_img = image::RgbaImage::new(target_size, target_size);
                 // Fill with transparent background
                 for pixel in square_img.pixels_mut() {
                     *pixel = image::Rgba([0, 0, 0, 0]);
                 }
-                
+
                 // Calculate offset to center the image
                 let offset_x = (target_size - new_width) / 2;
                 let offset_y = (target_size - new_height) / 2;
-                
+
                 // Copy resized image to center of square canvas
-                image::imageops::overlay(&mut square_img, &resized, offset_x as i64, offset_y as i64);
-                
+                image::imageops::overlay(
+                    &mut square_img,
+                    &resized,
+                    offset_x as i64,
+                    offset_y as i64,
+                );
+
                 let rgba_data = square_img.into_raw();
-                
+
                 // Create Icon from RGBA data (must be square)
                 match Icon::from_rgba(rgba_data, target_size, target_size) {
                     Ok(icon) => {
@@ -120,7 +150,7 @@ pub fn load_window_icon() -> Option<Icon> {
             }
         }
     }
-    
+
     None
 }
 
@@ -158,12 +188,12 @@ pub fn native_plot_window(args: &[Value]) -> Value {
         Value::Number(n) => *n as u32,
         _ => return Value::Null,
     };
-    
+
     let height = match &args[1] {
         Value::Number(n) => *n as u32,
         _ => return Value::Null,
     };
-    
+
     let title = match &args[2] {
         Value::String(s) => s.clone(),
         _ => "Window".to_string(),
@@ -172,40 +202,40 @@ pub fn native_plot_window(args: &[Value]) -> Value {
     // Get PlotSystem (EventLoop is created in main.rs)
     let plot_system = get_plot_system();
     let proxy = plot_system.proxy();
-    
+
     // Create channel for response
-        let (tx, rx) = mpsc::channel();
-        
-            // Load window icon
-            let icon = load_window_icon();
-            
+    let (tx, rx) = mpsc::channel();
+
+    // Load window icon
+    let icon = load_window_icon();
+
     // Send request to create window via EventLoopProxy
     let command = GuiCommand::CreateWindow {
-                width,
-                height,
-                title: title.clone(),
-                icon,
-                response: tx,
-            };
-            
+        width,
+        height,
+        title: title.clone(),
+        icon,
+        response: tx,
+    };
+
     if let Err(_e) = proxy.send_event(command) {
         return Value::Null;
     }
-    
+
     // Wait for response from main thread
-                match rx.recv() {
-                    Ok(Ok(window_id)) => {
+    match rx.recv() {
+        Ok(Ok(window_id)) => {
             // Return PlotWindowHandle (contains only WindowId) - Window stays in GUI thread
             let handle = PlotWindowHandle::new(window_id);
             return Value::Window(handle);
-                    }
-                    Ok(Err(_e)) => {
-                        return Value::Null;
-                    }
-                    Err(_) => {
-                        return Value::Null;
-                    }
-                }
+        }
+        Ok(Err(_e)) => {
+            return Value::Null;
+        }
+        Err(_) => {
+            return Value::Null;
+        }
+    }
 }
 
 /// Draw image to window
@@ -241,17 +271,17 @@ pub fn native_window_draw(args: &[Value]) -> Value {
     // Send command to GUI thread to draw image
     let plot_system = get_plot_system();
     let proxy = plot_system.proxy();
-    
+
     let command = GuiCommand::DrawImage {
         window_id: window_handle.id(),
         image,
     };
-    
+
     if let Err(_e) = proxy.send_event(command) {
         return Value::Null;
     }
-    
-        Value::Null
+
+    Value::Null
 }
 
 /// Wait for window to close (blocking).
@@ -273,17 +303,19 @@ pub fn native_plot_wait(args: &[Value]) -> Value {
     // Create a waiter for this window's close event
     let waiter = Arc::new((Mutex::new(false), Condvar::new()));
     // Send waiter to event loop (no global WINDOW_WAITERS Mutex)
-    let _ = get_plot_system().proxy().send_event(GuiCommand::RegisterWaiter {
-        window_id,
-        waiter: waiter.clone(),
-    });
+    let _ = get_plot_system()
+        .proxy()
+        .send_event(GuiCommand::RegisterWaiter {
+            window_id,
+            waiter: waiter.clone(),
+        });
 
     // Event loop is running in main thread - just wait for window to close
-        let (lock, cvar) = &*waiter;
-        let mut closed = lock.lock().unwrap();
-        while !*closed {
-            closed = cvar.wait(closed).unwrap();
-        }
+    let (lock, cvar) = &*waiter;
+    let mut closed = lock.lock().unwrap();
+    while !*closed {
+        closed = cvar.wait(closed).unwrap();
+    }
     Value::Null
 }
 
@@ -303,14 +335,15 @@ pub fn native_plot_show(args: &[Value]) -> Value {
     }
 
     // Check if we have pie/bar/heatmap/line data in plot state (from PlotContext)
-    let (has_pie_data, has_bar_data, has_heatmap_data, has_line_data) = PlotContext::with_current(|ctx| {
-        (
-            !ctx.plot_state.pie_data.is_empty(),
-            !ctx.plot_state.bar_data.is_empty(),
-            !ctx.plot_state.heatmap_data.is_empty(),
-            !ctx.plot_state.line_data.is_empty(),
-        )
-    });
+    let (has_pie_data, has_bar_data, has_heatmap_data, has_line_data) =
+        PlotContext::with_current(|ctx| {
+            (
+                !ctx.plot_state.pie_data.is_empty(),
+                !ctx.plot_state.bar_data.is_empty(),
+                !ctx.plot_state.heatmap_data.is_empty(),
+                !ctx.plot_state.line_data.is_empty(),
+            )
+        });
 
     // If we have pie data and no image arguments, render pie chart
     if has_pie_data {
@@ -354,9 +387,10 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         }
 
         // Clone all pie data for storage
-        let pies_clone: Vec<(Vec<String>, Vec<f64>, u32)> = pie_data.iter().map(|(x, y, c)| {
-            (x.clone(), y.clone(), *c)
-        }).collect();
+        let pies_clone: Vec<(Vec<String>, Vec<f64>, u32)> = pie_data
+            .iter()
+            .map(|(x, y, c)| (x.clone(), y.clone(), *c))
+            .collect();
         let xlabel_clone = xlabel.clone();
         let ylabel_clone = ylabel.clone();
 
@@ -380,24 +414,24 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         // Rendering will happen in GUI thread on RedrawRequested
         let plot_system = get_plot_system();
         let proxy = plot_system.proxy();
-        
+
         // Convert to command::ChartData
         let chart_data = CommandChartData {
             chart_type: CommandChartType::Pie,
-                lines: Vec::new(),
-                bars: Vec::new(),
-                pies: pies_clone,
-                heatmaps: Vec::new(),
-                xlabel: xlabel_clone,
-                ylabel: ylabel_clone,
+            lines: Vec::new(),
+            bars: Vec::new(),
+            pies: pies_clone,
+            heatmaps: Vec::new(),
+            xlabel: xlabel_clone,
+            ylabel: ylabel_clone,
             pie_rotation: -std::f64::consts::PI / 2.0,
         };
-        
+
         let command = GuiCommand::UpdateChart {
             window_id: window.id(),
             chart_data,
         };
-        
+
         if let Err(_e) = proxy.send_event(command) {
             return Value::Null;
         }
@@ -451,9 +485,10 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         }
 
         // Clone all bar data for storage
-        let bars_clone: Vec<(Vec<String>, Vec<f64>, u32)> = bar_data.iter().map(|(x, y, c)| {
-            (x.clone(), y.clone(), *c)
-        }).collect();
+        let bars_clone: Vec<(Vec<String>, Vec<f64>, u32)> = bar_data
+            .iter()
+            .map(|(x, y, c)| (x.clone(), y.clone(), *c))
+            .collect();
         let xlabel_clone = xlabel.clone();
         let ylabel_clone = ylabel.clone();
 
@@ -476,23 +511,23 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         // Send command to GUI thread to update chart data
         let plot_system = get_plot_system();
         let proxy = plot_system.proxy();
-        
+
         let chart_data = CommandChartData {
             chart_type: CommandChartType::Bar,
-                lines: Vec::new(),
+            lines: Vec::new(),
             bars: bars_clone.clone(),
-                pies: Vec::new(),
-                heatmaps: Vec::new(),
+            pies: Vec::new(),
+            heatmaps: Vec::new(),
             xlabel: xlabel_clone.clone(),
             ylabel: ylabel_clone.clone(),
-                pie_rotation: 0.0,
+            pie_rotation: 0.0,
         };
-        
+
         let cmd = GuiCommand::UpdateChart {
             window_id: window.id(),
             chart_data,
         };
-        
+
         if let Err(_e) = proxy.send_event(cmd) {
             return Value::Null;
         }
@@ -546,9 +581,10 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         }
 
         // Clone all heatmap data for storage
-        let heatmaps_clone: Vec<(Vec<Vec<f64>>, Option<f64>, Option<f64>, String)> = heatmap_data.iter().map(|(d, min, max, p)| {
-            (d.clone(), *min, *max, p.clone())
-        }).collect();
+        let heatmaps_clone: Vec<(Vec<Vec<f64>>, Option<f64>, Option<f64>, String)> = heatmap_data
+            .iter()
+            .map(|(d, min, max, p)| (d.clone(), *min, *max, p.clone()))
+            .collect();
         let xlabel_clone = xlabel.clone();
         let ylabel_clone = ylabel.clone();
 
@@ -571,23 +607,23 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         // Send command to GUI thread to update chart data
         let plot_system = get_plot_system();
         let proxy = plot_system.proxy();
-        
+
         let chart_data = CommandChartData {
             chart_type: CommandChartType::Heatmap,
-                lines: Vec::new(),
-                bars: Vec::new(),
-                pies: Vec::new(),
-                heatmaps: heatmaps_clone,
-                xlabel: xlabel_clone,
-                ylabel: ylabel_clone,
-                pie_rotation: 0.0,
+            lines: Vec::new(),
+            bars: Vec::new(),
+            pies: Vec::new(),
+            heatmaps: heatmaps_clone,
+            xlabel: xlabel_clone,
+            ylabel: ylabel_clone,
+            pie_rotation: 0.0,
         };
-        
+
         let cmd = GuiCommand::UpdateChart {
             window_id: window.id(),
             chart_data,
         };
-        
+
         if let Err(_e) = proxy.send_event(cmd) {
             return Value::Null;
         }
@@ -641,9 +677,10 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         }
 
         // Clone all line data for storage
-        let lines_clone: Vec<(Vec<f64>, Vec<f64>, bool, usize, usize, u32)> = line_data.iter().map(|(x, y, sp, ps, lw, c)| {
-            (x.clone(), y.clone(), *sp, *ps, *lw, *c)
-        }).collect();
+        let lines_clone: Vec<(Vec<f64>, Vec<f64>, bool, usize, usize, u32)> = line_data
+            .iter()
+            .map(|(x, y, sp, ps, lw, c)| (x.clone(), y.clone(), *sp, *ps, *lw, *c))
+            .collect();
         let xlabel_clone = xlabel.clone();
         let ylabel_clone = ylabel.clone();
 
@@ -666,23 +703,23 @@ pub fn native_plot_show(args: &[Value]) -> Value {
         // Send command to GUI thread to update chart data
         let plot_system = get_plot_system();
         let proxy = plot_system.proxy();
-        
+
         let chart_data = CommandChartData {
             chart_type: CommandChartType::Line,
             lines: lines_clone.clone(),
-                bars: Vec::new(),
-                pies: Vec::new(),
-                heatmaps: Vec::new(),
+            bars: Vec::new(),
+            pies: Vec::new(),
+            heatmaps: Vec::new(),
             xlabel: xlabel_clone.clone(),
             ylabel: ylabel_clone.clone(),
-                pie_rotation: 0.0,
+            pie_rotation: 0.0,
         };
-        
+
         let cmd = GuiCommand::UpdateChart {
             window_id: window.id(),
             chart_data,
         };
-        
+
         if let Err(_e) = proxy.send_event(cmd) {
             return Value::Null;
         }
@@ -738,7 +775,7 @@ pub fn native_plot_show(args: &[Value]) -> Value {
     };
 
     let img_ref = image.borrow();
-    
+
     // Calculate scale factor (like matplotlib - scale small images)
     // For images <= 100px, use scale 10, otherwise scale 4
     let scale = if img_ref.width <= 100 && img_ref.height <= 100 {
@@ -748,7 +785,7 @@ pub fn native_plot_show(args: &[Value]) -> Value {
     } else {
         4
     };
-    
+
     // Create window with scaled dimensions (like matplotlib imshow)
     let width = img_ref.width * scale;
     let height = img_ref.height * scale;
@@ -766,10 +803,7 @@ pub fn native_plot_show(args: &[Value]) -> Value {
     };
 
     // Draw image
-    let draw_args = vec![
-        Value::Window(window.clone()),
-        Value::Image(image),
-    ];
+    let draw_args = vec![Value::Window(window), Value::Image(image)];
     native_window_draw(&draw_args);
 
     // Wait for window to close
@@ -830,12 +864,12 @@ pub fn native_plot_show_grid(args: &[Value]) -> Value {
     // Convert all images to Image objects
     let mut images = Vec::new();
     let mut titles = Vec::new();
-    
+
     for (idx, val) in images_array.iter().enumerate() {
         let image = match val {
             Value::String(_) | Value::Path(_) => {
                 // Load from path
-                let image_result = native_plot_image(&[val.clone()]);
+                let image_result = native_plot_image(std::slice::from_ref(val));
                 match image_result {
                     Value::Image(img) => img,
                     _ => continue, // Skip invalid images
@@ -845,7 +879,7 @@ pub fn native_plot_show_grid(args: &[Value]) -> Value {
             Value::Image(img) => img.clone(),
             _ => continue, // Skip invalid values
         };
-        
+
         images.push(image);
         titles.push(format!("{}", idx));
     }
@@ -874,20 +908,23 @@ pub fn native_plot_show_grid(args: &[Value]) -> Value {
     };
 
     // Convert images to Arc<Mutex<Image>> for Send
-    let images_arc: Vec<Arc<Mutex<Image>>> = images.iter().map(|img_rc| {
-        let img_ref = img_rc.borrow();
-        let cloned_image = Image {
-            width: img_ref.width,
-            height: img_ref.height,
-            data: img_ref.data.clone(),
-        };
-        Arc::new(Mutex::new(cloned_image))
-    }).collect();
-    
+    let images_arc: Vec<Arc<Mutex<Image>>> = images
+        .iter()
+        .map(|img_rc| {
+            let img_ref = img_rc.borrow();
+            let cloned_image = Image {
+                width: img_ref.width,
+                height: img_ref.height,
+                data: img_ref.data.clone(),
+            };
+            Arc::new(Mutex::new(cloned_image))
+        })
+        .collect();
+
     // Send command to GUI thread to update image grid
     let plot_system = get_plot_system();
     let proxy = plot_system.proxy();
-    
+
     let cmd = GuiCommand::UpdateImageGrid {
         window_id: window.id(),
         images: images_arc,
@@ -895,7 +932,7 @@ pub fn native_plot_show_grid(args: &[Value]) -> Value {
         cols,
         titles,
     };
-    
+
     if let Err(_e) = proxy.send_event(cmd) {
         return Value::Null;
     }
@@ -976,7 +1013,7 @@ pub fn native_plot_subplots(args: &[Value]) -> Value {
     // Create figure
     let figure = Figure::new(rows, cols, figsize);
     let figure_rc = Rc::new(RefCell::new(figure));
-    
+
     // Return only the figure (axes accessible via fig.axes)
     Value::Figure(figure_rc)
 }
@@ -1061,8 +1098,7 @@ fn value_array_to_f32(v: &Value) -> Option<Vec<f32>> {
 /// axis.imshow(image) -> Null
 /// axis.imshow(image, cmap='gray') -> Null
 pub fn native_axis_imshow(args: &[Value]) -> Value {
-    for (_i, _arg) in args.iter().enumerate() {
-    }
+    for (_i, _arg) in args.iter().enumerate() {}
     if args.is_empty() || args.len() > 3 {
         return Value::Null;
     }
@@ -1075,71 +1111,64 @@ pub fn native_axis_imshow(args: &[Value]) -> Value {
             None
         }
     });
-    
+
     let axis = match axis {
-        Some(a) => {
-            a
-        },
+        Some(a) => a,
         None => {
             return Value::Null;
-        },
+        }
     };
 
     // Extract image (from Image)
     // Find image in args (skip the axis we already found)
-    let image = args.iter().find_map(|arg| {
-        match arg {
-            Value::PluginOpaque { tag, .. } if *tag == 0 => plugin_tensor_to_plot_image(arg),
-            Value::Image(img) => {
-                Some(img.clone())
+    let image = args.iter().find_map(|arg| match arg {
+        Value::PluginOpaque { tag, .. } if *tag == 0 => plugin_tensor_to_plot_image(arg),
+        Value::Image(img) => Some(img.clone()),
+        Value::String(_) | Value::Path(_) => {
+            let image_result = native_plot_image(std::slice::from_ref(arg));
+            match image_result {
+                Value::Image(img) => Some(img),
+                _ => None,
             }
-            Value::String(_) | Value::Path(_) => {
-                let image_result = native_plot_image(&[arg.clone()]);
-                match image_result {
-                    Value::Image(img) => Some(img),
-                    _ => {
-                        None
-                    },
-                }
-            }
-            _ => None,
         }
+        _ => None,
     });
-    
+
     let image = match image {
         Some(img) => img,
         None => {
             return Value::Null;
-        },
+        }
     };
 
     // Extract cmap if provided - find String in args (skip axis and image)
-    let cmap = args.iter().find_map(|arg| {
-        match arg {
-            Value::String(s) if s != "off" && s != "on" => {
-                // This is likely cmap, not axis('off') or axis('on')
-                Some(s.clone())
-            }
-            Value::Object(map_rc) => {
-                let map = map_rc.borrow();
-                // Named arguments: cmap='gray' might be passed as object
-                if let Some(Value::String(s)) = map.get("cmap") {
+    let cmap = args
+        .iter()
+        .find_map(|arg| {
+            match arg {
+                Value::String(s) if s != "off" && s != "on" => {
+                    // This is likely cmap, not axis('off') or axis('on')
                     Some(s.clone())
-                } else {
-                    None
                 }
+                Value::Object(map_rc) => {
+                    let map = map_rc.borrow();
+                    // Named arguments: cmap='gray' might be passed as object
+                    if let Some(Value::String(s)) = map.get("cmap") {
+                        Some(s.clone())
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
             }
-            _ => None,
-        }
-    }).unwrap_or_else(|| {
-        "gray".to_string()
-    });
+        })
+        .unwrap_or_else(|| "gray".to_string());
 
     // Update axis
     let mut axis_ref = axis.borrow_mut();
     axis_ref.image = Some(image.clone());
     axis_ref.cmap = cmap;
-    
+
     // Debug: verify image was set
     let _img_ref = image.borrow();
 
@@ -1161,38 +1190,32 @@ pub fn native_axis_set_title(args: &[Value]) -> Value {
             None
         }
     });
-    
+
     let axis = match axis {
-        Some(a) => {
-            a
-        },
+        Some(a) => a,
         None => {
             return Value::Null;
-        },
+        }
     };
 
     // Find title (String or Number) in args
-    let title = args.iter().find_map(|arg| {
-        match arg {
-            Value::String(s) => Some(s.clone()),
-            Value::Number(n) => {
-                if n.fract() == 0.0 {
-                    Some(format!("{}", *n as i64))
-                } else {
-                    Some(format!("{}", n))
-                }
+    let title = args.iter().find_map(|arg| match arg {
+        Value::String(s) => Some(s.clone()),
+        Value::Number(n) => {
+            if n.fract() == 0.0 {
+                Some(format!("{}", *n as i64))
+            } else {
+                Some(format!("{}", n))
             }
-            _ => None,
         }
+        _ => None,
     });
-    
+
     let title = match title {
-        Some(t) => {
-            t
-        },
+        Some(t) => t,
         None => {
             return Value::Null;
-        },
+        }
     };
 
     let mut axis_ref = axis.borrow_mut();
@@ -1217,7 +1240,7 @@ pub fn native_axis_axis(args: &[Value]) -> Value {
             None
         }
     });
-    
+
     let axis = match axis {
         Some(a) => a,
         None => return Value::Null,
@@ -1231,7 +1254,7 @@ pub fn native_axis_axis(args: &[Value]) -> Value {
             None
         }
     });
-    
+
     let mode = match mode {
         Some(m) => m,
         None => return Value::Null,
@@ -1294,7 +1317,11 @@ pub fn native_plot_show_figure(args: &[Value]) -> Value {
 
     let figure_ref = figure.borrow();
     let rows = figure_ref.axes.len();
-    let _cols = if rows > 0 { figure_ref.axes[0].len() } else { 0 };
+    let _cols = if rows > 0 {
+        figure_ref.axes[0].len()
+    } else {
+        0
+    };
 
     // Convert figsize to pixels (figsize is in "figure units", convert to pixels)
     // Default: 1 unit = 100 pixels, so (10, 10) = 1000x1000 pixels
@@ -1321,7 +1348,7 @@ pub fn native_plot_show_figure(args: &[Value]) -> Value {
     let figure_data = {
         let figure_ref = figure.borrow();
         let mut axes_data = Vec::new();
-        
+
         for row in &figure_ref.axes {
             let mut row_data = Vec::new();
             for axis_rc in row {
@@ -1344,22 +1371,22 @@ pub fn native_plot_show_figure(args: &[Value]) -> Value {
             }
             axes_data.push(row_data);
         }
-        
+
         FigureData {
             axes: axes_data,
             tight_layout: figure_ref.tight_layout,
         }
     };
-    
+
     // Send command to GUI thread to update figure
     let plot_system = get_plot_system();
     let proxy = plot_system.proxy();
-    
+
     let command = GuiCommand::UpdateFigure {
         window_id,
         figure_data,
     };
-    
+
     if let Err(_e) = proxy.send_event(command) {
         return Value::Null;
     }
@@ -1429,14 +1456,14 @@ pub fn native_plot_ylabel(args: &[Value]) -> Value {
 /// Returns default blue (0xFF00BFFF) on error
 fn parse_color(color_str: &str) -> u32 {
     let color_lower = color_str.to_lowercase();
-    
+
     // Named colors
     match color_lower.as_str() {
-        "blue" => 0xFF00BFFF,   // Deep sky blue
+        "blue" => 0xFF00BFFF,  // Deep sky blue
         "green" => 0xFF00FF00, // Lime green
         "red" => 0xFFFF0000,   // Red
-        "black" => 0xFF000000,  // Black
-        "white" => 0xFFFFFFFF,  // White
+        "black" => 0xFF000000, // Black
+        "white" => 0xFFFFFFFF, // White
         _ => {
             // Try to parse as hex color
             let hex_str = if color_str.starts_with('#') {
@@ -1444,7 +1471,7 @@ fn parse_color(color_str: &str) -> u32 {
             } else {
                 color_str
             };
-            
+
             if hex_str.len() == 6 {
                 if let Ok(rgb) = u32::from_str_radix(hex_str, 16) {
                     let r = ((rgb >> 16) & 0xFF) as u8;
@@ -1454,7 +1481,7 @@ fn parse_color(color_str: &str) -> u32 {
                     return (0xFF << 24) | ((b as u32) << 16) | ((g as u32) << 8) | (r as u32);
                 }
             }
-            
+
             // Default to blue on error
             0xFF00BFFF
         }
@@ -1561,41 +1588,53 @@ pub fn native_plot_line(args: &[Value]) -> Value {
             if let Some(Value::Bool(b)) = map.get("show_points") {
                 show_points = *b;
             }
-            
+
             if let Some(Value::Number(n)) = map.get("point_size") {
                 point_size = (*n as usize).max(1).min(50); // Clamp between 1 and 50
             }
-            
+
             if let Some(Value::Number(n)) = map.get("line_width") {
                 line_width = (*n as usize).max(1).min(20); // Clamp between 1 and 20
             }
-            
+
             if let Some(Value::String(s)) = map.get("color") {
                 color = parse_color(s);
             }
         }
     }
-    
+
     // Handle case where color is passed as a positional string argument after positional args
     // This happens when color="blue" is compiled as a positional argument
     for arg in args.iter() {
-            if let Value::String(s) = arg {
-                // Check if this string looks like a color (named color or hex)
-                let s_lower = s.to_lowercase();
-                let is_named_color = matches!(s_lower.as_str(), "blue" | "green" | "red" | "black" | "white");
-                let is_hex_color = s.starts_with('#') && s.len() == 7 && s[1..].chars().all(|c| c.is_ascii_hexdigit())
-                    || !s.starts_with('#') && s.len() == 6 && s.chars().all(|c| c.is_ascii_hexdigit());
-                
-                if is_named_color || is_hex_color {
-                    color = parse_color(s);
-                    break; // Use first valid color string found
-                }
+        if let Value::String(s) = arg {
+            // Check if this string looks like a color (named color or hex)
+            let s_lower = s.to_lowercase();
+            let is_named_color = matches!(
+                s_lower.as_str(),
+                "blue" | "green" | "red" | "black" | "white"
+            );
+            let is_hex_color = s.starts_with('#')
+                && s.len() == 7
+                && s[1..].chars().all(|c| c.is_ascii_hexdigit())
+                || !s.starts_with('#') && s.len() == 6 && s.chars().all(|c| c.is_ascii_hexdigit());
+
+            if is_named_color || is_hex_color {
+                color = parse_color(s);
+                break; // Use first valid color string found
             }
+        }
     }
 
     // Add line data to plot state
     PlotContext::with_current(|ctx| {
-        ctx.plot_state.line_data.push((x_array, y_array, show_points, point_size, line_width, color));
+        ctx.plot_state.line_data.push((
+            x_array,
+            y_array,
+            show_points,
+            point_size,
+            line_width,
+            color,
+        ));
     });
 
     Value::Null
@@ -1608,7 +1647,11 @@ pub fn native_plot_line(args: &[Value]) -> Value {
 /// x can be array of strings (categories) or numbers (will be converted to strings)
 /// Note: When called as plot.bar(x, y, ...), args[0] is the receiver (plot object), so x=args[1], y=args[2].
 pub fn native_plot_bar(args: &[Value]) -> Value {
-    let offset = if args.len() >= 3 && matches!(&args[0], Value::Object(_)) { 1 } else { 0 };
+    let offset = if args.len() >= 3 && matches!(&args[0], Value::Object(_)) {
+        1
+    } else {
+        0
+    };
     if args.len() < offset + 2 {
         return Value::Null;
     }
@@ -1675,16 +1718,23 @@ pub fn native_plot_bar(args: &[Value]) -> Value {
             }
         }
     }
-    
+
     // Handle case where color is passed as a positional string argument
     if args.len() >= offset + 3 {
         for arg in args.iter().skip(offset + 2) {
             if let Value::String(s) = arg {
                 let s_lower = s.to_lowercase();
-                let is_named_color = matches!(s_lower.as_str(), "blue" | "green" | "red" | "black" | "white");
-                let is_hex_color = s.starts_with('#') && s.len() == 7 && s[1..].chars().all(|c| c.is_ascii_hexdigit())
-                    || !s.starts_with('#') && s.len() == 6 && s.chars().all(|c| c.is_ascii_hexdigit());
-                
+                let is_named_color = matches!(
+                    s_lower.as_str(),
+                    "blue" | "green" | "red" | "black" | "white"
+                );
+                let is_hex_color = s.starts_with('#')
+                    && s.len() == 7
+                    && s[1..].chars().all(|c| c.is_ascii_hexdigit())
+                    || !s.starts_with('#')
+                        && s.len() == 6
+                        && s.chars().all(|c| c.is_ascii_hexdigit());
+
                 if is_named_color || is_hex_color {
                     color = parse_color(s);
                     break;
@@ -1708,7 +1758,11 @@ pub fn native_plot_bar(args: &[Value]) -> Value {
 /// x can be array of strings (categories) or numbers (will be converted to strings)
 /// Note: When called as plot.pie(x, y, ...), args[0] is the receiver (plot object), so x=args[1], y=args[2].
 pub fn native_plot_pie(args: &[Value]) -> Value {
-    let offset = if args.len() >= 3 && matches!(&args[0], Value::Object(_)) { 1 } else { 0 };
+    let offset = if args.len() >= 3 && matches!(&args[0], Value::Object(_)) {
+        1
+    } else {
+        0
+    };
     if args.len() < offset + 2 {
         return Value::Null;
     }
@@ -1775,16 +1829,23 @@ pub fn native_plot_pie(args: &[Value]) -> Value {
             }
         }
     }
-    
+
     // Handle case where color is passed as a positional string argument
     if args.len() >= offset + 3 {
         for arg in args.iter().skip(offset + 2) {
             if let Value::String(s) = arg {
                 let s_lower = s.to_lowercase();
-                let is_named_color = matches!(s_lower.as_str(), "blue" | "green" | "red" | "black" | "white");
-                let is_hex_color = s.starts_with('#') && s.len() == 7 && s[1..].chars().all(|c| c.is_ascii_hexdigit())
-                    || !s.starts_with('#') && s.len() == 6 && s.chars().all(|c| c.is_ascii_hexdigit());
-                
+                let is_named_color = matches!(
+                    s_lower.as_str(),
+                    "blue" | "green" | "red" | "black" | "white"
+                );
+                let is_hex_color = s.starts_with('#')
+                    && s.len() == 7
+                    && s[1..].chars().all(|c| c.is_ascii_hexdigit())
+                    || !s.starts_with('#')
+                        && s.len() == 6
+                        && s.chars().all(|c| c.is_ascii_hexdigit());
+
                 if is_named_color || is_hex_color {
                     color = parse_color(s);
                     break;
@@ -1808,7 +1869,11 @@ pub fn native_plot_pie(args: &[Value]) -> Value {
 /// data must be a 2D array (array of arrays of numbers)
 /// Note: When called as plot.heatmap(data, ...), args[0] is the receiver (plot object), so data=args[1].
 pub fn native_plot_heatmap(args: &[Value]) -> Value {
-    let offset = if args.len() >= 2 && matches!(&args[0], Value::Object(_)) { 1 } else { 0 };
+    let offset = if args.len() >= 2 && matches!(&args[0], Value::Object(_)) {
+        1
+    } else {
+        0
+    };
     if args.len() <= offset {
         return Value::Null;
     }
@@ -1818,12 +1883,12 @@ pub fn native_plot_heatmap(args: &[Value]) -> Value {
         Value::Array(arr) => {
             let arr_ref = arr.borrow();
             let mut data = Vec::new();
-            
+
             // Check if array is empty
             if arr_ref.is_empty() {
                 return Value::Null;
             }
-            
+
             // Get first row to determine column count
             let first_row = match &arr_ref[0] {
                 Value::Array(row) => {
@@ -1842,10 +1907,10 @@ pub fn native_plot_heatmap(args: &[Value]) -> Value {
                 }
                 _ => return Value::Null, // First element must be an array
             };
-            
+
             let col_count = first_row.len();
             data.push(first_row);
-            
+
             // Process remaining rows
             for val in arr_ref.iter().skip(1) {
                 match val {
@@ -1867,7 +1932,7 @@ pub fn native_plot_heatmap(args: &[Value]) -> Value {
                     _ => return Value::Null, // All elements must be arrays
                 }
             }
-            
+
             data
         }
         _ => return Value::Null,
@@ -1902,7 +1967,7 @@ pub fn native_plot_heatmap(args: &[Value]) -> Value {
             }
         }
     }
-    
+
     // Handle case where parameters are passed as positional arguments
     if args.len() >= offset + 2 {
         for arg in args.iter().skip(offset + 1) {
@@ -1924,9 +1989,10 @@ pub fn native_plot_heatmap(args: &[Value]) -> Value {
 
     // Add heatmap data to plot state
     PlotContext::with_current(|ctx| {
-        ctx.plot_state.heatmap_data.push((heatmap_data, min_val, max_val, palette));
+        ctx.plot_state
+            .heatmap_data
+            .push((heatmap_data, min_val, max_val, palette));
     });
 
     Value::Null
 }
-

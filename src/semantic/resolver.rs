@@ -1,7 +1,7 @@
 // Разрешение переменных и подготовка к компиляции
 
-use crate::parser::ast::{Expr, IndexExpr, Stmt, Param, Arg, UnpackPattern};
 use crate::common::error::LangError;
+use crate::parser::ast::{Arg, Expr, IndexExpr, Param, Stmt, UnpackPattern};
 use crate::semantic::scope::Scope;
 
 pub struct Resolver {
@@ -44,7 +44,12 @@ impl Resolver {
                 // Import statements don't need variable resolution
                 // They are handled at runtime by the VM
             }
-            Stmt::Let { name, value, is_global, .. } => {
+            Stmt::Let {
+                name,
+                value,
+                is_global,
+                ..
+            } => {
                 self.resolve_expr(value)?;
                 // Глобальные переменные не добавляются в локальные области видимости
                 if !is_global {
@@ -55,7 +60,9 @@ impl Resolver {
             Stmt::Expr { expr, .. } => {
                 self.resolve_expr(expr)?;
             }
-            Stmt::Function { name, params, body, .. } => {
+            Stmt::Function {
+                name, params, body, ..
+            } => {
                 self.declare(name);
                 self.define(name);
                 // Разрешаем значения по умолчанию параметров
@@ -66,7 +73,9 @@ impl Resolver {
                 }
                 self.resolve_function(params, body, FunctionType::Function)?;
             }
-            Stmt::StreamFunction { name, params, body, .. } => {
+            Stmt::StreamFunction {
+                name, params, body, ..
+            } => {
                 self.declare(name);
                 self.define(name);
                 for param in params {
@@ -76,14 +85,21 @@ impl Resolver {
                 }
                 self.resolve_function(params, body, FunctionType::Stream)?;
             }
-            Stmt::If { condition, then_branch, else_branch, .. } => {
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
                 self.resolve_expr(condition)?;
                 self.resolve_stmt_block(then_branch)?;
                 if let Some(else_branch) = else_branch {
                     self.resolve_stmt_block(else_branch)?;
                 }
             }
-            Stmt::While { condition, body, .. } => {
+            Stmt::While {
+                condition, body, ..
+            } => {
                 self.resolve_expr(condition)?;
                 self.resolve_stmt_block(body)?;
             }
@@ -117,25 +133,36 @@ impl Resolver {
             Stmt::Continue { .. } => {
                 // continue не требует разрешения переменных
             }
-            Stmt::For { pattern, iterable, body, .. } => {
+            Stmt::For {
+                pattern,
+                iterable,
+                body,
+                ..
+            } => {
                 // Начинаем новую область видимости для цикла for
                 self.begin_scope();
-                
+
                 // Объявляем переменные из паттерна распаковки
                 self.declare_unpack_pattern(pattern);
-                
+
                 // Разрешаем итерируемое выражение
                 self.resolve_expr(iterable)?;
-                
+
                 // Разрешаем тело цикла
                 self.resolve_stmt_block(body)?;
-                
+
                 self.end_scope();
             }
-            Stmt::Try { try_block, catch_blocks, else_block, finally_block, .. } => {
+            Stmt::Try {
+                try_block,
+                catch_blocks,
+                else_block,
+                finally_block,
+                ..
+            } => {
                 // Разрешаем try блок
                 self.resolve_stmt_block(try_block)?;
-                
+
                 // Разрешаем catch блоки
                 for catch_block in catch_blocks {
                     self.begin_scope();
@@ -147,12 +174,12 @@ impl Resolver {
                     self.resolve_stmt_block(&catch_block.body)?;
                     self.end_scope();
                 }
-                
+
                 // Разрешаем else блок (если есть)
                 if let Some(ref else_block) = else_block {
                     self.resolve_stmt_block(else_block)?;
                 }
-                
+
                 // Разрешаем finally блок (если есть)
                 if let Some(ref finally_block) = finally_block {
                     self.resolve_stmt_block(finally_block)?;
@@ -162,23 +189,42 @@ impl Resolver {
                 // Разрешаем выражение в throw
                 self.resolve_expr(value)?;
             }
-            Stmt::Class { name, private_fields, protected_fields, public_fields, private_variables, protected_variables, public_variables, constructors, methods, .. } => {
+            Stmt::Class {
+                name,
+                private_fields,
+                protected_fields,
+                public_fields,
+                private_variables,
+                protected_variables,
+                public_variables,
+                constructors,
+                methods,
+                ..
+            } => {
                 // Объявляем класс
                 self.declare(name);
                 self.define(name);
-                
+
                 // Разрешаем значения по умолчанию полей
-                for field in private_fields.iter().chain(protected_fields.iter()).chain(public_fields.iter()) {
+                for field in private_fields
+                    .iter()
+                    .chain(protected_fields.iter())
+                    .chain(public_fields.iter())
+                {
                     if let Some(ref default_expr) = field.default_value {
                         self.resolve_expr(default_expr)?;
                     }
                 }
-                
+
                 // Разрешаем выражения переменных уровня класса
-                for var in private_variables.iter().chain(protected_variables.iter()).chain(public_variables.iter()) {
+                for var in private_variables
+                    .iter()
+                    .chain(protected_variables.iter())
+                    .chain(public_variables.iter())
+                {
                     self.resolve_expr(&var.value)?;
                 }
-                
+
                 // Разрешаем конструкторы и методы
                 for constructor in constructors {
                     // Разрешаем значения по умолчанию параметров
@@ -187,9 +233,13 @@ impl Resolver {
                             self.resolve_expr(default_expr)?;
                         }
                     }
-                    self.resolve_function(&constructor.params, &constructor.body, FunctionType::Function)?;
+                    self.resolve_function(
+                        &constructor.params,
+                        &constructor.body,
+                        FunctionType::Function,
+                    )?;
                 }
-                
+
                 for method in methods {
                     // Разрешаем значения по умолчанию параметров
                     for param in &method.params {
@@ -221,7 +271,10 @@ impl Resolver {
                         if scope.locals.contains_key(name) && !scope.locals.contains_key(name) {
                             // Переменная объявлена, но еще не определена
                             return Err(LangError::SemanticError {
-                                message: format!("Cannot read local variable '{}' in its own initializer", name),
+                                message: format!(
+                                    "Cannot read local variable '{}' in its own initializer",
+                                    name
+                                ),
                                 line: *line,
                                 file: self.source_name.clone(),
                             });
@@ -323,12 +376,22 @@ impl Resolver {
                 self.resolve_expr(array)?;
                 self.resolve_index_expr(index)?;
             }
-            Expr::AssignArray { array, index, value, .. } => {
+            Expr::AssignArray {
+                array,
+                index,
+                value,
+                ..
+            } => {
                 self.resolve_expr(array)?;
                 self.resolve_index_expr(index)?;
                 self.resolve_expr(value)?;
             }
-            Expr::AssignArrayOp { array, index, value, .. } => {
+            Expr::AssignArrayOp {
+                array,
+                index,
+                value,
+                ..
+            } => {
                 self.resolve_expr(array)?;
                 self.resolve_index_expr(index)?;
                 self.resolve_expr(value)?;
@@ -397,7 +460,9 @@ impl Resolver {
             Expr::ExprReturn { value, line } => {
                 if self.current_function != FunctionType::Stream {
                     return Err(LangError::SemanticError {
-                        message: "'return' as an expression is only allowed inside a stream fn body".to_string(),
+                        message:
+                            "'return' as an expression is only allowed inside a stream fn body"
+                                .to_string(),
                         line: *line,
                         file: self.source_name.clone(),
                     });
@@ -433,7 +498,9 @@ impl Resolver {
     fn resolve_index_expr(&mut self, index: &IndexExpr) -> Result<(), LangError> {
         match index {
             IndexExpr::Scalar(e) => self.resolve_expr(e),
-            IndexExpr::Slice { start, stop, step, .. } => {
+            IndexExpr::Slice {
+                start, stop, step, ..
+            } => {
                 if let Some(e) = start {
                     self.resolve_expr(e)?;
                 }
@@ -470,11 +537,7 @@ impl Resolver {
     }
 
     fn begin_scope(&mut self) {
-        let parent = if let Some(last) = self.scopes.last() {
-            Some(Box::new(last.clone()))
-        } else {
-            None
-        };
+        let parent = self.scopes.last().map(|last| Box::new(last.clone()));
         let scope = if let Some(parent) = parent {
             Scope::with_parent(parent)
         } else {
@@ -534,4 +597,3 @@ impl Resolver {
         }
     }
 }
-

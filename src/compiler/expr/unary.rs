@@ -1,11 +1,10 @@
-/// Компиляция унарных операторов
-
-use crate::parser::ast::Expr;
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
-use crate::lexer::TokenKind;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
+use crate::lexer::TokenKind;
+/// Компиляция унарных операторов
+use crate::parser::ast::Expr;
 
 pub fn compile_unary(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), LangError> {
     if let Expr::Unary { op, right, line } = expr {
@@ -38,4 +37,3 @@ pub fn compile_unary(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
         })
     }
 }
-

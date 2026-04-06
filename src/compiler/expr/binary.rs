@@ -1,15 +1,20 @@
-/// Компиляция бинарных операторов
-
-use crate::parser::ast::{BinaryOpKind, Expr};
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
 use crate::common::value::Value;
-use crate::lexer::TokenKind;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
+use crate::lexer::TokenKind;
+/// Компиляция бинарных операторов
+use crate::parser::ast::{BinaryOpKind, Expr};
 
 pub fn compile_binary(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), LangError> {
-    if let Expr::Binary { left, op, right, line } = expr {
+    if let Expr::Binary {
+        left,
+        op,
+        right,
+        line,
+    } = expr
+    {
         *ctx.current_line = *line;
 
         match op {
@@ -25,9 +30,11 @@ pub fn compile_binary(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                 ctx.chunk.write_with_line(OpCode::Dup, *line);
                 let skip_right_label = ctx.labels.create_label();
                 let end_label = ctx.labels.create_label();
-                ctx.labels.emit_jump(ctx.chunk, *line, true, skip_right_label)?;
+                ctx.labels
+                    .emit_jump(ctx.chunk, *line, true, skip_right_label)?;
                 ctx.labels.emit_jump(ctx.chunk, *line, false, end_label)?;
-                ctx.labels.mark_label(skip_right_label, ctx.chunk.code.len());
+                ctx.labels
+                    .mark_label(skip_right_label, ctx.chunk.code.len());
                 ctx.chunk.write_with_line(OpCode::Pop, *line);
                 expr::compile_expr(ctx, right)?;
                 ctx.labels.mark_label(end_label, ctx.chunk.code.len());
@@ -68,7 +75,9 @@ pub fn compile_binary(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                     TokenKind::Percent => ctx.chunk.write_with_line(OpCode::Mod, *line),
                     TokenKind::Greater => ctx.chunk.write_with_line(OpCode::Greater, *line),
                     TokenKind::Less => ctx.chunk.write_with_line(OpCode::Less, *line),
-                    TokenKind::GreaterEqual => ctx.chunk.write_with_line(OpCode::GreaterEqual, *line),
+                    TokenKind::GreaterEqual => {
+                        ctx.chunk.write_with_line(OpCode::GreaterEqual, *line)
+                    }
                     TokenKind::LessEqual => ctx.chunk.write_with_line(OpCode::LessEqual, *line),
                     TokenKind::In => ctx.chunk.write_with_line(OpCode::In, *line),
                     _ => {

@@ -67,10 +67,7 @@ impl OperatorRegistry {
         let mut r = Self::new();
         let _ = r.register(builtin_op("or", "or", 10, Associativity::Left));
         let _ = r.register(builtin_op("and", "and", 20, Associativity::Left));
-        for (sym, name, _prec) in [
-            ("==", "eq", 30),
-            ("!=", "ne", 30),
-        ] {
+        for (sym, name, _prec) in [("==", "eq", 30), ("!=", "ne", 30)] {
             let _ = r.register(builtin_op(sym, name, 30, Associativity::Left));
         }
         for (sym, name, prec) in [
@@ -121,7 +118,11 @@ impl OperatorRegistry {
 
     /// Merge rows from a native module's `operator_descriptor` return value.
     /// `source_module` labels the dylib (e.g. `"ml"`) for errors and [`OperatorInfo::source_module`].
-    pub fn merge_from_descriptor_value(&mut self, v: &Value, source_module: &str) -> Result<(), LangError> {
+    pub fn merge_from_descriptor_value(
+        &mut self,
+        v: &Value,
+        source_module: &str,
+    ) -> Result<(), LangError> {
         let Value::Array(rows) = v else {
             return Err(LangError::runtime_error(
                 "operator_descriptor must return an array".to_string(),
@@ -181,7 +182,8 @@ impl OperatorRegistry {
                 }
                 _ => {
                     return Err(LangError::runtime_error(
-                        "operator_descriptor: assoc must be \"left\", \"right\", 0, or 1".to_string(),
+                        "operator_descriptor: assoc must be \"left\", \"right\", 0, or 1"
+                            .to_string(),
                         0,
                     ))
                 }
@@ -215,10 +217,7 @@ impl OperatorRegistry {
         items.sort_by(|a, b| a.symbol.cmp(&b.symbol));
         let mut out = String::new();
         for info in items {
-            let src = info
-                .source_module
-                .as_deref()
-                .unwrap_or("(unknown)");
+            let src = info.source_module.as_deref().unwrap_or("(unknown)");
             let _ = writeln!(
                 out,
                 "symbol={}\tname={}\tprecedence={}\tassociativity={}\tsource={}",

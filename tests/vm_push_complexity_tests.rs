@@ -13,12 +13,7 @@ fn run_push_only_loop(n: u32) -> std::time::Duration {
     let v = run(&src).expect("run");
     let elapsed = t0.elapsed();
     match v {
-        Value::Number(x) => assert!(
-            (x - n as f64).abs() < 0.01,
-            "expected len {} got {}",
-            n,
-            x
-        ),
+        Value::Number(x) => assert!((x - n as f64).abs() < 0.01, "expected len {} got {}", n, x),
         other => panic!("expected Number, got {:?}", other),
     }
     elapsed

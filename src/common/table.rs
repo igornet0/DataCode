@@ -59,10 +59,7 @@ impl<'a> RowsRef<'a> {
 
     /// Iterator over rows as slices (no allocation per row).
     pub fn iter(&'a self) -> RowsIter<'a> {
-        RowsIter {
-            rr: self,
-            next: 0,
-        }
+        RowsIter { rr: self, next: 0 }
     }
 
     /// Materialize all rows into Vec<Vec<Value>> (e.g. for clone/join).
@@ -196,11 +193,8 @@ impl Table {
         }
 
         let num_cols = data[0].len();
-        let headers = headers.unwrap_or_else(|| {
-            (0..num_cols)
-                .map(|i| format!("Column_{}", i))
-                .collect()
-        });
+        let headers =
+            headers.unwrap_or_else(|| (0..num_cols).map(|i| format!("Column_{}", i)).collect());
 
         let flat: Vec<Value> = data
             .into_iter()
@@ -239,7 +233,11 @@ impl Table {
     }
 
     /// Build View table from pre-flattened cell IDs (length must be rows*num_cols).
-    pub fn from_flat_view(flat_cell_ids: Vec<ValueId>, num_cols: usize, headers: Vec<String>) -> Self {
+    pub fn from_flat_view(
+        flat_cell_ids: Vec<ValueId>,
+        num_cols: usize,
+        headers: Vec<String>,
+    ) -> Self {
         Table {
             data: TableData::View {
                 flat_cell_ids,
@@ -491,8 +489,16 @@ impl PartialEq for Table {
             && self.len() == other.len()
             && match (&self.data, &other.data) {
                 (
-                    TableData::Owned { flat: a, num_cols: nc_a, .. },
-                    TableData::Owned { flat: b, num_cols: nc_b, .. },
+                    TableData::Owned {
+                        flat: a,
+                        num_cols: nc_a,
+                        ..
+                    },
+                    TableData::Owned {
+                        flat: b,
+                        num_cols: nc_b,
+                        ..
+                    },
                 ) => nc_a == nc_b && a == b,
                 _ => false,
             }

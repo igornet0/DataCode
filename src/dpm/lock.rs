@@ -22,7 +22,8 @@ pub fn load_lock(project_root: &Path, lock_file_name: &str) -> Result<DpmLock, S
     if !path.exists() {
         return Ok(DpmLock::default());
     }
-    let s = std::fs::read_to_string(&path).map_err(|e| format!("Read {}: {}", path.display(), e))?;
+    let s =
+        std::fs::read_to_string(&path).map_err(|e| format!("Read {}: {}", path.display(), e))?;
     toml::from_str(&s).map_err(|e| format!("Parse {}: {}", path.display(), e))
 }
 

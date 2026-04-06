@@ -13,9 +13,9 @@ pub type ForRangeState = (i64, i64, i64, usize);
 
 pub struct CallFrame {
     pub function: Function,
-    pub ip: usize,           // Instruction pointer
+    pub ip: usize,               // Instruction pointer
     pub slots: Vec<TaggedValue>, // Локальные переменные (TaggedValue: immediates без store)
-    pub stack_start: usize,  // Начало стека для этой функции в общем стеке VM
+    pub stack_start: usize,      // Начало стека для этой функции в общем стеке VM
     /// Константы текущего chunk, загруженные в store при создании фрейма
     pub constant_ids: Vec<ValueId>,
     /// Tagged form for immediates (Number/Bool/Null) to push without store lookup; None => use constant_ids.

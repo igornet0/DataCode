@@ -5,9 +5,9 @@ use crate::common::value::Value;
 use crate::dpm::registry::registry_index_url;
 use crate::vm::permission_policy::PermissionPolicy;
 use crate::vm::vm::VM_CALL_CONTEXT;
+use std::cell::RefCell;
 use std::io::Write;
 use std::rc::Rc;
-use std::cell::RefCell;
 use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
@@ -39,12 +39,7 @@ fn arg_string(args: &[Value], i: usize) -> Option<String> {
 
 pub fn native_system_get_os(_args: &[Value]) -> Value {
     let raw = std::env::consts::OS;
-    let s = match raw {
-        "linux" => "linux",
-        "macos" => "macos",
-        "windows" => "windows",
-        _ => raw,
-    };
+    let s = raw;
     Value::String(s.to_string())
 }
 

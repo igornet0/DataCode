@@ -12,7 +12,12 @@ mod tests {
     fn assert_number_result(source: &str, expected: f64) {
         let result = run_plain(source);
         match result {
-            Ok(Value::Number(n)) => assert!((n - expected).abs() < 1e-10, "expected {}, got {}", expected, n),
+            Ok(Value::Number(n)) => assert!(
+                (n - expected).abs() < 1e-10,
+                "expected {}, got {}",
+                expected,
+                n
+            ),
             Ok(v) => panic!("expected Number({}), got {:?}", expected, v),
             Err(e) => panic!("error: {:?}", e),
         }
@@ -36,12 +41,13 @@ mod tests {
         }
     }
 
-
     /// Path to a temp SQLite file for tests that need persistence (unique per test).
     fn temp_db_path() -> String {
         let mut path = std::env::temp_dir();
         path.push(format!("datacode_test_{}.db", std::process::id()));
-        path.to_string_lossy().replace('\\', "\\\\").replace('"', "\\\"")
+        path.to_string_lossy()
+            .replace('\\', "\\\\")
+            .replace('"', "\\\"")
     }
 
     // ========== Import ==========
@@ -101,7 +107,10 @@ mod tests {
             from database_engine import engine
             engine("postgres://localhost/db")
         "#;
-        assert!(run_plain(source).is_err(), "expected error for unsupported URL scheme");
+        assert!(
+            run_plain(source).is_err(),
+            "expected error for unsupported URL scheme"
+        );
     }
 
     #[test]
@@ -389,7 +398,10 @@ mod tests {
             from database_engine import select
             select()
         "#;
-        assert!(run_plain(source).is_err(), "expected error for select() without arg");
+        assert!(
+            run_plain(source).is_err(),
+            "expected error for select() without arg"
+        );
     }
 
     // ========== now_call ==========
@@ -672,7 +684,10 @@ mod tests {
             let e = engine("sqlite:///:memory:")
             e.query("NOT A SELECT", [])
         "#;
-        assert!(run_plain(source).is_err(), "expected error for invalid query");
+        assert!(
+            run_plain(source).is_err(),
+            "expected error for invalid query"
+        );
     }
 
     #[test]
@@ -682,7 +697,10 @@ mod tests {
             let cluster = DatabaseCluster()
             cluster.add("x", 123)
         "#;
-        assert!(run_plain(source).is_err(), "expected error when add receives non-engine");
+        assert!(
+            run_plain(source).is_err(),
+            "expected error when add receives non-engine"
+        );
     }
 
     #[test]
@@ -693,7 +711,10 @@ mod tests {
             cluster.add("main", engine("sqlite:///:memory:"))
             cluster.get(42)
         "#;
-        assert!(run_plain(source).is_err(), "expected error when get receives non-string");
+        assert!(
+            run_plain(source).is_err(),
+            "expected error when get receives non-string"
+        );
     }
 
     #[test]
@@ -760,7 +781,11 @@ mod tests {
         match run_plain(source) {
             Ok(Value::Null) => panic!("expected error for unique constraint on login"),
             Ok(v) => panic!("expected error, got Ok({:?})", v),
-            Err(e) => assert!(e.to_string().contains("UNIQUE") || e.to_string().to_lowercase().contains("unique"), "expected UNIQUE constraint error, got: {}", e),
+            Err(e) => assert!(
+                e.to_string().contains("UNIQUE") || e.to_string().to_lowercase().contains("unique"),
+                "expected UNIQUE constraint error, got: {}",
+                e
+            ),
         }
     }
 
@@ -859,5 +884,4 @@ mod tests {
 
         assert_bool_result(source, true);
     }
-
 }

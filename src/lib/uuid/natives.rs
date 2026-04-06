@@ -1,8 +1,8 @@
 // Native functions for uuid module
 
 use crate::common::value::Value;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 use uuid::Uuid;
 use uuid::Variant;
 
@@ -70,7 +70,9 @@ pub fn native_uuid_to_string(args: &[Value]) -> Value {
         Some(v) => match value_to_uuid(v) {
             Some(u) => u,
             None => {
-                crate::websocket::set_native_error("uuid.to_string requires a UUID argument".to_string());
+                crate::websocket::set_native_error(
+                    "uuid.to_string requires a UUID argument".to_string(),
+                );
                 return Value::Null;
             }
         },
@@ -87,7 +89,9 @@ pub fn native_uuid_to_bytes(args: &[Value]) -> Value {
     let u = match args.first().and_then(value_to_uuid) {
         Some(u) => u,
         None => {
-            crate::websocket::set_native_error("uuid.to_bytes requires a UUID argument".to_string());
+            crate::websocket::set_native_error(
+                "uuid.to_bytes requires a UUID argument".to_string(),
+            );
             return Value::Null;
         }
     };
@@ -101,12 +105,17 @@ pub fn native_uuid_from_bytes(args: &[Value]) -> Value {
     let arr = match args.first() {
         Some(Value::Array(rc)) => rc.borrow().clone(),
         _ => {
-            crate::websocket::set_native_error("uuid.from_bytes requires an array of 16 numbers".to_string());
+            crate::websocket::set_native_error(
+                "uuid.from_bytes requires an array of 16 numbers".to_string(),
+            );
             return Value::Null;
         }
     };
     if arr.len() != 16 {
-        crate::websocket::set_native_error(format!("uuid.from_bytes: array must have 16 elements, got {}", arr.len()));
+        crate::websocket::set_native_error(format!(
+            "uuid.from_bytes: array must have 16 elements, got {}",
+            arr.len()
+        ));
         return Value::Null;
     }
     let mut bytes = [0u8; 16];
@@ -114,7 +123,9 @@ pub fn native_uuid_from_bytes(args: &[Value]) -> Value {
         let n = match v {
             Value::Number(x) if *x >= 0.0 && *x <= 255.0 && x.fract() == 0.0 => *x as u8,
             _ => {
-                crate::websocket::set_native_error("uuid.from_bytes: each element must be integer 0-255".to_string());
+                crate::websocket::set_native_error(
+                    "uuid.from_bytes: each element must be integer 0-255".to_string(),
+                );
                 return Value::Null;
             }
         };
@@ -152,7 +163,9 @@ pub fn native_uuid_timestamp(args: &[Value]) -> Value {
     let u = match args.first().and_then(value_to_uuid) {
         Some(u) => u,
         None => {
-            crate::websocket::set_native_error("uuid.timestamp requires a UUID argument".to_string());
+            crate::websocket::set_native_error(
+                "uuid.timestamp requires a UUID argument".to_string(),
+            );
             return Value::Null;
         }
     };
@@ -172,14 +185,18 @@ pub fn native_uuid_v3(args: &[Value]) -> Value {
             let ns = match value_to_uuid(ns_v) {
                 Some(u) => u,
                 None => {
-                    crate::websocket::set_native_error("uuid.v3: first argument must be a UUID (namespace)".to_string());
+                    crate::websocket::set_native_error(
+                        "uuid.v3: first argument must be a UUID (namespace)".to_string(),
+                    );
                     return Value::Null;
                 }
             };
             (ns, name.as_bytes())
         }
         _ => {
-            crate::websocket::set_native_error("uuid.v3 requires (namespace: UUID, name: string)".to_string());
+            crate::websocket::set_native_error(
+                "uuid.v3 requires (namespace: UUID, name: string)".to_string(),
+            );
             return Value::Null;
         }
     };
@@ -193,14 +210,18 @@ pub fn native_uuid_v5(args: &[Value]) -> Value {
             let ns = match value_to_uuid(ns_v) {
                 Some(u) => u,
                 None => {
-                    crate::websocket::set_native_error("uuid.v5: first argument must be a UUID (namespace)".to_string());
+                    crate::websocket::set_native_error(
+                        "uuid.v5: first argument must be a UUID (namespace)".to_string(),
+                    );
                     return Value::Null;
                 }
             };
             (ns, name.as_bytes())
         }
         _ => {
-            crate::websocket::set_native_error("uuid.v5 requires (namespace: UUID, name: string)".to_string());
+            crate::websocket::set_native_error(
+                "uuid.v5 requires (namespace: UUID, name: string)".to_string(),
+            );
             return Value::Null;
         }
     };

@@ -1,11 +1,11 @@
 // Window state stored in GUI thread
 
-use crate::plot::Window;
-use crate::plot::Image;
-use crate::plot::window::ImageViewState;
-use crate::plot::renderer::Renderer;
 use crate::plot::command::{ChartData, FigureData};
-use std::sync::{Arc, Mutex, Condvar};
+use crate::plot::renderer::Renderer;
+use crate::plot::window::ImageViewState;
+use crate::plot::Image;
+use crate::plot::Window;
+use std::sync::{Arc, Condvar, Mutex};
 
 /// Render content type for a window
 #[derive(Debug)]
@@ -30,7 +30,7 @@ pub struct WindowState {
     pub renderer: Option<Renderer>,
     pub content: RenderContent,
     pub wait: Option<Arc<(Mutex<bool>, Condvar)>>, // For blocking runtime until window closes
-    pub cursor_pos: Option<(f32, f32)>, // Cursor position (x, y) in screen coordinates
+    pub cursor_pos: Option<(f32, f32)>,            // Cursor position (x, y) in screen coordinates
     pub selected_point: Option<(usize, usize)>, // Selected point (line_index, point_index) for line charts
     pub hovered_point: Option<(usize, usize)>, // Hovered point (line_index, point_index) for line charts
 }
@@ -48,4 +48,3 @@ impl WindowState {
         }
     }
 }
-

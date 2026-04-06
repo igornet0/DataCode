@@ -4,13 +4,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::common::array_slice::{contiguous_positive_slice_bounds, slice_indices};
-use crate::common::value::{ArrayViewData, ArrayViewSource, ByteBuffer, Value};
-use crate::common::{error::LangError, value_store::{ValueCell, ValueStore}, TaggedValue};
-use crate::vm::array_view::{
-    origin_to_view_data, push_array_view_value, resolve_slice_origin, validate_view_physical, view_get_element,
-    SliceOrigin,
-};
 use crate::common::error::ErrorType;
+use crate::common::value::{ArrayViewData, ArrayViewSource, ByteBuffer, Value};
+use crate::common::{
+    error::LangError,
+    value_store::{ValueCell, ValueStore},
+    TaggedValue,
+};
+use crate::vm::array_view::{
+    origin_to_view_data, push_array_view_value, resolve_slice_origin, validate_view_physical,
+    view_get_element, SliceOrigin,
+};
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
@@ -47,7 +51,10 @@ pub fn get_array(
             _ => None,
         };
         if let Some(idx) = method_index {
-            stack::push_id(stack, store_value(Value::NativeFunction(idx), value_store, heavy_store));
+            stack::push_id(
+                stack,
+                store_value(Value::NativeFunction(idx), value_store, heavy_store),
+            );
             return Ok(VMStatus::Continue);
         }
         let error = ExceptionHandler::runtime_error(
@@ -55,7 +62,14 @@ pub fn get_array(
             format!("Array has no property '{}'. Available: push, pop, unique, reverse, sort, sum, average, count, any, all, chunk, or use numeric index", key),
             line,
         );
-        return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+        return match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
             Ok(()) => Ok(VMStatus::Continue),
             Err(e) => Err(e),
         };
@@ -68,8 +82,19 @@ pub fn get_array(
     let index = match index_value {
         Value::Number(n) => {
             if n.fract() != 0.0 && (n - n.round()).abs() > 1e-9 {
-                let error = ExceptionHandler::runtime_error(&frames, "Array index must be an integer".to_string(), line);
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                let error = ExceptionHandler::runtime_error(
+                    &frames,
+                    "Array index must be an integer".to_string(),
+                    line,
+                );
+                match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
                     Ok(()) => return Ok(VMStatus::Continue),
                     Err(e) => return Err(e),
                 }
@@ -85,7 +110,14 @@ pub fn get_array(
                     line,
                     ErrorType::IndexError,
                 );
-                return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                return match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
                     Ok(()) => Ok(VMStatus::Continue),
                     Err(e) => Err(e),
                 };
@@ -93,8 +125,19 @@ pub fn get_array(
             idx as usize
         }
         _ => {
-            let error = ExceptionHandler::runtime_error(&frames, "Array index must be a number".to_string(), line);
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            let error = ExceptionHandler::runtime_error(
+                &frames,
+                "Array index must be a number".to_string(),
+                line,
+            );
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }
@@ -110,11 +153,22 @@ pub fn get_array(
     if index >= arr_ref.len() {
         let error = ExceptionHandler::runtime_error_with_type(
             &frames,
-            format!("Array index {} out of bounds (length: {})", index, arr_ref.len()),
+            format!(
+                "Array index {} out of bounds (length: {})",
+                index,
+                arr_ref.len()
+            ),
             line,
             ErrorType::IndexError,
         );
-        return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+        return match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
             Ok(()) => Ok(VMStatus::Continue),
             Err(e) => Err(e),
         };
@@ -166,7 +220,10 @@ pub fn get_array_view(
             _ => None,
         };
         if let Some(idx) = method_index {
-            stack::push_id(stack, store_value(Value::NativeFunction(idx), value_store, heavy_store));
+            stack::push_id(
+                stack,
+                store_value(Value::NativeFunction(idx), value_store, heavy_store),
+            );
             return Ok(VMStatus::Continue);
         }
         let error = ExceptionHandler::runtime_error(
@@ -174,7 +231,14 @@ pub fn get_array_view(
             format!("Array has no property '{}'. Available: push, pop, unique, reverse, sort, sum, average, count, any, all, chunk, or use numeric index", key),
             line,
         );
-        return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+        return match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
             Ok(()) => Ok(VMStatus::Continue),
             Err(e) => Err(e),
         };
@@ -183,8 +247,19 @@ pub fn get_array_view(
     let index = match index_value {
         Value::Number(n) => {
             if n.fract() != 0.0 && (n - n.round()).abs() > 1e-9 {
-                let error = ExceptionHandler::runtime_error(&frames, "Array index must be an integer".to_string(), line);
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                let error = ExceptionHandler::runtime_error(
+                    &frames,
+                    "Array index must be an integer".to_string(),
+                    line,
+                );
+                match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
                     Ok(()) => return Ok(VMStatus::Continue),
                     Err(e) => return Err(e),
                 }
@@ -200,7 +275,14 @@ pub fn get_array_view(
                     line,
                     ErrorType::IndexError,
                 );
-                return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                return match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
                     Ok(()) => Ok(VMStatus::Continue),
                     Err(e) => Err(e),
                 };
@@ -208,8 +290,19 @@ pub fn get_array_view(
             idx as usize
         }
         _ => {
-            let error = ExceptionHandler::runtime_error(&frames, "Array index must be a number".to_string(), line);
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            let error = ExceptionHandler::runtime_error(
+                &frames,
+                "Array index must be a number".to_string(),
+                line,
+            );
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }
@@ -224,7 +317,14 @@ pub fn get_array_view(
                 line,
                 ErrorType::IndexError,
             );
-            return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            return match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => Ok(VMStatus::Continue),
                 Err(e) => Err(e),
             };
@@ -263,8 +363,19 @@ pub fn get_tuple(
         Value::Number(n) => {
             let idx = n as i64;
             if idx < 0 {
-                let error = ExceptionHandler::runtime_error(&frames, "Tuple index must be non-negative".to_string(), line);
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                let error = ExceptionHandler::runtime_error(
+                    &frames,
+                    "Tuple index must be non-negative".to_string(),
+                    line,
+                );
+                match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
                     Ok(()) => return Ok(VMStatus::Continue),
                     Err(e) => return Err(e),
                 }
@@ -272,8 +383,19 @@ pub fn get_tuple(
             idx as usize
         }
         _ => {
-            let error = ExceptionHandler::runtime_error(&frames, "Tuple index must be a number".to_string(), line);
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            let error = ExceptionHandler::runtime_error(
+                &frames,
+                "Tuple index must be a number".to_string(),
+                line,
+            );
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }
@@ -283,11 +405,22 @@ pub fn get_tuple(
     if index >= tuple_ref.len() {
         let error = ExceptionHandler::runtime_error_with_type(
             &frames,
-            format!("Tuple index {} out of bounds (length: {})", index, tuple_ref.len()),
+            format!(
+                "Tuple index {} out of bounds (length: {})",
+                index,
+                tuple_ref.len()
+            ),
             line,
             ErrorType::IndexError,
         );
-        return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+        return match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
             Ok(()) => Ok(VMStatus::Continue),
             Err(e) => Err(e),
         };
@@ -321,8 +454,19 @@ pub fn get_enumerate(
         Value::Number(n) => {
             let idx = n as i64;
             if idx < 0 {
-                let error = ExceptionHandler::runtime_error(&frames, "Enumerate index must be non-negative".to_string(), line);
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                let error = ExceptionHandler::runtime_error(
+                    &frames,
+                    "Enumerate index must be non-negative".to_string(),
+                    line,
+                );
+                match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
                     Ok(()) => return Ok(VMStatus::Continue),
                     Err(e) => return Err(e),
                 }
@@ -330,8 +474,19 @@ pub fn get_enumerate(
             idx as usize
         }
         _ => {
-            let error = ExceptionHandler::runtime_error(&frames, "Enumerate index must be a number".to_string(), line);
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            let error = ExceptionHandler::runtime_error(
+                &frames,
+                "Enumerate index must be a number".to_string(),
+                line,
+            );
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }
@@ -341,11 +496,22 @@ pub fn get_enumerate(
     if index >= data_ref.len() {
         let error = ExceptionHandler::runtime_error_with_type(
             &frames,
-            format!("Enumerate index {} out of bounds (length: {})", index, data_ref.len()),
+            format!(
+                "Enumerate index {} out of bounds (length: {})",
+                index,
+                data_ref.len()
+            ),
             line,
             ErrorType::IndexError,
         );
-        return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+        return match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
             Ok(()) => Ok(VMStatus::Continue),
             Err(e) => Err(e),
         };
@@ -393,8 +559,19 @@ pub fn set_array(
     let index = match index_value {
         Value::Number(n) => {
             if n.fract() != 0.0 && (n - n.round()).abs() > 1e-9 {
-                let error = ExceptionHandler::runtime_error(&frames, "Array index must be an integer".to_string(), line);
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                let error = ExceptionHandler::runtime_error(
+                    &frames,
+                    "Array index must be an integer".to_string(),
+                    line,
+                );
+                match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
                     Ok(()) => return Ok(VMStatus::Continue),
                     Err(e) => return Err(e),
                 }
@@ -410,7 +587,14 @@ pub fn set_array(
                     line,
                     ErrorType::IndexError,
                 );
-                return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                return match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
                     Ok(()) => Ok(VMStatus::Continue),
                     Err(e) => Err(e),
                 };
@@ -418,8 +602,19 @@ pub fn set_array(
             idx as usize
         }
         _ => {
-            let error = ExceptionHandler::runtime_error(&frames, "Array index must be a number".to_string(), line);
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            let error = ExceptionHandler::runtime_error(
+                &frames,
+                "Array index must be a number".to_string(),
+                line,
+            );
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }
@@ -491,7 +686,14 @@ pub fn get_array_slice_from_container(
             "GetArraySlice requires an array or array view".to_string(),
             line,
         );
-        return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+        return match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
             Ok(()) => Ok(VMStatus::Continue),
             Err(e) => Err(e),
         };
@@ -524,7 +726,14 @@ pub fn get_array_slice_from_container(
         };
         if let Err(msg) = validate_view_physical(&av, value_store) {
             let error = ExceptionHandler::runtime_error(frames, msg, line);
-            return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            return match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => Ok(VMStatus::Continue),
                 Err(e) => Err(e),
             };
@@ -537,7 +746,14 @@ pub fn get_array_slice_from_container(
         Ok(ix) => ix,
         Err(msg) => {
             let error = ExceptionHandler::runtime_error(&frames, msg.to_string(), line);
-            return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            return match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => Ok(VMStatus::Continue),
                 Err(e) => Err(e),
             };
@@ -576,7 +792,14 @@ pub fn set_array_slice_splice(
             "Slice assignment with step other than 1 is not supported".to_string(),
             line,
         );
-        return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+        return match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
             Ok(()) => Ok(VMStatus::Continue),
             Err(e) => Err(e),
         };
@@ -587,7 +810,14 @@ pub fn set_array_slice_splice(
             "Slice assignment requires an array on the right-hand side".to_string(),
             line,
         );
-        return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+        return match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
             Ok(()) => Ok(VMStatus::Continue),
             Err(e) => Err(e),
         };
@@ -599,8 +829,19 @@ pub fn set_array_slice_splice(
         .collect();
 
     let Some(ValueCell::Array(slots)) = value_store.get_mut(container_id) else {
-        let error = ExceptionHandler::runtime_error(&frames, "SetArraySlice expects array storage".to_string(), line);
-        return match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+        let error = ExceptionHandler::runtime_error(
+            &frames,
+            "SetArraySlice expects array storage".to_string(),
+            line,
+        );
+        return match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
             Ok(()) => Ok(VMStatus::Continue),
             Err(e) => Err(e),
         };

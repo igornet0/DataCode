@@ -25,7 +25,12 @@ pub fn get_cell_value(
             let cell_id = *flat_cell_ids.get(idx)?;
             Some(load_value(cell_id, store, heap))
         }
-        TableData::Owned { flat, num_cols, headers, .. } => {
+        TableData::Owned {
+            flat,
+            num_cols,
+            headers,
+            ..
+        } => {
             let col_idx = headers.iter().position(|h| h == col_name)?;
             let idx = row_index * num_cols + col_idx;
             Some(flat.get(idx).cloned().unwrap_or(Value::Null))
@@ -120,11 +125,7 @@ pub fn get_column(
 }
 
 /// Materialize all rows. View: from flat_cell_ids; Owned: clone flat into rows.
-pub fn materialize_rows(
-    table: &Table,
-    store: &ValueStore,
-    heap: &HeavyStore,
-) -> Vec<Vec<Value>> {
+pub fn materialize_rows(table: &Table, store: &ValueStore, heap: &HeavyStore) -> Vec<Vec<Value>> {
     if table.is_view() {
         (0..table.len())
             .map(|i| get_row(table, i, store, heap).unwrap_or_default())

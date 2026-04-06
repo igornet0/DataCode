@@ -13,10 +13,7 @@ use super::manifest::DcmoduleManifest;
 pub fn pack_directory(dir: &Path, out_path: &Path) -> Result<(), String> {
     let manifest_path = dir.join("manifest.json");
     if !manifest_path.is_file() {
-        return Err(format!(
-            "missing {}",
-            manifest_path.display()
-        ));
+        return Err(format!("missing {}", manifest_path.display()));
     }
     let raw = fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
     let manifest: DcmoduleManifest =
@@ -26,8 +23,7 @@ pub fn pack_directory(dir: &Path, out_path: &Path) -> Result<(), String> {
 
     let file = File::create(out_path).map_err(|e| e.to_string())?;
     let mut zip = ZipWriter::new(file);
-    let opts = FileOptions::<()>::default()
-        .compression_method(CompressionMethod::Deflated);
+    let opts = FileOptions::<()>::default().compression_method(CompressionMethod::Deflated);
 
     let dir = fs::canonicalize(dir).map_err(|e| e.to_string())?;
     let mut files: Vec<PathBuf> = Vec::new();
@@ -58,8 +54,7 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
 }
 
 fn path_to_zip_name(rel: &Path) -> String {
-    rel
-        .components()
+    rel.components()
         .map(|c| c.as_os_str().to_string_lossy())
         .collect::<Vec<_>>()
         .join("/")
@@ -69,8 +64,7 @@ fn path_to_zip_name(rel: &Path) -> String {
 pub fn default_output_path(dir: &Path) -> Result<PathBuf, String> {
     let manifest_path = dir.join("manifest.json");
     let raw = fs::read_to_string(&manifest_path).map_err(|e| e.to_string())?;
-    let manifest: DcmoduleManifest =
-        serde_json::from_str(&raw).map_err(|e| e.to_string())?;
+    let manifest: DcmoduleManifest = serde_json::from_str(&raw).map_err(|e| e.to_string())?;
     let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
     Ok(cwd.join(format!("{}.dcmodule", manifest.name)))
 }

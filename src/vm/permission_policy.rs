@@ -29,6 +29,6 @@ const RESTRICTED_DENIED: &[&str] = &[
 pub fn is_permission_allowed(policy: PermissionPolicy, perm: &str) -> bool {
     match policy {
         PermissionPolicy::AllowAll => true,
-        PermissionPolicy::Restricted => !RESTRICTED_DENIED.iter().any(|&p| p == perm),
+        PermissionPolicy::Restricted => !RESTRICTED_DENIED.contains(&perm),
     }
 }

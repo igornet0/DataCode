@@ -1,15 +1,15 @@
 // Table manipulation native functions
 
-use crate::common::value::Value;
 use crate::common::table::Table;
-use std::path::PathBuf;
-use std::rc::Rc;
+use crate::common::value::Value;
 use std::cell::RefCell;
 use std::fs;
 use std::io;
+use std::path::PathBuf;
+use std::rc::Rc;
 
 // Import resolve_path_in_session and format_path_for_error from file module
-use super::file::{resolve_path_in_session, format_path_for_error};
+use super::file::{format_path_for_error, resolve_path_in_session};
 
 pub fn native_table(args: &[Value]) -> Value {
     if args.is_empty() {
@@ -61,22 +61,18 @@ pub fn native_table(args: &[Value]) -> Value {
 
 fn read_csv_file(path: &PathBuf) -> Result<Table, io::Error> {
     use csv::ReaderBuilder;
-    
-    let mut reader = ReaderBuilder::new()
-        .has_headers(true)
-        .from_path(path)?;
+
+    let mut reader = ReaderBuilder::new().has_headers(true).from_path(path)?;
 
     // Читаем заголовки
-    let headers: Vec<String> = reader.headers()?
-        .iter()
-        .map(|s| s.to_string())
-        .collect();
+    let headers: Vec<String> = reader.headers()?.iter().map(|s| s.to_string()).collect();
 
     // Читаем данные
     let mut rows = Vec::new();
     for result in reader.records() {
         let record = result?;
-        let row: Vec<Value> = record.iter()
+        let row: Vec<Value> = record
+            .iter()
             .map(|field| {
                 // Пытаемся определить тип данных
                 if let Ok(num) = field.parse::<f64>() {
@@ -98,11 +94,15 @@ fn read_csv_file(path: &PathBuf) -> Result<Table, io::Error> {
     Ok(Table::from_data(rows, Some(headers)))
 }
 
-fn read_xlsx_file(path: &PathBuf, header_row: usize, sheet_name: Option<&str>) -> Result<Table, Box<dyn std::error::Error>> {
+fn read_xlsx_file(
+    path: &PathBuf,
+    header_row: usize,
+    sheet_name: Option<&str>,
+) -> Result<Table, Box<dyn std::error::Error>> {
     use calamine::{open_workbook, Reader, Xlsx};
-    
+
     let mut workbook: Xlsx<_> = open_workbook(path)?;
-    
+
     // Выбираем лист
     let sheet = if let Some(name) = sheet_name {
         workbook.worksheet_range(name)?
@@ -117,27 +117,27 @@ fn read_xlsx_file(path: &PathBuf, header_row: usize, sheet_name: Option<&str>) -
 
     let mut rows = Vec::new();
     let mut headers = Vec::new();
-    
+
     for (row_idx, row) in sheet.rows().enumerate() {
-        let values: Vec<Value> = row.iter()
-            .map(|cell| {
-                match cell {
-                    calamine::Data::Int(n) => Value::Number(*n as f64),
-                    calamine::Data::Float(n) => Value::Number(*n),
-                    calamine::Data::String(s) => Value::String(s.clone()),
-                    calamine::Data::Bool(b) => Value::Bool(*b),
-                    calamine::Data::DateTime(dt) => Value::String(dt.to_string()),
-                    calamine::Data::DateTimeIso(s) => Value::String(s.clone()),
-                    calamine::Data::DurationIso(s) => Value::String(s.clone()),
-                    calamine::Data::Error(_) => Value::Null,
-                    calamine::Data::Empty => Value::Null,
-                }
+        let values: Vec<Value> = row
+            .iter()
+            .map(|cell| match cell {
+                calamine::Data::Int(n) => Value::Number(*n as f64),
+                calamine::Data::Float(n) => Value::Number(*n),
+                calamine::Data::String(s) => Value::String(s.clone()),
+                calamine::Data::Bool(b) => Value::Bool(*b),
+                calamine::Data::DateTime(dt) => Value::String(dt.to_string()),
+                calamine::Data::DateTimeIso(s) => Value::String(s.clone()),
+                calamine::Data::DurationIso(s) => Value::String(s.clone()),
+                calamine::Data::Error(_) => Value::Null,
+                calamine::Data::Empty => Value::Null,
             })
             .collect();
 
         if row_idx == header_row {
             // Это строка заголовков
-            headers = values.iter()
+            headers = values
+                .iter()
                 .map(|v| match v {
                     Value::String(s) => s.clone(),
                     _ => v.to_string(),
@@ -151,9 +151,7 @@ fn read_xlsx_file(path: &PathBuf, header_row: usize, sheet_name: Option<&str>) -
     // Если заголовки не были найдены, генерируем их
     if headers.is_empty() && !rows.is_empty() {
         let num_cols = rows[0].len();
-        headers = (0..num_cols)
-            .map(|i| format!("Column_{}", i))
-            .collect();
+        headers = (0..num_cols).map(|i| format!("Column_{}", i)).collect();
     }
 
     Ok(Table::from_data(rows, Some(headers)))
@@ -173,7 +171,7 @@ fn apply_header_filter(table: Table, header_arg: Option<&Value>) -> Table {
             // Фильтруем колонки: оставляем только указанные в массиве
             let cols_arr_ref = cols_arr.borrow();
             let mut selected_cols = Vec::new();
-            
+
             // Извлекаем имена колонок из массива
             for col_val in cols_arr_ref.iter() {
                 match col_val {
@@ -184,15 +182,15 @@ fn apply_header_filter(table: Table, header_arg: Option<&Value>) -> Table {
                     }
                 }
             }
-            
+
             if selected_cols.is_empty() {
                 return table;
             }
-            
+
             // Создаем индексы колонок для выборки
             let mut col_indices = Vec::new();
             let mut new_headers = Vec::new();
-            
+
             for col_name in &selected_cols {
                 if let Some(idx) = table.headers().iter().position(|h| h == col_name) {
                     col_indices.push(idx);
@@ -200,11 +198,11 @@ fn apply_header_filter(table: Table, header_arg: Option<&Value>) -> Table {
                 }
                 // Игнорируем несуществующие колонки
             }
-            
+
             if col_indices.is_empty() {
                 return table;
             }
-            
+
             // Создаем новые строки только с выбранными колонками
             let mut new_rows = Vec::new();
             let rr = table.rows_ref().unwrap();
@@ -219,14 +217,14 @@ fn apply_header_filter(table: Table, header_arg: Option<&Value>) -> Table {
                 }
                 new_rows.push(new_row);
             }
-            
+
             Table::from_data(new_rows, Some(new_headers))
         }
         Value::Object(rename_map_rc) => {
             // Переименовываем колонки согласно словарю
             let rename_map = rename_map_rc.borrow();
             let mut new_headers = Vec::new();
-            
+
             for old_header in table.headers() {
                 if let Some(new_name_val) = rename_map.get(old_header) {
                     match new_name_val {
@@ -248,7 +246,7 @@ fn apply_header_filter(table: Table, header_arg: Option<&Value>) -> Table {
                     new_headers.push(old_header.clone());
                 }
             }
-            
+
             // Создаем новую таблицу с переименованными заголовками
             // Данные остаются теми же, меняются только заголовки
             Table::from_data(table.rows_ref().unwrap().to_vec(), Some(new_headers))
@@ -266,7 +264,7 @@ fn extract_read_file_args(args: &[Value]) -> (usize, Option<String>, Option<&Val
     let mut header_row = 0;
     let mut sheet_name: Option<String> = None;
     let mut header_arg: Option<&Value> = None;
-    
+
     // Ищем header - это Array или Object (может быть на любой позиции после path)
     for arg in args.iter().skip(1) {
         if matches!(arg, Value::Array(_) | Value::Object(_)) {
@@ -274,19 +272,19 @@ fn extract_read_file_args(args: &[Value]) -> (usize, Option<String>, Option<&Val
             break;
         }
     }
-    
+
     // Определяем header_row и sheet_name по позиции и типу
     // Исключаем header из проверки
     if args.len() > 1 {
         // Проверяем, является ли args[1] header
         let is_header_1 = matches!(&args[1], Value::Array(_) | Value::Object(_));
-        
+
         if !is_header_1 {
             match &args[1] {
                 Value::Number(n) => {
                     // args[1] - это header_row
                     header_row = *n as usize;
-                    
+
                     // Проверяем args[2] для sheet_name
                     if args.len() > 2 {
                         let is_header_2 = matches!(&args[2], Value::Array(_) | Value::Object(_));
@@ -315,7 +313,7 @@ fn extract_read_file_args(args: &[Value]) -> (usize, Option<String>, Option<&Val
             }
         }
     }
-    
+
     (header_row, sheet_name, header_arg)
 }
 
@@ -330,10 +328,10 @@ pub fn native_read_file(args: &[Value]) -> Value {
         Value::String(s) => PathBuf::from(s),
         _ => return Value::Null,
     };
-    
+
     // Извлекаем аргументы по типу
     let (header_row, sheet_name, header_arg) = extract_read_file_args(args);
-    
+
     let file_path_str = file_path.to_string_lossy().to_string();
 
     // Проверяем, является ли это SMB путем (lib://)
@@ -341,14 +339,14 @@ pub fn native_read_file(args: &[Value]) -> Value {
         // Извлекаем имя шары и путь к файлу
         let path_without_prefix = &file_path_str[6..]; // Убираем "lib://"
         let parts: Vec<&str> = path_without_prefix.splitn(2, '/').collect();
-        
+
         if parts.is_empty() {
             return Value::Null;
         }
-        
+
         let share_name = parts[0];
         let file_path_on_share = if parts.len() > 1 { parts[1] } else { "" };
-        
+
         // Получаем SmbManager из thread-local storage; hold lock only for read_file, then release before processing content.
         if let Some(smb_manager) = crate::vm::file_ops::get_smb_manager() {
             let read_result = {
@@ -363,19 +361,23 @@ pub fn native_read_file(args: &[Value]) -> Value {
                         .and_then(|ext| ext.to_str())
                         .unwrap_or("")
                         .to_lowercase();
-                    
+
                     match extension.as_str() {
                         "csv" => {
                             // Парсим CSV из байтов
                             use std::io::Write;
-                            let temp_file = std::env::temp_dir().join(format!("datacode_smb_{}.csv", std::process::id()));
+                            let temp_file = std::env::temp_dir()
+                                .join(format!("datacode_smb_{}.csv", std::process::id()));
                             if let Ok(mut file) = fs::File::create(&temp_file) {
                                 if file.write_all(&content).is_ok() {
                                     match read_csv_file(&temp_file) {
                                         Ok(table) => {
                                             let _ = fs::remove_file(&temp_file);
-                                            let filtered_table = apply_header_filter(table, header_arg);
-                                            return Value::Table(Rc::new(RefCell::new(filtered_table)));
+                                            let filtered_table =
+                                                apply_header_filter(table, header_arg);
+                                            return Value::Table(Rc::new(RefCell::new(
+                                                filtered_table,
+                                            )));
                                         }
                                         Err(_) => {
                                             let _ = fs::remove_file(&temp_file);
@@ -388,14 +390,22 @@ pub fn native_read_file(args: &[Value]) -> Value {
                         "xlsx" => {
                             // Создаем временный файл для парсинга XLSX
                             use std::io::Write;
-                            let temp_file = std::env::temp_dir().join(format!("datacode_smb_{}.xlsx", std::process::id()));
+                            let temp_file = std::env::temp_dir()
+                                .join(format!("datacode_smb_{}.xlsx", std::process::id()));
                             if let Ok(mut file) = fs::File::create(&temp_file) {
                                 if file.write_all(&content).is_ok() {
-                                    match read_xlsx_file(&temp_file, header_row, sheet_name.as_deref()) {
+                                    match read_xlsx_file(
+                                        &temp_file,
+                                        header_row,
+                                        sheet_name.as_deref(),
+                                    ) {
                                         Ok(table) => {
                                             let _ = fs::remove_file(&temp_file);
-                                            let filtered_table = apply_header_filter(table, header_arg);
-                                            return Value::Table(Rc::new(RefCell::new(filtered_table)));
+                                            let filtered_table =
+                                                apply_header_filter(table, header_arg);
+                                            return Value::Table(Rc::new(RefCell::new(
+                                                filtered_table,
+                                            )));
                                         }
                                         Err(_) => {
                                             let _ = fs::remove_file(&temp_file);
@@ -405,12 +415,10 @@ pub fn native_read_file(args: &[Value]) -> Value {
                             }
                             Value::Null
                         }
-                        "txt" | "text" => {
-                            match String::from_utf8(content) {
-                                Ok(text) => Value::String(text),
-                                Err(_) => Value::Null,
-                            }
-                        }
+                        "txt" | "text" => match String::from_utf8(content) {
+                            Ok(text) => Value::String(text),
+                            Err(_) => Value::Null,
+                        },
                         _ => {
                             // По умолчанию пытаемся прочитать как текст
                             match String::from_utf8(content) {
@@ -437,22 +445,29 @@ pub fn native_read_file(args: &[Value]) -> Value {
                 return Value::Null;
             }
         };
-        
+
         // Проверяем существование файла перед чтением
         if !resolved_path.exists() {
             use crate::websocket::set_native_error;
-            set_native_error(format!("File does not exist: {}", format_path_for_error(&resolved_path)));
+            set_native_error(format!(
+                "File does not exist: {}",
+                format_path_for_error(&resolved_path)
+            ));
             return Value::Null;
         }
-        
+
         if !resolved_path.is_file() {
             use crate::websocket::set_native_error;
-            set_native_error(format!("Path is not a file: {}", format_path_for_error(&resolved_path)));
+            set_native_error(format!(
+                "Path is not a file: {}",
+                format_path_for_error(&resolved_path)
+            ));
             return Value::Null;
         }
-        
+
         // Проверяем расширение файла
-        let extension = resolved_path.extension()
+        let extension = resolved_path
+            .extension()
             .and_then(|ext| ext.to_str())
             .unwrap_or("")
             .to_lowercase();
@@ -464,12 +479,12 @@ pub fn native_read_file(args: &[Value]) -> Value {
                     Ok(table) => {
                         let filtered_table = apply_header_filter(table, header_arg);
                         Value::Table(Rc::new(RefCell::new(filtered_table)))
-                    },
+                    }
                     Err(e) => {
                         use crate::websocket::set_native_error;
                         set_native_error(format!("Error reading CSV file: {}", e));
                         Value::Null
-                    },
+                    }
                 }
             }
             "xlsx" => {
@@ -478,12 +493,12 @@ pub fn native_read_file(args: &[Value]) -> Value {
                     Ok(table) => {
                         let filtered_table = apply_header_filter(table, header_arg);
                         Value::Table(Rc::new(RefCell::new(filtered_table)))
-                    },
+                    }
                     Err(e) => {
                         use crate::websocket::set_native_error;
                         set_native_error(format!("Error reading XLSX file: {}", e));
                         Value::Null
-                    },
+                    }
                 }
             }
             "txt" | "text" => {
@@ -494,7 +509,7 @@ pub fn native_read_file(args: &[Value]) -> Value {
                         use crate::websocket::set_native_error;
                         set_native_error(format!("Error reading text file: {}", e));
                         Value::Null
-                    },
+                    }
                 }
             }
             _ => {
@@ -505,7 +520,7 @@ pub fn native_read_file(args: &[Value]) -> Value {
                         use crate::websocket::set_native_error;
                         set_native_error(format!("Error reading file: {}", e));
                         Value::Null
-                    },
+                    }
                 }
             }
         }
@@ -514,7 +529,9 @@ pub fn native_read_file(args: &[Value]) -> Value {
 
 pub fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
     match (a, b) {
-        (Value::Number(n1), Value::Number(n2)) => n1.partial_cmp(n2).unwrap_or(std::cmp::Ordering::Equal),
+        (Value::Number(n1), Value::Number(n2)) => {
+            n1.partial_cmp(n2).unwrap_or(std::cmp::Ordering::Equal)
+        }
         (Value::String(s1), Value::String(s2)) => s1.cmp(s2),
         (Value::Bool(b1), Value::Bool(b2)) => b1.cmp(b2),
         (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
@@ -553,9 +570,17 @@ pub fn native_table_info(args: &[Value]) -> Value {
                     for header in &headers {
                         let len = crate::vm::table_ops::column_len(&*t, header).unwrap_or(0);
                         let col_type = (0..len)
-                            .find_map(|i| crate::vm::table_ops::get_cell_value(&*t, i, header, store, heap))
+                            .find_map(|i| {
+                                crate::vm::table_ops::get_cell_value(&*t, i, header, store, heap)
+                            })
                             .map(|v| col_type_from_value(&v).to_string())
-                            .unwrap_or_else(|| if len == 0 { "empty".to_string() } else { "mixed".to_string() });
+                            .unwrap_or_else(|| {
+                                if len == 0 {
+                                    "empty".to_string()
+                                } else {
+                                    "mixed".to_string()
+                                }
+                            });
                         info.push_str(&format!("  - {}: {} ({} values)\n", header, col_type, len));
                     }
                 });
@@ -572,7 +597,12 @@ pub fn native_table_info(args: &[Value]) -> Value {
                                 _ => "mixed".to_string(),
                             }
                         };
-                        info.push_str(&format!("  - {}: {} ({} values)\n", header, col_type, column.len()));
+                        info.push_str(&format!(
+                            "  - {}: {} ({} values)\n",
+                            header,
+                            col_type,
+                            column.len()
+                        ));
                     }
                 }
             }
@@ -607,7 +637,9 @@ pub fn native_table_head(args: &[Value]) -> Value {
                 crate::vm::vm::with_current_stores(|store, heap| {
                     let mut rows = Vec::with_capacity(take_n);
                     for i in 0..take_n {
-                        if let Some(row) = crate::vm::table_ops::get_row(&*table_ref, i, store, heap) {
+                        if let Some(row) =
+                            crate::vm::table_ops::get_row(&*table_ref, i, store, heap)
+                        {
                             rows.push(row);
                         }
                     }
@@ -649,14 +681,16 @@ pub fn native_table_tail(args: &[Value]) -> Value {
             let table_ref = table.borrow();
             let row_count = table_ref.len();
             let take_n = if n > row_count { row_count } else { n };
-            let start_idx = if row_count > take_n { row_count - take_n } else { 0 };
+            let start_idx = row_count.saturating_sub(take_n);
             let headers = table_ref.headers().clone();
 
             let new_rows: Vec<Vec<Value>> = if table_ref.is_view() {
                 crate::vm::vm::with_current_stores(|store, heap| {
                     let mut rows = Vec::with_capacity(take_n);
                     for i in start_idx..row_count {
-                        if let Some(row) = crate::vm::table_ops::get_row(&*table_ref, i, store, heap) {
+                        if let Some(row) =
+                            crate::vm::table_ops::get_row(&*table_ref, i, store, heap)
+                        {
                             rows.push(row);
                         }
                     }
@@ -716,7 +750,9 @@ pub fn native_table_select(args: &[Value]) -> Value {
                     let n_rows = table_ref.len();
                     let mut rows = Vec::with_capacity(n_rows);
                     for i in 0..n_rows {
-                        if let Some(row) = crate::vm::table_ops::get_row(&*table_ref, i, store, heap) {
+                        if let Some(row) =
+                            crate::vm::table_ops::get_row(&*table_ref, i, store, heap)
+                        {
                             let mut new_row = Vec::new();
                             for &idx in &col_indices {
                                 new_row.push(row.get(idx).cloned().unwrap_or(Value::Null));
@@ -780,9 +816,14 @@ pub fn native_table_sort(args: &[Value]) -> Value {
                 crate::vm::vm::with_current_stores(|store, heap| {
                     let mut t = table.borrow_mut();
                     crate::vm::table_ops::get_column(&mut *t, &column_name, store, heap)
-                }).unwrap_or_default()
+                })
+                .unwrap_or_default()
             } else {
-                table.borrow_mut().get_column(&column_name).map(|c| c.clone()).unwrap_or_default()
+                table
+                    .borrow_mut()
+                    .get_column(&column_name)
+                    .map(|c| c.clone())
+                    .unwrap_or_default()
             };
             if sort_column.len() != n_rows {
                 return Value::Null;
@@ -791,19 +832,25 @@ pub fn native_table_sort(args: &[Value]) -> Value {
             let mut indices: Vec<usize> = (0..n_rows).collect();
             indices.sort_by(|&a, &b| {
                 let cmp = compare_values(&sort_column[a], &sort_column[b]);
-                if ascending { cmp } else { cmp.reverse() }
+                if ascending {
+                    cmp
+                } else {
+                    cmp.reverse()
+                }
             });
 
             let new_rows: Vec<Vec<Value>> = if is_view {
                 crate::vm::vm::with_current_stores(|store, heap| {
                     let t = table.borrow();
-                    indices.iter()
+                    indices
+                        .iter()
                         .filter_map(|&idx| crate::vm::table_ops::get_row(&*t, idx, store, heap))
                         .collect()
                 })
             } else {
                 let table_ref = table.borrow();
-                indices.iter()
+                indices
+                    .iter()
                     .filter_map(|&idx| table_ref.get_row(idx).map(|r| r.to_vec()))
                     .collect()
             };
@@ -842,22 +889,20 @@ pub fn table_where_impl(
     let matching_indices: Vec<usize> = filter_column
         .iter()
         .enumerate()
-        .filter(|(_, val)| {
-            match operator {
-                ">" => compare_values(val, filter_value) == std::cmp::Ordering::Greater,
-                "<" => compare_values(val, filter_value) == std::cmp::Ordering::Less,
-                ">=" => {
-                    let cmp = compare_values(val, filter_value);
-                    cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
-                }
-                "<=" => {
-                    let cmp = compare_values(val, filter_value);
-                    cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
-                }
-                "==" | "=" => compare_values(val, filter_value) == std::cmp::Ordering::Equal,
-                "!=" | "<>" => compare_values(val, filter_value) != std::cmp::Ordering::Equal,
-                _ => false,
+        .filter(|(_, val)| match operator {
+            ">" => compare_values(val, filter_value) == std::cmp::Ordering::Greater,
+            "<" => compare_values(val, filter_value) == std::cmp::Ordering::Less,
+            ">=" => {
+                let cmp = compare_values(val, filter_value);
+                cmp == std::cmp::Ordering::Greater || cmp == std::cmp::Ordering::Equal
             }
+            "<=" => {
+                let cmp = compare_values(val, filter_value);
+                cmp == std::cmp::Ordering::Less || cmp == std::cmp::Ordering::Equal
+            }
+            "==" | "=" => compare_values(val, filter_value) == std::cmp::Ordering::Equal,
+            "!=" | "<>" => compare_values(val, filter_value) != std::cmp::Ordering::Equal,
+            _ => false,
         })
         .map(|(i, _)| i)
         .collect();
@@ -927,7 +972,9 @@ pub fn native_show_table(args: &[Value]) -> Value {
                     let mut col_widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
                     for row_idx in 0..max_show {
                         for (col_i, header) in headers.iter().enumerate() {
-                            if let Some(v) = crate::vm::table_ops::get_cell_value(&*t, row_idx, header, store, heap) {
+                            if let Some(v) = crate::vm::table_ops::get_cell_value(
+                                &*t, row_idx, header, store, heap,
+                            ) {
                                 let w = v.to_string().len();
                                 if col_widths[col_i] < w {
                                     col_widths[col_i] = w;
@@ -953,7 +1000,10 @@ pub fn native_show_table(args: &[Value]) -> Value {
                         }
                     }
                 }
-                (col_widths.into_iter().map(|w| w.max(3)).collect(), rr.len().min(20))
+                (
+                    col_widths.into_iter().map(|w| w.max(3)).collect(),
+                    rr.len().min(20),
+                )
             };
 
             // Печатаем верхнюю границу
@@ -989,7 +1039,11 @@ pub fn native_show_table(args: &[Value]) -> Value {
                         crate::vm::table_ops::get_row(&*t, row_idx, store, heap).unwrap_or_default()
                     })
                 } else {
-                    table.borrow().get_row(row_idx).map(|r| r.to_vec()).unwrap_or_default()
+                    table
+                        .borrow()
+                        .get_row(row_idx)
+                        .map(|r| r.to_vec())
+                        .unwrap_or_default()
                 };
                 print!("│");
                 for (i, val) in row_vals.iter().enumerate() {
@@ -1023,7 +1077,7 @@ pub fn native_show_table(args: &[Value]) -> Value {
 
 pub fn native_merge_tables(args: &[Value]) -> Value {
     use std::collections::HashSet;
-    
+
     if args.is_empty() {
         return Value::Null;
     }
@@ -1079,7 +1133,7 @@ pub fn native_merge_tables(args: &[Value]) -> Value {
     // Собираем все уникальные колонки
     let mut all_columns_set = HashSet::new();
     let mut column_order = Vec::new();
-    
+
     // Сначала добавляем колонки первой таблицы для сохранения порядка
     let first_table = tables[0].borrow();
     for header in first_table.headers() {
@@ -1087,7 +1141,7 @@ pub fn native_merge_tables(args: &[Value]) -> Value {
             column_order.push(header.clone());
         }
     }
-    
+
     // Затем добавляем колонки из остальных таблиц
     for table_rc in &tables[1..] {
         let table_ref = table_rc.borrow();

@@ -2,15 +2,15 @@
 
 use crate::common::value::Value;
 use crate::common::value_store::ValueStore;
-use crate::vm::frame::CallFrame;
-use crate::vm::global_slot::{GlobalSlot, default_global_slot};
-use crate::vm::store_convert::{store_value, load_value};
-use crate::vm::heavy_store::HeavyStore;
 use crate::vm::executor::{global_index_by_name, global_indices_by_name};
+use crate::vm::frame::CallFrame;
+use crate::vm::global_slot::{default_global_slot, GlobalSlot};
+use crate::vm::heavy_store::HeavyStore;
+use crate::vm::store_convert::{load_value, store_value};
 
 /// Set __constructing_class__ in globals for constructor calls (function name contains "::new_").
 /// So Settings subclasses load model_config from the leaf class (e.g. DevSettings).
-pub fn set_constructing_class_for_call(
+pub(crate) fn set_constructing_class_for_call(
     function: &crate::bytecode::Function,
     constructing_class_opt: Option<&Value>,
     frames: &[CallFrame],
@@ -24,33 +24,36 @@ pub fn set_constructing_class_for_call(
         return;
     }
     const CONSTRUCTING_CLASS_NAME: &str = "__constructing_class__";
-    let skip_set_super_chain: bool = frames.last().and_then(|f| {
-        let caller_name = f.function.name.as_str();
-        let callee_name = function.name.split("::").next().unwrap_or("");
-        if !caller_name.contains("::new_") || callee_name.is_empty() {
-            return Some(false);
-        }
-        let caller_class = caller_name.split("::").next().unwrap_or("");
-        if caller_class == callee_name {
-            return Some(false);
-        }
-        let caller_class_idx = global_index_by_name(global_names, caller_class);
-        let superclass_name: Option<String> = caller_class_idx.and_then(|idx| {
-            if idx >= globals.len() {
-                return None;
+    let skip_set_super_chain: bool = frames
+        .last()
+        .map(|f| {
+            let caller_name = f.function.name.as_str();
+            let callee_name = function.name.split("::").next().unwrap_or("");
+            if !caller_name.contains("::new_") || callee_name.is_empty() {
+                return false;
             }
-            let id = globals[idx].resolve_to_value_id(value_store);
-            let v = load_value(id, value_store, heavy_store);
-            if let Value::Object(rc) = &v {
-                let o = rc.borrow();
-                if let Some(Value::String(s)) = o.get("__superclass") {
-                    return Some(s.clone());
+            let caller_class = caller_name.split("::").next().unwrap_or("");
+            if caller_class == callee_name {
+                return false;
+            }
+            let caller_class_idx = global_index_by_name(global_names, caller_class);
+            let superclass_name: Option<String> = caller_class_idx.and_then(|idx| {
+                if idx >= globals.len() {
+                    return None;
                 }
-            }
-            None
-        });
-        Some(superclass_name.as_deref() == Some(callee_name))
-    }).unwrap_or(false);
+                let id = globals[idx].resolve_to_value_id(value_store);
+                let v = load_value(id, value_store, heavy_store);
+                if let Value::Object(rc) = &v {
+                    let o = rc.borrow();
+                    if let Some(Value::String(s)) = o.get("__superclass") {
+                        return Some(s.clone());
+                    }
+                }
+                None
+            });
+            superclass_name.as_deref() == Some(callee_name)
+        })
+        .unwrap_or(false);
     if skip_set_super_chain {
         return;
     }
@@ -110,15 +113,23 @@ pub fn set_constructing_class_for_call(
         None
     };
     let class_to_set = class_to_set.or_else(|| {
-        let caller_indices: Vec<usize> = frames.last()
+        let caller_indices: Vec<usize> = frames
+            .last()
             .and_then(|f| {
-                let mut idx: Vec<usize> = f.function.chunk.global_names
+                let mut idx: Vec<usize> = f
+                    .function
+                    .chunk
+                    .global_names
                     .iter()
                     .filter(|(_, n)| n.as_str() == CONSTRUCTING_CLASS_NAME)
                     .map(|(idx, _)| *idx)
                     .collect();
                 idx.sort_unstable();
-                if idx.is_empty() { None } else { Some(idx) }
+                if idx.is_empty() {
+                    None
+                } else {
+                    Some(idx)
+                }
             })
             .unwrap_or_else(|| global_indices_by_name(global_names, CONSTRUCTING_CLASS_NAME));
         caller_indices.into_iter().find_map(|idx| {
@@ -129,7 +140,10 @@ pub fn set_constructing_class_for_call(
             let v = load_value(id, value_store, heavy_store);
             if let Value::Object(rc) = &v {
                 let o = rc.borrow();
-                if o.contains_key("new_0") || o.contains_key("new_1") || o.get("__class_name").is_some() {
+                if o.contains_key("new_0")
+                    || o.contains_key("new_1")
+                    || o.get("__class_name").is_some()
+                {
                     return Some(v.clone());
                 }
             }
@@ -140,14 +154,18 @@ pub fn set_constructing_class_for_call(
         let mut indices: Vec<usize> = Vec::new();
         for op in &function.chunk.code {
             if let crate::bytecode::OpCode::LoadGlobal(idx) = op {
-                if function.chunk.global_names.get(idx).map(|n| n.as_str()) == Some(CONSTRUCTING_CLASS_NAME) {
+                if function.chunk.global_names.get(idx).map(|n| n.as_str())
+                    == Some(CONSTRUCTING_CLASS_NAME)
+                {
                     indices.push(*idx);
                     break;
                 }
             }
         }
         if indices.is_empty() {
-            indices = function.chunk.global_names
+            indices = function
+                .chunk
+                .global_names
                 .iter()
                 .filter(|(_, n)| n.as_str() == CONSTRUCTING_CLASS_NAME)
                 .map(|(idx, _)| *idx)
@@ -174,7 +192,10 @@ pub fn set_constructing_class_for_call(
             }
         }
         if crate::common::debug::verbose_constructor_debug() {
-            eprintln!("[executor] constructor '{}': __constructing_class__ set", function.name);
+            eprintln!(
+                "[executor] constructor '{}': __constructing_class__ set",
+                function.name
+            );
         }
         let class_id = store_value(class_val, value_store, heavy_store);
         for idx in indices {
@@ -187,8 +208,7 @@ pub fn set_constructing_class_for_call(
         let class_name = function.name.split("::").next().unwrap_or("");
         eprintln!(
             "[executor] constructor '{}': class '{}' not found (globals + vm.modules)",
-            function.name,
-            class_name,
+            function.name, class_name,
         );
     }
 }

@@ -89,7 +89,10 @@ s
         if let Ok(data_code::Value::Number(v)) = r {
             assert_eq!(v, n as f64, "expected sum {}", n);
         }
-        println!("bench_native_calls_heavy: {} iterations in {:?}", n, elapsed);
+        println!(
+            "bench_native_calls_heavy: {} iterations in {:?}",
+            n, elapsed
+        );
     }
 
     /// Hot path: table operations (native table(), iteration) to stress Value/HeavyStore and relations.
@@ -110,7 +113,10 @@ len(t)
         let r = run(&source);
         let elapsed = start.elapsed();
         assert!(r.is_ok(), "run failed: {:?}", r);
-        println!("bench_table_ops_heavy: {} table creations in {:?}", rows, elapsed);
+        println!(
+            "bench_table_ops_heavy: {} table creations in {:?}",
+            rows, elapsed
+        );
     }
 
     /// Mixed: arithmetic + array push (mutability write-back path).
@@ -161,33 +167,40 @@ acc
             start.elapsed()
         };
 
-        let run_many_threads = |script: Arc<String>, k: u32, num_threads: usize| -> std::time::Duration {
-            let start = Instant::now();
-            let handles: Vec<_> = (0..num_threads)
-                .map(|_| {
-                    let script = Arc::clone(&script);
-                    thread::spawn(move || {
-                        for _ in 0..k {
-                            let r = run(script.as_str());
-                            assert!(r.is_ok(), "run failed: {:?}", r);
-                        }
+        let run_many_threads =
+            |script: Arc<String>, k: u32, num_threads: usize| -> std::time::Duration {
+                let start = Instant::now();
+                let handles: Vec<_> = (0..num_threads)
+                    .map(|_| {
+                        let script = Arc::clone(&script);
+                        thread::spawn(move || {
+                            for _ in 0..k {
+                                let r = run(script.as_str());
+                                assert!(r.is_ok(), "run failed: {:?}", r);
+                            }
+                        })
                     })
-                })
-                .collect();
-            for h in handles {
-                h.join().expect("thread panicked");
-            }
-            start.elapsed()
-        };
+                    .collect();
+                for h in handles {
+                    h.join().expect("thread panicked");
+                }
+                start.elapsed()
+            };
 
-        println!("--- GIL experiment: {} threads, {} iterations per thread ---", NUM_THREADS, K_ITERATIONS);
+        println!(
+            "--- GIL experiment: {} threads, {} iterations per thread ---",
+            NUM_THREADS, K_ITERATIONS
+        );
 
         // Mode A: arithmetic
         let script_a = script_mode_a(N_MODE_A);
         let t1_a = run_one_thread(&script_a, K_ITERATIONS);
         let t8_a = run_many_threads(Arc::new(script_a.clone()), K_ITERATIONS, NUM_THREADS);
         let ratio_a = t8_a.as_secs_f64() / t1_a.as_secs_f64();
-        println!("Mode A (arithmetic):  T1 = {:?}, T8 = {:?}, T8/T1 = {:.2}", t1_a, t8_a, ratio_a);
+        println!(
+            "Mode A (arithmetic):  T1 = {:?}, T8 = {:?}, T8/T1 = {:.2}",
+            t1_a, t8_a, ratio_a
+        );
         assert!(ratio_a < 3.0, "Mode A ratio {:.2} suggests serialization; expect < 3 (2-3 = partial contention, 8 = GIL)", ratio_a);
 
         // Mode B: objects
@@ -195,7 +208,10 @@ acc
         let t1_b = run_one_thread(&script_b, K_ITERATIONS);
         let t8_b = run_many_threads(Arc::new(script_b.clone()), K_ITERATIONS, NUM_THREADS);
         let ratio_b = t8_b.as_secs_f64() / t1_b.as_secs_f64();
-        println!("Mode B (objects):    T1 = {:?}, T8 = {:?}, T8/T1 = {:.2}", t1_b, t8_b, ratio_b);
+        println!(
+            "Mode B (objects):    T1 = {:?}, T8 = {:?}, T8/T1 = {:.2}",
+            t1_b, t8_b, ratio_b
+        );
         assert!(ratio_b < 3.0, "Mode B ratio {:.2} suggests serialization; expect < 3 (2-3 = partial contention, 8 = GIL)", ratio_b);
 
         // Mode C: class methods
@@ -203,7 +219,10 @@ acc
         let t1_c = run_one_thread(&script_c, K_ITERATIONS);
         let t8_c = run_many_threads(Arc::new(script_c.clone()), K_ITERATIONS, NUM_THREADS);
         let ratio_c = t8_c.as_secs_f64() / t1_c.as_secs_f64();
-        println!("Mode C (class):      T1 = {:?}, T8 = {:?}, T8/T1 = {:.2}", t1_c, t8_c, ratio_c);
+        println!(
+            "Mode C (class):      T1 = {:?}, T8 = {:?}, T8/T1 = {:.2}",
+            t1_c, t8_c, ratio_c
+        );
         assert!(ratio_c < 3.0, "Mode C ratio {:.2} suggests serialization; expect < 3 (2-3 = partial contention, 8 = GIL)", ratio_c);
 
         println!("--- ratio < 2 => architecture clean; ratio 2-3 => partial contention; T8/T1 ~ 8 => full serialization ---");
@@ -230,47 +249,68 @@ acc
             start.elapsed()
         };
 
-        let run_many_threads = |script: Arc<String>, k: u32, num_threads: usize| -> std::time::Duration {
-            let start = Instant::now();
-            let handles: Vec<_> = (0..num_threads)
-                .map(|_| {
-                    let script = Arc::clone(&script);
-                    thread::spawn(move || {
-                        for _ in 0..k {
-                            let r = run(script.as_str());
-                            assert!(r.is_ok(), "run failed: {:?}", r);
-                        }
+        let run_many_threads =
+            |script: Arc<String>, k: u32, num_threads: usize| -> std::time::Duration {
+                let start = Instant::now();
+                let handles: Vec<_> = (0..num_threads)
+                    .map(|_| {
+                        let script = Arc::clone(&script);
+                        thread::spawn(move || {
+                            for _ in 0..k {
+                                let r = run(script.as_str());
+                                assert!(r.is_ok(), "run failed: {:?}", r);
+                            }
+                        })
                     })
-                })
-                .collect();
-            for h in handles {
-                h.join().expect("thread panicked");
-            }
-            start.elapsed()
-        };
+                    .collect();
+                for h in handles {
+                    h.join().expect("thread panicked");
+                }
+                start.elapsed()
+            };
 
-        println!("--- GIL experiment: {} threads, {} iterations per thread ---", NUM_THREADS, K_ITERATIONS);
+        println!(
+            "--- GIL experiment: {} threads, {} iterations per thread ---",
+            NUM_THREADS, K_ITERATIONS
+        );
 
         let script_a = script_mode_a(N_MODE_A);
         let t1_a = run_one_thread(&script_a, K_ITERATIONS);
         let t16_a = run_many_threads(Arc::new(script_a.clone()), K_ITERATIONS, NUM_THREADS);
         let ratio_a = t16_a.as_secs_f64() / t1_a.as_secs_f64();
-        println!("Mode A (arithmetic):  T1 = {:?}, T16 = {:?}, T16/T1 = {:.2}", t1_a, t16_a, ratio_a);
+        println!(
+            "Mode A (arithmetic):  T1 = {:?}, T16 = {:?}, T16/T1 = {:.2}",
+            t1_a, t16_a, ratio_a
+        );
         assert!(ratio_a < 5.0, "Mode A (16 threads) ratio {:.2} suggests serialization; expect < 5 (allocator contention ok)", ratio_a);
 
         let script_b = script_mode_b(N_MODE_B);
         let t1_b = run_one_thread(&script_b, K_ITERATIONS);
         let t16_b = run_many_threads(Arc::new(script_b.clone()), K_ITERATIONS, NUM_THREADS);
         let ratio_b = t16_b.as_secs_f64() / t1_b.as_secs_f64();
-        println!("Mode B (objects):    T1 = {:?}, T16 = {:?}, T16/T1 = {:.2}", t1_b, t16_b, ratio_b);
-        assert!(ratio_b < 5.0, "Mode B (16 threads) ratio {:.2} suggests serialization; expect < 5", ratio_b);
+        println!(
+            "Mode B (objects):    T1 = {:?}, T16 = {:?}, T16/T1 = {:.2}",
+            t1_b, t16_b, ratio_b
+        );
+        assert!(
+            ratio_b < 5.0,
+            "Mode B (16 threads) ratio {:.2} suggests serialization; expect < 5",
+            ratio_b
+        );
 
         let script_c = script_mode_c(N_MODE_C);
         let t1_c = run_one_thread(&script_c, K_ITERATIONS);
         let t16_c = run_many_threads(Arc::new(script_c.clone()), K_ITERATIONS, NUM_THREADS);
         let ratio_c = t16_c.as_secs_f64() / t1_c.as_secs_f64();
-        println!("Mode C (class):      T1 = {:?}, T16 = {:?}, T16/T1 = {:.2}", t1_c, t16_c, ratio_c);
-        assert!(ratio_c < 5.0, "Mode C (16 threads) ratio {:.2} suggests serialization; expect < 5", ratio_c);
+        println!(
+            "Mode C (class):      T1 = {:?}, T16 = {:?}, T16/T1 = {:.2}",
+            t1_c, t16_c, ratio_c
+        );
+        assert!(
+            ratio_c < 5.0,
+            "Mode C (16 threads) ratio {:.2} suggests serialization; expect < 5",
+            ratio_c
+        );
 
         println!("--- 16 threads: ratio < 5 => no GIL; T16/T1 ~ 16 => full serialization ---");
     }
@@ -295,24 +335,25 @@ acc
             start.elapsed()
         };
 
-        let run_many_threads = |script: Arc<String>, k: u32, num_threads: usize| -> std::time::Duration {
-            let start = Instant::now();
-            let handles: Vec<_> = (0..num_threads)
-                .map(|_| {
-                    let script = Arc::clone(&script);
-                    thread::spawn(move || {
-                        for _ in 0..k {
-                            let r = run(script.as_str());
-                            assert!(r.is_ok(), "run failed: {:?}", r);
-                        }
+        let run_many_threads =
+            |script: Arc<String>, k: u32, num_threads: usize| -> std::time::Duration {
+                let start = Instant::now();
+                let handles: Vec<_> = (0..num_threads)
+                    .map(|_| {
+                        let script = Arc::clone(&script);
+                        thread::spawn(move || {
+                            for _ in 0..k {
+                                let r = run(script.as_str());
+                                assert!(r.is_ok(), "run failed: {:?}", r);
+                            }
+                        })
                     })
-                })
-                .collect();
-            for h in handles {
-                h.join().expect("thread panicked");
-            }
-            start.elapsed()
-        };
+                    .collect();
+                for h in handles {
+                    h.join().expect("thread panicked");
+                }
+                start.elapsed()
+            };
 
         fn report_mode(
             name: &str,
@@ -329,10 +370,16 @@ acc
                 "Mode {}: T1 = {:.2}s, T8 = {:.2}s, T16 = {:.2}s, T8/T1 = {:.2}, T16/T1 = {:.2}, peak_memory = (use time -v or heaptrack)",
                 name, s1, s8, s16, r8, r16
             );
-            println!("ALLOC_BENCH Mode={} T1={:.3} T8={:.3} T16={:.3} T8/T1={:.3} T16/T1={:.3}", name, s1, s8, s16, r8, r16);
+            println!(
+                "ALLOC_BENCH Mode={} T1={:.3} T8={:.3} T16={:.3} T8/T1={:.3} T16/T1={:.3}",
+                name, s1, s8, s16, r8, r16
+            );
         }
 
-        println!("--- Allocator comparison: 1 / 8 / 16 threads, {} iterations per thread ---", K_ITERATIONS);
+        println!(
+            "--- Allocator comparison: 1 / 8 / 16 threads, {} iterations per thread ---",
+            K_ITERATIONS
+        );
 
         let script_a = script_mode_a(N_MODE_A);
         let t1_a = run_one_thread(&script_a, K_ITERATIONS);
@@ -352,6 +399,8 @@ acc
         let t16_c = run_many_threads(Arc::new(script_c), K_ITERATIONS, 16);
         report_mode("C", t1_c, t8_c, t16_c);
 
-        println!("--- Peak memory: run with /usr/bin/time -v or heaptrack and fill table manually ---");
+        println!(
+            "--- Peak memory: run with /usr/bin/time -v or heaptrack and fill table manually ---"
+        );
     }
 }

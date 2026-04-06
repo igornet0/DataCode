@@ -1,10 +1,9 @@
-/// Разрешение аргументов функций: именованные -> позиционные, применение значений по умолчанию
-
-use crate::parser::ast::Arg;
-use crate::parser::ast::Expr;
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use crate::compiler::natives;
+/// Разрешение аргументов функций: именованные -> позиционные, применение значений по умолчанию
+use crate::parser::ast::Arg;
+use crate::parser::ast::Expr;
 
 /// Разрешает аргументы функции: именованные -> позиционные, применяет значения по умолчанию
 pub fn resolve_function_args(
@@ -23,22 +22,25 @@ pub fn resolve_function_args(
     // Если это встроенная функция, проверяем, поддерживает ли она именованные аргументы
     if function_info.is_none() {
         // Проверяем, есть ли именованные аргументы
-        let has_named = args.iter().any(|a| matches!(a, Arg::Named { .. } | Arg::UnpackObject(_)));
-        
+        let has_named = args
+            .iter()
+            .any(|a| matches!(a, Arg::Named { .. } | Arg::UnpackObject(_)));
+
         if has_named {
             // Проверяем, поддерживает ли эта нативная функция именованные аргументы
-            let param_names_opt: Option<Vec<String>> = if let Some(override_names) = override_native_param_names {
-                Some(override_names.iter().map(|s| s.to_string()).collect())
-            } else {
-                natives::get_native_function_params(function_name)
-            };
+            let param_names_opt: Option<Vec<String>> =
+                if let Some(override_names) = override_native_param_names {
+                    Some(override_names.iter().map(|s| s.to_string()).collect())
+                } else {
+                    natives::get_native_function_params(function_name)
+                };
             if let Some(param_names) = param_names_opt {
                 // Нативная функция поддерживает именованные аргументы
                 // Разрешаем их аналогично пользовательским функциям
                 let mut resolved = vec![None; param_names.len()];
                 let mut positional_count = 0;
                 let start_position = 0;
-                
+
                 // Обрабатываем аргументы
                 for arg in args {
                     match arg {
@@ -102,7 +104,7 @@ pub fn resolve_function_args(
                         }
                     }
                 }
-                
+
                 // Собираем итоговый список аргументов в правильном порядке.
                 // Для нативных функций с большим числом опциональных параметров (например Field)
                 // передаём Null для непереданных параметров, чтобы натива получала args[i] = param i.
@@ -174,29 +176,32 @@ pub fn resolve_function_args(
                     });
                 }
             }
-            return Ok(args.iter().map(|a| match a {
-                Arg::Positional(e) => Arg::Positional(e.clone()),
-                Arg::Named { .. } => unreachable!(),
-                Arg::UnpackObject(e) => Arg::Positional(e.clone()),
-            }).collect());
+            return Ok(args
+                .iter()
+                .map(|a| match a {
+                    Arg::Positional(e) => Arg::Positional(e.clone()),
+                    Arg::Named { .. } => unreachable!(),
+                    Arg::UnpackObject(e) => Arg::Positional(e.clone()),
+                })
+                .collect());
         }
     }
-    
+
     let (_, function) = function_info.unwrap();
     let param_names = &function.param_names;
     let default_values = &function.default_values;
-    
+
     // Единственный аргумент **obj — распаковка в kwargs; ключи объекта проверяются в runtime.
     if args.len() == 1 {
         if let Arg::UnpackObject(expr) = &args[0] {
             return Ok(vec![Arg::UnpackObject(expr.clone())]);
         }
     }
-    
+
     // Создаем массив для разрешенных аргументов
     let mut resolved = vec![None; param_names.len()];
     let mut positional_count = 0;
-    
+
     // Обрабатываем аргументы
     for arg in args {
         match arg {
@@ -219,7 +224,9 @@ pub fn resolve_function_args(
                     return Err(LangError::ParseError {
                         message: format!(
                             "Function '{}' takes {} arguments but {} arguments were provided",
-                            function_name, param_names.len(), positional_count + 1
+                            function_name,
+                            param_names.len(),
+                            positional_count + 1
                         ),
                         line,
                         file: file_owned.clone(),
@@ -258,7 +265,7 @@ pub fn resolve_function_args(
             }
         }
     }
-    
+
     // Применяем значения по умолчанию для незаполненных параметров
     let mut final_args = Vec::new();
     for (i, param_name) in param_names.iter().enumerate() {
@@ -294,12 +301,6 @@ pub fn resolve_function_args(
             }
         }
     }
-    
+
     Ok(final_args)
 }
-
-
-
-
-
-

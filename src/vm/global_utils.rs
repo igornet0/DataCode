@@ -8,7 +8,10 @@ use crate::vm::heavy_store::HeavyStore;
 use crate::vm::store_convert::load_value;
 
 /// Deterministic global slot by name (min index when multiple; stable across HashMap iteration).
-pub(crate) fn global_index_by_name(global_names: &std::collections::BTreeMap<usize, String>, name: &str) -> Option<usize> {
+pub(crate) fn global_index_by_name(
+    global_names: &std::collections::BTreeMap<usize, String>,
+    name: &str,
+) -> Option<usize> {
     global_names
         .iter()
         .filter(|(_, n)| n.as_str() == name)
@@ -17,7 +20,10 @@ pub(crate) fn global_index_by_name(global_names: &std::collections::BTreeMap<usi
 }
 
 /// All global slot indices for a name (for updating every binding of the same name on import).
-pub(crate) fn global_indices_by_name(global_names: &std::collections::BTreeMap<usize, String>, name: &str) -> Vec<usize> {
+pub(crate) fn global_indices_by_name(
+    global_names: &std::collections::BTreeMap<usize, String>,
+    name: &str,
+) -> Vec<usize> {
     let mut indices: Vec<usize> = global_names
         .iter()
         .filter(|(_, n)| n.as_str() == name)

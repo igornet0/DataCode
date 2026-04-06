@@ -19,7 +19,10 @@ fn env_base_from_env() -> Option<PathBuf> {
 }
 
 /// `[dpm] env_base` from manifest: absolute path or relative to `project_root`.
-pub fn env_base_from_manifest(project_root: &Path, manifest: &manifest::DpmManifest) -> Option<PathBuf> {
+pub fn env_base_from_manifest(
+    project_root: &Path,
+    manifest: &manifest::DpmManifest,
+) -> Option<PathBuf> {
     let s = manifest.dpm.as_ref()?.env_base.as_ref()?.trim();
     if s.is_empty() {
         return None;
@@ -58,8 +61,8 @@ fn cache_envs_base() -> Option<PathBuf> {
 /// Env root for project: either cache or in-project.
 /// - In-project: <project_root>/.dpm/
 /// - Cache: ~/.cache/datacode/dpm/envs/<project_name>-<hash>/ (Linux)
-///          or ~/Library/Caches/datacode/dpm/envs/<project_name>-<hash>/ (macOS)
-///          or %APPDATA%\datacode\Cache\dpm\envs\<project_name>-<hash>\ (Windows)
+///   or ~/Library/Caches/datacode/dpm/envs/<project_name>-<hash>/ (macOS)
+///   or %APPDATA%\datacode\Cache\dpm\envs\<project_name>-<hash>\ (Windows)
 /// - Override: [`ENV_DPM_ENV_BASE`] (highest), then `[dpm] env_base` in manifest, then cache.
 pub fn env_root(project_root: &Path, manifest: &manifest::DpmManifest) -> Option<PathBuf> {
     if config::virtualenvs_in_project() {
@@ -81,7 +84,11 @@ pub fn packages_dir(env_root: &Path) -> PathBuf {
 
 /// Single search path for import resolution: <env_root>/packages/.
 /// Import "foo" will resolve to packages/foo.dc or packages/foo/__lib__.dc.
-pub fn package_paths(env_root: &Path, _manifest: &manifest::DpmManifest, _lock: &super::lock::DpmLock) -> Vec<PathBuf> {
+pub fn package_paths(
+    env_root: &Path,
+    _manifest: &manifest::DpmManifest,
+    _lock: &super::lock::DpmLock,
+) -> Vec<PathBuf> {
     let packages = env_root.join("packages");
     if packages.exists() {
         vec![packages]
@@ -126,13 +133,12 @@ mod tests {
     #[test]
     fn env_root_uses_manifest_env_base_when_env_unset() {
         let _guard = ENV_TEST_LOCK.lock().expect("env test lock");
-        let _ = std::env::remove_var(ENV_DPM_ENV_BASE);
+        std::env::remove_var(ENV_DPM_ENV_BASE);
         let project_root = std::env::temp_dir().join("dpm_test_manifest_env_base");
         let _ = std::fs::create_dir_all(&project_root);
         let mut manifest = sample_manifest();
         manifest.dpm = Some(manifest::DpmSection {
             env_base: Some(".".to_string()),
-            ..Default::default()
         });
         let root = env_root(&project_root, &manifest).expect("env root");
         assert!(root.starts_with(&project_root));
@@ -151,7 +157,6 @@ mod tests {
         let mut manifest = sample_manifest();
         manifest.dpm = Some(manifest::DpmSection {
             env_base: Some(".".to_string()),
-            ..Default::default()
         });
         let root = env_root(&project_root, &manifest).expect("env root");
         assert!(root.starts_with(&tmp));

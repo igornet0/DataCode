@@ -1,9 +1,8 @@
-/// Константное сворачивание (constant folding) - вычисление константных выражений во время компиляции
-
-use crate::parser::ast::{BinaryOpKind, Expr};
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use crate::lexer::TokenKind;
+/// Константное сворачивание (constant folding) - вычисление константных выражений во время компиляции
+use crate::parser::ast::{BinaryOpKind, Expr};
 
 /// Оптимизация: вычисляет константные выражения во время компиляции
 pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
@@ -12,29 +11,35 @@ pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
         Expr::ArrayLiteral { .. } => Ok(None), // Не можем вычислить во время компиляции
         Expr::ObjectLiteral { .. } => Ok(None), // Не можем вычислить во время компиляции
         Expr::TupleLiteral { .. } => Ok(None), // Не можем вычислить во время компиляции
-        Expr::Property { .. } => Ok(None), // Не можем вычислить во время компиляции
-        Expr::MethodCall { .. } => Ok(None), // Не можем вычислить во время компиляции
+        Expr::Property { .. } => Ok(None),     // Не можем вычислить во время компиляции
+        Expr::MethodCall { .. } => Ok(None),   // Не можем вычислить во время компиляции
         Expr::InterpolatedString { .. } => Ok(None), // Содержит выражения — вычисляем в рантайме
-        Expr::Binary { left, op, right, .. } => {
+        Expr::Binary {
+            left, op, right, ..
+        } => {
             // Пытаемся вычислить бинарное выражение, если оба операнда константы
             let left_val = evaluate_constant_expr(left)?;
             let right_val = evaluate_constant_expr(right)?;
-            
+
             if let (Some(l), Some(r)) = (left_val, right_val) {
                 let op = match op {
                     BinaryOpKind::Builtin(t) => t,
                     BinaryOpKind::Plugin { .. } => return Ok(None),
                 };
                 match op {
-                    TokenKind::Plus => {
-                        match (l, r) {
-                            (Value::Number(n1), Value::Number(n2)) => Ok(Some(Value::Number(n1 + n2))),
-                            (Value::String(s1), Value::String(s2)) => Ok(Some(Value::String(format!("{}{}", s1, s2)))),
-                            (Value::String(s), Value::Number(n)) => Ok(Some(Value::String(format!("{}{}", s, n)))),
-                            (Value::Number(n), Value::String(s)) => Ok(Some(Value::String(format!("{}{}", n, s)))),
-                            _ => Ok(None),
+                    TokenKind::Plus => match (l, r) {
+                        (Value::Number(n1), Value::Number(n2)) => Ok(Some(Value::Number(n1 + n2))),
+                        (Value::String(s1), Value::String(s2)) => {
+                            Ok(Some(Value::String(format!("{}{}", s1, s2))))
                         }
-                    }
+                        (Value::String(s), Value::Number(n)) => {
+                            Ok(Some(Value::String(format!("{}{}", s, n))))
+                        }
+                        (Value::Number(n), Value::String(s)) => {
+                            Ok(Some(Value::String(format!("{}{}", n, s))))
+                        }
+                        _ => Ok(None),
+                    },
                     TokenKind::Minus => {
                         if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
                             Ok(Some(Value::Number(n1 - n2)))
@@ -42,28 +47,26 @@ pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
                             Ok(None)
                         }
                     }
-                    TokenKind::Star => {
-                        match (&l, &r) {
-                            (Value::Number(n1), Value::Number(n2)) => Ok(Some(Value::Number(n1 * n2))),
-                            (Value::String(s), Value::Number(n)) => {
-                                let count = *n as i64;
-                                if count <= 0 {
-                                    Ok(Some(Value::String(String::new())))
-                                } else {
-                                    Ok(Some(Value::String(s.repeat(count as usize))))
-                                }
+                    TokenKind::Star => match (&l, &r) {
+                        (Value::Number(n1), Value::Number(n2)) => Ok(Some(Value::Number(n1 * n2))),
+                        (Value::String(s), Value::Number(n)) => {
+                            let count = *n as i64;
+                            if count <= 0 {
+                                Ok(Some(Value::String(String::new())))
+                            } else {
+                                Ok(Some(Value::String(s.repeat(count as usize))))
                             }
-                            (Value::Number(n), Value::String(s)) => {
-                                let count = *n as i64;
-                                if count <= 0 {
-                                    Ok(Some(Value::String(String::new())))
-                                } else {
-                                    Ok(Some(Value::String(s.repeat(count as usize))))
-                                }
-                            }
-                            _ => Ok(None),
                         }
-                    }
+                        (Value::Number(n), Value::String(s)) => {
+                            let count = *n as i64;
+                            if count <= 0 {
+                                Ok(Some(Value::String(String::new())))
+                            } else {
+                                Ok(Some(Value::String(s.repeat(count as usize))))
+                            }
+                        }
+                        _ => Ok(None),
+                    },
                     TokenKind::Slash => {
                         if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
                             if n2 == 0.0 {
@@ -133,9 +136,7 @@ pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
                             Ok(None)
                         }
                     }
-                    TokenKind::Bang => {
-                        Ok(Some(Value::Bool(!r.is_truthy())))
-                    }
+                    TokenKind::Bang => Ok(Some(Value::Bool(!r.is_truthy()))),
                     _ => Ok(None),
                 }
             } else {
@@ -145,5 +146,3 @@ pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
         _ => Ok(None), // Переменные, вызовы функций и присваивания не могут быть вычислены во время компиляции
     }
 }
-
-

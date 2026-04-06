@@ -34,7 +34,11 @@ fn test_dcb_file_created_after_import() {
 
     let canonical = mod_path.canonicalize().unwrap_or_else(|_| mod_path.clone());
     let dcb_path = data_code::vm::dcb::dcb_cache_path(&canonical);
-    assert!(dcb_path.exists(), ".dcb should exist after first run: {}", dcb_path.display());
+    assert!(
+        dcb_path.exists(),
+        ".dcb should exist after first run: {}",
+        dcb_path.display()
+    );
 }
 
 /// Changing source invalidates cache: different source produces different result after re-run.
@@ -50,7 +54,11 @@ fn test_dcb_invalidated_on_source_change() {
 
     fs::write(&mod_path, "let val = 99\n").expect("change varmod.dc");
     let r2 = run_with_base_path(main_source, &dir).unwrap();
-    assert_eq!(r2, Value::Number(99.0), "changed source should be recompiled and return new value");
+    assert_eq!(
+        r2,
+        Value::Number(99.0),
+        "changed source should be recompiled and return new value"
+    );
 }
 
 /// import A; from A import x — module runs once (executed_modules singleton).
@@ -65,7 +73,11 @@ from sing import x
 x + 1
 "#;
     let result = run_with_base_path(main_source, &dir);
-    assert!(result.is_ok(), "singleton import + from should succeed: {:?}", result);
+    assert!(
+        result.is_ok(),
+        "singleton import + from should succeed: {:?}",
+        result
+    );
     assert_eq!(result.unwrap(), Value::Number(11.0));
 }
 

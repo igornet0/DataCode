@@ -1,24 +1,23 @@
 /// Контекст компиляции для передачи между модулями
-
 use crate::bytecode::{Chunk, Function};
-use crate::compiler::scope::ScopeManager;
 use crate::compiler::labels::LabelManager;
+use crate::compiler::scope::ScopeManager;
 
 // Структура для отслеживания обработчиков исключений
 #[derive(Clone)]
 pub struct ExceptionHandler {
-    pub catch_ips: Vec<usize>,           // IP начала каждого catch блока
-    pub error_types: Vec<Option<usize>>, // Типы ошибок для каждого catch (None для catch всех)
+    pub catch_ips: Vec<usize>,               // IP начала каждого catch блока
+    pub error_types: Vec<Option<usize>>,     // Типы ошибок для каждого catch (None для catch всех)
     pub error_var_slots: Vec<Option<usize>>, // Слоты для переменных ошибок
-    pub else_ip: Option<usize>,          // IP начала else блока
-    pub finally_ip: Option<usize>,       // IP начала finally блока
-    pub stack_height: usize,            // Высота стека при входе в try
+    pub else_ip: Option<usize>,              // IP начала else блока
+    pub finally_ip: Option<usize>,           // IP начала finally блока
+    pub stack_height: usize,                 // Высота стека при входе в try
 }
 
 // Структура для отслеживания контекста циклов
 pub struct LoopContext {
-    pub continue_label: usize,   // Метка для continue (начало следующей итерации или инкремент)
-    pub break_label: usize,      // Метка для break (конец цикла)
+    pub continue_label: usize, // Метка для continue (начало следующей итерации или инкремент)
+    pub break_label: usize,    // Метка для break (конец цикла)
     /// true для for i in range(...); при break нужно снять состояние с for_range_stack
     pub is_for_range: bool,
 }
@@ -56,9 +55,11 @@ pub struct CompilationContext<'a> {
     /// Class name -> env_prefix from model_config (for Settings subclasses). Used to build nested_specs when calling load_env.
     pub class_settings_env_prefix: &'a mut std::collections::HashMap<String, String>,
     /// Class name -> nested_specs Value (array) for Settings subclasses. Used so subclasses (e.g. DevSettings) pass parent's nested_specs when calling super.
-    pub class_nested_specs_value: &'a mut std::collections::HashMap<String, crate::common::value::Value>,
+    pub class_nested_specs_value:
+        &'a mut std::collections::HashMap<String, crate::common::value::Value>,
     /// Class name -> default required_keys array for Settings subclasses. Used at call site for Config(path) to pass 3 args.
-    pub class_required_keys_value: &'a mut std::collections::HashMap<String, crate::common::value::Value>,
+    pub class_required_keys_value:
+        &'a mut std::collections::HashMap<String, crate::common::value::Value>,
     /// Current class being compiled (for super.method() resolution).
     pub current_class: Option<String>,
     /// Superclass of current class (for super() and super.method() resolution).
@@ -70,13 +71,18 @@ pub struct CompilationContext<'a> {
     /// Source file path for error messages (propagated to chunk.source_name).
     pub source_name: Option<&'a str>,
     /// Parse-time native export param names (from `native_call_descriptor` preload), e.g. `native_dataset_split`.
-    pub native_call_param_registry: Option<&'a crate::vm::native_call_registry::NativeCallParamRegistry>,
+    pub native_call_param_registry:
+        Option<&'a crate::vm::native_call_registry::NativeCallParamRegistry>,
 }
 
 impl<'a> CompilationContext<'a> {
     pub fn get_error_type_index(&mut self, error_type_name: &str) -> usize {
         // Ищем в существующей таблице
-        if let Some(index) = self.error_type_table.iter().position(|s| s == error_type_name) {
+        if let Some(index) = self
+            .error_type_table
+            .iter()
+            .position(|s| s == error_type_name)
+        {
             return index;
         }
         // Добавляем новый тип
@@ -85,4 +91,3 @@ impl<'a> CompilationContext<'a> {
         index
     }
 }
-

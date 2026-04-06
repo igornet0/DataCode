@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::common::{error::LangError, error::ErrorType, value::Value, value_store::ValueStore};
+use crate::common::{error::ErrorType, error::LangError, value::Value, value_store::ValueStore};
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
@@ -26,53 +26,74 @@ pub fn get_path(
     index_value: Value,
 ) -> Result<VMStatus, LangError> {
     match index_value {
-        Value::String(property_name) => {
-            match property_name.as_str() {
-                "is_file" => {
-                    stack::push_id(stack, store_value(Value::Bool(path.is_file()), value_store, heavy_store));
-                }
-                "is_dir" => {
-                    stack::push_id(stack, store_value(Value::Bool(path.is_dir()), value_store, heavy_store));
-                }
-                "extension" => {
-                    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                        stack::push_id(stack, store_value(Value::String(ext.to_string()), value_store, heavy_store));
-                    } else {
-                        stack::push_id(stack, crate::common::value_store::NULL_VALUE_ID);
-                    }
-                }
-                "name" => {
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        stack::push_id(stack, store_value(Value::String(name.to_string()), value_store, heavy_store));
-                    } else {
-                        stack::push_id(stack, crate::common::value_store::NULL_VALUE_ID);
-                    }
-                }
-                "parent" => {
-                    use crate::vm::natives::path::safe_path_parent;
-                    match safe_path_parent(&path) {
-                        Some(parent) => stack::push_id(stack, store_value(Value::Path(parent), value_store, heavy_store)),
-                        None => stack::push_id(stack, crate::common::value_store::NULL_VALUE_ID),
-                    }
-                }
-                "exists" => {
-                    stack::push_id(stack, store_value(Value::Bool(path.exists()), value_store, heavy_store));
-                }
-                _ => {
-                    let error = ExceptionHandler::runtime_error(
-                        &frames,
-                        format!("Property '{}' not found on Path", property_name),
-                        line,
+        Value::String(property_name) => match property_name.as_str() {
+            "is_file" => {
+                stack::push_id(
+                    stack,
+                    store_value(Value::Bool(path.is_file()), value_store, heavy_store),
+                );
+            }
+            "is_dir" => {
+                stack::push_id(
+                    stack,
+                    store_value(Value::Bool(path.is_dir()), value_store, heavy_store),
+                );
+            }
+            "extension" => {
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    stack::push_id(
+                        stack,
+                        store_value(Value::String(ext.to_string()), value_store, heavy_store),
                     );
-                    return match ExceptionHandler::handle_exception(
-                        stack, frames, exception_handlers, error, value_store, heavy_store,
-                    ) {
-                        Ok(()) => Ok(VMStatus::Continue),
-                        Err(e) => Err(e),
-                    };
+                } else {
+                    stack::push_id(stack, crate::common::value_store::NULL_VALUE_ID);
                 }
             }
-        }
+            "name" => {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    stack::push_id(
+                        stack,
+                        store_value(Value::String(name.to_string()), value_store, heavy_store),
+                    );
+                } else {
+                    stack::push_id(stack, crate::common::value_store::NULL_VALUE_ID);
+                }
+            }
+            "parent" => {
+                use crate::vm::natives::path::safe_path_parent;
+                match safe_path_parent(&path) {
+                    Some(parent) => stack::push_id(
+                        stack,
+                        store_value(Value::Path(parent), value_store, heavy_store),
+                    ),
+                    None => stack::push_id(stack, crate::common::value_store::NULL_VALUE_ID),
+                }
+            }
+            "exists" => {
+                stack::push_id(
+                    stack,
+                    store_value(Value::Bool(path.exists()), value_store, heavy_store),
+                );
+            }
+            _ => {
+                let error = ExceptionHandler::runtime_error(
+                    &frames,
+                    format!("Property '{}' not found on Path", property_name),
+                    line,
+                );
+                return match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
+                    Ok(()) => Ok(VMStatus::Continue),
+                    Err(e) => Err(e),
+                };
+            }
+        },
         _ => {
             let error = ExceptionHandler::runtime_error(
                 &frames,
@@ -80,7 +101,12 @@ pub fn get_path(
                 line,
             );
             return match ExceptionHandler::handle_exception(
-                stack, frames, exception_handlers, error, value_store, heavy_store,
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
             ) {
                 Ok(()) => Ok(VMStatus::Continue),
                 Err(e) => Err(e),
@@ -112,7 +138,12 @@ pub fn get_column_reference(
                     line,
                 );
                 return match ExceptionHandler::handle_exception(
-                    stack, frames, exception_handlers, error, value_store, heavy_store,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
                 ) {
                     Ok(()) => Ok(VMStatus::Continue),
                     Err(e) => Err(e),
@@ -127,7 +158,12 @@ pub fn get_column_reference(
                 line,
             );
             return match ExceptionHandler::handle_exception(
-                stack, frames, exception_handlers, error, value_store, heavy_store,
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
             ) {
                 Ok(()) => Ok(VMStatus::Continue),
                 Err(e) => Err(e),
@@ -136,7 +172,10 @@ pub fn get_column_reference(
     };
     let pushed = if let Some(column) = table.borrow().get_column_cached(&column_name) {
         if index < column.len() {
-            stack::push_id(stack, store_value(column[index].clone(), value_store, heavy_store));
+            stack::push_id(
+                stack,
+                store_value(column[index].clone(), value_store, heavy_store),
+            );
             true
         } else {
             false
@@ -144,7 +183,9 @@ pub fn get_column_reference(
     } else {
         let t = table.borrow();
         if index < t.len() {
-            if let Some(cell) = table_ops::get_cell_value(&*t, index, &column_name, value_store, heavy_store) {
+            if let Some(cell) =
+                table_ops::get_cell_value(&*t, index, &column_name, value_store, heavy_store)
+            {
                 stack::push_id(stack, store_value(cell, value_store, heavy_store));
                 true
             } else {
@@ -164,7 +205,9 @@ pub fn get_column_reference(
                 format!(
                     "Column index {} out of bounds{}",
                     index,
-                    len_opt.map(|l| format!(" (length: {})", l)).unwrap_or_default()
+                    len_opt
+                        .map(|l| format!(" (length: {})", l))
+                        .unwrap_or_default()
                 ),
                 line,
                 ErrorType::IndexError,
@@ -178,7 +221,12 @@ pub fn get_column_reference(
             )
         };
         return match ExceptionHandler::handle_exception(
-            stack, frames, exception_handlers, error, value_store, heavy_store,
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
         ) {
             Ok(()) => Ok(VMStatus::Continue),
             Err(e) => Err(e),
@@ -208,7 +256,12 @@ pub fn get_string(
                     line,
                 );
                 return match ExceptionHandler::handle_exception(
-                    stack, frames, exception_handlers, error, value_store, heavy_store,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
                 ) {
                     Ok(()) => Ok(VMStatus::Continue),
                     Err(e) => Err(e),
@@ -216,16 +269,28 @@ pub fn get_string(
             }
             let idx_usize = idx as usize;
             if let Some(ch) = s.chars().nth(idx_usize) {
-                stack::push_id(stack, store_value(Value::String(ch.to_string()), value_store, heavy_store));
+                stack::push_id(
+                    stack,
+                    store_value(Value::String(ch.to_string()), value_store, heavy_store),
+                );
             } else {
                 let error = ExceptionHandler::runtime_error_with_type(
                     &frames,
-                    format!("String index {} out of bounds (length: {})", idx_usize, s.chars().count()),
+                    format!(
+                        "String index {} out of bounds (length: {})",
+                        idx_usize,
+                        s.chars().count()
+                    ),
                     line,
                     ErrorType::IndexError,
                 );
                 return match ExceptionHandler::handle_exception(
-                    stack, frames, exception_handlers, error, value_store, heavy_store,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
                 ) {
                     Ok(()) => Ok(VMStatus::Continue),
                     Err(e) => Err(e),
@@ -245,7 +310,10 @@ pub fn get_string(
                 _ => None,
             };
             if let Some(idx) = method_index {
-                stack::push_id(stack, store_value(Value::NativeFunction(idx), value_store, heavy_store));
+                stack::push_id(
+                    stack,
+                    store_value(Value::NativeFunction(idx), value_store, heavy_store),
+                );
             } else {
                 let error = ExceptionHandler::runtime_error(
                     &frames,
@@ -253,7 +321,12 @@ pub fn get_string(
                     line,
                 );
                 return match ExceptionHandler::handle_exception(
-                    stack, frames, exception_handlers, error, value_store, heavy_store,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
                 ) {
                     Ok(()) => Ok(VMStatus::Continue),
                     Err(e) => Err(e),
@@ -267,7 +340,12 @@ pub fn get_string(
                 line,
             );
             return match ExceptionHandler::handle_exception(
-                stack, frames, exception_handlers, error, value_store, heavy_store,
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
             ) {
                 Ok(()) => Ok(VMStatus::Continue),
                 Err(e) => Err(e),
@@ -293,7 +371,14 @@ pub fn get_native_str(
             let mut desc = HashMap::new();
             desc.insert("__type".to_string(), Value::String("str".to_string()));
             desc.insert("__length".to_string(), Value::Number(idx as f64));
-            stack::push_id(stack, store_value(Value::Object(Rc::new(RefCell::new(desc))), value_store, heavy_store));
+            stack::push_id(
+                stack,
+                store_value(
+                    Value::Object(Rc::new(RefCell::new(desc))),
+                    value_store,
+                    heavy_store,
+                ),
+            );
             return Ok(VMStatus::Continue);
         }
     }
@@ -302,7 +387,14 @@ pub fn get_native_str(
         "Expected array, tuple, column reference, table, object, path, database engine, or database cluster for GetArrayElement".to_string(),
         line,
     );
-    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+    match ExceptionHandler::handle_exception(
+        stack,
+        frames,
+        exception_handlers,
+        error,
+        value_store,
+        heavy_store,
+    ) {
         Ok(()) => Ok(VMStatus::Continue),
         Err(e) => Err(e),
     }

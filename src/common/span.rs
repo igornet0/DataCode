@@ -15,4 +15,3 @@ impl Span {
         Self { line: 1, column: 1 }
     }
 }
-

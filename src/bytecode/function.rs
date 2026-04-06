@@ -3,14 +3,14 @@
 use super::chunk::Chunk;
 use crate::common::value::Value;
 use crate::parser::ast::TypePart;
-use std::collections::HashMap;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 
 #[derive(Debug, Clone)]
 pub struct CapturedVar {
-    pub name: String,           // Variable name
+    pub name: String,             // Variable name
     pub parent_slot_index: usize, // Slot index in ancestor function's frame
     pub local_slot_index: usize,  // Slot index in this function's frame
     pub ancestor_depth: usize,    // Depth of ancestor (0 = immediate parent, 1 = grandparent, etc.)
@@ -34,7 +34,7 @@ impl CacheKey {
         if !args.iter().all(|v| v.is_hashable()) {
             return None;
         }
-        
+
         // Оптимизация для двух чисел (частый случай для Ackermann)
         if args.len() == 2 {
             if let (Value::Number(m), Value::Number(n)) = (&args[0], &args[1]) {
@@ -47,7 +47,7 @@ impl CacheKey {
                 }
             }
         }
-        
+
         // Универсальный случай
         Some(CacheKey::Args(args.to_vec()))
     }
@@ -78,12 +78,8 @@ impl Hash for CacheKey {
 impl PartialEq for CacheKey {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
-            (CacheKey::TwoNumbers(m1, n1), CacheKey::TwoNumbers(m2, n2)) => {
-                m1 == m2 && n1 == n2
-            }
-            (CacheKey::Args(a1), CacheKey::Args(a2)) => {
-                a1 == a2
-            }
+            (CacheKey::TwoNumbers(m1, n1), CacheKey::TwoNumbers(m2, n2)) => m1 == m2 && n1 == n2,
+            (CacheKey::Args(a1), CacheKey::Args(a2)) => a1 == a2,
             _ => false,
         }
     }
@@ -102,23 +98,21 @@ impl FnCache {
         let mut map = HashMap::new();
         // Предварительно резервируем память для ~1500 записей (оптимизация для Ackermann)
         map.reserve(1500);
-        Self {
-            map,
-        }
+        Self { map }
     }
 }
 
 #[derive(Debug)]
 pub struct Function {
-    pub name: String,  // Имя функции для трассировки
+    pub name: String, // Имя функции для трассировки
     pub chunk: Chunk,
-    pub arity: usize, // Количество параметров
+    pub arity: usize,                            // Количество параметров
     pub param_names: Vec<String>, // Имена параметров для разрешения именованных аргументов
     pub param_types: Vec<Option<Vec<TypePart>>>, // Типы параметров (None если не указан, Vec для union: TypeName + LiteralStr)
-    pub return_type: Option<Vec<TypePart>>, // Тип возвращаемого значения (union)
+    pub return_type: Option<Vec<TypePart>>,      // Тип возвращаемого значения (union)
     pub default_values: Vec<Option<Value>>, // Значения по умолчанию для каждого параметра (None если нет default)
-    pub captured_vars: Vec<CapturedVar>, // Information about captured variables
-    pub is_cached: bool, // Флаг, указывающий, что функция должна кэшироваться
+    pub captured_vars: Vec<CapturedVar>,    // Information about captured variables
+    pub is_cached: bool,                    // Флаг, указывающий, что функция должна кэшироваться
     pub cache: Option<Rc<RefCell<FnCache>>>, // Кэш для мемоизации (если is_cached = true)
     /// Web route: (method, path) from @route("METHOD", "/path")
     pub route_method: Option<String>,
@@ -189,4 +183,3 @@ impl Clone for Function {
         }
     }
 }
-

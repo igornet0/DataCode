@@ -1,7 +1,12 @@
 //! Python-style slice index normalization for 1D sequences.
 
 /// `step` must be non-zero. Returns indices in traversal order (copy order).
-pub fn slice_indices(len: usize, start: Option<i64>, stop: Option<i64>, step: i64) -> Result<Vec<usize>, &'static str> {
+pub fn slice_indices(
+    len: usize,
+    start: Option<i64>,
+    stop: Option<i64>,
+    step: i64,
+) -> Result<Vec<usize>, &'static str> {
     if step == 0 {
         return Err("slice step cannot be zero");
     }
@@ -81,7 +86,11 @@ pub fn slice_indices(len: usize, start: Option<i64>, stop: Option<i64>, step: i6
 }
 
 /// Границы полуинтервала `[a, b)` для `step == 1` (присваивание срезу / splice).
-pub fn contiguous_positive_slice_bounds(len: usize, start: Option<i64>, stop: Option<i64>) -> (usize, usize) {
+pub fn contiguous_positive_slice_bounds(
+    len: usize,
+    start: Option<i64>,
+    stop: Option<i64>,
+) -> (usize, usize) {
     let n = len as i64;
     let mut a = start.unwrap_or(0);
     let mut b = stop.unwrap_or(n);

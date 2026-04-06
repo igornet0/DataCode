@@ -1,7 +1,7 @@
 // Utility functions for native functions
 
-use crate::common::value::Value;
 use crate::common::error::LangError;
+use crate::common::value::Value;
 use crate::vm::global_utils::global_index_by_name;
 use crate::vm::store_convert::load_value;
 use crate::vm::vm::VM_CALL_CONTEXT;
@@ -36,7 +36,7 @@ pub fn call_user_function(function_index: usize, args: &[Value]) -> Result<Value
         let ctx_ref = ctx.borrow();
         *ctx_ref
     });
-    
+
     if let Some(vm_ptr) = vm_ptr {
         unsafe {
             let vm = &mut *vm_ptr;
@@ -49,4 +49,3 @@ pub fn call_user_function(function_index: usize, args: &[Value]) -> Result<Value
         ))
     }
 }
-

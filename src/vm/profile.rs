@@ -61,7 +61,9 @@ pub fn record_allocate() {
     PROFILE.with(|p| {
         if let Some(ref mut s) = *p.borrow_mut() {
             s.store_allocations += 1;
-            let name = CURRENT_OPCODE.with(|c| c.borrow().clone()).unwrap_or_else(|| "?".to_string());
+            let name = CURRENT_OPCODE
+                .with(|c| c.borrow().clone())
+                .unwrap_or_else(|| "?".to_string());
             *s.alloc_by_opcode.entry(name).or_insert(0) += 1;
         }
     });
@@ -73,7 +75,9 @@ pub fn record_store_get() {
     PROFILE.with(|p| {
         if let Some(ref mut s) = *p.borrow_mut() {
             s.store_get_count += 1;
-            let name = CURRENT_OPCODE.with(|c| c.borrow().clone()).unwrap_or_else(|| "?".to_string());
+            let name = CURRENT_OPCODE
+                .with(|c| c.borrow().clone())
+                .unwrap_or_else(|| "?".to_string());
             *s.get_by_opcode.entry(name).or_insert(0) += 1;
         }
     });
@@ -93,13 +97,29 @@ pub fn print_stats(stats: &ProfileStats) {
     eprintln!("[profile] store_allocations  = {}", stats.store_allocations);
     eprintln!("[profile] store_get_count    = {}", stats.store_get_count);
 
-    let mut by_alloc: Vec<_> = stats.alloc_by_opcode.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let mut by_alloc: Vec<_> = stats
+        .alloc_by_opcode
+        .iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
     by_alloc.sort_by(|a, b| b.1.cmp(&a.1));
-    eprintln!("[profile] top {} by alloc: {:?}", TOP_N, &by_alloc[..TOP_N.min(by_alloc.len())]);
+    eprintln!(
+        "[profile] top {} by alloc: {:?}",
+        TOP_N,
+        &by_alloc[..TOP_N.min(by_alloc.len())]
+    );
 
-    let mut by_get: Vec<_> = stats.get_by_opcode.iter().map(|(k, v)| (k.clone(), *v)).collect();
+    let mut by_get: Vec<_> = stats
+        .get_by_opcode
+        .iter()
+        .map(|(k, v)| (k.clone(), *v))
+        .collect();
     by_get.sort_by(|a, b| b.1.cmp(&a.1));
-    eprintln!("[profile] top {} by get:  {:?}", TOP_N, &by_get[..TOP_N.min(by_get.len())]);
+    eprintln!(
+        "[profile] top {} by get:  {:?}",
+        TOP_N,
+        &by_get[..TOP_N.min(by_get.len())]
+    );
 
     let mut combined: HashMap<String, u64> = HashMap::new();
     for (k, v) in &stats.alloc_by_opcode {
@@ -110,7 +130,11 @@ pub fn print_stats(stats: &ProfileStats) {
     }
     let mut by_combined: Vec<_> = combined.into_iter().collect();
     by_combined.sort_by(|a, b| b.1.cmp(&a.1));
-    eprintln!("[profile] top {} by alloc+get: {:?}", TOP_N, &by_combined[..TOP_N.min(by_combined.len())]);
+    eprintln!(
+        "[profile] top {} by alloc+get: {:?}",
+        TOP_N,
+        &by_combined[..TOP_N.min(by_combined.len())]
+    );
 }
 
 // Stubs when feature is off: no cost, no thread_local.
@@ -137,4 +161,3 @@ pub fn record_store_get() {}
 #[cfg(not(feature = "profile"))]
 #[inline(always)]
 pub fn set_current_opcode(_op: &crate::bytecode::OpCode) {}
-

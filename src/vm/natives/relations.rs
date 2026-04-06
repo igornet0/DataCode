@@ -4,11 +4,11 @@
 // (no RefCell on hot path). Fallback to thread-local RELATIONS/PRIMARY_KEYS when VM context
 // is not set (e.g. tests). See docs/gil_bottlenecks.md.
 
-use crate::common::value::Value;
 use crate::common::table::Table;
+use crate::common::value::Value;
 use crate::vm::vm::VM_CALL_CONTEXT;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 // Thread-local fallback when VM_CALL_CONTEXT is not set (e.g. standalone tests).
 thread_local! {
@@ -69,11 +69,11 @@ pub fn native_relate(args: &[Value]) -> Value {
         // Проверяем первый не-null элемент каждой колонки
         let type1 = &col1_data[0];
         let type2 = &col2_data[0];
-        
+
         // Проверяем совместимость типов (Number <-> Number, String <-> String)
         match (type1, type2) {
-            (Value::Number(_), Value::Number(_)) => {},
-            (Value::String(_), Value::String(_)) => {},
+            (Value::Number(_), Value::Number(_)) => {}
+            (Value::String(_), Value::String(_)) => {}
             _ => {
                 // Типы не совместимы, но все равно сохраняем связь
                 // Более строгая проверка будет при экспорте
@@ -128,4 +128,3 @@ pub fn native_primary_key(args: &[Value]) -> Value {
 
     Value::Null
 }
-

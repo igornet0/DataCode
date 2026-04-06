@@ -6,12 +6,12 @@ use crate::common::value::Value;
 /// Информация об обработчике исключений для передачи из компилятора в VM
 #[derive(Debug, Clone)]
 pub struct ExceptionHandlerInfo {
-    pub catch_ips: Vec<usize>,           // IP начала каждого catch блока
-    pub error_types: Vec<Option<usize>>, // Типы ошибок для каждого catch (None для catch всех)
+    pub catch_ips: Vec<usize>,               // IP начала каждого catch блока
+    pub error_types: Vec<Option<usize>>,     // Типы ошибок для каждого catch (None для catch всех)
     pub error_var_slots: Vec<Option<usize>>, // Слоты для переменных ошибок
-    pub else_ip: Option<usize>,          // IP начала else блока
-    pub finally_ip: Option<usize>,       // IP начала finally блока
-    pub stack_height: usize,             // Высота стека при входе в try
+    pub else_ip: Option<usize>,              // IP начала else блока
+    pub finally_ip: Option<usize>,           // IP начала finally блока
+    pub stack_height: usize,                 // Высота стека при входе в try
 }
 
 #[derive(Debug, Clone)]
@@ -103,7 +103,7 @@ impl Chunk {
         } else {
             0
         };
-        
+
         output.push_str(&format!("{:04} ", offset));
         if offset > 0 && line == self.lines[offset - 1] {
             output.push_str("   | ");
@@ -247,7 +247,10 @@ impl Chunk {
                 offset + 1
             }
             OpCode::ForRange(var_slot, start_c, end_c, step_c, end_offset) => {
-                output.push_str(&format!("FOR_RANGE slot={} start_c={} end_c={} step_c={} end_off={}\n", var_slot, start_c, end_c, step_c, end_offset));
+                output.push_str(&format!(
+                    "FOR_RANGE slot={} start_c={} end_c={} step_c={} end_off={}\n",
+                    var_slot, start_c, end_c, step_c, end_offset
+                ));
                 offset + 1
             }
             OpCode::ForRangeNext(back_offset) => {
@@ -356,7 +359,11 @@ impl Chunk {
             }
             OpCode::FormatInterp(index) => {
                 let fmt = &self.constants[*index];
-                output.push_str(&format!("FORMAT_INTERP {:4} '{}'\n", index, fmt.to_string()));
+                output.push_str(&format!(
+                    "FORMAT_INTERP {:4} '{}'\n",
+                    index,
+                    fmt.to_string()
+                ));
                 offset + 1
             }
             OpCode::BeginTry(handler_index) => {
@@ -391,13 +398,22 @@ impl Chunk {
             }
             OpCode::Import(module_index) => {
                 let module_name = &self.constants[*module_index];
-                output.push_str(&format!("IMPORT {:4} '{}'\n", module_index, module_name.to_string()));
+                output.push_str(&format!(
+                    "IMPORT {:4} '{}'\n",
+                    module_index,
+                    module_name.to_string()
+                ));
                 offset + 1
             }
             OpCode::ImportFrom(module_index, items_index) => {
                 let module_name = &self.constants[*module_index];
                 let items_array = &self.constants[*items_index];
-                output.push_str(&format!("IMPORT_FROM {:4} '{}' items={}\n", module_index, module_name.to_string(), items_array.to_string()));
+                output.push_str(&format!(
+                    "IMPORT_FROM {:4} '{}' items={}\n",
+                    module_index,
+                    module_name.to_string(),
+                    items_array.to_string()
+                ));
                 offset + 1
             }
             OpCode::RegAdd(rd, r1, r2) => {
@@ -407,4 +423,3 @@ impl Chunk {
         }
     }
 }
-

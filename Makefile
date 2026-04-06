@@ -338,6 +338,7 @@ clean:
 	cargo clean
 
 # Проверка форматирования и линтинга кода
+# Лог в файл: перезапись `make check > log.txt` (не `>>`, иначе дубликаты); без ANSI: `NO_COLOR=1 make check > log.txt`
 check:
 	@echo "🔍 Проверка кода..."
 	cargo check

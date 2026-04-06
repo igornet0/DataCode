@@ -8,20 +8,20 @@ use std::process::Command;
 
 /// Clone a git repo into dest_dir. Supports source like "git+https://github.com/user/repo.git".
 pub fn install_package(_name: &str, source: &str, dest_dir: &Path) -> Result<String, String> {
-    let url = source
-        .strip_prefix("git+")
-        .unwrap_or(source)
-        .trim();
+    let url = source.strip_prefix("git+").unwrap_or(source).trim();
     if url.is_empty() {
         return Err("Source must be git+<url>".to_string());
     }
     if dest_dir.exists() {
-        std::fs::remove_dir_all(dest_dir).map_err(|e| format!("Remove {}: {}", dest_dir.display(), e))?;
+        std::fs::remove_dir_all(dest_dir)
+            .map_err(|e| format!("Remove {}: {}", dest_dir.display(), e))?;
     }
     if let Some(parent) = dest_dir.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Create {}: {}", parent.display(), e))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Create {}: {}", parent.display(), e))?;
     }
-    std::fs::create_dir_all(dest_dir).map_err(|e| format!("Create {}: {}", dest_dir.display(), e))?;
+    std::fs::create_dir_all(dest_dir)
+        .map_err(|e| format!("Create {}: {}", dest_dir.display(), e))?;
     let status = Command::new("git")
         .args(["clone", "--depth", "1", url, "."])
         .current_dir(dest_dir)

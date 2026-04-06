@@ -1,21 +1,28 @@
 //! Execution of native (builtin and ABI) function calls.
 
-use crate::debug_println;
-use crate::common::{error::LangError, value::Value, value_store::{ValueCell, ValueId, ValueStore}, TaggedValue};
-use crate::common::table::Table;
-use crate::vm::types::VMStatus;
-use crate::vm::frame::CallFrame;
-use crate::vm::exceptions::ExceptionHandler;
-use crate::vm::stack;
-use crate::vm::vm::VM_CALL_CONTEXT;
-use crate::vm::global_slot::GlobalSlot;
-use crate::vm::store_convert::{store_value, load_value, update_cell_if_mutable, tagged_to_value_id};
-use crate::vm::heavy_store::HeavyStore;
 use crate::common::error::ErrorType;
+use crate::common::table::Table;
+use crate::common::{
+    error::LangError,
+    value::Value,
+    value_store::{ValueCell, ValueId, ValueStore},
+    TaggedValue,
+};
+use crate::debug_println;
+use crate::vm::exceptions::ExceptionHandler;
+use crate::vm::frame::CallFrame;
+use crate::vm::global_slot::GlobalSlot;
+use crate::vm::heavy_store::HeavyStore;
 use crate::vm::host::HostEntry;
-use crate::vm::types::{ExplicitRelation, ExplicitPrimaryKey};
-use std::rc::Rc;
+use crate::vm::stack;
+use crate::vm::store_convert::{
+    load_value, store_value, tagged_to_value_id, update_cell_if_mutable,
+};
+use crate::vm::types::VMStatus;
+use crate::vm::types::{ExplicitPrimaryKey, ExplicitRelation};
+use crate::vm::vm::VM_CALL_CONTEXT;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 /// Restores VM_CALL_CONTEXT to its previous value on drop.
 /// Allows nested native calls (e.g. __tablename__ calling enum()) without losing context.
@@ -33,7 +40,7 @@ impl Drop for RestoreVmContextGuard {
 
 /// Execute a native (builtin or ABI) call. Called from call_dispatch when callee is Value::NativeFunction(native_index).
 #[allow(clippy::too_many_arguments)]
-pub fn execute_native_call(
+pub(crate) fn execute_native_call(
     native_index: usize,
     arity: usize,
     line: usize,
@@ -60,7 +67,14 @@ pub fn execute_native_call(
             format!("Native function index {} out of bounds", native_index),
             line,
         );
-        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+        match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
             Ok(()) => return Ok(VMStatus::Continue),
             Err(e) => return Err(e),
         }
@@ -71,7 +85,13 @@ pub fn execute_native_call(
     if native_index == RANGE_NATIVE_INDEX && (arity == 1 || arity == 2 || arity == 3) {
         let frame = frames.last().unwrap();
         let available = stack.len().saturating_sub(frame.stack_start);
-        let need = if arity == 1 { 1 } else if arity == 2 { 2 } else { 3 };
+        let need = if arity == 1 {
+            1
+        } else if arity == 2 {
+            2
+        } else {
+            3
+        };
         if available >= need {
             let read_number = |store: &ValueStore, id: ValueId| -> Option<i64> {
                 store.get(id).and_then(|c| match c {
@@ -89,16 +109,24 @@ pub fn execute_native_call(
             let params = if arity == 1 {
                 let n_tv = stack.pop().unwrap_or(TaggedValue::null());
                 let n_id = tagged_to_value_id(n_tv, value_store);
-                read_number(value_store, n_id).map(|n| (0_i64, n.max(0), 1_i64)).map_or_else(
-                    || { stack::push_id(stack, n_id); None },
-                    |t| Some(t),
-                )
+                read_number(value_store, n_id)
+                    .map(|n| (0_i64, n.max(0), 1_i64))
+                    .map_or_else(
+                        || {
+                            stack::push_id(stack, n_id);
+                            None
+                        },
+                        |t| Some(t),
+                    )
             } else if arity == 2 {
                 let end_tv = stack.pop().unwrap_or(TaggedValue::null());
                 let start_tv = stack.pop().unwrap_or(TaggedValue::null());
                 let end_id = tagged_to_value_id(end_tv, value_store);
                 let start_id = tagged_to_value_id(start_tv, value_store);
-                match (read_number(value_store, start_id), read_number(value_store, end_id)) {
+                match (
+                    read_number(value_store, start_id),
+                    read_number(value_store, end_id),
+                ) {
                     (Some(start), Some(end)) => Some((start, end, 1_i64)),
                     _ => {
                         stack::push_id(stack, start_id);
@@ -113,7 +141,11 @@ pub fn execute_native_call(
                 let step_id = tagged_to_value_id(step_tv, value_store);
                 let end_id = tagged_to_value_id(end_tv, value_store);
                 let start_id = tagged_to_value_id(start_tv, value_store);
-                match (read_number(value_store, start_id), read_number(value_store, end_id), read_number(value_store, step_id)) {
+                match (
+                    read_number(value_store, start_id),
+                    read_number(value_store, end_id),
+                    read_number(value_store, step_id),
+                ) {
                     (Some(start), Some(end), Some(step)) if step != 0 => Some((start, end, step)),
                     _ => {
                         stack::push_id(stack, start_id);
@@ -125,9 +157,17 @@ pub fn execute_native_call(
             };
             if let Some((start, end, step)) = params {
                 let len = if step > 0 {
-                    if start >= end { 0 } else { ((end - start) as u64 / step as u64).min(usize::MAX as u64) as usize }
+                    if start >= end {
+                        0
+                    } else {
+                        ((end - start) as u64 / step as u64).min(usize::MAX as u64) as usize
+                    }
                 } else {
-                    if start <= end { 0 } else { ((start - end) as u64 / (-step) as u64).min(usize::MAX as u64) as usize }
+                    if start <= end {
+                        0
+                    } else {
+                        ((start - end) as u64 / (-step) as u64).min(usize::MAX as u64) as usize
+                    }
                 };
                 value_store.reserve_min(value_store.len() + 1);
                 let mut slots = Vec::with_capacity(len);
@@ -213,10 +253,20 @@ pub fn execute_native_call(
                     (4, ValueCell::Bool(b)) => Some(Value::Number(if *b { 1.0 } else { 0.0 })),
                     (4, ValueCell::Null) => Some(Value::Number(0.0)),
                     (6, ValueCell::Number(n)) => Some(Value::String(n.to_string())),
-                    (6, ValueCell::Bool(b)) => Some(Value::String(if *b { "true".to_string() } else { "false".to_string() })),
-                    (6, ValueCell::String(sid)) => value_store.get_string(*sid).map(|s| Value::String(s.to_string())),
+                    (6, ValueCell::Bool(b)) => Some(Value::String(if *b {
+                        "true".to_string()
+                    } else {
+                        "false".to_string()
+                    })),
+                    (6, ValueCell::String(sid)) => value_store
+                        .get_string(*sid)
+                        .map(|s| Value::String(s.to_string())),
                     (6, ValueCell::Null) => Some(Value::String("null".to_string())),
-                    (8, ValueCell::Number(n)) => Some(Value::String(if n.fract() == 0.0 { "int".to_string() } else { "float".to_string() })),
+                    (8, ValueCell::Number(n)) => Some(Value::String(if n.fract() == 0.0 {
+                        "int".to_string()
+                    } else {
+                        "float".to_string()
+                    })),
                     (8, ValueCell::Bool(_)) => Some(Value::String("bool".to_string())),
                     (8, ValueCell::String(_)) => Some(Value::String("string".to_string())),
                     (8, ValueCell::Null) => Some(Value::String("null".to_string())),
@@ -224,7 +274,9 @@ pub fn execute_native_call(
                     (8, ValueCell::Tuple(_)) => Some(Value::String("tuple".to_string())),
                     // Object: must call native_typeof (e.g. __plugin_namespace for native modules / ml.layer).
                     (8, ValueCell::Path(_)) => Some(Value::String("path".to_string())),
-                    (8, ValueCell::Function(_)) | (8, ValueCell::NativeFunction(_)) => Some(Value::String("function".to_string())),
+                    (8, ValueCell::Function(_)) | (8, ValueCell::NativeFunction(_)) => {
+                        Some(Value::String("function".to_string()))
+                    }
                     _ => None,
                 }
             });
@@ -247,24 +299,40 @@ pub fn execute_native_call(
             let data_tv = stack.pop().unwrap_or(TaggedValue::null());
             let headers_id = tagged_to_value_id(headers_tv, value_store);
             let data_id = tagged_to_value_id(data_tv, value_store);
-            let row_slots_opt = value_store.get(data_id).and_then(|c| if let ValueCell::Array(s) = c { Some(s.clone()) } else { None });
+            let row_slots_opt = value_store.get(data_id).and_then(|c| {
+                if let ValueCell::Array(s) = c {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            });
             if let Some(row_slots) = row_slots_opt {
-                let num_cols = row_slots.first().and_then(|row_tv| {
-                    if row_tv.is_heap() {
-                        value_store.get(row_tv.get_heap_id()).and_then(|c| match c {
-                            ValueCell::Array(s) => Some(s.len()),
-                            _ => None,
-                        })
-                    } else {
-                        None
-                    }
-                }).unwrap_or(0);
+                let num_cols = row_slots
+                    .first()
+                    .and_then(|row_tv| {
+                        if row_tv.is_heap() {
+                            value_store.get(row_tv.get_heap_id()).and_then(|c| match c {
+                                ValueCell::Array(s) => Some(s.len()),
+                                _ => None,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
                 let mut flat_cell_ids = Vec::with_capacity(row_slots.len() * num_cols.max(1));
                 for row_tv in row_slots.iter() {
                     if row_tv.is_heap() {
                         let row_id = row_tv.get_heap_id();
-                        let cell_slots: Vec<TaggedValue> = value_store.get(row_id)
-                            .and_then(|c| if let ValueCell::Array(s) = c { Some(s.clone()) } else { None })
+                        let cell_slots: Vec<TaggedValue> = value_store
+                            .get(row_id)
+                            .and_then(|c| {
+                                if let ValueCell::Array(s) = c {
+                                    Some(s.clone())
+                                } else {
+                                    None
+                                }
+                            })
                             .unwrap_or_default();
                         for slot in cell_slots.iter() {
                             flat_cell_ids.push(tagged_to_value_id(*slot, value_store));
@@ -272,12 +340,23 @@ pub fn execute_native_call(
                     }
                 }
                 let headers: Vec<String> = {
-                    let header_slots: Vec<TaggedValue> = value_store.get(headers_id)
-                        .and_then(|c| if let ValueCell::Array(s) = c { Some(s.clone()) } else { None })
+                    let header_slots: Vec<TaggedValue> = value_store
+                        .get(headers_id)
+                        .and_then(|c| {
+                            if let ValueCell::Array(s) = c {
+                                Some(s.clone())
+                            } else {
+                                None
+                            }
+                        })
                         .unwrap_or_default();
                     let mut v = Vec::with_capacity(header_slots.len());
                     for slot in header_slots.iter() {
-                        let val = load_value(tagged_to_value_id(*slot, value_store), value_store, heavy_store);
+                        let val = load_value(
+                            tagged_to_value_id(*slot, value_store),
+                            value_store,
+                            heavy_store,
+                        );
                         v.push(match &val {
                             Value::String(s) => s.clone(),
                             _ => val.to_string(),
@@ -302,16 +381,31 @@ pub fn execute_native_call(
     }
 
     use crate::database_engine::natives as db_natives;
-    let is_db_connect = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(db_natives::native_engine_connect as *const ());
-    let is_db_execute = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(db_natives::native_engine_execute as *const ());
-    let is_db_query = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(db_natives::native_engine_query as *const ());
-    let is_db_run = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(db_natives::native_engine_run as *const ());
-    let is_db_cluster_add = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(db_natives::native_cluster_add as *const ());
-    let is_db_cluster_get = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(db_natives::native_cluster_get as *const ());
-    let is_db_cluster_names = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(db_natives::native_cluster_names as *const ());
-    let is_db_column = native_index < builtin_count && natives[native_index].as_fn_ptr() == Some(db_natives::native_column as *const ());
-    let is_db_engine_method = is_db_connect || is_db_execute || is_db_query || is_db_run
-        || is_db_cluster_add || is_db_cluster_get || is_db_cluster_names;
+    let is_db_connect = native_index < builtin_count
+        && natives[native_index].as_fn_ptr()
+            == Some(db_natives::native_engine_connect as *const ());
+    let is_db_execute = native_index < builtin_count
+        && natives[native_index].as_fn_ptr()
+            == Some(db_natives::native_engine_execute as *const ());
+    let is_db_query = native_index < builtin_count
+        && natives[native_index].as_fn_ptr() == Some(db_natives::native_engine_query as *const ());
+    let is_db_run = native_index < builtin_count
+        && natives[native_index].as_fn_ptr() == Some(db_natives::native_engine_run as *const ());
+    let is_db_cluster_add = native_index < builtin_count
+        && natives[native_index].as_fn_ptr() == Some(db_natives::native_cluster_add as *const ());
+    let is_db_cluster_get = native_index < builtin_count
+        && natives[native_index].as_fn_ptr() == Some(db_natives::native_cluster_get as *const ());
+    let is_db_cluster_names = native_index < builtin_count
+        && natives[native_index].as_fn_ptr() == Some(db_natives::native_cluster_names as *const ());
+    let is_db_column = native_index < builtin_count
+        && natives[native_index].as_fn_ptr() == Some(db_natives::native_column as *const ());
+    let is_db_engine_method = is_db_connect
+        || is_db_execute
+        || is_db_query
+        || is_db_run
+        || is_db_cluster_add
+        || is_db_cluster_get
+        || is_db_cluster_names;
 
     native_args_buffer.clear();
     let mut native_arg_ids: Option<&mut Vec<ValueId>> = None;
@@ -327,16 +421,17 @@ pub fn execute_native_call(
             reusable_all_popped.push(load_value(id, value_store, heavy_store));
         }
         reusable_all_popped.reverse();
-        let receiver_predicate: fn(&Value) -> bool = if is_db_cluster_add || is_db_cluster_get || is_db_cluster_names {
-            |v| matches!(v, Value::DatabaseCluster(_))
-        } else {
-            |v| matches!(v, Value::DatabaseEngine(_) | Value::DatabaseCluster(_))
-        };
+        let receiver_predicate: fn(&Value) -> bool =
+            if is_db_cluster_add || is_db_cluster_get || is_db_cluster_names {
+                |v| matches!(v, Value::DatabaseCluster(_))
+            } else {
+                |v| matches!(v, Value::DatabaseEngine(_) | Value::DatabaseCluster(_))
+            };
         if let Some(engine_idx) = reusable_all_popped.iter().position(receiver_predicate) {
             let receiver = reusable_all_popped.remove(engine_idx);
             native_args_buffer.push(receiver);
         }
-        native_args_buffer.extend(reusable_all_popped.drain(..));
+        native_args_buffer.append(reusable_all_popped);
     }
     if !is_db_engine_method {
         let frame = frames.last().unwrap();
@@ -348,12 +443,18 @@ pub fn execute_native_call(
                 &frames,
                 format!(
                     "Not enough arguments on stack for native function: expected {} but got {}",
-                    arity,
-                    available_args
+                    arity, available_args
                 ),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }
@@ -365,18 +466,27 @@ pub fn execute_native_call(
             let data_tv = stack.pop().unwrap_or(TaggedValue::null());
             let headers_id = tagged_to_value_id(headers_tv, value_store);
             let data_id = tagged_to_value_id(data_tv, value_store);
-            let row_slots_opt2 = value_store.get(data_id).and_then(|c| if let ValueCell::Array(s) = c { Some(s.clone()) } else { None });
+            let row_slots_opt2 = value_store.get(data_id).and_then(|c| {
+                if let ValueCell::Array(s) = c {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            });
             if let Some(row_slots) = row_slots_opt2 {
-                let num_cols = row_slots.first().and_then(|row_tv| {
-                    if row_tv.is_heap() {
-                        value_store.get(row_tv.get_heap_id()).and_then(|c| match c {
-                            ValueCell::Array(slots) => Some(slots.len()),
-                            _ => None,
-                        })
-                    } else {
-                        None
-                    }
-                }).unwrap_or(0);
+                let num_cols = row_slots
+                    .first()
+                    .and_then(|row_tv| {
+                        if row_tv.is_heap() {
+                            value_store.get(row_tv.get_heap_id()).and_then(|c| match c {
+                                ValueCell::Array(slots) => Some(slots.len()),
+                                _ => None,
+                            })
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(0);
                 if num_cols > 0 && !row_slots.is_empty() {
                     let mut flat_cell_ids = Vec::with_capacity(row_slots.len() * num_cols);
                     let mut ok = true;
@@ -386,8 +496,15 @@ pub fn execute_native_call(
                             break;
                         }
                         let row_id = row_tv.get_heap_id();
-                        let cell_slots: Vec<TaggedValue> = value_store.get(row_id)
-                            .and_then(|c| if let ValueCell::Array(s) = c { Some(s.clone()) } else { None })
+                        let cell_slots: Vec<TaggedValue> = value_store
+                            .get(row_id)
+                            .and_then(|c| {
+                                if let ValueCell::Array(s) = c {
+                                    Some(s.clone())
+                                } else {
+                                    None
+                                }
+                            })
                             .unwrap_or_default();
                         if cell_slots.len() >= num_cols {
                             for slot in cell_slots.iter().take(num_cols) {
@@ -405,7 +522,8 @@ pub fn execute_native_call(
                             _ => Vec::new(),
                         };
                         if header_strings.len() >= num_cols {
-                            let table = Table::from_flat_view(flat_cell_ids, num_cols, header_strings);
+                            let table =
+                                Table::from_flat_view(flat_cell_ids, num_cols, header_strings);
                             let idx = heavy_store.push(Value::Table(Rc::new(RefCell::new(table))));
                             let result_id = value_store.allocate(ValueCell::Heavy(idx));
                             stack::push_id(stack, result_id);
@@ -440,22 +558,38 @@ pub fn execute_native_call(
 
     if native_index == 2 {
         if arity < 1 || arity > 3 {
-            let error = ExceptionHandler::runtime_error(&frames,
+            let error = ExceptionHandler::runtime_error(
+                &frames,
                 format!("range() expects 1, 2, or 3 arguments, got {}", arity),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }
         }
         for arg in native_args_buffer.iter() {
             if !matches!(arg, Value::Number(_)) {
-                let error = ExceptionHandler::runtime_error(&frames,
+                let error = ExceptionHandler::runtime_error(
+                    &frames,
                     "range() arguments must be numbers".to_string(),
                     line,
                 );
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
                     Ok(()) => return Ok(VMStatus::Continue),
                     Err(e) => return Err(e),
                 }
@@ -464,11 +598,19 @@ pub fn execute_native_call(
         if arity == 3 {
             if let Value::Number(step) = &native_args_buffer[2] {
                 if *step == 0.0 {
-                    let error = ExceptionHandler::runtime_error(&frames,
+                    let error = ExceptionHandler::runtime_error(
+                        &frames,
                         "range() step cannot be zero".to_string(),
                         line,
                     );
-                    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+                    match ExceptionHandler::handle_exception(
+                        stack,
+                        frames,
+                        exception_handlers,
+                        error,
+                        value_store,
+                        heavy_store,
+                    ) {
                         Ok(()) => return Ok(VMStatus::Continue),
                         Err(e) => return Err(e),
                     }
@@ -478,11 +620,19 @@ pub fn execute_native_call(
     }
     if native_index == 72 {
         if arity != 1 {
-            let error = ExceptionHandler::runtime_error(&frames,
+            let error = ExceptionHandler::runtime_error(
+                &frames,
                 format!("enum() expects 1 argument, got {}", arity),
                 line,
             );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }
@@ -536,7 +686,14 @@ pub fn execute_native_call(
         match natives[native_index].invoke(&native_args_buffer) {
             Ok(v) => v,
             Err(e) => {
-                match ExceptionHandler::handle_exception(stack, frames, exception_handlers, e, value_store, heavy_store) {
+                match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    e,
+                    value_store,
+                    heavy_store,
+                ) {
                     Ok(()) => return Ok(VMStatus::Continue),
                     Err(ee) => return Err(ee),
                 }
@@ -547,7 +704,12 @@ pub fn execute_native_call(
         let vm = unsafe { &mut *vm_ptr };
         for v in &mut abi_args {
             let tmp = v.clone();
-            match crate::vm::iterable::materialize_iterables_in_value(vm, &tmp, value_store, heavy_store) {
+            match crate::vm::iterable::materialize_iterables_in_value(
+                vm,
+                &tmp,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(x) => *v = x,
                 Err(e) => {
                     match ExceptionHandler::handle_exception(
@@ -582,7 +744,14 @@ pub fn execute_native_call(
     };
 
     if let Some(abi_err) = crate::vm::native_loader::take_last_abi_error() {
-        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, abi_err, value_store, heavy_store) {
+        match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            abi_err,
+            value_store,
+            heavy_store,
+        ) {
             Ok(()) => return Ok(VMStatus::Continue),
             Err(e) => return Err(e),
         }
@@ -646,19 +815,29 @@ pub fn execute_native_call(
 
     use crate::websocket::take_native_error;
     if let Some(error_msg) = take_native_error() {
-        if error_msg.contains("Falling back to CPU") ||
-            error_msg.contains("not available") && error_msg.contains("GPU") {
+        if error_msg.contains("Falling back to CPU")
+            || error_msg.contains("not available") && error_msg.contains("GPU")
+        {
             debug_println!("⚠️  Предупреждение: {}", error_msg);
         } else {
-            let error_type = if error_msg.contains("ShapeError") ||
-                error_msg.contains("Shape mismatch") ||
-                error_msg.starts_with("ShapeError:") {
+            let error_type = if error_msg.contains("ShapeError")
+                || error_msg.contains("Shape mismatch")
+                || error_msg.starts_with("ShapeError:")
+            {
                 ErrorType::ValueError
             } else {
                 ErrorType::IOError
             };
-            let error = ExceptionHandler::runtime_error_with_type(&frames, error_msg, line, error_type);
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+            let error =
+                ExceptionHandler::runtime_error_with_type(&frames, error_msg, line, error_type);
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
                 Ok(()) => return Ok(VMStatus::Continue),
                 Err(e) => return Err(e),
             }

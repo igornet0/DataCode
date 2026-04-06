@@ -59,10 +59,7 @@ impl DcmoduleManifest {
         if !abi_compatible(&m, &DATACODE_ABI_VERSION) {
             return Err(format!(
                 "manifest abi_version {}.{} is not compatible with VM {}.{}",
-                m.major,
-                m.minor,
-                DATACODE_ABI_VERSION.major,
-                DATACODE_ABI_VERSION.minor
+                m.major, m.minor, DATACODE_ABI_VERSION.major, DATACODE_ABI_VERSION.minor
             ));
         }
         Ok(())

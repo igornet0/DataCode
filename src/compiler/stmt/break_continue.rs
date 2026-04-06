@@ -1,9 +1,8 @@
 /// Компиляция break и continue statements
-
 use crate::bytecode::OpCode;
-use crate::parser::ast::Stmt;
 use crate::common::error::LangError;
 use crate::compiler::context::CompilationContext;
+use crate::parser::ast::Stmt;
 
 pub fn compile_break(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), LangError> {
     if let Stmt::Break { line } = stmt {
@@ -22,7 +21,8 @@ pub fn compile_break(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
         }
         // Jump к метке конца цикла
         let break_label = loop_ctx.break_label;
-        ctx.labels.emit_jump(ctx.chunk, *ctx.current_line, false, break_label)?;
+        ctx.labels
+            .emit_jump(ctx.chunk, *ctx.current_line, false, break_label)?;
         Ok(())
     } else {
         Err(LangError::ParseError {
@@ -45,7 +45,8 @@ pub fn compile_continue(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
         }
         // Jump к метке continue
         let continue_label = ctx.loop_contexts.last().unwrap().continue_label;
-        ctx.labels.emit_jump(ctx.chunk, *ctx.current_line, false, continue_label)?;
+        ctx.labels
+            .emit_jump(ctx.chunk, *ctx.current_line, false, continue_label)?;
         Ok(())
     } else {
         Err(LangError::ParseError {
@@ -55,4 +56,3 @@ pub fn compile_continue(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
         })
     }
 }
-

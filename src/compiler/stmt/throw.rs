@@ -1,10 +1,9 @@
-/// Компиляция throw statements
-
-use crate::parser::ast::Stmt;
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
+/// Компиляция throw statements
+use crate::parser::ast::Stmt;
 
 pub fn compile_throw(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), LangError> {
     if let Stmt::Throw { value, line } = stmt {
@@ -22,4 +21,3 @@ pub fn compile_throw(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), La
         })
     }
 }
-

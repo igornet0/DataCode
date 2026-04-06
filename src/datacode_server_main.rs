@@ -1,7 +1,7 @@
 // datacode-server binary: HTTP server for DataCode.
 // Usage: datacode-server [app.dc] [--host HOST] [--port PORT]
 
-use data_code::infra::{http_server, cli};
+use data_code::infra::{cli, http_server};
 use std::env;
 
 fn main() {

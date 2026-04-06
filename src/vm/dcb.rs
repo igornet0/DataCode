@@ -356,7 +356,10 @@ fn chunk_to_ser(chunk: &Chunk) -> Result<SerChunk, String> {
     let constants: Vec<DcbConstant> = chunk
         .constants
         .iter()
-        .map(|v| DcbConstant::from_value(v).ok_or_else(|| format!("Unsupported constant for .dcb: {:?}", v)))
+        .map(|v| {
+            DcbConstant::from_value(v)
+                .ok_or_else(|| format!("Unsupported constant for .dcb: {:?}", v))
+        })
         .collect::<Result<_, _>>()?;
     Ok(SerChunk {
         code: chunk.code.iter().map(SerOpCode::from).collect(),
@@ -584,11 +587,7 @@ fn read_dcb_file(path: &Path) -> Option<(DcbHeader, Vec<u8>)> {
 }
 
 /// Check freshness: format_version, compiler_version and source_hash must match. Optionally source_mtime.
-pub fn is_dcb_fresh(
-    header: &DcbHeader,
-    source: &str,
-    source_mtime: Option<u64>,
-) -> bool {
+pub fn is_dcb_fresh(header: &DcbHeader, source: &str, source_mtime: Option<u64>) -> bool {
     if header.format_version != DCB_FORMAT_VERSION {
         return false;
     }

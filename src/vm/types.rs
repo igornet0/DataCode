@@ -39,9 +39,9 @@ pub struct ModuleInfo {
 /// Статус выполнения одного шага VM (Stage 1: Return carries ValueId)
 #[derive(Debug)]
 pub enum VMStatus {
-    Continue,           // Продолжить выполнение
-    Return(ValueId),    // Возврат из функции (значение в store по id)
-    FrameEnded,         // Фрейм завершился без return
+    Continue,        // Продолжить выполнение
+    Return(ValueId), // Возврат из функции (значение в store по id)
+    FrameEnded,      // Фрейм завершился без return
     /// `stream fn`: yield значение; фрейм генератора остаётся на стеке.
     GeneratorYield(ValueId),
     /// `stream fn`: yield + ожидание значения из `.send()` (`x = return expr`), пока `pending_generator_send` пуст.
@@ -53,4 +53,3 @@ pub enum VMStatus {
 // Thread-local storage для хранения контекста VM во время вызова нативных функций
 // Это позволяет нативным функциям вызывать пользовательские функции
 // Определено в vm.rs для избежания циклических зависимостей
-

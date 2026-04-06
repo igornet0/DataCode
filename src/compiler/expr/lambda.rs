@@ -1,7 +1,6 @@
-/// Компиляция лямбда-выражений `fn(...) => expr`
-
-use crate::bytecode::{Function, OpCode};
 use crate::bytecode::function::CapturedVar;
+/// Компиляция лямбда-выражений `fn(...) => expr`
+use crate::bytecode::{Function, OpCode};
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use crate::compiler::closure;
@@ -112,7 +111,10 @@ pub fn compile_lambda(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
 
             if parent_slot_index.is_none() {
                 return Err(LangError::ParseError {
-                    message: format!("Captured variable '{}' not found in parent scopes", var_name),
+                    message: format!(
+                        "Captured variable '{}' not found in parent scopes",
+                        var_name
+                    ),
                     line: *line,
                     file: None,
                 });
@@ -136,8 +138,7 @@ pub fn compile_lambda(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
 
         ctx.scope.end_scope();
 
-        ctx.labels
-            .stabilize_layout(&mut *ctx.chunk, *line)?;
+        ctx.labels.stabilize_layout(&mut *ctx.chunk, *line)?;
         ctx.labels.finalize_jumps(&mut *ctx.chunk, *line)?;
 
         let function_chunk = std::mem::replace(&mut *ctx.chunk, saved_chunk);
@@ -155,7 +156,8 @@ pub fn compile_lambda(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
         ctx.labels.pending_jumps = saved_pending_jumps;
 
         let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
-        ctx.chunk.write_with_line(OpCode::Constant(constant_index), *line);
+        ctx.chunk
+            .write_with_line(OpCode::Constant(constant_index), *line);
         Ok(())
     } else {
         Err(LangError::ParseError {

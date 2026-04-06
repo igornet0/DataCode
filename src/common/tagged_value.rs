@@ -21,8 +21,8 @@ pub enum Tag {
     Null = 0,
     False = 1,
     True = 2,
-    Int = 3,   // signed 32-bit in payload
-    Heap = 4,  // ValueId in low 32 bits
+    Int = 3,  // signed 32-bit in payload
+    Heap = 4, // ValueId in low 32 bits
 }
 
 impl TaggedValue {

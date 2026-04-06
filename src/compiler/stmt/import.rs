@@ -1,10 +1,9 @@
-/// Компиляция import statements
-
-use crate::parser::ast::{Stmt, ImportStmt, ImportItem};
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use crate::compiler::context::CompilationContext;
+/// Компиляция import statements
+use crate::parser::ast::{ImportItem, ImportStmt, Stmt};
 
 pub fn compile_import(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), LangError> {
     if let Stmt::Import { import_stmt, line } = stmt {
@@ -15,8 +14,9 @@ pub fn compile_import(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), L
                     // We compile them as a special opcode that the VM will handle
                     // Store the module name as a constant and emit Import opcode
                     let module_index = ctx.chunk.add_constant(Value::String(module.clone()));
-                    ctx.chunk.write_with_line(OpCode::Import(module_index), *line);
-                    
+                    ctx.chunk
+                        .write_with_line(OpCode::Import(module_index), *line);
+
                     // Register the module name in globals so subsequent uses are recognized
                     if !ctx.scope.globals.contains_key(module) {
                         let global_index = ctx.scope.globals.len();
@@ -27,8 +27,8 @@ pub fn compile_import(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), L
             }
             ImportStmt::From { module, items } => {
                 // Создаем массив элементов импорта в константах
-                use std::rc::Rc;
                 use std::cell::RefCell;
+                use std::rc::Rc;
                 let mut item_strings = Vec::new();
                 for item in items {
                     match item {
@@ -46,18 +46,19 @@ pub fn compile_import(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), L
                 }
                 let items_array = Value::Array(Rc::new(RefCell::new(item_strings)));
                 let items_index = ctx.chunk.add_constant(items_array);
-                
+
                 // Store the module name as a constant
                 let module_index = ctx.chunk.add_constant(Value::String(module.clone()));
-                ctx.chunk.write_with_line(OpCode::ImportFrom(module_index, items_index), *line);
-                
+                ctx.chunk
+                    .write_with_line(OpCode::ImportFrom(module_index, items_index), *line);
+
                 // Register the module name in globals
                 if !ctx.scope.globals.contains_key(module) {
                     let global_index = ctx.scope.globals.len();
                     ctx.scope.globals.insert(module.clone(), global_index);
                     ctx.chunk.global_names.insert(global_index, module.clone());
                 }
-                
+
                 // Register imported item names in globals for from-import, in deterministic order (sort by bound name) so the same set of names always gets the same global indices.
                 let mut to_register: Vec<(String, String)> = Vec::new();
                 for item in items {
@@ -94,4 +95,3 @@ pub fn compile_import(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), L
         })
     }
 }
-

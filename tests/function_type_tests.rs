@@ -3,7 +3,7 @@
 
 #[cfg(test)]
 mod tests {
-    use data_code::{run, Value, LangError};
+    use data_code::{run, LangError, Value};
     use std::path::PathBuf;
 
     fn get_test_data_path(filename: &str) -> String {
@@ -59,12 +59,24 @@ mod tests {
     fn assert_type_error(source: &str) {
         let result = run_and_get_result(source);
         match result {
-            Err(LangError::RuntimeError { error_type: Some(error_type), message, .. }) => {
+            Err(LangError::RuntimeError {
+                error_type: Some(error_type),
+                message,
+                ..
+            }) => {
                 use data_code::common::error::ErrorType;
-                assert_eq!(error_type, ErrorType::TypeError, "Expected TypeError, got {:?}", error_type);
+                assert_eq!(
+                    error_type,
+                    ErrorType::TypeError,
+                    "Expected TypeError, got {:?}",
+                    error_type
+                );
                 // Также проверяем, что сообщение содержит информацию о типе
-                assert!(message.contains("expected type") || message.contains("got"), 
-                    "Error message should contain type information: {}", message);
+                assert!(
+                    message.contains("expected type") || message.contains("got"),
+                    "Error message should contain type information: {}",
+                    message
+                );
             }
             Err(e) => panic!("Expected TypeError, got {:?}", e),
             Ok(v) => panic!("Expected TypeError, got success: {:?}", v),
@@ -86,32 +98,38 @@ mod tests {
 
     #[test]
     fn test_int_function_float_arg_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn int_add(a: int, b: int) -> int {
                 return a + b
             }
             int_add(1, 2.5)
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_int_function_string_arg_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn int_add(a: int, b: int) -> int {
                 return a + b
             }
             int_add(1, "2")
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_int_function_first_arg_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn int_add(a: int, b: int) -> int {
                 return a + b
             }
             int_add(1.5, 2)
-        "#);
+        "#,
+        );
     }
 
     // ========== 2. Тесты функций с типизированными параметрами float ==========
@@ -141,12 +159,14 @@ mod tests {
 
     #[test]
     fn test_float_function_string_arg_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn float_add(a: float, b: float) -> float {
                 return a + b
             }
             float_add(1.5, "2.5")
-        "#);
+        "#,
+        );
     }
 
     // ========== 3. Тесты функций с типизированными параметрами str ==========
@@ -164,22 +184,26 @@ mod tests {
 
     #[test]
     fn test_str_function_int_arg_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn str_concat(a: str, b: str) -> str {
                 return a + b
             }
             str_concat("hello", 123)
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_str_function_first_arg_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn str_concat(a: str, b: str) -> str {
                 return a + b
             }
             str_concat(123, "world")
-        "#);
+        "#,
+        );
     }
 
     // ========== 4. Тесты функций с типизированными параметрами bool ==========
@@ -197,12 +221,14 @@ mod tests {
 
     #[test]
     fn test_bool_function_int_arg_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn bool_and(a: bool, b: bool) -> bool {
                 return a and b
             }
             bool_and(true, 1)
-        "#);
+        "#,
+        );
     }
 
     // ========== 5. Тесты функций с типизированными параметрами array ==========
@@ -220,12 +246,14 @@ mod tests {
 
     #[test]
     fn test_array_function_string_arg_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn array_len(arr: array) -> int {
                 return len(arr)
             }
             array_len("not an array")
-        "#);
+        "#,
+        );
     }
 
     /// `read_file_bin` returns `ByteBuffer`; it must satisfy `: array` like `Array` / `ArrayView`.
@@ -294,22 +322,26 @@ mod tests {
 
     #[test]
     fn test_partial_typing_first_param_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn add(a: int, b) {
                 return a + b
             }
             add(1.5, 2)
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_partial_typing_second_param_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn add(a, b: int) {
                 return a + b
             }
             add(1, 2.5)
-        "#);
+        "#,
+        );
     }
 
     // ========== 8. Тесты функций с возвращаемым типом ==========
@@ -385,7 +417,8 @@ mod tests {
 
     #[test]
     fn test_type_error_not_caught_by_other_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn int_add(a: int, b: int) -> int {
                 return a + b
             }
@@ -394,7 +427,8 @@ mod tests {
             } catch ValueError {
                 print("wrong catch")
             }
-        "#);
+        "#,
+        );
     }
 
     #[test]
@@ -433,32 +467,38 @@ mod tests {
 
     #[test]
     fn test_multiple_typed_params_first_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn process(a: int, b: str, c: bool) -> str {
                 return b
             }
             process(42.5, "num: ", true)
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_multiple_typed_params_second_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn process(a: int, b: str, c: bool) -> str {
                 return b
             }
             process(42, 123, true)
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_multiple_typed_params_third_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn process(a: int, b: str, c: bool) -> str {
                 return b
             }
             process(42, "num: ", 1)
-        "#);
+        "#,
+        );
     }
 
     // ========== 11. Тесты с параметрами по умолчанию ==========
@@ -487,12 +527,14 @@ mod tests {
 
     #[test]
     fn test_typed_param_with_default_override_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn add(a: int, b: int = 10) -> int {
                 return a + b
             }
             add(5, 20.5)
-        "#);
+        "#,
+        );
     }
 
     // ========== 12. Тесты с null типом ==========
@@ -510,12 +552,14 @@ mod tests {
 
     #[test]
     fn test_null_type_parameter_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn process(value: null) -> str {
                 return "null received"
             }
             process(123)
-        "#);
+        "#,
+        );
     }
 
     // ========== 13. Тесты с object типом ==========
@@ -533,12 +577,14 @@ mod tests {
 
     #[test]
     fn test_object_type_parameter_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn get_value(obj: object) -> str {
                 return obj["key"]
             }
             get_value("not an object")
-        "#);
+        "#,
+        );
     }
 
     // ========== 14. Тесты с tuple типом ==========
@@ -556,12 +602,14 @@ mod tests {
 
     #[test]
     fn test_tuple_type_parameter_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn get_first(t: tuple) -> int {
                 return t[0]
             }
             get_first([10, 20, 30])
-        "#);
+        "#,
+        );
     }
 
     // ========== 15. Тесты вложенных функций с типизацией ==========
@@ -582,7 +630,8 @@ mod tests {
 
     #[test]
     fn test_nested_typed_functions_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn outer(a: int) -> int {
                 fn inner(b: int) -> int {
                     return b * 2
@@ -590,7 +639,8 @@ mod tests {
                 return inner(a)
             }
             outer(5.5)
-        "#);
+        "#,
+        );
     }
 
     // ========== 16. Тесты рекурсивных функций с типизацией ==========
@@ -612,7 +662,8 @@ mod tests {
 
     #[test]
     fn test_recursive_typed_function_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn factorial(n: int) -> int {
                 if n <= 1 {
                     return 1
@@ -621,25 +672,38 @@ mod tests {
                 }
             }
             factorial(5.5)
-        "#);
+        "#,
+        );
     }
 
     // ========== 17. Тесты сообщений об ошибках ==========
 
     #[test]
     fn test_type_error_message_contains_param_name() {
-        let result = run_and_get_result(r#"
+        let result = run_and_get_result(
+            r#"
             fn test(a: int, b: str) -> int {
                 return a
             }
             test(1, 2)
-        "#);
+        "#,
+        );
         match result {
-            Err(LangError::RuntimeError { message, error_type, .. }) => {
+            Err(LangError::RuntimeError {
+                message,
+                error_type,
+                ..
+            }) => {
                 use data_code::common::error::ErrorType;
                 assert_eq!(error_type, Some(ErrorType::TypeError), "Expected TypeError");
-                assert!(message.contains("b"), "Error message should contain parameter name 'b'");
-                assert!(message.contains("str"), "Error message should contain expected type 'str'");
+                assert!(
+                    message.contains("b"),
+                    "Error message should contain parameter name 'b'"
+                );
+                assert!(
+                    message.contains("str"),
+                    "Error message should contain expected type 'str'"
+                );
             }
             _ => panic!("Expected TypeError with message"),
         }
@@ -650,12 +714,14 @@ mod tests {
     #[test]
     fn test_int_accepts_only_integers() {
         // int должен принимать только целые числа
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn test(n: int) -> int {
                 return n
             }
             test(1.5)
-        "#);
+        "#,
+        );
     }
 
     #[test]
@@ -707,12 +773,14 @@ mod tests {
 
     #[test]
     fn test_union_type_str_or_int_with_float_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn process(value: str | int) -> str {
                 return str(value)
             }
             process(3.14)
-        "#);
+        "#,
+        );
     }
 
     #[test]
@@ -762,12 +830,14 @@ mod tests {
 
     #[test]
     fn test_union_type_three_types_with_bool_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn process(value: null | str | int) -> str {
                 return str(value)
             }
             process(true)
-        "#);
+        "#,
+        );
     }
 
     #[test]
@@ -802,12 +872,14 @@ mod tests {
 
     #[test]
     fn test_union_type_with_default_value_override_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn process(value: null | str | int = null) -> str {
                 return str(value)
             }
             process(true)
-        "#);
+        "#,
+        );
     }
 
     #[test]
@@ -845,12 +917,14 @@ mod tests {
 
     #[test]
     fn test_union_type_int_or_float_with_str_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn add(a: int | float, b: int | float) -> float {
                 return a + b
             }
             add(1, "2")
-        "#);
+        "#,
+        );
     }
 
     #[test]
@@ -877,12 +951,14 @@ mod tests {
 
     #[test]
     fn test_union_type_array_or_string_with_int_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn get_length(value: array | str) -> int {
                 return len(value)
             }
             get_length(123)
-        "#);
+        "#,
+        );
     }
 
     #[test]
@@ -928,21 +1004,25 @@ mod tests {
 
     #[test]
     fn test_union_type_multiple_params_first_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn process(a: str | int, b: str | int) -> str {
                 return str(a) + str(b)
             }
             process(true, 42)
-        "#);
+        "#,
+        );
     }
 
     #[test]
     fn test_union_type_multiple_params_second_error() {
-        assert_type_error(r#"
+        assert_type_error(
+            r#"
             fn process(a: str | int, b: str | int) -> str {
                 return str(a) + str(b)
             }
             process("hello", true)
-        "#);
+        "#,
+        );
     }
 }

@@ -37,6 +37,11 @@ impl HeavyStore {
         self.cells.len()
     }
 
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.cells.is_empty()
+    }
+
     /// Clear all heavy values. Used when reusing VM for stateless runs (e.g. HTTP requests).
     pub fn clear(&mut self) {
         self.cells.clear();

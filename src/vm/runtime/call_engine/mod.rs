@@ -7,4 +7,4 @@ mod constructor_call;
 mod method_call;
 mod native_call;
 
-pub use call_dispatch::{execute_call, execute_call_with_unpack};
+pub(crate) use call_dispatch::{execute_call, execute_call_with_unpack};

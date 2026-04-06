@@ -1,7 +1,7 @@
 //! Module namespace: own globals and global_names. Used for module isolation.
 
 use crate::common::value::Value;
-use crate::vm::global_slot::{GlobalSlot, default_global_slot};
+use crate::vm::global_slot::{default_global_slot, GlobalSlot};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;

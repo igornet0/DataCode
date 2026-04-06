@@ -1,9 +1,9 @@
 // Plot system for managing EventLoopProxy and window communication
 
-use winit::event_loop::EventLoopProxy;
 use crate::plot::command::GuiCommand;
-use std::sync::Mutex;
 use std::cell::RefCell;
+use std::sync::Mutex;
+use winit::event_loop::EventLoopProxy;
 
 /// Plot system: communication with the main thread's EventLoop.
 /// Window waiters are handled in the event loop closure (no global Mutex).
@@ -21,7 +21,6 @@ impl PlotSystem {
     pub fn proxy(&self) -> &EventLoopProxy<GuiCommand> {
         &self.proxy
     }
-
 }
 
 /// Global PlotSystem instance (set by gui when event loop starts).
@@ -48,11 +47,13 @@ pub fn get_plot_system() -> PlotSystem {
         }
         let proxy = {
             let system = PLOT_SYSTEM.lock().unwrap();
-            system.as_ref().expect("PlotSystem not initialized. Call init_plot_system() first.")
-                .proxy().clone()
+            system
+                .as_ref()
+                .expect("PlotSystem not initialized. Call init_plot_system() first.")
+                .proxy()
+                .clone()
         };
         *cell.borrow_mut() = Some(proxy.clone());
         PlotSystem::new(proxy)
     })
 }
-

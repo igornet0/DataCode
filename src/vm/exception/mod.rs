@@ -2,12 +2,12 @@
 // Logic preserved 1:1 from executor.rs — no semantic changes.
 
 use crate::common::error::LangError;
+use crate::common::value_store::ValueStore;
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::store_convert::load_value;
 use crate::vm::types::VMStatus;
-use crate::common::value_store::ValueStore;
 
 use crate::vm::interpreter::helpers::pop_to_value_id;
 
@@ -91,19 +91,29 @@ pub fn op_throw(
     value_store: &mut ValueStore,
     heavy_store: &mut HeavyStore,
 ) -> Result<VMStatus, LangError> {
-    let error_value_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
+    let error_value_id =
+        pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
     let error_value = load_value(error_value_id, value_store, heavy_store);
     let error_message = error_value.to_string();
     let error = LangError::runtime_error(error_message, line);
 
-    match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error, value_store, heavy_store) {
+    match ExceptionHandler::handle_exception(
+        stack,
+        frames,
+        exception_handlers,
+        error,
+        value_store,
+        heavy_store,
+    ) {
         Ok(()) => {}
         Err(e) => return Err(e),
     }
     Ok(VMStatus::Continue)
 }
 
-pub fn op_pop_exception_handler(exception_handlers: &mut Vec<ExceptionHandler>) -> Result<VMStatus, LangError> {
+pub fn op_pop_exception_handler(
+    exception_handlers: &mut Vec<ExceptionHandler>,
+) -> Result<VMStatus, LangError> {
     exception_handlers.pop();
     Ok(VMStatus::Continue)
 }

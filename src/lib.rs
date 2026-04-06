@@ -5,36 +5,36 @@
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
 pub mod abi;
+pub mod bytecode;
 pub mod common;
+pub mod compiler;
 pub mod dcmodule;
 pub mod dpm;
+pub mod infra;
 pub mod lexer;
 pub mod parser;
 pub mod semantic;
-pub mod bytecode;
-pub mod compiler;
 pub mod vm;
-pub mod infra;
 
-#[path = "lib/websocket/mod.rs"]
-pub mod websocket;
-#[path = "lib/sqlite_export/mod.rs"]
-pub mod sqlite_export;
+#[path = "lib/database_engine/mod.rs"]
+pub mod database_engine;
 #[path = "lib/plot/mod.rs"]
 pub mod plot;
 #[path = "lib/settings_env/mod.rs"]
 pub mod settings_env;
-#[path = "lib/uuid/mod.rs"]
-pub mod uuid;
-#[path = "lib/database_engine/mod.rs"]
-pub mod database_engine;
+#[path = "lib/sqlite_export/mod.rs"]
+pub mod sqlite_export;
 #[path = "lib/system/mod.rs"]
 pub mod system;
+#[path = "lib/uuid/mod.rs"]
+pub mod uuid;
+#[path = "lib/websocket/mod.rs"]
+pub mod websocket;
 
 // Публичный API для запуска интерпретатора
+pub use bytecode::Chunk;
 pub use common::{error::LangError, value::Value};
 pub use vm::PermissionPolicy;
-pub use bytecode::Chunk;
 pub use vm::Vm;
 
 use std::cell::RefCell;
@@ -51,13 +51,22 @@ pub(crate) fn preload_operator_registry_for_parse(
     use std::sync::Arc;
     use vm::import_scan::collect_imported_module_names_from_tokens;
     use vm::module_object::BUILTIN_END;
-    use vm::native_loader::{merge_operator_descriptor_from_native_module_object, try_load_native_module};
+    use vm::native_loader::{
+        merge_operator_descriptor_from_native_module_object, try_load_native_module,
+    };
     use vm::operator_registry::OperatorRegistry;
     let mut reg = OperatorRegistry::with_builtins();
     for module_name in collect_imported_module_names_from_tokens(tokens) {
         let mut abi = Vec::new();
         let mut libs = Vec::new();
-        match try_load_native_module(&module_name, base_path, BUILTIN_END, &mut abi, &mut libs, None) {
+        match try_load_native_module(
+            &module_name,
+            base_path,
+            BUILTIN_END,
+            &mut abi,
+            &mut libs,
+            None,
+        ) {
             Ok((module_obj, _)) => {
                 merge_operator_descriptor_from_native_module_object(
                     &module_obj,
@@ -84,22 +93,28 @@ pub(crate) fn preload_native_call_registry_for_parse(
     use vm::import_scan::collect_imported_module_names_from_tokens;
     use vm::module_object::BUILTIN_END;
     use vm::native_call_registry::NativeCallParamRegistry;
-    use vm::native_loader::{merge_native_call_descriptor_from_native_module_object, try_load_native_module};
+    use vm::native_loader::{
+        merge_native_call_descriptor_from_native_module_object, try_load_native_module,
+    };
     let mut reg = NativeCallParamRegistry::new();
     for module_name in collect_imported_module_names_from_tokens(tokens) {
         let mut abi = Vec::new();
         let mut libs = Vec::new();
-        match try_load_native_module(&module_name, base_path, BUILTIN_END, &mut abi, &mut libs, None) {
-            Ok((module_obj, _)) => {
-                merge_native_call_descriptor_from_native_module_object(
-                    &module_obj,
-                    BUILTIN_END,
-                    &abi,
-                    &mut reg,
-                    &module_name,
-                )?;
-            }
-            Err(_) => {}
+        if let Ok((module_obj, _)) = try_load_native_module(
+            &module_name,
+            base_path,
+            BUILTIN_END,
+            &mut abi,
+            &mut libs,
+            None,
+        ) {
+            merge_native_call_descriptor_from_native_module_object(
+                &module_obj,
+                BUILTIN_END,
+                &abi,
+                &mut reg,
+                &module_name,
+            )?;
         }
     }
     Ok(Arc::new(reg))
@@ -117,11 +132,14 @@ pub fn run(source: &str) -> Result<Value, LangError> {
 }
 
 /// Выполняет код с возможностью использования существующего VM для глобальных переменных
-pub fn run_with_existing_vm(source: &str, existing_vm: Option<&mut Vm>) -> Result<Value, LangError> {
+pub fn run_with_existing_vm(
+    source: &str,
+    existing_vm: Option<&mut Vm>,
+) -> Result<Value, LangError> {
+    use compiler::Compiler;
     use lexer::Lexer;
     use parser::Parser;
     use semantic::resolver::Resolver;
-    use compiler::Compiler;
     use vm::Vm;
 
     // 1. Лексический анализ
@@ -131,7 +149,8 @@ pub fn run_with_existing_vm(source: &str, existing_vm: Option<&mut Vm>) -> Resul
     // 2. Парсинг (operator preload from token stream — any `import` of a native dylib)
     let operator_registry = preload_operator_registry_for_parse(&tokens, None)?;
     let native_call_registry = preload_native_call_registry_for_parse(&tokens, None)?;
-    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, operator_registry.clone());
+    let mut parser =
+        Parser::new_with_source_name_and_registry(tokens, None, operator_registry.clone());
     let mut ast = parser.parse()?;
     crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
 
@@ -140,7 +159,8 @@ pub fn run_with_existing_vm(source: &str, existing_vm: Option<&mut Vm>) -> Resul
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
+    let mut compiler =
+        Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
     let mut chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
 
@@ -173,7 +193,11 @@ pub fn run_with_existing_vm(source: &str, existing_vm: Option<&mut Vm>) -> Resul
 /// Выполняет код с возможностью передачи базового пути для импортов и существующего VM.
 /// Когда передан base_path, он задаётся в thread-local и явно передаётся во внутренний VM,
 /// чтобы разрешение модулей и load_env не зависело от порядка вызовов.
-pub fn run_with_vm_and_path(source: &str, base_path: Option<&std::path::Path>, existing_vm: Option<&mut Vm>) -> Result<(Value, Vm), LangError> {
+pub fn run_with_vm_and_path(
+    source: &str,
+    base_path: Option<&std::path::Path>,
+    existing_vm: Option<&mut Vm>,
+) -> Result<(Value, Vm), LangError> {
     use crate::vm::file_import;
     use std::path::PathBuf;
 
@@ -192,10 +216,10 @@ pub fn run_with_vm_and_path(source: &str, base_path: Option<&std::path::Path>, e
 
 /// Выполняет код в существующий VM
 fn run_with_vm_into_vm(source: &str, vm: &mut Vm) -> Result<(Value, Vm), LangError> {
+    use compiler::Compiler;
     use lexer::Lexer;
     use parser::Parser;
     use semantic::resolver::Resolver;
-    use compiler::Compiler;
 
     // 1. Лексический анализ
     let mut lexer = Lexer::new(source);
@@ -204,7 +228,8 @@ fn run_with_vm_into_vm(source: &str, vm: &mut Vm) -> Result<(Value, Vm), LangErr
     // 2. Парсинг
     let operator_registry = preload_operator_registry_for_parse(&tokens, None)?;
     let native_call_registry = preload_native_call_registry_for_parse(&tokens, None)?;
-    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, operator_registry.clone());
+    let mut parser =
+        Parser::new_with_source_name_and_registry(tokens, None, operator_registry.clone());
     let mut ast = parser.parse()?;
     crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
 
@@ -213,7 +238,8 @@ fn run_with_vm_into_vm(source: &str, vm: &mut Vm) -> Result<(Value, Vm), LangErr
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
+    let mut compiler =
+        Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
 
@@ -221,10 +247,10 @@ fn run_with_vm_into_vm(source: &str, vm: &mut Vm) -> Result<(Value, Vm), LangErr
 
     // 5. Добавляем функции в существующий VM
     vm.add_functions(functions);
-    
+
     // Обновляем индексы функций для новых функций
     // (это нужно для правильной работы вызовов функций)
-    
+
     // 6. Выполнение на существующем VM
     let result = vm.run(&chunk, None)?;
 
@@ -237,7 +263,10 @@ pub fn run_with_vm(source: &str) -> Result<(Value, Vm), LangError> {
 }
 
 /// Выполняет код с аргументами командной строки и возвращает VM
-pub fn run_with_vm_with_args(source: &str, args: Option<Vec<String>>) -> Result<(Value, Vm), LangError> {
+pub fn run_with_vm_with_args(
+    source: &str,
+    args: Option<Vec<String>>,
+) -> Result<(Value, Vm), LangError> {
     run_with_vm_with_args_and_lib(source, args, None, None, None)
 }
 
@@ -311,8 +340,8 @@ fn expr_default_to_value(expr: &parser::ast::Expr) -> Option<Value> {
 /// По ним распознаются опции `--имя=значение` и строится argv в порядке параметров.
 pub fn get_main_entry_params(source: &str) -> Option<Vec<(String, Option<Value>)>> {
     use lexer::Lexer;
-    use parser::Parser;
     use parser::ast::Stmt;
+    use parser::Parser;
     let mut lexer = Lexer::new(source);
     let tokens = lexer.tokenize().ok()?;
     let operator_registry = preload_operator_registry_for_parse(&tokens, None).ok()?;
@@ -325,10 +354,7 @@ pub fn get_main_entry_params(source: &str) -> Option<Vec<(String, Option<Value>)
                     params
                         .iter()
                         .map(|p| {
-                            let default = p
-                                .default_value
-                                .as_ref()
-                                .and_then(expr_default_to_value);
+                            let default = p.default_value.as_ref().and_then(expr_default_to_value);
                             (p.name.clone(), default)
                         })
                         .collect(),
@@ -353,7 +379,7 @@ pub(crate) fn remap_function_indices_in_exports(
         seen: &mut HashSet<*const ()>,
     ) {
         match v {
-            Value::Function(i) => *i = start_idx + *i,
+            Value::Function(i) => *i += start_idx,
             Value::Object(rc) => {
                 if root_rc.is_some_and(|r| Rc::ptr_eq(rc, r)) {
                     return;
@@ -441,7 +467,7 @@ pub(crate) fn remap_function_constants_in_chunks(
         for c in &mut f.chunk.constants {
             if let Value::Function(local_i) = c {
                 if *local_i < module_function_count {
-                    *local_i = start_idx + *local_i;
+                    *local_i += start_idx;
                 }
             }
         }
@@ -496,12 +522,12 @@ fn run_with_vm_internal(source: &str) -> Result<(Value, Vm), LangError> {
 }
 
 /// Внутренняя функция выполнения кода с аргументами
-/// 
+///
 /// # Параметры
 /// * `source` - исходный код для выполнения
 /// * `args` - аргументы командной строки
 /// * `lib_path` - путь к __lib__.dc. Если Some, то мы выполняем __lib__.dc и не должны искать его автоматически.
-///               Если None, то пытаемся автоматически найти __lib__.dc в базовом пути.
+///   Если None, то пытаемся автоматически найти __lib__.dc в базовом пути.
 /// * `source_name` - путь к исходному файлу для сообщений об ошибках.
 fn run_with_vm_internal_with_args(
     source: &str,
@@ -510,27 +536,32 @@ fn run_with_vm_internal_with_args(
     explicit_base_path: Option<std::path::PathBuf>,
     source_name: Option<std::path::PathBuf>,
 ) -> Result<(Value, Vm), LangError> {
+    use compiler::Compiler;
     use lexer::Lexer;
     use parser::Parser;
     use semantic::resolver::Resolver;
-    use compiler::Compiler;
-    use vm::Vm;
-    use vm::file_import;
-    use std::rc::Rc;
     use std::cell::RefCell;
+    use std::rc::Rc;
+    use vm::file_import;
+    use vm::Vm;
 
     // Set base_path up front so run_lib_file's save/restore keeps it; then load_env in Settings constructor can resolve relative paths.
     if let Some(ref base) = explicit_base_path {
         file_import::set_base_path(Some(base.clone()));
     }
-    let base_for_lib = explicit_base_path.clone().or_else(file_import::get_base_path);
-    let source_name_str = source_name.as_deref().map(|p| p.to_string_lossy().into_owned());
+    let base_for_lib = explicit_base_path
+        .clone()
+        .or_else(file_import::get_base_path);
+    let source_name_str = source_name
+        .as_deref()
+        .map(|p| p.to_string_lossy().into_owned());
 
     // Парсинг до выбора lib, чтобы при отсутствии __lib__.dc в директории искать папки по импортам (from X import ...)
     let mut lexer = Lexer::new_with_source_name(source, source_name_str.as_deref());
     let tokens = lexer.tokenize()?;
     let operator_registry = preload_operator_registry_for_parse(&tokens, base_for_lib.as_deref())?;
-    let native_call_registry = preload_native_call_registry_for_parse(&tokens, base_for_lib.as_deref())?;
+    let native_call_registry =
+        preload_native_call_registry_for_parse(&tokens, base_for_lib.as_deref())?;
     let mut parser = Parser::new_with_source_name_and_registry(
         tokens,
         source_name_str.as_deref(),
@@ -545,7 +576,9 @@ fn run_with_vm_internal_with_args(
     // НО только если мы не выполняем уже __lib__.dc (проверяем флаг is_executing_lib)
     let lib_vm = if file_import::is_executing_lib() {
         // Мы уже выполняем __lib__.dc - не загружаем его снова
-        debug_println!("[DEBUG run_with_vm_internal_with_args] Уже выполняем __lib__.dc, не загружаем снова");
+        debug_println!(
+            "[DEBUG run_with_vm_internal_with_args] Уже выполняем __lib__.dc, не загружаем снова"
+        );
         None
     } else if let Some(lib_path_val) = lib_path {
         // lib_path указан явно - загружаем __lib__.dc
@@ -627,14 +660,21 @@ fn run_with_vm_internal_with_args(
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
     // Отладка: главный chunk должен содержать "Config" в global_names (from config import Config)
-    let config_in_chunk: Vec<usize> = chunk.global_names.iter().filter(|(_, n)| n.as_str() == "Config").map(|(i, _)| *i).collect();
+    let config_in_chunk: Vec<usize> = chunk
+        .global_names
+        .iter()
+        .filter(|(_, n)| n.as_str() == "Config")
+        .map(|(i, _)| *i)
+        .collect();
     debug_println!("[DEBUG run_with_vm_internal_with_args] После компиляции: главный chunk global_names содержит 'Config': {} (индексы: {:?})", !config_in_chunk.is_empty(), config_in_chunk);
 
     // 5. Выполнение на VM
     let mut vm = Vm::new();
     vm.set_operator_registry_snapshot(Some(operator_registry));
     // Сразу задаём base_path и project_root в VM, чтобы импорты и load_env разрешались детерминированно
-    let base = explicit_base_path.clone().or_else(file_import::get_base_path);
+    let base = explicit_base_path
+        .clone()
+        .or_else(file_import::get_base_path);
     vm.set_base_path(base.clone());
     vm.set_project_root(base);
 
@@ -649,10 +689,12 @@ fn run_with_vm_internal_with_args(
     }
     // Регистрируем встроенные модули (plot, settings_env, uuid) — они заполняют слоты по имени
     vm.register_all_builtin_modules()?;
-    
+
     // Module isolation: register __lib__.dc as a module (no merge). Main must "from __lib__ import X" to use lib exports.
     if let Some(mut lib_vm) = lib_vm {
-        debug_println!("[DEBUG run_with_vm_internal_with_args] Регистрируем __lib__.dc как модуль (без merge)");
+        debug_println!(
+            "[DEBUG run_with_vm_internal_with_args] Регистрируем __lib__.dc как модуль (без merge)"
+        );
         let start_idx = vm.add_functions_only(lib_vm.get_functions().clone());
         let lib_fn_count = lib_vm.get_functions().len();
         remap_function_constants_in_chunks(vm.get_functions_mut(), start_idx, lib_fn_count);
@@ -662,44 +704,65 @@ fn run_with_vm_internal_with_args(
         {
             use crate::vm::module_object::ModuleObject;
             if let Value::Object(ref namespace_rc) = lib_module_value {
-                let mod_obj = ModuleObject::from_namespace("__lib__".to_string(), namespace_rc.clone());
-                vm.get_modules_mut().insert("__lib__".to_string(), Rc::new(RefCell::new(mod_obj)));
+                let mod_obj =
+                    ModuleObject::from_namespace("__lib__".to_string(), namespace_rc.clone());
+                vm.get_modules_mut()
+                    .insert("__lib__".to_string(), Rc::new(RefCell::new(mod_obj)));
             }
         }
         // Set __lib__ slot in main VM so "from __lib__ import X" and "import __lib__" resolve.
-        let lib_slot_idx = vm.get_global_names().iter()
+        let lib_slot_idx = vm
+            .get_global_names()
+            .iter()
             .find(|(_, n)| n.as_str() == "__lib__")
             .map(|(i, _)| *i);
         if let Some(idx) = lib_slot_idx {
-            let id = vm.with_stores_mut(|store, heap| crate::vm::store_convert::store_value(lib_module_value.clone(), store, heap));
+            let id = vm.with_stores_mut(|store, heap| {
+                crate::vm::store_convert::store_value(lib_module_value.clone(), store, heap)
+            });
             if idx >= vm.get_globals().len() {
-                vm.get_globals_mut().resize(idx + 1, crate::vm::global_slot::default_global_slot());
+                vm.get_globals_mut()
+                    .resize(idx + 1, crate::vm::global_slot::default_global_slot());
             }
             vm.get_globals_mut()[idx] = crate::vm::global_slot::GlobalSlot::Heap(id);
         } else {
-            let id = vm.with_stores_mut(|store, heap| crate::vm::store_convert::store_value(lib_module_value, store, heap));
+            let id = vm.with_stores_mut(|store, heap| {
+                crate::vm::store_convert::store_value(lib_module_value, store, heap)
+            });
             let idx = vm.get_globals().len();
-            vm.get_globals_mut().push(crate::vm::global_slot::GlobalSlot::Heap(id));
+            vm.get_globals_mut()
+                .push(crate::vm::global_slot::GlobalSlot::Heap(id));
             vm.get_global_names_mut().insert(idx, "__lib__".to_string());
         }
         debug_println!("[DEBUG run_with_vm_internal_with_args] __lib__ зарегистрирован как модуль");
     } else {
-        debug_println!("[DEBUG run_with_vm_internal_with_args] __lib__.dc не загружен (lib_path не указан)");
+        debug_println!(
+            "[DEBUG run_with_vm_internal_with_args] __lib__.dc не загружен (lib_path не указан)"
+        );
     }
-    
+
     // Добавляем слоты для глобальных переменных из главного chunk (кроме "argv" — его слот создаём ниже).
     vm.ensure_globals_from_chunk(&chunk);
     // Единственный слот "argv": сохраняем индекс и пушим в конец; перед run пишем по этому индексу.
     let script_args = args.unwrap_or_default();
-    let argv: Vec<Value> = script_args.iter().map(|s| Value::String(s.clone())).collect();
+    let argv: Vec<Value> = script_args
+        .iter()
+        .map(|s| Value::String(s.clone()))
+        .collect();
     let argv_array = Value::Array(Rc::new(RefCell::new(argv)));
-    let argv_id = vm.with_stores_mut(|store, heap| crate::vm::store_convert::store_value(argv_array, store, heap));
+    let argv_id = vm.with_stores_mut(|store, heap| {
+        crate::vm::store_convert::store_value(argv_array, store, heap)
+    });
     let argv_slot_index = vm.get_globals().len();
-    vm.get_globals_mut().push(crate::vm::global_slot::GlobalSlot::Heap(argv_id));
-    vm.get_global_names_mut().insert(argv_slot_index, "argv".to_string());
+    vm.get_globals_mut()
+        .push(crate::vm::global_slot::GlobalSlot::Heap(argv_id));
+    vm.get_global_names_mut()
+        .insert(argv_slot_index, "argv".to_string());
     vm.set_argv_slot_index(Some(argv_slot_index)); // set before update_chunk_indices so argv is forced to this slot; executor will see it when re-patching after ImportFrom
-    // Проверка: есть ли "Config" в global_names перед set_functions (для отладки sentinel/недетерминизма)
-    let config_indices: Vec<usize> = vm.get_global_names().iter()
+                                                   // Проверка: есть ли "Config" в global_names перед set_functions (для отладки sentinel/недетерминизма)
+    let config_indices: Vec<usize> = vm
+        .get_global_names()
+        .iter()
         .filter(|(_, n)| n.as_str() == "Config")
         .map(|(idx, _)| *idx)
         .collect();
@@ -717,7 +780,8 @@ fn run_with_vm_internal_with_args(
         .iter()
         .map(|(i, n)| (*i, n.clone()))
         .collect();
-    let argv_old_indices: Vec<usize> = main_old_idx_to_name.iter()
+    let argv_old_indices: Vec<usize> = main_old_idx_to_name
+        .iter()
         .filter(|(_, n)| n.as_str() == "argv")
         .map(|(i, _)| *i)
         .collect();
@@ -739,7 +803,8 @@ fn run_with_vm_internal_with_args(
     for f in &mut functions {
         for (old_idx, name) in &main_old_idx_to_name {
             if name == "argv" {
-                let this_chunk_uses_argv_at_old = f.chunk.global_names.get(old_idx).map(|n| n.as_str()) == Some("argv");
+                let this_chunk_uses_argv_at_old =
+                    f.chunk.global_names.get(old_idx).map(|n| n.as_str()) == Some("argv");
                 if !this_chunk_uses_argv_at_old {
                     continue;
                 }
@@ -765,7 +830,9 @@ fn run_with_vm_internal_with_args(
                 if let Some(prev_name) = f.chunk.global_names.remove(&argv_slot_index) {
                     f.chunk.global_names.insert(*old_idx, prev_name);
                 }
-                f.chunk.global_names.insert(argv_slot_index, "argv".to_string());
+                f.chunk
+                    .global_names
+                    .insert(argv_slot_index, "argv".to_string());
                 f.chunk.global_names.remove(&SWAP_TEMP_SLOT);
                 break;
             }
@@ -773,8 +840,10 @@ fn run_with_vm_internal_with_args(
     }
     // Затем устанавливаем функции основного скрипта (передаём main chunk и снимок имён до патча).
     vm.set_functions(functions, Some(&mut chunk), Some(main_old_idx_to_name));
-    
-    let debug_sf: Vec<(usize, String)> = vm.get_global_names().iter()
+
+    let debug_sf: Vec<(usize, String)> = vm
+        .get_global_names()
+        .iter()
         .filter(|(_, n)| n.contains("Data"))
         .filter_map(|(i, n)| vm.get_globals().get(*i).map(|_| (*i, n.clone())))
         .collect();
@@ -787,12 +856,19 @@ fn run_with_vm_internal_with_args(
             Value::Object(_) => "Object",
             _ => "Other",
         };
-        debug_println!("[DEBUG run_with_vm_internal_with_args] После set_functions: '{}' в globals[{}] = {:?}", name, idx, type_str);
+        debug_println!(
+            "[DEBUG run_with_vm_internal_with_args] После set_functions: '{}' в globals[{}] = {:?}",
+            name,
+            idx,
+            type_str
+        );
     }
     use crate::vm::globals;
     for (idx, &name) in globals::BUILTIN_GLOBAL_NAMES.iter().enumerate() {
         if vm.get_global_names().get(&idx).map(|s| s.as_str()) == Some(name) {
-            let id = vm.with_stores_mut(|store, heap| crate::vm::store_convert::store_value(Value::NativeFunction(idx), store, heap));
+            let id = vm.with_stores_mut(|store, heap| {
+                crate::vm::store_convert::store_value(Value::NativeFunction(idx), store, heap)
+            });
             vm.get_globals_mut()[idx] = crate::vm::global_slot::GlobalSlot::Heap(id);
         }
     }
@@ -804,7 +880,9 @@ fn run_with_vm_internal_with_args(
     // Не повторно патчим argv в главном chunk: после update_chunk_indices и set_functions индексы уже верны,
     // а замена всех LoadGlobal(old_idx) на argv_slot_index подменяет загрузку __main__ (если тот оказался по тому же индексу).
     // Guarantee main chunk has argv_slot_index -> "argv" so executor's update_chunk_indices_from_names (when argv_slot=Some) forces argv to this slot and does not remap 85 -> 79.
-    chunk.global_names.insert(argv_slot_index, "argv".to_string());
+    chunk
+        .global_names
+        .insert(argv_slot_index, "argv".to_string());
     // Патчим главный chunk только когда в chunk по этому индексу значится "argv", чтобы не подменять загрузку __main__.
     for op in chunk.code.iter_mut() {
         if let crate::bytecode::OpCode::LoadGlobal(idx) = op {
@@ -816,11 +894,16 @@ fn run_with_vm_internal_with_args(
     }
     // Записываем argv в слот по сохранённому индексу (resize если merge добавил слоты и индекс ещё в границах).
     if argv_slot_index >= vm.get_globals().len() {
-        vm.get_globals_mut()
-            .resize(argv_slot_index + 1, crate::vm::global_slot::default_global_slot());
+        vm.get_globals_mut().resize(
+            argv_slot_index + 1,
+            crate::vm::global_slot::default_global_slot(),
+        );
     }
     vm.get_globals_mut()[argv_slot_index] = crate::vm::global_slot::GlobalSlot::Heap(argv_id);
-    let result = vm.run(&chunk, Some((argv_slot_index, &argv_old_indices, Some(argv_id))))?;
+    let result = vm.run(
+        &chunk,
+        Some((argv_slot_index, &argv_old_indices, Some(argv_id))),
+    )?;
 
     Ok((result, vm))
 }
@@ -828,47 +911,43 @@ fn run_with_vm_internal_with_args(
 /// Выполняет __lib__.dc файл и возвращает VM с глобальными переменными
 pub fn run_lib_file(lib_path: &std::path::Path) -> Result<Vm, LangError> {
     use crate::vm::file_import;
-    
+
     // Сохраняем текущий базовый путь
     let old_base_path = file_import::get_base_path();
-    
+
     // Устанавливаем флаг, что мы выполняем __lib__.dc
     // Это предотвратит автоматический поиск __lib__.dc в рекурсивном вызове
     file_import::set_executing_lib(true);
-    
+
     // Устанавливаем базовый путь для импортов в __lib__.dc
     // Базовый путь должен указывать на директорию, где находится __lib__.dc
     // чтобы модули (например, data.dc) могли быть найдены
     if let Some(base_path) = lib_path.parent() {
         file_import::set_base_path(Some(base_path.to_path_buf()));
     }
-    
-    let source = std::fs::read_to_string(lib_path).map_err(|e| {
-        LangError::runtime_error(
-            format!("Failed to read __lib__.dc: {}", e),
-            0,
-        )
-    })?;
-    
+
+    let source = std::fs::read_to_string(lib_path)
+        .map_err(|e| LangError::runtime_error(format!("Failed to read __lib__.dc: {}", e), 0))?;
+
     // Выполняем __lib__.dc без argv (пустой массив)
     // Флаг is_executing_lib предотвратит автоматический поиск __lib__.dc
     let (_, vm) = run_with_vm_internal_with_args(&source, Some(Vec::new()), None, None, None)?;
-    
+
     // Снимаем флаг выполнения __lib__.dc
     file_import::set_executing_lib(false);
-    
+
     // Восстанавливаем старый базовый путь
     file_import::set_base_path(old_base_path);
-    
+
     Ok(vm)
 }
 
 /// Компилирует код в байт-код без выполнения (для отладки)
 pub fn compile(source: &str) -> Result<(Chunk, Vec<bytecode::Function>), LangError> {
+    use compiler::Compiler;
     use lexer::Lexer;
     use parser::Parser;
     use semantic::resolver::Resolver;
-    use compiler::Compiler;
 
     // 1. Лексический анализ
     let mut lexer = Lexer::new(source);
@@ -886,7 +965,8 @@ pub fn compile(source: &str) -> Result<(Chunk, Vec<bytecode::Function>), LangErr
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
+    let mut compiler =
+        Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
 
@@ -895,10 +975,10 @@ pub fn compile(source: &str) -> Result<(Chunk, Vec<bytecode::Function>), LangErr
 
 /// Выполняет код с включенным debug mode (выводит байт-код)
 pub fn run_debug(source: &str) -> Result<Value, LangError> {
+    use compiler::Compiler;
     use lexer::Lexer;
     use parser::Parser;
     use semantic::resolver::Resolver;
-    use compiler::Compiler;
     use vm::Vm;
 
     // 1. Лексический анализ
@@ -908,7 +988,8 @@ pub fn run_debug(source: &str) -> Result<Value, LangError> {
     // 2. Парсинг
     let operator_registry = preload_operator_registry_for_parse(&tokens, None)?;
     let native_call_registry = preload_native_call_registry_for_parse(&tokens, None)?;
-    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, operator_registry.clone());
+    let mut parser =
+        Parser::new_with_source_name_and_registry(tokens, None, operator_registry.clone());
     let mut ast = parser.parse()?;
     crate::compiler::array_map_onehot_fusion::inject_ml_onehots_import(&mut ast);
 
@@ -917,7 +998,8 @@ pub fn run_debug(source: &str) -> Result<Value, LangError> {
     resolver.resolve(&ast)?;
 
     // 4. Компиляция в байт-код
-    let mut compiler = Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
+    let mut compiler =
+        Compiler::new_with_source_and_native_registry(None, Some(native_call_registry));
     let chunk = compiler.compile(&ast)?;
     let functions = compiler.get_functions();
 
@@ -936,4 +1018,3 @@ pub fn run_debug(source: &str) -> Result<Value, LangError> {
 
     Ok(result)
 }
-

@@ -19,8 +19,11 @@ fn row(sym: &str, name: &str, prec: f64, assoc: &str) -> Value {
 #[test]
 fn merge_operator_descriptor_conflict_is_error() {
     let mut reg = OperatorRegistry::with_builtins();
-    let v1 = Value::Array(Rc::new(RefCell::new(vec![row("@", "matmul", 60.0, "left")])));
-    reg.merge_from_descriptor_value(&v1, "mod_a").expect("first merge");
+    let v1 = Value::Array(Rc::new(RefCell::new(vec![row(
+        "@", "matmul", 60.0, "left",
+    )])));
+    reg.merge_from_descriptor_value(&v1, "mod_a")
+        .expect("first merge");
     let v2 = Value::Array(Rc::new(RefCell::new(vec![row("@", "other", 60.0, "left")])));
     let err = reg.merge_from_descriptor_value(&v2, "mod_b").unwrap_err();
     let msg = format!("{}", err);
@@ -107,4 +110,3 @@ a @ b @ c
 "#;
     let _ = data_code::run_with_base_path(assoc, base).expect("assoc");
 }
-

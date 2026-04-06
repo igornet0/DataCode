@@ -5,13 +5,13 @@ use crate::common::value::{IterableInner, Value};
 use crate::vm::host::HostFunction;
 use crate::vm::iterable::{chunk_source_count, iterable_materialize_capacity_hint, iterable_next};
 use crate::vm::vm::VM_CALL_CONTEXT;
-use std::rc::Rc;
 use std::cell::RefCell;
 use std::io::Write;
+use std::rc::Rc;
 
 pub fn native_print(args: &[Value]) -> Value {
-    use crate::websocket::output_capture::OutputCapture;
     use crate::common::debug;
+    use crate::websocket::output_capture::OutputCapture;
     if args.is_empty() {
         if OutputCapture::is_capturing() {
             OutputCapture::write_output("");
@@ -67,15 +67,15 @@ pub fn native_len(args: &[Value]) -> Value {
                         .map(|len| Value::Number(len as f64))
                         .unwrap_or(Value::Null)
                 })
-            },
-            Value::PluginOpaque { .. } => crate::vm::interpreter::object::plugin_opaque_len_via_plugin_call(arg)
-                .unwrap_or(Value::Null),
+            }
+            Value::PluginOpaque { .. } => {
+                crate::vm::interpreter::object::plugin_opaque_len_via_plugin_call(arg)
+                    .unwrap_or(Value::Null)
+            }
             Value::Enumerate { data, .. } => Value::Number(data.borrow().len() as f64),
             Value::Iterable(rc) => match &*rc.borrow() {
                 IterableInner::Chunks {
-                    source,
-                    chunk_size,
-                    ..
+                    source, chunk_size, ..
                 } => Value::Number(chunk_source_count(source, *chunk_size) as f64),
                 _ => Value::Null,
             },
@@ -133,7 +133,7 @@ pub fn native_range(args: &[Value]) -> Value {
             return Value::Null;
         }
     };
-    
+
     // Генерация массива с учетом шага
     let mut result = Vec::new();
     if step > 0 {
@@ -150,7 +150,7 @@ pub fn native_range(args: &[Value]) -> Value {
             current += step; // step уже отрицательный
         }
     }
-    
+
     Value::Array(Rc::new(RefCell::new(result)))
 }
 
@@ -161,11 +161,20 @@ pub fn native_enum(args: &[Value]) -> Value {
         None => return Value::Null,
     };
     match iterable {
-        Value::Array(rc) => Value::Enumerate { data: Rc::clone(rc), start: 0 },
-        Value::Tuple(rc) => Value::Enumerate { data: Rc::clone(rc), start: 0 },
+        Value::Array(rc) => Value::Enumerate {
+            data: Rc::clone(rc),
+            start: 0,
+        },
+        Value::Tuple(rc) => Value::Enumerate {
+            data: Rc::clone(rc),
+            start: 0,
+        },
         Value::String(s) => {
             let elements: Vec<Value> = s.chars().map(|c| Value::String(c.to_string())).collect();
-            Value::Enumerate { data: Rc::new(RefCell::new(elements)), start: 0 }
+            Value::Enumerate {
+                data: Rc::new(RefCell::new(elements)),
+                start: 0,
+            }
         }
         _ => Value::Null,
     }
@@ -293,7 +302,7 @@ impl HostFunction for ArrayHostFunction {
                 }
             }
         }
-        let result: Vec<Value> = args.iter().cloned().collect();
+        let result: Vec<Value> = args.to_vec();
         Ok(Value::Array(Rc::new(RefCell::new(result))))
     }
 }
@@ -302,15 +311,18 @@ pub fn native_date(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::String(String::new());
     }
-    
+
     match &args[0] {
         Value::String(s) => {
             // Парсим строку даты и нормализуем в ISO формат
             // Поддерживаем форматы: YYYY-MM-DD, YYYY-MM-DDTHH:MM:SSZ, и другие ISO форматы
             let date_str = s.trim();
-            
+
             // Если уже в формате ISO (YYYY-MM-DD или YYYY-MM-DDTHH:MM:SSZ), возвращаем как есть
-            if date_str.len() >= 10 && date_str.chars().nth(4) == Some('-') && date_str.chars().nth(7) == Some('-') {
+            if date_str.len() >= 10
+                && date_str.chars().nth(4) == Some('-')
+                && date_str.chars().nth(7) == Some('-')
+            {
                 Value::String(date_str.to_string())
             } else {
                 // Для других форматов пока возвращаем как есть
@@ -331,12 +343,12 @@ pub fn native_money(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::String("0".to_string());
     }
-    
+
     if args.len() < 2 {
         // Если формат не указан, просто возвращаем число как строку
         return Value::String(args[0].to_string());
     }
-    
+
     let amount = match &args[0] {
         Value::Number(n) => *n,
         Value::String(s) => {
@@ -345,12 +357,12 @@ pub fn native_money(args: &[Value]) -> Value {
         }
         _ => 0.0,
     };
-    
+
     let format_str = match &args[1] {
         Value::String(s) => s.clone(),
         _ => String::new(),
     };
-    
+
     // Простое форматирование денег
     // Поддерживаем базовые паттерны: "$0.00", "0,0 $", "0 EUR"
     // Сначала проверяем паттерн "0,0" (запятая как десятичный разделитель)
@@ -394,7 +406,7 @@ pub fn native_money(args: &[Value]) -> Value {
         // Простое форматирование с двумя знаками после запятой (точка)
         format!("{:.2}", amount)
     };
-    
+
     Value::String(formatted)
 }
 
@@ -480,9 +492,15 @@ pub fn native_typeof(args: &[Value]) -> Value {
             // Проверяем, является ли строка датой или деньгами
             let s_trimmed = s.trim();
             // Проверка на дату: формат YYYY-MM-DD или ISO формат
-            if s_trimmed.len() >= 10 && s_trimmed.chars().nth(4) == Some('-') && s_trimmed.chars().nth(7) == Some('-') {
+            if s_trimmed.len() >= 10
+                && s_trimmed.chars().nth(4) == Some('-')
+                && s_trimmed.chars().nth(7) == Some('-')
+            {
                 "date"
-            } else if s_trimmed.starts_with('$') || s_trimmed.contains("EUR") || s_trimmed.contains("€") {
+            } else if s_trimmed.starts_with('$')
+                || s_trimmed.contains("EUR")
+                || s_trimmed.contains("€")
+            {
                 // Проверка на деньги: содержит валютные символы
                 "money"
             } else {
@@ -523,7 +541,9 @@ pub fn native_isinstance(args: &[Value]) -> Value {
 
 /// Check if an Object's __class_name or __superclass chain includes target_class.
 fn object_class_chain_contains(obj: &Value, target_class: &str) -> bool {
-    let Value::Object(map_rc) = obj else { return false };
+    let Value::Object(map_rc) = obj else {
+        return false;
+    };
     let map = map_rc.borrow();
     if let Some(Value::String(ref cn)) = map.get("__class_name") {
         if cn == target_class {
@@ -612,14 +632,18 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
         // Это позволит работать с константами типов, которые уже являются строками
         other => other.to_string(),
     };
-    
+
     // Нормализуем имя типа (приводим к нижнему регистру)
     let type_name_lower = type_name_str.to_lowercase();
-    
+
     let matches = match value {
         Value::Number(n) => {
             // Для чисел проверяем int, float и money
-            if type_name_lower == "int" || type_name_lower == "integer" || type_name_lower == "num" || type_name_lower == "number" {
+            if type_name_lower == "int"
+                || type_name_lower == "integer"
+                || type_name_lower == "num"
+                || type_name_lower == "number"
+            {
                 true
             } else if type_name_lower == "float" {
                 n.fract() != 0.0
@@ -637,7 +661,9 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
                 true
             } else if type_name_lower == "date" {
                 // Проверка на формат даты: YYYY-MM-DD или ISO формат
-                s_trimmed.len() >= 10 && s_trimmed.chars().nth(4) == Some('-') && s_trimmed.chars().nth(7) == Some('-')
+                s_trimmed.len() >= 10
+                    && s_trimmed.chars().nth(4) == Some('-')
+                    && s_trimmed.chars().nth(7) == Some('-')
             } else if type_name_lower == "money" {
                 // Проверка на деньги: содержит валютные символы
                 s_trimmed.starts_with('$') || s_trimmed.contains("EUR") || s_trimmed.contains("€")
@@ -656,7 +682,10 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
             let map = map_rc.borrow();
             if let Some(Value::String(ns)) = map.get("__plugin_namespace") {
                 type_name_lower == ns.to_lowercase()
-            } else if type_name_lower == "object" || type_name_lower == "dict" || type_name_lower == "dictionary" {
+            } else if type_name_lower == "object"
+                || type_name_lower == "dict"
+                || type_name_lower == "dictionary"
+            {
                 true
             } else if type_name_lower == "table" {
                 map.get("__extends_table") == Some(&Value::Bool(true))
@@ -666,7 +695,9 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
         }
         Value::ColumnReference { .. } => type_name_lower == "column",
         Value::Null => type_name_lower == "null" || type_name_lower == "none",
-        Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_) => type_name_lower == "function",
+        Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_) => {
+            type_name_lower == "function"
+        }
         Value::PluginOpaque { .. } => {
             if let Some(tn) = plugin_opaque_type_name_via_abi(value) {
                 type_name_lower == tn.to_lowercase()
@@ -685,7 +716,7 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
         Value::Generator(_) => type_name_lower == "generator",
         Value::Ellipsis => type_name_lower == "ellipsis",
     };
-    
+
     Value::Bool(matches)
 }
 
@@ -807,7 +838,10 @@ impl HostFunction for NativeGeneratorSend {
 pub fn native_table_class(args: &[Value]) -> Value {
     use std::collections::HashMap;
     let mut obj = HashMap::new();
-    obj.insert("__class_name".to_string(), Value::String("Table".to_string()));
+    obj.insert(
+        "__class_name".to_string(),
+        Value::String("Table".to_string()),
+    );
     obj.insert("__builtin_table".to_string(), Value::Bool(true));
     obj.insert("__extends_table".to_string(), Value::Bool(true));
     if let Some(arg) = args.first() {

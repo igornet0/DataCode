@@ -6,7 +6,6 @@ use crate::vm::vm::VM_CALL_CONTEXT;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-
 fn plugin_opaque_min_max_via_abi(arg: &Value, op: &str) -> Option<Value> {
     let Value::PluginOpaque { .. } = arg else {
         return None;
@@ -186,8 +185,6 @@ pub fn native_round(args: &[Value]) -> Value {
                 let abs_fract = n.abs().fract();
                 if abs_fract > 0.5 {
                     Value::Number(n.floor())
-                } else if abs_fract < 0.5 {
-                    Value::Number(n.ceil())
                 } else {
                     Value::Number(n.ceil())
                 }

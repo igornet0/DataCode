@@ -1,34 +1,34 @@
 // Компилятор AST → Bytecode
 
-use crate::debug_println;
-use crate::parser::ast::{Expr, Stmt, Arg, UnpackPattern, ImportStmt, ImportItem};
-use crate::bytecode::{Chunk, OpCode, Function, CapturedVar};
+use crate::bytecode::{CapturedVar, Chunk, Function, OpCode};
 use crate::common::error::LangError;
 use crate::common::value::Value;
-use crate::lexer::TokenKind;
+use crate::compiler::args;
+use crate::compiler::closure;
+use crate::compiler::constant_fold;
+use crate::compiler::context::{ExceptionHandler, LoopContext};
+use crate::compiler::expr;
+use crate::compiler::labels::LabelManager;
 use crate::compiler::natives;
 use crate::compiler::scope::ScopeManager;
-use crate::compiler::labels::LabelManager;
-use crate::compiler::context::{ExceptionHandler, LoopContext};
-use crate::compiler::constant_fold;
-use crate::compiler::expr;
 use crate::compiler::stmt;
 use crate::compiler::unpack;
-use crate::compiler::closure;
-use crate::compiler::args;
+use crate::debug_println;
+use crate::lexer::TokenKind;
+use crate::parser::ast::{Arg, Expr, ImportItem, ImportStmt, Stmt, UnpackPattern};
 use std::sync::Arc;
 
 pub struct Compiler {
     chunk: Chunk,
     functions: Vec<Function>,
-    function_names: Vec<String>, // Имена функций для поиска
-    current_function: Option<usize>, // Индекс текущей компилируемой функции
-    scope: ScopeManager, // Управление областями видимости
-    labels: LabelManager, // Управление метками и jump-инструкциями
-    current_line: usize, // Текущий номер строки (для отладки и ошибок)
+    function_names: Vec<String>,               // Имена функций для поиска
+    current_function: Option<usize>,           // Индекс текущей компилируемой функции
+    scope: ScopeManager,                       // Управление областями видимости
+    labels: LabelManager,                      // Управление метками и jump-инструкциями
+    current_line: usize,                       // Текущий номер строки (для отладки и ошибок)
     exception_handlers: Vec<ExceptionHandler>, // Стек обработчиков исключений
-    error_type_table: Vec<String>, // Таблица типов ошибок для текущей функции
-    loop_contexts: Vec<LoopContext>, // Стек контекстов циклов для break/continue
+    error_type_table: Vec<String>,             // Таблица типов ошибок для текущей функции
+    loop_contexts: Vec<LoopContext>,           // Стек контекстов циклов для break/continue
     /// Symbols from `from module import X`: name -> module. Uppercase names from file modules are compiled as constructor calls.
     imported_symbols: std::collections::HashMap<String, String>,
     /// Class name -> list of private field names (for inheritance: merge in subclass constructors).
@@ -56,7 +56,8 @@ pub struct Compiler {
     /// Source file path for error messages.
     source_name: Option<String>,
     /// Preloaded `native_call_descriptor` rows (import ml / etc.).
-    native_call_param_registry: Option<Arc<crate::vm::native_call_registry::NativeCallParamRegistry>>,
+    native_call_param_registry:
+        Option<Arc<crate::vm::native_call_registry::NativeCallParamRegistry>>,
 }
 
 impl Compiler {
@@ -76,7 +77,9 @@ impl Compiler {
 
     pub fn new_with_source_and_native_registry(
         source_name: Option<&str>,
-        native_call_param_registry: Option<Arc<crate::vm::native_call_registry::NativeCallParamRegistry>>,
+        native_call_param_registry: Option<
+            Arc<crate::vm::native_call_registry::NativeCallParamRegistry>,
+        >,
     ) -> Self {
         let mut compiler = Self {
             chunk: Chunk::new(),
@@ -108,7 +111,6 @@ impl Compiler {
         compiler
     }
 
-
     fn register_natives(&mut self) {
         natives::register_natives(&mut self.scope.globals);
     }
@@ -117,13 +119,15 @@ impl Compiler {
         self.chunk.set_source_name(self.source_name.as_deref());
         // Начинаем область видимости для главной функции
         self.begin_scope();
-        
+
         // Assign global indices to top-level functions in sorted order so module export is deterministic
         // (same name always gets same index regardless of source order, e.g. get_settings vs load_settings).
         let mut top_level_fn_names: Vec<String> = statements
             .iter()
             .filter_map(|s| match s {
-                Stmt::Function { name, .. } | Stmt::StreamFunction { name, .. } => Some(name.clone()),
+                Stmt::Function { name, .. } | Stmt::StreamFunction { name, .. } => {
+                    Some(name.clone())
+                }
                 _ => None,
             })
             .collect();
@@ -134,7 +138,7 @@ impl Compiler {
                 self.scope.globals.insert(name.clone(), idx);
             }
         }
-        
+
         // Первый проход: объявляем все функции (forward declaration), включая вложенные
         self.collect_all_functions(statements)?;
 
@@ -142,7 +146,12 @@ impl Compiler {
         // чтобы при компиляции тел функций (например get_settings) глобалы вроде "settings" уже были в scope.globals
         // и не подменялись на UNDEFINED_GLOBAL_SENTINEL, иначе после merge байткод остаётся LoadGlobal(MAX).
         for stmt in statements {
-            if let Stmt::Let { name, is_global: true, .. } = stmt {
+            if let Stmt::Let {
+                name,
+                is_global: true,
+                ..
+            } = stmt
+            {
                 self.declare_global_name(&name);
             }
         }
@@ -159,20 +168,23 @@ impl Compiler {
             let pop_value = !is_last || !last_is_expression;
             self.compile_stmt_with_pop(stmt, pop_value)?;
         }
-        
+
         // Проверяем наличие функции __main__
         if let Some(main_fn_index) = self.function_names.iter().position(|n| n == "__main__") {
             // Найдена функция __main__, вызываем её вместо выполнения кода верхнего уровня
             let main_function = &self.functions[main_fn_index];
             let main_arity = main_function.arity;
-            
+
             // Загружаем функцию __main__
             if let Some(&global_index) = self.scope.globals.get("__main__") {
                 // Если __main__ принимает аргументы, передаем их из argv
                 if main_arity > 0 {
                     // Регистрируем argv в scope для доступа (если его там еще нет)
                     let argv_global_index = if let Some(&idx) = self.scope.globals.get("argv") {
-                        debug_println!("[DEBUG compiler] argv уже зарегистрирован в scope с индексом {}", idx);
+                        debug_println!(
+                            "[DEBUG compiler] argv уже зарегистрирован в scope с индексом {}",
+                            idx
+                        );
                         idx
                     } else {
                         // argv будет установлен в VM, создаем временный индекс
@@ -184,52 +196,87 @@ impl Compiler {
                     };
                     // Индекс для загрузки __main__ должен быть строго меньше argv, иначе после update_chunk_indices
                     // все LoadGlobal(76) станут argv и вызов подменится на "Can only call functions, got: Array".
-                    let load_main_idx = std::cmp::min(global_index, argv_global_index.saturating_sub(1));
-                    self.chunk.global_names.insert(load_main_idx, "__main__".to_string());
+                    let load_main_idx =
+                        std::cmp::min(global_index, argv_global_index.saturating_sub(1));
+                    self.chunk
+                        .global_names
+                        .insert(load_main_idx, "__main__".to_string());
                 } else {
-                    self.chunk.global_names.insert(global_index, "__main__".to_string());
+                    self.chunk
+                        .global_names
+                        .insert(global_index, "__main__".to_string());
                 }
                 if main_arity > 0 {
-                    let argv_global_index = self.scope.globals.get("argv").copied().unwrap_or_else(|| self.scope.globals.len());
-                    let load_main_idx = std::cmp::min(global_index, argv_global_index.saturating_sub(1));
-                    
+                    let argv_global_index = self
+                        .scope
+                        .globals
+                        .get("argv")
+                        .copied()
+                        .unwrap_or(self.scope.globals.len());
+                    let load_main_idx =
+                        std::cmp::min(global_index, argv_global_index.saturating_sub(1));
+
                     // Загружаем аргументы из argv для каждого параметра функции
                     // Порядок важен: сначала загружаем все аргументы, потом функцию
                     for i in 0..main_arity {
                         // Проверяем границы массива: если i >= len(argv), используем значение по умолчанию
                         // Загружаем argv для проверки длины
-                        self.chunk.write_with_line(OpCode::LoadGlobal(argv_global_index), self.current_line);
-                        self.chunk.write_with_line(OpCode::GetArrayLength, self.current_line);
+                        self.chunk.write_with_line(
+                            OpCode::LoadGlobal(argv_global_index),
+                            self.current_line,
+                        );
+                        self.chunk
+                            .write_with_line(OpCode::GetArrayLength, self.current_line);
                         // Загружаем индекс i
                         let index_const = self.chunk.add_constant(Value::Number(i as f64));
-                        self.chunk.write_with_line(OpCode::Constant(index_const), self.current_line);
+                        self.chunk
+                            .write_with_line(OpCode::Constant(index_const), self.current_line);
                         // Сравниваем: i < len(argv) <=> len(argv) > i. Стек [length, i]; VM Greater даёт (a > b) при pop b, pop a -> (length > i). JumpIfFalse: при false (i >= length) переходим к default.
-                        self.chunk.write_with_line(OpCode::Greater, self.current_line);
-                        
+                        self.chunk
+                            .write_with_line(OpCode::Greater, self.current_line);
+
                         // Создаем метки для условного перехода
                         let default_value_label = self.labels.create_label();
                         let after_default_label = self.labels.create_label();
-                        
+
                         // Если (length > i) false, т.е. i >= len(argv), переходим к загрузке значения по умолчанию
-                        self.labels.emit_jump(&mut self.chunk, self.current_line, true, default_value_label)?;
-                        
+                        self.labels.emit_jump(
+                            &mut self.chunk,
+                            self.current_line,
+                            true,
+                            default_value_label,
+                        )?;
+
                         // Путь 1: argv[i] существует, загружаем его
                         // Загружаем argv снова для получения элемента
-                        self.chunk.write_with_line(OpCode::LoadGlobal(argv_global_index), self.current_line);
+                        self.chunk.write_with_line(
+                            OpCode::LoadGlobal(argv_global_index),
+                            self.current_line,
+                        );
                         // Загружаем индекс i
                         let index_const = self.chunk.add_constant(Value::Number(i as f64));
-                        self.chunk.write_with_line(OpCode::Constant(index_const), self.current_line);
+                        self.chunk
+                            .write_with_line(OpCode::Constant(index_const), self.current_line);
                         // Получаем argv[i]
-                        self.chunk.write_with_line(OpCode::GetArrayElement, self.current_line);
+                        self.chunk
+                            .write_with_line(OpCode::GetArrayElement, self.current_line);
                         // Переходим к преобразованию типа
-                        self.labels.emit_jump(&mut self.chunk, self.current_line, false, after_default_label)?;
-                        
+                        self.labels.emit_jump(
+                            &mut self.chunk,
+                            self.current_line,
+                            false,
+                            after_default_label,
+                        )?;
+
                         // Путь 2: argv[i] не существует, загружаем значение по умолчанию
-                        self.labels.mark_label(default_value_label, self.chunk.code.len());
-                        
+                        self.labels
+                            .mark_label(default_value_label, self.chunk.code.len());
+
                         // Определяем значение по умолчанию: сначала проверяем default_values функции,
                         // затем используем значения по умолчанию в зависимости от типа параметра
-                        let default_value = if let Some(Some(function_default)) = main_function.default_values.get(i) {
+                        let default_value = if let Some(Some(function_default)) =
+                            main_function.default_values.get(i)
+                        {
                             // Используем значение по умолчанию из определения функции
                             function_default.clone()
                         } else if let Some(param_type) = main_function.param_types.get(i) {
@@ -255,14 +302,16 @@ impl Compiler {
                             // Тип параметра не указан - используем null
                             Value::Null
                         };
-                        
+
                         // Загружаем значение по умолчанию на стек
                         let default_const = self.chunk.add_constant(default_value);
-                        self.chunk.write_with_line(OpCode::Constant(default_const), self.current_line);
-                        
+                        self.chunk
+                            .write_with_line(OpCode::Constant(default_const), self.current_line);
+
                         // Помечаем метку после значения по умолчанию
-                        self.labels.mark_label(after_default_label, self.chunk.code.len());
-                        
+                        self.labels
+                            .mark_label(after_default_label, self.chunk.code.len());
+
                         // Преобразуем значение в нужный тип, если необходимо
                         // (для значения по умолчанию это обычно не нужно, но для argv[i] нужно)
                         if let Some(param_type) = main_function.param_types.get(i) {
@@ -270,44 +319,55 @@ impl Compiler {
                                 let has_num = type_parts.iter().any(|t| matches!(t, crate::parser::ast::TypePart::TypeName(s) if s == "int" || s == "float" || s == "num" || s == "number"));
                                 if has_num {
                                     if let Some(&int_global_index) = self.scope.globals.get("int") {
-                                        self.chunk.write_with_line(OpCode::LoadGlobal(int_global_index), self.current_line);
-                                        self.chunk.write_with_line(OpCode::Call(1), self.current_line);
+                                        self.chunk.write_with_line(
+                                            OpCode::LoadGlobal(int_global_index),
+                                            self.current_line,
+                                        );
+                                        self.chunk
+                                            .write_with_line(OpCode::Call(1), self.current_line);
                                     }
                                 }
                             }
                         }
                         // Значение argv[i] или значение по умолчанию (возможно преобразованное) теперь на стеке
                     }
-                    
+
                     // Теперь загружаем функцию на стек (load_main_idx гарантированно < argv, чтобы патч не подменил на argv)
                     // На стеке: [argv[0], argv[1], ..., argv[n-1]]
-                    self.chunk.write_with_line(OpCode::LoadGlobal(load_main_idx), self.current_line);
+                    self.chunk
+                        .write_with_line(OpCode::LoadGlobal(load_main_idx), self.current_line);
                     // Теперь на стеке: [argv[0], argv[1], ..., argv[n-1], function]
                     // Вызываем функцию с аргументами из argv
-                    self.chunk.write_with_line(OpCode::Call(main_arity), self.current_line);
+                    self.chunk
+                        .write_with_line(OpCode::Call(main_arity), self.current_line);
                 } else {
                     // __main__ не принимает аргументы
                     // Загружаем функцию на стек
-                    self.chunk.write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
+                    self.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
                     // Вызываем функцию
-                    self.chunk.write_with_line(OpCode::Call(0), self.current_line);
+                    self.chunk
+                        .write_with_line(OpCode::Call(0), self.current_line);
                 }
             }
         } else {
             // Функция __main__ не найдена, выполняем код верхнего уровня как обычно
-            self.chunk.write_with_line(OpCode::Return, self.current_line);
+            self.chunk
+                .write_with_line(OpCode::Return, self.current_line);
         }
-        
+
         // Заканчиваем область видимости главной функции
         self.end_scope();
-        
+
         // Эталонный алгоритм апгрейда jump-инструкций: стабилизация layout и финализация
-        self.labels.stabilize_layout(&mut self.chunk, self.current_line)?;
-        self.labels.finalize_jumps(&mut self.chunk, self.current_line)?;
-        
+        self.labels
+            .stabilize_layout(&mut self.chunk, self.current_line)?;
+        self.labels
+            .finalize_jumps(&mut self.chunk, self.current_line)?;
+
         // Очищаем метки после финализации главного скрипта
         self.labels.clear();
-        
+
         Ok(self.chunk.clone())
     }
 
@@ -315,14 +375,32 @@ impl Compiler {
     fn collect_all_functions(&mut self, statements: &[Stmt]) -> Result<(), LangError> {
         for stmt in statements {
             match stmt {
-                Stmt::Function { name, params, return_type, body, is_cached, route, .. }
-                | Stmt::StreamFunction { name, params, return_type, body, is_cached, route, .. } => {
+                Stmt::Function {
+                    name,
+                    params,
+                    return_type,
+                    body,
+                    is_cached,
+                    route,
+                    ..
+                }
+                | Stmt::StreamFunction {
+                    name,
+                    params,
+                    return_type,
+                    body,
+                    is_cached,
+                    route,
+                    ..
+                } => {
                     // Объявляем функцию с правильной сигнатурой сразу
                     let arity = params.len();
                     let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
-                    let param_types: Vec<Option<Vec<crate::parser::ast::TypePart>>> = params.iter().map(|p| p.type_annotation.clone()).collect();
-                    
-                    let mut function = if *is_cached && !matches!(stmt, Stmt::StreamFunction { .. }) {
+                    let param_types: Vec<Option<Vec<crate::parser::ast::TypePart>>> =
+                        params.iter().map(|p| p.type_annotation.clone()).collect();
+
+                    let mut function = if *is_cached && !matches!(stmt, Stmt::StreamFunction { .. })
+                    {
                         Function::with_cache(name.clone(), arity)
                     } else {
                         Function::new(name.clone(), arity)
@@ -330,7 +408,7 @@ impl Compiler {
                     if matches!(stmt, Stmt::StreamFunction { .. }) {
                         function.is_stream = true;
                     }
-                    
+
                     // Устанавливаем имена и типы параметров сразу
                     function.param_names = param_names;
                     function.param_types = param_types;
@@ -341,7 +419,7 @@ impl Compiler {
                         function.route_method = Some(method.clone());
                         function.route_path = Some(path.clone());
                     }
-                    
+
                     self.functions.push(function);
                     self.function_names.push(name.clone());
                     // Use existing global index if already assigned (e.g. top-level sorted), else assign new
@@ -354,11 +432,15 @@ impl Compiler {
                     };
                     // Ensure chunk.global_names has this index (collect_all_functions runs before compile_stmt)
                     self.chunk.global_names.insert(global_index, name.clone());
-                    
+
                     // Рекурсивно собираем функции из тела этой функции
                     self.collect_all_functions(body)?;
                 }
-                Stmt::If { then_branch, else_branch, .. } => {
+                Stmt::If {
+                    then_branch,
+                    else_branch,
+                    ..
+                } => {
                     // Рекурсивно собираем функции из веток if
                     self.collect_all_functions(then_branch)?;
                     if let Some(else_branch) = else_branch {
@@ -373,7 +455,12 @@ impl Compiler {
                     // Рекурсивно собираем функции из тела for
                     self.collect_all_functions(body)?;
                 }
-                Stmt::Try { try_block, catch_blocks, else_block, .. } => {
+                Stmt::Try {
+                    try_block,
+                    catch_blocks,
+                    else_block,
+                    ..
+                } => {
                     // Рекурсивно собираем функции из try блока
                     self.collect_all_functions(try_block)?;
                     // Рекурсивно собираем функции из catch блоков
@@ -410,7 +497,6 @@ impl Compiler {
     pub fn get_functions(self) -> Vec<Function> {
         self.functions
     }
-
 
     fn compile_stmt(&mut self, stmt: &Stmt) -> Result<(), LangError> {
         self.compile_stmt_with_pop(stmt, true)
@@ -467,9 +553,11 @@ impl Compiler {
                             // Import statements are handled at runtime by the VM
                             // We compile them as a special opcode that the VM will handle
                             // Store the module name as a constant and emit Import opcode
-                            let module_index = self.chunk.add_constant(Value::String(module.clone()));
-                            self.chunk.write_with_line(OpCode::Import(module_index), *line);
-                            
+                            let module_index =
+                                self.chunk.add_constant(Value::String(module.clone()));
+                            self.chunk
+                                .write_with_line(OpCode::Import(module_index), *line);
+
                             // Register the module name in globals so subsequent uses are recognized
                             // This allows the compiler to know about the module even though it's loaded at runtime
                             if !self.scope.globals.contains_key(module) {
@@ -482,8 +570,8 @@ impl Compiler {
                     ImportStmt::From { module, items } => {
                         // from plot import plot, *
                         // Создаем массив элементов импорта в константах
-                        use std::rc::Rc;
                         use std::cell::RefCell;
+                        use std::rc::Rc;
                         let mut item_strings = Vec::new();
                         for item in items {
                             match item {
@@ -501,18 +589,19 @@ impl Compiler {
                         }
                         let items_array = Value::Array(Rc::new(RefCell::new(item_strings)));
                         let items_index = self.chunk.add_constant(items_array);
-                        
+
                         // Store the module name as a constant
                         let module_index = self.chunk.add_constant(Value::String(module.clone()));
-                        self.chunk.write_with_line(OpCode::ImportFrom(module_index, items_index), *line);
-                        
+                        self.chunk
+                            .write_with_line(OpCode::ImportFrom(module_index, items_index), *line);
+
                         // Register the module name in globals
                         if !self.scope.globals.contains_key(module) {
                             let global_index = self.scope.globals.len();
                             self.scope.globals.insert(module.clone(), global_index);
                             self.chunk.global_names.insert(global_index, module.clone());
                         }
-                        
+
                         // Register imported item names in globals in deterministic (sorted) order,
                         // so chunk.global_names and VM slots are stable across runs and threads.
                         let mut item_names: Vec<String> = items
@@ -534,75 +623,104 @@ impl Compiler {
                     }
                 }
             }
-            Stmt::Let { name, value, is_global, line } => {
+            Stmt::Let {
+                name,
+                value,
+                is_global,
+                line,
+            } => {
                 self.current_line = *line;
                 // Проверяем, является ли value UnpackAssign (распаковка кортежа)
-                if let Expr::UnpackAssign { names, value: tuple_value, .. } = value {
+                if let Expr::UnpackAssign {
+                    names,
+                    value: tuple_value,
+                    ..
+                } = value
+                {
                     // Распаковка кортежа в let statement
                     self.compile_expr(tuple_value)?;
-                    
+
                     // Сохраняем кортеж во временную переменную
                     let tuple_temp = self.declare_local(&format!("__tuple_temp_{}", line));
-                    self.chunk.write_with_line(OpCode::StoreLocal(tuple_temp), *line);
-                    
+                    self.chunk
+                        .write_with_line(OpCode::StoreLocal(tuple_temp), *line);
+
                     // Для каждой переменной извлекаем элемент кортежа и сохраняем
                     for (index, var_name) in names.iter().enumerate() {
                         // Загружаем кортеж
-                        self.chunk.write_with_line(OpCode::LoadLocal(tuple_temp), *line);
+                        self.chunk
+                            .write_with_line(OpCode::LoadLocal(tuple_temp), *line);
                         // Загружаем индекс
                         let index_const = self.chunk.add_constant(Value::Number(index as f64));
-                        self.chunk.write_with_line(OpCode::Constant(index_const), *line);
+                        self.chunk
+                            .write_with_line(OpCode::Constant(index_const), *line);
                         // Получаем элемент по индексу
                         self.chunk.write_with_line(OpCode::GetArrayElement, *line);
-                        
+
                         // Сохраняем в переменную
                         if *is_global {
                             // Глобальная переменная
-                            let global_index = if let Some(&idx) = self.scope.globals.get(var_name) {
+                            let global_index = if let Some(&idx) = self.scope.globals.get(var_name)
+                            {
                                 idx
                             } else {
                                 let idx = self.scope.globals.len();
                                 self.scope.globals.insert(var_name.clone(), idx);
                                 idx
                             };
-                            self.chunk.global_names.insert(global_index, var_name.clone());
-                            self.chunk.explicit_global_names.insert(global_index, var_name.clone());
-                            self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                            self.chunk
+                                .global_names
+                                .insert(global_index, var_name.clone());
+                            self.chunk
+                                .explicit_global_names
+                                .insert(global_index, var_name.clone());
+                            self.chunk
+                                .write_with_line(OpCode::StoreGlobal(global_index), *line);
                         } else {
                             // Локальная переменная
                             if let Some(local_index) = self.resolve_local(var_name) {
-                                self.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
+                                self.chunk
+                                    .write_with_line(OpCode::StoreLocal(local_index), *line);
                             } else if self.current_function.is_some() {
                                 let var_index = self.declare_local(var_name);
-                                self.chunk.write_with_line(OpCode::StoreLocal(var_index), *line);
+                                self.chunk
+                                    .write_with_line(OpCode::StoreLocal(var_index), *line);
                             } else {
                                 // На верхнем уровне - проверяем, есть ли глобальная переменная
                                 if let Some(&global_index) = self.scope.globals.get(var_name) {
                                     // Глобальная переменная найдена - обновляем
-                                    self.chunk.global_names.insert(global_index, var_name.clone());
-                                    self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                                    self.chunk
+                                        .global_names
+                                        .insert(global_index, var_name.clone());
+                                    self.chunk
+                                        .write_with_line(OpCode::StoreGlobal(global_index), *line);
                                 } else {
                                     // Новая глобальная переменная на верхнем уровне
                                     let global_index = self.scope.globals.len();
                                     self.scope.globals.insert(var_name.clone(), global_index);
-                                    self.chunk.global_names.insert(global_index, var_name.clone());
-                                    self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                                    self.chunk
+                                        .global_names
+                                        .insert(global_index, var_name.clone());
+                                    self.chunk
+                                        .write_with_line(OpCode::StoreGlobal(global_index), *line);
                                 }
                             }
                         }
                     }
-                    
+
                     // Загружаем последнее значение на стек
                     if let Some(last_name) = names.last() {
                         if let Some(local_index) = self.resolve_local(last_name) {
-                            self.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                            self.chunk
+                                .write_with_line(OpCode::LoadLocal(local_index), *line);
                         } else if let Some(&global_index) = self.scope.globals.get(last_name) {
-                            self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                            self.chunk
+                                .write_with_line(OpCode::LoadGlobal(global_index), *line);
                         }
                     }
                     return Ok(());
                 }
-                
+
                 // Обычное присваивание
                 self.compile_expr(value)?;
                 // Не клонируем автоматически - переменные должны разделять ссылки на массивы/таблицы/объекты
@@ -620,14 +738,18 @@ impl Compiler {
                     // Сохраняем имя глобальной переменной для использования в JOIN
                     self.chunk.global_names.insert(global_index, name.clone());
                     // Сохраняем имя явно объявленной глобальной переменной для экспорта в SQLite
-                    self.chunk.explicit_global_names.insert(global_index, name.clone());
-                    self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                    self.chunk
+                        .explicit_global_names
+                        .insert(global_index, name.clone());
+                    self.chunk
+                        .write_with_line(OpCode::StoreGlobal(global_index), *line);
                 } else {
                     // Локальная переменная или глобальная на верхнем уровне
                     // Проверяем, есть ли переменная в локальной области видимости
                     if let Some(local_index) = self.resolve_local(name) {
                         // Локальная переменная уже объявлена - обновляем
-                        self.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
+                        self.chunk
+                            .write_with_line(OpCode::StoreLocal(local_index), *line);
                     } else if self.current_function.is_some() {
                         // Мы находимся внутри функции - объявляем новую локальную переменную
                         let index = self.declare_local(name);
@@ -639,14 +761,16 @@ impl Compiler {
                             // Глобальная переменная уже существует - обновляем
                             // Сохраняем имя глобальной переменной для использования в JOIN
                             self.chunk.global_names.insert(global_index, name.clone());
-                            self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                            self.chunk
+                                .write_with_line(OpCode::StoreGlobal(global_index), *line);
                         } else {
                             // Новая глобальная переменная на верхнем уровне
                             let global_index = self.scope.globals.len();
                             self.scope.globals.insert(name.clone(), global_index);
                             // Сохраняем имя глобальной переменной для использования в JOIN
                             self.chunk.global_names.insert(global_index, name.clone());
-                            self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                            self.chunk
+                                .write_with_line(OpCode::StoreGlobal(global_index), *line);
                         }
                     }
                 }
@@ -659,18 +783,28 @@ impl Compiler {
                     self.chunk.write_with_line(OpCode::Pop, *line);
                 }
             }
-            Stmt::If { condition, then_branch, else_branch, line } => {
+            Stmt::If {
+                condition,
+                then_branch,
+                else_branch,
+                line,
+            } => {
                 self.current_line = *line;
                 self.compile_expr(condition)?;
-                
+
                 // Создаем метки для else и end
                 let else_label = self.labels.create_label();
                 let end_label = self.labels.create_label();
-                
+
                 // Jump if false к else (или end, если else нет)
-                let target_label = if else_branch.is_some() { else_label } else { end_label };
-                self.labels.emit_jump(&mut self.chunk, self.current_line,true, target_label)?;
-                
+                let target_label = if else_branch.is_some() {
+                    else_label
+                } else {
+                    end_label
+                };
+                self.labels
+                    .emit_jump(&mut self.chunk, self.current_line, true, target_label)?;
+
                 // Компилируем then ветку (с новой областью видимости)
                 self.begin_scope();
                 for (i, stmt) in then_branch.iter().enumerate() {
@@ -678,15 +812,16 @@ impl Compiler {
                     self.compile_stmt_with_pop(stmt, !is_last || pop_value)?;
                 }
                 self.end_scope();
-                
+
                 // Jump к end после then
-                self.labels.emit_jump(&mut self.chunk, self.current_line,false, end_label)?;
-                
+                self.labels
+                    .emit_jump(&mut self.chunk, self.current_line, false, end_label)?;
+
                 // Помечаем метку else (если есть)
                 if else_branch.is_some() {
                     self.labels.mark_label(else_label, self.chunk.code.len());
-                
-                // Компилируем else ветку (с новой областью видимости)
+
+                    // Компилируем else ветку (с новой областью видимости)
                     self.begin_scope();
                     for (i, stmt) in else_branch.as_ref().unwrap().iter().enumerate() {
                         let is_last = i == else_branch.as_ref().unwrap().len() - 1;
@@ -694,24 +829,30 @@ impl Compiler {
                     }
                     self.end_scope();
                 }
-                
+
                 // Помечаем метку end
                 self.labels.mark_label(end_label, self.chunk.code.len());
             }
-            Stmt::While { condition, body, line } => {
+            Stmt::While {
+                condition,
+                body,
+                line,
+            } => {
                 self.current_line = *line;
-                
+
                 // Создаем метки для начала и конца цикла
                 let loop_start_label = self.labels.create_label();
                 let loop_end_label = self.labels.create_label();
-                
+
                 // Помечаем начало цикла
-                self.labels.mark_label(loop_start_label, self.chunk.code.len());
-                
+                self.labels
+                    .mark_label(loop_start_label, self.chunk.code.len());
+
                 self.compile_expr(condition)?;
                 // Jump if false к концу цикла
-                self.labels.emit_jump(&mut self.chunk, self.current_line,true, loop_end_label)?;
-                
+                self.labels
+                    .emit_jump(&mut self.chunk, self.current_line, true, loop_end_label)?;
+
                 // Создаем контекст цикла
                 let loop_context = LoopContext {
                     continue_label: loop_start_label, // continue возвращается к началу цикла
@@ -719,56 +860,67 @@ impl Compiler {
                     is_for_range: false,
                 };
                 self.loop_contexts.push(loop_context);
-                
+
                 // Компилируем тело цикла (с новой областью видимости)
                 self.begin_scope();
                 for stmt in body {
                     self.compile_stmt(stmt)?;
                 }
                 self.end_scope();
-                
+
                 // Jump к началу цикла
-                self.labels.emit_loop(&mut self.chunk, self.current_line,loop_start_label)?;
-                
+                self.labels
+                    .emit_loop(&mut self.chunk, self.current_line, loop_start_label)?;
+
                 // Помечаем конец цикла
-                self.labels.mark_label(loop_end_label, self.chunk.code.len());
-                
+                self.labels
+                    .mark_label(loop_end_label, self.chunk.code.len());
+
                 // Контекст цикла уже содержит метки для break/continue
-                
+
                 // Условие уже удалено JumpIfFalse при выходе из цикла
                 self.loop_contexts.pop();
             }
-            Stmt::For { pattern, iterable, body, line } => {
+            Stmt::For {
+                pattern,
+                iterable,
+                body,
+                line,
+            } => {
                 self.current_line = *line;
-                
+
                 // Начинаем новую область видимости для переменных цикла
                 self.begin_scope();
-                
+
                 // Компилируем итерируемое выражение (оно должно быть массивом)
                 self.compile_expr(iterable)?;
-                
+
                 // Сохраняем массив во временную переменную (локальную)
                 // Создаем скрытую переменную для массива
                 let array_local = self.declare_local("__array_iter");
-                self.chunk.write_with_line(OpCode::StoreLocal(array_local), *line);
-                
+                self.chunk
+                    .write_with_line(OpCode::StoreLocal(array_local), *line);
+
                 // Создаем переменную для индекса
                 let index_local = self.declare_local("__index_iter");
                 // Инициализируем индекс как 0
                 let zero_index = self.chunk.add_constant(Value::Number(0.0));
-                self.chunk.write_with_line(OpCode::Constant(zero_index), *line);
-                self.chunk.write_with_line(OpCode::StoreLocal(index_local), *line);
-                
+                self.chunk
+                    .write_with_line(OpCode::Constant(zero_index), *line);
+                self.chunk
+                    .write_with_line(OpCode::StoreLocal(index_local), *line);
+
                 // Проверяем, является ли это простым случаем (одна переменная без распаковки)
-                let is_simple_case = pattern.len() == 1 && matches!(pattern[0], UnpackPattern::Variable(_));
-                
+                let is_simple_case =
+                    pattern.len() == 1 && matches!(pattern[0], UnpackPattern::Variable(_));
+
                 // Подсчитываем количество переменных (не wildcard) для проверки
                 let expected_count = if is_simple_case {
                     0 // Не распаковываем, просто присваиваем
                 } else {
                     unpack::count_unpack_variables(pattern)
                 };
-                
+
                 // Объявляем переменные из паттерна распаковки
                 let var_locals = if is_simple_case {
                     // Простой случай: одна переменная
@@ -781,44 +933,60 @@ impl Compiler {
                 } else {
                     unpack::declare_unpack_pattern_variables(pattern, &mut self.scope, *line)?
                 };
-                
+
                 // Создаем метки для цикла
                 let loop_start_label = self.labels.create_label();
                 let continue_label = self.labels.create_label();
                 let loop_end_label = self.labels.create_label();
-                
+
                 // Помечаем начало цикла
-                self.labels.mark_label(loop_start_label, self.chunk.code.len());
-                
+                self.labels
+                    .mark_label(loop_start_label, self.chunk.code.len());
+
                 // Проверяем условие: индекс < длина массива
                 // Загружаем индекс
-                self.chunk.write_with_line(OpCode::LoadLocal(index_local), *line);
+                self.chunk
+                    .write_with_line(OpCode::LoadLocal(index_local), *line);
                 // Загружаем массив
-                self.chunk.write_with_line(OpCode::LoadLocal(array_local), *line);
+                self.chunk
+                    .write_with_line(OpCode::LoadLocal(array_local), *line);
                 // Получаем длину массива
                 self.chunk.write_with_line(OpCode::GetArrayLength, *line);
                 // Сравниваем индекс < длина
                 self.chunk.write_with_line(OpCode::Less, *line);
-                
+
                 // Если условие false, выходим из цикла
-                self.labels.emit_jump(&mut self.chunk, self.current_line,true, loop_end_label)?;
-                
+                self.labels
+                    .emit_jump(&mut self.chunk, self.current_line, true, loop_end_label)?;
+
                 // Загружаем элемент массива по индексу
-                self.chunk.write_with_line(OpCode::LoadLocal(array_local), *line);
-                self.chunk.write_with_line(OpCode::LoadLocal(index_local), *line);
+                self.chunk
+                    .write_with_line(OpCode::LoadLocal(array_local), *line);
+                self.chunk
+                    .write_with_line(OpCode::LoadLocal(index_local), *line);
                 self.chunk.write_with_line(OpCode::GetArrayElement, *line);
-                
+
                 // Распаковываем элемент в переменные (или просто присваиваем для простого случая)
                 // Элемент находится на стеке
                 if is_simple_case {
                     // Простой случай: просто сохраняем элемент в переменную
                     if let Some(local_index) = var_locals[0] {
-                        self.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
+                        self.chunk
+                            .write_with_line(OpCode::StoreLocal(local_index), *line);
                     }
                 } else {
-                    unpack::compile_unpack_pattern(pattern, &var_locals, expected_count, &mut self.chunk, &mut self.scope, &mut self.labels, self.current_line, *line)?;
+                    unpack::compile_unpack_pattern(
+                        pattern,
+                        &var_locals,
+                        expected_count,
+                        &mut self.chunk,
+                        &mut self.scope,
+                        &mut self.labels,
+                        self.current_line,
+                        *line,
+                    )?;
                 }
-                
+
                 // Создаем контекст цикла
                 let loop_context = LoopContext {
                     continue_label: continue_label, // continue переходит к инкременту
@@ -826,47 +994,63 @@ impl Compiler {
                     is_for_range: false,
                 };
                 self.loop_contexts.push(loop_context);
-                
+
                 // Компилируем тело цикла
                 for stmt in body {
                     self.compile_stmt(stmt)?;
                 }
-                
+
                 // Помечаем метку continue (начало инкремента индекса)
-                self.labels.mark_label(continue_label, self.chunk.code.len());
-                
+                self.labels
+                    .mark_label(continue_label, self.chunk.code.len());
+
                 // Инкрементируем индекс
-                self.chunk.write_with_line(OpCode::LoadLocal(index_local), *line);
+                self.chunk
+                    .write_with_line(OpCode::LoadLocal(index_local), *line);
                 let one_index = self.chunk.add_constant(Value::Number(1.0));
-                self.chunk.write_with_line(OpCode::Constant(one_index), *line);
+                self.chunk
+                    .write_with_line(OpCode::Constant(one_index), *line);
                 self.chunk.write_with_line(OpCode::Add, *line);
-                self.chunk.write_with_line(OpCode::StoreLocal(index_local), *line);
-                
+                self.chunk
+                    .write_with_line(OpCode::StoreLocal(index_local), *line);
+
                 // Переход к началу цикла
-                self.labels.emit_loop(&mut self.chunk, self.current_line,loop_start_label)?;
-                
+                self.labels
+                    .emit_loop(&mut self.chunk, self.current_line, loop_start_label)?;
+
                 // Помечаем конец цикла
-                self.labels.mark_label(loop_end_label, self.chunk.code.len());
-                
+                self.labels
+                    .mark_label(loop_end_label, self.chunk.code.len());
+
                 // Контекст цикла уже содержит метки для break/continue
-                
+
                 // Очищаем стек от условия (оно уже удалено JumpIfFalse, но на всякий случай)
-                
+
                 // Заканчиваем область видимости
                 self.end_scope();
                 self.loop_contexts.pop();
             }
-            Stmt::Function { name, params, return_type, body, is_cached, route, line } => {
+            Stmt::Function {
+                name,
+                params,
+                return_type,
+                body,
+                is_cached,
+                route,
+                line,
+            } => {
                 self.current_line = *line;
                 // Находим индекс функции (она уже объявлена в первом проходе)
-                let function_index = self.function_names.iter()
+                let function_index = self
+                    .function_names
+                    .iter()
                     .position(|n| n == name)
                     .ok_or_else(|| LangError::ParseError {
                         message: format!("Function '{}' not found in forward declarations", name),
                         line: *line,
                         file: None,
                     })?;
-                
+
                 // Получаем функцию и обновляем количество параметров и флаг кэширования
                 let mut function = self.functions[function_index].clone();
                 function.arity = params.len();
@@ -875,16 +1059,19 @@ impl Compiler {
                     function.route_method = Some(method.clone());
                     function.route_path = Some(path.clone());
                 }
-                function.param_types = params.iter().map(|p| p.type_annotation.clone()).collect::<Vec<_>>();
+                function.param_types = params
+                    .iter()
+                    .map(|p| p.type_annotation.clone())
+                    .collect::<Vec<_>>();
                 function.return_type = return_type.clone();
 
                 // Сохраняем имена параметров и вычисляем значения по умолчанию
                 let mut param_names = Vec::new();
                 let mut default_values = Vec::new();
-                
+
                 for param in params.iter() {
                     param_names.push(param.name.clone());
-                    
+
                     // Вычисляем значение по умолчанию во время компиляции
                     if let Some(ref default_expr) = param.default_value {
                         // Пытаемся вычислить константное выражение
@@ -911,27 +1098,30 @@ impl Compiler {
                         default_values.push(None);
                     }
                 }
-                
+
                 function.param_names = param_names;
                 function.default_values = default_values;
                 // Если кэш включен, но еще не инициализирован, инициализируем его
                 if *is_cached && function.cache.is_none() {
-                    use std::rc::Rc;
-                    use std::cell::RefCell;
                     use crate::bytecode::function::FnCache;
+                    use std::cell::RefCell;
+                    use std::rc::Rc;
                     function.cache = Some(Rc::new(RefCell::new(FnCache::new())));
                 }
-                
+
                 // ВАЖНО: Сохраняем сигнатуру функции ДО компиляции тела, чтобы рекурсивные вызовы
                 // могли видеть правильное количество параметров и их имена
                 self.functions[function_index] = function.clone();
-                
+
                 // Сохраняем текущие локальные области видимости для доступа к переменным родительских функций
                 // Это нужно для поддержки замыканий - переменные из родительских функций должны быть доступны
-                let parent_locals_snapshot: Vec<std::collections::HashMap<String, usize>> = self.scope.locals.iter()
+                let parent_locals_snapshot: Vec<std::collections::HashMap<String, usize>> = self
+                    .scope
+                    .locals
+                    .iter()
                     .map(|scope| scope.clone())
                     .collect();
-                
+
                 // Компилируем тело функции в chunk функции
                 let saved_chunk = std::mem::replace(&mut self.chunk, function.chunk.clone());
                 self.chunk.set_source_name(self.source_name.as_deref());
@@ -944,25 +1134,28 @@ impl Compiler {
                 // Очищаем обработчики и таблицу типов ошибок для новой функции
                 self.exception_handlers.clear();
                 self.error_type_table.clear();
-                
+
                 // Начинаем новую область видимости для функции
                 self.begin_scope();
-                
+
                 // Находим переменные, которые используются в теле функции, но не объявлены в ней
                 // (захваченные из родительских функций)
                 let param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                 let current_scope = self.scope.locals.last().cloned().unwrap_or_default();
-                let captured_vars = closure::find_captured_variables(body, &parent_locals_snapshot, &param_names, &current_scope);
-        
-                
+                let captured_vars = closure::find_captured_variables(
+                    body,
+                    &parent_locals_snapshot,
+                    &param_names,
+                    &current_scope,
+                );
+
                 // Создаем локальные слоты для захваченных переменных (перед параметрами)
                 // Эти слоты будут заполнены значениями из родительских функций при вызове
                 let mut captured_vars_info = Vec::new();
-                
-                
+
                 for var_name in &captured_vars {
                     let local_slot_index = self.declare_local(var_name);
-                    
+
                     // Находим slot index в родительской функции и глубину предка
                     // Ищем переменную в parent_locals_snapshot (от последней области к первой)
                     // Последняя область - это самая внутренняя, которая соответствует текущему контексту
@@ -972,31 +1165,33 @@ impl Compiler {
                     // Ищем в обратном порядке, чтобы найти в самой внутренней (последней) области сначала
                     // parent_locals_snapshot[0] - самый внешний предок (например, outer)
                     // parent_locals_snapshot[n-1] - ближайший родитель (например, middle)
-                    
-                    
+
                     for (depth, scope) in parent_locals_snapshot.iter().rev().enumerate() {
                         if let Some(&slot_idx) = scope.get(var_name) {
                             parent_slot_index = Some(slot_idx);
                             // depth = 0 означает ближайший родитель, depth = 1 означает дедушку и т.д.
                             ancestor_depth = depth;
-                            
+
                             break;
                         }
                     }
-                    
+
                     // Если переменная не найдена в родительских локальных, она может быть глобальной
                     // В этом случае мы не можем захватить её как локальную переменную
                     // Но для правильного кода она должна быть найдена
                     if parent_slot_index.is_none() {
                         return Err(LangError::ParseError {
-                            message: format!("Captured variable '{}' not found in parent scopes", var_name),
+                            message: format!(
+                                "Captured variable '{}' not found in parent scopes",
+                                var_name
+                            ),
                             line: *line,
                             file: None,
                         });
                     }
-                    
+
                     let parent_slot = parent_slot_index.unwrap();
-                    
+
                     captured_vars_info.push(CapturedVar {
                         name: var_name.clone(),
                         parent_slot_index: parent_slot,
@@ -1004,12 +1199,12 @@ impl Compiler {
                         ancestor_depth,
                     });
                 }
-                
+
                 // Объявляем параметры как локальные переменные (после захваченных переменных)
                 for param in params {
                     self.declare_local(&param.name);
                 }
-                
+
                 // Компилируем тело функции
                 // При компиляции переменных, resolve_local будет искать в текущих областях видимости,
                 // которые включают параметры функции. Если переменная не найдена, она будет искаться
@@ -1017,46 +1212,49 @@ impl Compiler {
                 for stmt in body {
                     self.compile_stmt(stmt)?;
                 }
-                
+
                 // Если функция не вернула значение явно, добавляем неявный return
                 // который вернет последнее значение на стеке (если есть) или null
-                if self.chunk.code.is_empty() || 
-                   !matches!(self.chunk.code.last(), Some(OpCode::Return)) {
+                if self.chunk.code.is_empty()
+                    || !matches!(self.chunk.code.last(), Some(OpCode::Return))
+                {
                     // Не добавляем Constant(Null) - просто возвращаем то, что на стеке
                     self.chunk.write_with_line(OpCode::Return, *line);
                 }
-                
+
                 // Заканчиваем область видимости функции
                 self.end_scope();
-                
+
                 // Эталонный алгоритм апгрейда jump-инструкций: стабилизация layout и финализация
                 self.labels.stabilize_layout(&mut self.chunk, *line)?;
                 self.labels.finalize_jumps(&mut self.chunk, *line)?;
-                
+
                 // Сохраняем скомпилированную функцию (обработчики уже сохранены в chunk при компиляции try/catch)
                 let function_chunk = std::mem::replace(&mut self.chunk, saved_chunk);
                 function.chunk = function_chunk;
                 function.captured_vars = captured_vars_info;
                 self.functions[function_index] = function;
-                
+
                 // Восстанавливаем состояние компилятора
                 self.exception_handlers = saved_exception_handlers;
                 self.error_type_table = saved_error_type_table;
                 self.current_function = saved_function;
                 self.scope.local_count = saved_local_count;
-                
+
                 // Сохраняем функцию в глобальную таблицу (уже сделано в первом проходе)
                 let global_index = *self.scope.globals.get(name).unwrap();
-                
+
                 // Сохраняем имя глобальной переменной для использования в JOIN
                 self.chunk.global_names.insert(global_index, name.clone());
-                
+
                 // Сохраняем функцию как константу
                 let constant_index = self.chunk.add_constant(Value::Function(function_index));
-                
+
                 // Сохраняем функцию в глобальную переменную
-                self.chunk.write_with_line(OpCode::Constant(constant_index), *line);
-                self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                self.chunk
+                    .write_with_line(OpCode::Constant(constant_index), *line);
+                self.chunk
+                    .write_with_line(OpCode::StoreGlobal(global_index), *line);
             }
             Stmt::Return { value, line } => {
                 self.current_line = *line;
@@ -1064,7 +1262,8 @@ impl Compiler {
                     self.compile_expr(expr)?;
                 } else {
                     let const_index = self.chunk.add_constant(Value::Null);
-                    self.chunk.write_with_line(OpCode::Constant(const_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::Constant(const_index), *line);
                 }
                 self.chunk.write_with_line(OpCode::Return, *line);
             }
@@ -1079,10 +1278,12 @@ impl Compiler {
                 }
                 let loop_ctx = self.loop_contexts.last().unwrap();
                 if loop_ctx.is_for_range {
-                    self.chunk.write_with_line(OpCode::PopForRange, self.current_line);
+                    self.chunk
+                        .write_with_line(OpCode::PopForRange, self.current_line);
                 }
                 let break_label = loop_ctx.break_label;
-                self.labels.emit_jump(&mut self.chunk, self.current_line, false, break_label)?;
+                self.labels
+                    .emit_jump(&mut self.chunk, self.current_line, false, break_label)?;
             }
             Stmt::Continue { line } => {
                 self.current_line = *line;
@@ -1095,7 +1296,8 @@ impl Compiler {
                 }
                 // Jump к метке continue
                 let continue_label = self.loop_contexts.last().unwrap().continue_label;
-                self.labels.emit_jump(&mut self.chunk, self.current_line,false, continue_label)?;
+                self.labels
+                    .emit_jump(&mut self.chunk, self.current_line, false, continue_label)?;
             }
             Stmt::Throw { value, line } => {
                 self.current_line = *line;
@@ -1122,7 +1324,6 @@ impl Compiler {
         Ok(())
     }
 
-
     /// Разрешает аргументы функции: именованные -> позиционные, применяет значения по умолчанию
     fn resolve_function_args(
         &self,
@@ -1146,14 +1347,15 @@ impl Compiler {
     fn compile_expr(&mut self, expr: &Expr) -> Result<(), LangError> {
         let expr_line = expr.line();
         self.current_line = expr_line;
-        
+
         // Оптимизация: вычисляем константные выражения во время компиляции
         if let Some(constant_value) = constant_fold::evaluate_constant_expr(expr)? {
             let constant_index = self.chunk.add_constant(constant_value);
-            self.chunk.write_with_line(OpCode::Constant(constant_index), expr_line);
+            self.chunk
+                .write_with_line(OpCode::Constant(constant_index), expr_line);
             return Ok(());
         }
-        
+
         let mut ctx = self.create_context();
         expr::compile_expr(&mut ctx, expr)
     }
@@ -1162,22 +1364,25 @@ impl Compiler {
     fn compile_expr_old(&mut self, expr: &Expr) -> Result<(), LangError> {
         let expr_line = expr.line();
         self.current_line = expr_line;
-        
+
         // Оптимизация: вычисляем константные выражения во время компиляции
         if let Some(constant_value) = constant_fold::evaluate_constant_expr(expr)? {
             let constant_index = self.chunk.add_constant(constant_value);
-            self.chunk.write_with_line(OpCode::Constant(constant_index), expr_line);
+            self.chunk
+                .write_with_line(OpCode::Constant(constant_index), expr_line);
             return Ok(());
         }
-        
+
         match expr {
             Expr::Literal { value, line } => {
                 let constant_index = self.chunk.add_constant(value.clone());
-                self.chunk.write_with_line(OpCode::Constant(constant_index), *line);
+                self.chunk
+                    .write_with_line(OpCode::Constant(constant_index), *line);
             }
             Expr::Ellipsis { line } => {
                 let constant_index = self.chunk.add_constant(Value::Ellipsis);
-                self.chunk.write_with_line(OpCode::Constant(constant_index), *line);
+                self.chunk
+                    .write_with_line(OpCode::Constant(constant_index), *line);
             }
             Expr::Assign { name, value, line } => {
                 // Компилируем значение
@@ -1187,8 +1392,10 @@ impl Compiler {
                 // Проверяем, является ли переменная локальной или глобальной
                 if let Some(local_index) = self.resolve_local(name) {
                     // Локальная переменная найдена - обновляем
-                    self.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
-                    self.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::StoreLocal(local_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::LoadLocal(local_index), *line);
                 } else if self.current_function.is_some() {
                     // Мы находимся внутри функции - создаем локальную переменную, которая скрывает глобальную
                     let index = self.declare_local(name);
@@ -1198,8 +1405,10 @@ impl Compiler {
                     // Мы в главной функции, глобальная переменная найдена - обновляем
                     // Сохраняем имя глобальной переменной для использования в JOIN
                     self.chunk.global_names.insert(global_index, name.clone());
-                    self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
-                    self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::StoreGlobal(global_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), *line);
                 } else {
                     // Переменная не найдена ни локально, ни глобально
                     if self.current_function.is_some() {
@@ -1212,8 +1421,10 @@ impl Compiler {
                         let global_index = self.scope.globals.len();
                         self.scope.globals.insert(name.clone(), global_index);
                         self.chunk.global_names.insert(global_index, name.clone());
-                        self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
-                        self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                        self.chunk
+                            .write_with_line(OpCode::StoreGlobal(global_index), *line);
+                        self.chunk
+                            .write_with_line(OpCode::LoadGlobal(global_index), *line);
                     }
                 }
             }
@@ -1221,69 +1432,84 @@ impl Compiler {
                 // Распаковка кортежа: a, b, c = tuple_expr
                 // Компилируем правую часть (должна вернуть кортеж)
                 self.compile_expr(value)?;
-                
+
                 // Сохраняем кортеж во временную переменную, чтобы можно было извлекать элементы
                 let tuple_temp = self.declare_local(&format!("__tuple_temp_{}", line));
-                self.chunk.write_with_line(OpCode::StoreLocal(tuple_temp), *line);
-                
+                self.chunk
+                    .write_with_line(OpCode::StoreLocal(tuple_temp), *line);
+
                 // Для каждой переменной извлекаем элемент кортежа и сохраняем
                 for (index, name) in names.iter().enumerate() {
                     // Загружаем кортеж
-                    self.chunk.write_with_line(OpCode::LoadLocal(tuple_temp), *line);
+                    self.chunk
+                        .write_with_line(OpCode::LoadLocal(tuple_temp), *line);
                     // Загружаем индекс
                     let index_const = self.chunk.add_constant(Value::Number(index as f64));
-                    self.chunk.write_with_line(OpCode::Constant(index_const), *line);
+                    self.chunk
+                        .write_with_line(OpCode::Constant(index_const), *line);
                     // Получаем элемент по индексу
                     self.chunk.write_with_line(OpCode::GetArrayElement, *line);
-                    
+
                     // Сохраняем в переменную
                     // Проверяем, находимся ли мы в контексте let statement (по имени первой переменной)
                     // Если это let statement, нужно объявить все переменные
                     if let Some(local_index) = self.resolve_local(name) {
                         // Локальная переменная найдена - обновляем
-                        self.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
+                        self.chunk
+                            .write_with_line(OpCode::StoreLocal(local_index), *line);
                     } else if self.current_function.is_some() {
                         // Мы находимся внутри функции - создаем локальную переменную
                         let var_index = self.declare_local(name);
-                        self.chunk.write_with_line(OpCode::StoreLocal(var_index), *line);
+                        self.chunk
+                            .write_with_line(OpCode::StoreLocal(var_index), *line);
                     } else {
                         // На верхнем уровне - проверяем, есть ли глобальная переменная
                         if let Some(&global_index) = self.scope.globals.get(name) {
                             // Глобальная переменная найдена - обновляем
                             self.chunk.global_names.insert(global_index, name.clone());
-                            self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                            self.chunk
+                                .write_with_line(OpCode::StoreGlobal(global_index), *line);
                         } else {
                             // Новая глобальная переменная на верхнем уровне
                             let global_index = self.scope.globals.len();
                             self.scope.globals.insert(name.clone(), global_index);
                             self.chunk.global_names.insert(global_index, name.clone());
-                            self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                            self.chunk
+                                .write_with_line(OpCode::StoreGlobal(global_index), *line);
                         }
                     }
                 }
-                
+
                 // Удаляем временную переменную кортежа
                 // (она будет автоматически удалена при выходе из области видимости)
-                
+
                 // Загружаем последнее значение на стек (для возврата результата)
                 if let Some(last_name) = names.last() {
                     if let Some(local_index) = self.resolve_local(last_name) {
-                        self.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                        self.chunk
+                            .write_with_line(OpCode::LoadLocal(local_index), *line);
                     } else if let Some(&global_index) = self.scope.globals.get(last_name) {
-                        self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                        self.chunk
+                            .write_with_line(OpCode::LoadGlobal(global_index), *line);
                     }
                 }
             }
-            Expr::AssignOp { name, op, value, line } => {
+            Expr::AssignOp {
+                name,
+                op,
+                value,
+                line,
+            } => {
                 // Оператор присваивания: a += b эквивалентно a = a + b
                 // Проверяем, является ли переменная локальной или глобальной
                 if let Some(local_index) = self.resolve_local(name) {
                     // Локальная переменная найдена - загружаем её значение
-                    self.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
-                    
+                    self.chunk
+                        .write_with_line(OpCode::LoadLocal(local_index), *line);
+
                     // Компилируем правую часть
                     self.compile_expr(value)?;
-                    
+
                     // Выполняем операцию
                     match op {
                         TokenKind::PlusEqual => {
@@ -1315,21 +1541,24 @@ impl Compiler {
                             });
                         }
                     }
-                    
+
                     // Сохраняем результат обратно в локальную переменную
-                    self.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::StoreLocal(local_index), *line);
                     // Загружаем значение обратно, чтобы присваивание возвращало значение
-                    self.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::LoadLocal(local_index), *line);
                 } else if self.current_function.is_some() {
                     // Мы находимся внутри функции - создаем локальную переменную, которая скрывает глобальную
                     let index = self.declare_local(name);
                     // Загружаем 0 как начальное значение
                     let zero_index = self.chunk.add_constant(Value::Number(0.0));
-                    self.chunk.write_with_line(OpCode::Constant(zero_index), *line);
-                    
+                    self.chunk
+                        .write_with_line(OpCode::Constant(zero_index), *line);
+
                     // Компилируем правую часть
                     self.compile_expr(value)?;
-                    
+
                     // Выполняем операцию
                     match op {
                         TokenKind::PlusEqual => {
@@ -1361,18 +1590,19 @@ impl Compiler {
                             });
                         }
                     }
-                    
+
                     // Сохраняем результат обратно в локальную переменную
                     self.chunk.write_with_line(OpCode::StoreLocal(index), *line);
                     // Загружаем значение обратно, чтобы присваивание возвращало значение
                     self.chunk.write_with_line(OpCode::LoadLocal(index), *line);
                 } else if let Some(&global_index) = self.scope.globals.get(name) {
                     // Мы в главной функции, глобальная переменная найдена - загружаем её значение
-                    self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
-                    
+                    self.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), *line);
+
                     // Компилируем правую часть
                     self.compile_expr(value)?;
-                    
+
                     // Выполняем операцию
                     match op {
                         TokenKind::PlusEqual => {
@@ -1404,23 +1634,26 @@ impl Compiler {
                             });
                         }
                     }
-                    
+
                     // Сохраняем результат обратно в глобальную переменную
                     // Сохраняем имя глобальной переменной для использования в JOIN
                     self.chunk.global_names.insert(global_index, name.clone());
-                    self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::StoreGlobal(global_index), *line);
                     // Загружаем значение обратно, чтобы присваивание возвращало значение
-                    self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), *line);
                 } else {
                     // Переменная не найдена ни локально, ни глобально - создаем новую локальную переменную
                     let index = self.declare_local(name);
                     // Загружаем 0 как начальное значение
                     let zero_index = self.chunk.add_constant(Value::Number(0.0));
-                    self.chunk.write_with_line(OpCode::Constant(zero_index), *line);
-                    
+                    self.chunk
+                        .write_with_line(OpCode::Constant(zero_index), *line);
+
                     // Компилируем правую часть
                     self.compile_expr(value)?;
-                    
+
                     // Выполняем операцию
                     match op {
                         TokenKind::PlusEqual => {
@@ -1452,7 +1685,7 @@ impl Compiler {
                             });
                         }
                     }
-                    
+
                     // Сохраняем результат обратно в локальную переменную
                     self.chunk.write_with_line(OpCode::StoreLocal(index), *line);
                     // Загружаем значение обратно, чтобы присваивание возвращало значение
@@ -1467,17 +1700,20 @@ impl Compiler {
                 // Определяем, глобальная или локальная переменная
                 if let Some(local_index) = self.resolve_local(name) {
                     // Локальная переменная
-                    self.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::LoadLocal(local_index), *line);
                 } else if let Some(&global_index) = self.scope.globals.get(name) {
                     // Глобальная переменная или функция
-                    self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), *line);
                 } else {
                     // Переменная не найдена - создаем новый глобальный индекс
                     // Это позволит проверить переменную во время выполнения
                     let global_index = self.scope.globals.len();
                     self.scope.globals.insert(name.clone(), global_index);
                     self.chunk.global_names.insert(global_index, name.clone());
-                    self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), *line);
                 }
             }
             Expr::Unary { op, right, line } => {
@@ -1502,7 +1738,12 @@ impl Compiler {
                     }
                 }
             }
-            Expr::Binary { left, op, right, line } => {
+            Expr::Binary {
+                left,
+                op,
+                right,
+                line,
+            } => {
                 use crate::parser::ast::BinaryOpKind;
                 self.current_line = *line;
                 match op {
@@ -1531,12 +1772,20 @@ impl Compiler {
                             TokenKind::Star => self.chunk.write_with_line(OpCode::Mul, *line),
                             TokenKind::StarStar => self.chunk.write_with_line(OpCode::Pow, *line),
                             TokenKind::Slash => self.chunk.write_with_line(OpCode::Div, *line),
-                            TokenKind::SlashSlash => self.chunk.write_with_line(OpCode::IntDiv, *line),
+                            TokenKind::SlashSlash => {
+                                self.chunk.write_with_line(OpCode::IntDiv, *line)
+                            }
                             TokenKind::Percent => self.chunk.write_with_line(OpCode::Mod, *line),
-                            TokenKind::Greater => self.chunk.write_with_line(OpCode::Greater, *line),
+                            TokenKind::Greater => {
+                                self.chunk.write_with_line(OpCode::Greater, *line)
+                            }
                             TokenKind::Less => self.chunk.write_with_line(OpCode::Less, *line),
-                            TokenKind::GreaterEqual => self.chunk.write_with_line(OpCode::GreaterEqual, *line),
-                            TokenKind::LessEqual => self.chunk.write_with_line(OpCode::LessEqual, *line),
+                            TokenKind::GreaterEqual => {
+                                self.chunk.write_with_line(OpCode::GreaterEqual, *line)
+                            }
+                            TokenKind::LessEqual => {
+                                self.chunk.write_with_line(OpCode::LessEqual, *line)
+                            }
                             TokenKind::In => self.chunk.write_with_line(OpCode::In, *line),
                             TokenKind::Or => self.chunk.write_with_line(OpCode::Or, *line),
                             TokenKind::And => self.chunk.write_with_line(OpCode::And, *line),
@@ -1560,22 +1809,30 @@ impl Compiler {
             }
             Expr::Call { name, args, line } => {
                 self.current_line = *line;
-                
+
                 // Находим функцию для получения информации о параметрах
-                let function_info = if let Some(function_index) = self.function_names.iter().position(|n| n == name) {
+                let function_info = if let Some(function_index) =
+                    self.function_names.iter().position(|n| n == name)
+                {
                     Some((function_index, &self.functions[function_index]))
                 } else {
                     None
                 };
-                
+
                 // Разрешаем аргументы: именованные -> позиционные, применяем значения по умолчанию
-                let resolved_args = self.resolve_function_args(name, args, function_info, *line, None)?;
-                
+                let resolved_args =
+                    self.resolve_function_args(name, args, function_info, *line, None)?;
+
                 // Специальная обработка для isinstance: преобразуем идентификаторы типов в строки
                 let processed_args = if name == "isinstance" && resolved_args.len() >= 2 {
                     let mut new_args = resolved_args.clone();
-                    if let Arg::Positional(Expr::Variable { name: type_name, .. }) = &resolved_args[1] {
-                        let type_names = vec!["int", "str", "bool", "array", "null", "num", "float", "table", "Table"];
+                    if let Arg::Positional(Expr::Variable {
+                        name: type_name, ..
+                    }) = &resolved_args[1]
+                    {
+                        let type_names = vec![
+                            "int", "str", "bool", "array", "null", "num", "float", "table", "Table",
+                        ];
                         if type_names.contains(&type_name.as_str()) {
                             new_args[1] = Arg::Positional(Expr::Literal {
                                 value: Value::String(type_name.clone()),
@@ -1591,16 +1848,18 @@ impl Compiler {
                 } else {
                     resolved_args
                 };
-                
+
                 // See compiler/expr/call.rs: push must not assign back (alias + update_cell); reverse/sort may.
-                let in_place_assign_back = vec!["reverse", "sort"];
+                let in_place_assign_back = ["reverse", "sort"];
                 let should_assign_back = in_place_assign_back.contains(&name.as_str())
                     && !processed_args.is_empty()
                     && matches!(&processed_args[0], Arg::Positional(Expr::Variable { .. }));
-                
+
                 // Если нужно присвоить обратно, сохраняем имя переменной
                 let var_name_to_assign = if should_assign_back {
-                    if let Arg::Positional(Expr::Variable { name: var_name, .. }) = &processed_args[0] {
+                    if let Arg::Positional(Expr::Variable { name: var_name, .. }) =
+                        &processed_args[0]
+                    {
                         Some(var_name.clone())
                     } else {
                         None
@@ -1608,10 +1867,10 @@ impl Compiler {
                 } else {
                     None
                 };
-                
-                let is_single_unpack = processed_args.len() == 1
-                    && matches!(&processed_args[0], Arg::UnpackObject(_));
-                
+
+                let is_single_unpack =
+                    processed_args.len() == 1 && matches!(&processed_args[0], Arg::UnpackObject(_));
+
                 // Компилируем аргументы на стек
                 for arg in &processed_args {
                     match arg {
@@ -1626,20 +1885,25 @@ impl Compiler {
                         }
                     }
                 }
-                
+
                 // Загружаем функцию: сначала проверяем локальные переменные,
                 // затем пользовательские функции (они имеют приоритет над встроенными),
                 // затем глобальные переменные (встроенные функции)
                 if let Some(local_index) = self.resolve_local(name) {
                     // Локальная переменная содержит функцию
-                    self.chunk.write_with_line(OpCode::LoadLocal(local_index), self.current_line);
-                } else if let Some(function_index) = self.function_names.iter().position(|n| n == name) {
+                    self.chunk
+                        .write_with_line(OpCode::LoadLocal(local_index), self.current_line);
+                } else if let Some(function_index) =
+                    self.function_names.iter().position(|n| n == name)
+                {
                     // Пользовательская функция найдена - она имеет приоритет над встроенными
                     let constant_index = self.chunk.add_constant(Value::Function(function_index));
-                    self.chunk.write_with_line(OpCode::Constant(constant_index), self.current_line);
+                    self.chunk
+                        .write_with_line(OpCode::Constant(constant_index), self.current_line);
                 } else if let Some(&global_index) = self.scope.globals.get(name) {
                     // Глобальная переменная содержит функцию (встроенная функция)
-                    self.chunk.write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
+                    self.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
                 } else {
                     // Функция не найдена - это может быть функция, импортированная через import *
                     // Регистрируем её как глобальную переменную для разрешения во время выполнения
@@ -1651,27 +1915,32 @@ impl Compiler {
                         self.chunk.global_names.insert(idx, name.clone());
                         idx
                     };
-                    self.chunk.write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
+                    self.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), self.current_line);
                 }
-                
+
                 // Вызываем функцию: при единственном **obj — CallWithUnpack(1)
                 if is_single_unpack {
                     self.chunk.write_with_line(OpCode::CallWithUnpack(1), *line);
                 } else {
-                    self.chunk.write_with_line(OpCode::Call(processed_args.len()), *line);
+                    self.chunk
+                        .write_with_line(OpCode::Call(processed_args.len()), *line);
                 }
-                
+
                 // Если нужно присвоить результат обратно в переменную
                 if let Some(var_name) = var_name_to_assign {
                     // Определяем, глобальная или локальная переменная
-                    let is_local = !self.scope.locals.is_empty() && self.resolve_local(&var_name).is_some();
-                    
+                    let is_local =
+                        !self.scope.locals.is_empty() && self.resolve_local(&var_name).is_some();
+
                     if is_local {
                         // Локальная переменная
                         let local_index = self.resolve_local(&var_name).unwrap();
-                        self.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
+                        self.chunk
+                            .write_with_line(OpCode::StoreLocal(local_index), *line);
                         // Загружаем значение обратно на стек, чтобы выражение возвращало результат
-                        self.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                        self.chunk
+                            .write_with_line(OpCode::LoadLocal(local_index), *line);
                     } else {
                         // Глобальная переменная
                         let global_index = if let Some(&idx) = self.scope.globals.get(&var_name) {
@@ -1682,10 +1951,14 @@ impl Compiler {
                             idx
                         };
                         // Сохраняем имя глобальной переменной для использования в JOIN
-                        self.chunk.global_names.insert(global_index, var_name.clone());
-                        self.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
+                        self.chunk
+                            .global_names
+                            .insert(global_index, var_name.clone());
+                        self.chunk
+                            .write_with_line(OpCode::StoreGlobal(global_index), *line);
                         // Загружаем значение обратно на стек, чтобы выражение возвращало результат
-                        self.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                        self.chunk
+                            .write_with_line(OpCode::LoadGlobal(global_index), *line);
                     }
                 }
             }
@@ -1715,35 +1988,45 @@ impl Compiler {
                     for p in pairs.iter().rev() {
                         if let ObjectPair::KeyValue(key, value) = p {
                             let key_index = self.chunk.add_constant(Value::String(key.clone()));
-                            self.chunk.write_with_line(OpCode::Constant(key_index), *line);
+                            self.chunk
+                                .write_with_line(OpCode::Constant(key_index), *line);
                             self.compile_expr(value)?;
                         }
                     }
-                    self.chunk.write_with_line(OpCode::MakeObject(pairs.len()), *line);
+                    self.chunk
+                        .write_with_line(OpCode::MakeObject(pairs.len()), *line);
                 } else {
                     let count_slot = self.declare_local("__object_pair_count");
                     let zero_index = self.chunk.add_constant(Value::Number(0.0));
-                    self.chunk.write_with_line(OpCode::Constant(zero_index), *line);
-                    self.chunk.write_with_line(OpCode::StoreLocal(count_slot), *line);
+                    self.chunk
+                        .write_with_line(OpCode::Constant(zero_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::StoreLocal(count_slot), *line);
                     for p in pairs {
                         match p {
                             ObjectPair::KeyValue(key, value) => {
                                 let key_index = self.chunk.add_constant(Value::String(key.clone()));
-                                self.chunk.write_with_line(OpCode::Constant(key_index), *line);
+                                self.chunk
+                                    .write_with_line(OpCode::Constant(key_index), *line);
                                 self.compile_expr(value)?;
-                                self.chunk.write_with_line(OpCode::LoadLocal(count_slot), *line);
+                                self.chunk
+                                    .write_with_line(OpCode::LoadLocal(count_slot), *line);
                                 let one_index = self.chunk.add_constant(Value::Number(1.0));
-                                self.chunk.write_with_line(OpCode::Constant(one_index), *line);
+                                self.chunk
+                                    .write_with_line(OpCode::Constant(one_index), *line);
                                 self.chunk.write_with_line(OpCode::Add, *line);
-                                self.chunk.write_with_line(OpCode::StoreLocal(count_slot), *line);
+                                self.chunk
+                                    .write_with_line(OpCode::StoreLocal(count_slot), *line);
                             }
                             ObjectPair::Spread(expr) => {
                                 self.compile_expr(expr)?;
-                                self.chunk.write_with_line(OpCode::UnpackObject(count_slot), *line);
+                                self.chunk
+                                    .write_with_line(OpCode::UnpackObject(count_slot), *line);
                             }
                         }
                     }
-                    self.chunk.write_with_line(OpCode::LoadLocal(count_slot), *line);
+                    self.chunk
+                        .write_with_line(OpCode::LoadLocal(count_slot), *line);
                     self.chunk.write_with_line(OpCode::MakeObjectDynamic, *line);
                 }
             }
@@ -1763,7 +2046,8 @@ impl Compiler {
                 if name != "idx" {
                     // Для других свойств создаем строку и используем индексацию
                     let name_index = self.chunk.add_constant(Value::String(name.clone()));
-                    self.chunk.write_with_line(OpCode::Constant(name_index), *line);
+                    self.chunk
+                        .write_with_line(OpCode::Constant(name_index), *line);
                     self.chunk.write_with_line(OpCode::GetArrayElement, *line);
                 }
                 // Для "idx" просто оставляем объект на стеке
@@ -1784,10 +2068,15 @@ impl Compiler {
                 // Обрабатывается в compile_expr через expr::compile_expr
                 unreachable!("SuperMethodCall expression should be handled by expr::compile_expr")
             }
-            Expr::MethodCall { object, method, args, line } => {
+            Expr::MethodCall {
+                object,
+                method,
+                args,
+                line,
+            } => {
                 // Компилируем объект
                 self.compile_expr(object)?;
-                
+
                 // Специальная обработка для метода clone()
                 if method == "clone" {
                     // Для clone() не нужны аргументы
@@ -1812,11 +2101,12 @@ impl Compiler {
                             file: None,
                         });
                     }
-                    
+
                     // Сохраняем объект (таблицу) во временную локальную переменную
                     let temp_object_slot = self.declare_local("__method_object");
-                    self.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
-                    
+                    self.chunk
+                        .write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
+
                     // Компилируем аргументы в нормальном порядке (left_suffix, right_suffix)
                     for arg in args {
                         match arg {
@@ -1825,14 +2115,15 @@ impl Compiler {
                             Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                         }
                     }
-                    
+
                     // Загружаем объект обратно (он должен быть первым аргументом)
                     // Порядок на стеке должен быть: [left_suffix, right_suffix, table]
                     // Но при вызове Call аргументы извлекаются в обратном порядке и реверсируются
                     // Поэтому нужно: [table, right_suffix, left_suffix] на стеке
                     // Чтобы получить это, загружаем объект последним
-                    self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
-                    
+                    self.chunk
+                        .write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+
                     // Находим индекс функции table_suffixes и загружаем её на стек
                     if let Some(&function_index) = self.scope.globals.get("table_suffixes") {
                         // Загружаем функцию на стек
@@ -1841,14 +2132,15 @@ impl Compiler {
                         // Реверсируется: [left_suffix, right_suffix, table] - неправильно!
                         // Нужно: [table, left_suffix, right_suffix]
                         // Поэтому нужно переставить аргументы
-                        
+
                         // Удаляем аргументы со стека
                         for _ in 0..3 {
                             self.chunk.write_with_line(OpCode::Pop, *line);
                         }
-                        
+
                         // Загружаем в правильном порядке: table, left_suffix, right_suffix
-                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+                        self.chunk
+                            .write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
                         // Компилируем аргументы заново
                         for arg in args {
                             match arg {
@@ -1857,9 +2149,10 @@ impl Compiler {
                                 Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                             }
                         }
-                        
+
                         // Загружаем функцию на стек
-                        self.chunk.write_with_line(OpCode::LoadGlobal(function_index), *line);
+                        self.chunk
+                            .write_with_line(OpCode::LoadGlobal(function_index), *line);
                         // Вызываем функцию с 3 аргументами: table, left_suffix, right_suffix
                         self.chunk.write_with_line(OpCode::Call(3), *line);
                     } else {
@@ -1869,15 +2162,27 @@ impl Compiler {
                             file: None,
                         });
                     }
-                } else if matches!(method.as_str(), "inner_join" | "left_join" | "right_join" | "full_join" | 
-                                   "cross_join" | "semi_join" | "anti_join" | "zip_join" | "asof_join" | 
-                                   "apply_join" | "join_on") {
+                } else if matches!(
+                    method.as_str(),
+                    "inner_join"
+                        | "left_join"
+                        | "right_join"
+                        | "full_join"
+                        | "cross_join"
+                        | "semi_join"
+                        | "anti_join"
+                        | "zip_join"
+                        | "asof_join"
+                        | "apply_join"
+                        | "join_on"
+                ) {
                     // JOIN методы для таблиц
                     // Объект уже на стеке. Нужно вызвать функцию с объектом как первым аргументом.
                     // Сохраняем объект во временную локальную переменную
                     let temp_object_slot = self.declare_local("__method_object");
-                    self.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
-                    
+                    self.chunk
+                        .write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
+
                     // Компилируем аргументы в нормальном порядке
                     for arg in args {
                         match arg {
@@ -1886,10 +2191,11 @@ impl Compiler {
                             Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                         }
                     }
-                    
+
                     // Загружаем объект обратно (он должен быть первым аргументом)
-                    self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
-                    
+                    self.chunk
+                        .write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+
                     // Определяем имя функции для вызова
                     let function_name = match method.as_str() {
                         "inner_join" => "inner_join",
@@ -1905,20 +2211,20 @@ impl Compiler {
                         "join_on" => "join_on",
                         _ => unreachable!(),
                     };
-                    
+
                     // Находим индекс функции
                     if let Some(&function_index) = self.scope.globals.get(function_name) {
                         // На стеке сейчас: [object, arg_n, ..., arg_2, arg_1]
                         // При вызове функции аргументы извлекаются в обратном порядке: [arg_1, arg_2, ..., arg_n, object]
                         // Но нам нужно [object, arg_1, arg_2, ..., arg_n]
                         // Поэтому нужно переставить: компилируем аргументы в обратном порядке
-                        
+
                         // Перекомпилируем аргументы в обратном порядке
                         // Удаляем текущие аргументы со стека (кроме объекта)
                         for _ in 0..args.len() {
                             self.chunk.write_with_line(OpCode::Pop, *line);
                         }
-                        
+
                         // Компилируем аргументы в обратном порядке
                         for arg in args.iter().rev() {
                             match arg {
@@ -1927,15 +2233,18 @@ impl Compiler {
                                 Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                             }
                         }
-                        
+
                         // Загружаем объект обратно
-                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
-                        
+                        self.chunk
+                            .write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+
                         // Загружаем функцию на стек
-                        self.chunk.write_with_line(OpCode::LoadGlobal(function_index), *line);
-                        
+                        self.chunk
+                            .write_with_line(OpCode::LoadGlobal(function_index), *line);
+
                         // Вызываем функцию с количеством аргументов (object + args)
-                        self.chunk.write_with_line(OpCode::Call(args.len() + 1), *line);
+                        self.chunk
+                            .write_with_line(OpCode::Call(args.len() + 1), *line);
                     } else {
                         return Err(LangError::ParseError {
                             message: format!("Function '{}' not found", function_name),
@@ -1949,14 +2258,15 @@ impl Compiler {
                     // Для обычных объектов: получаем свойство объекта
                     // Сначала сохраняем объект во временную переменную
                     let temp_object_slot = self.declare_local("__method_object");
-                    self.chunk.write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
-                    
+                    self.chunk
+                        .write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
+
                     // Проверяем, является ли это методом объекта (например, axis.imshow)
                     // Методы объектов (Axis) нуждаются в объекте как первом аргументе,
                     // а функции модулей (plot) - нет
                     // Определяем это по имени метода
                     let is_axis_method = matches!(method.as_str(), "imshow" | "set_title" | "axis");
-                    
+
                     if is_axis_method {
                         // Для методов Axis компилируем аргументы сразу (они не поддерживают именованные аргументы через разрешение)
                         for arg in args {
@@ -1970,13 +2280,14 @@ impl Compiler {
                         // Для методов Axis: нужно изменить порядок аргументов так, чтобы объект был первым
                         // Удаляем текущие аргументы со стека
                         for _ in 0..args.len() {
-                             self.chunk.write_with_line(OpCode::Pop, *line);
+                            self.chunk.write_with_line(OpCode::Pop, *line);
                         }
-                        
+
                         // Загружаем объект первым
-                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+                        self.chunk
+                            .write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
                         // Теперь на стеке: [object]
-                        
+
                         // Компилируем аргументы в нормальном порядке (они будут после объекта)
                         for arg in args {
                             match arg {
@@ -1986,71 +2297,85 @@ impl Compiler {
                             }
                         }
                         // Теперь на стеке: [object, arg_1, ..., arg_n]
-                        
+
                         // Получаем свойство объекта по имени метода
                         // Загружаем объект еще раз для получения метода
-                        self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+                        self.chunk
+                            .write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
                         // Теперь на стеке: [object, arg_1, ..., arg_n, object]
-                        
-                        let method_name_index = self.chunk.add_constant(Value::String(method.clone()));
-                        self.chunk.write_with_line(OpCode::Constant(method_name_index), *line);
+
+                        let method_name_index =
+                            self.chunk.add_constant(Value::String(method.clone()));
+                        self.chunk
+                            .write_with_line(OpCode::Constant(method_name_index), *line);
                         self.chunk.write_with_line(OpCode::GetArrayElement, *line);
                         // Теперь на стеке: [object, arg_1, ..., arg_n, NativeFunction]
-                        
+
                         // Вызываем метод
-                        self.chunk.write_with_line(OpCode::Call(args.len() + 1), *line);
+                        self.chunk
+                            .write_with_line(OpCode::Call(args.len() + 1), *line);
                     } else {
-                            // Default method call: receiver + args, then get method; Call(1 + n) so method receives (self, arg_1, ...).
-                            let resolved_args = match self.resolve_function_args(method, args, None, *line, None) {
-                                Ok(resolved) => {
-                                    resolved
-                                }
+                        // Default method call: receiver + args, then get method; Call(1 + n) so method receives (self, arg_1, ...).
+                        let resolved_args =
+                            match self.resolve_function_args(method, args, None, *line, None) {
+                                Ok(resolved) => resolved,
                                 Err(e) => {
                                     // Проверяем, является ли это ошибкой "not supported"
                                     let error_msg = match &e {
                                         LangError::ParseError { message, .. } => message,
                                         _ => "",
                                     };
-                                    
-                                    if error_msg.contains("not supported") || error_msg.contains("Named arguments are not supported") {
+
+                                    if error_msg.contains("not supported")
+                                        || error_msg.contains("Named arguments are not supported")
+                                    {
                                         // Fallback: компилируем аргументы как есть (именованные аргументы будут преобразованы в объекты)
-                                        args.iter().map(|a| match a {
-                                            Arg::Positional(e) => Arg::Positional(e.clone()),
-                                            Arg::Named { value, .. } => Arg::Positional(value.clone()),
-                                            Arg::UnpackObject(e) => Arg::Positional(e.clone()),
-                                        }).collect()
+                                        args.iter()
+                                            .map(|a| match a {
+                                                Arg::Positional(e) => Arg::Positional(e.clone()),
+                                                Arg::Named { value, .. } => {
+                                                    Arg::Positional(value.clone())
+                                                }
+                                                Arg::UnpackObject(e) => Arg::Positional(e.clone()),
+                                            })
+                                            .collect()
                                     } else {
                                         return Err(e);
                                     }
                                 }
                             };
-                            
-                            // Push receiver first so stack becomes [receiver, arg_1, ..., arg_n] for Call(1 + n)
-                            self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
-                            // Компилируем разрешенные аргументы
-                            for arg in &resolved_args {
-                                match arg {
-                                    Arg::Positional(expr) => self.compile_expr(expr)?,
-                                    Arg::Named { value, .. } => self.compile_expr(value)?,
-                                    Arg::UnpackObject(expr) => self.compile_expr(expr)?,
-                                }
+
+                        // Push receiver first so stack becomes [receiver, arg_1, ..., arg_n] for Call(1 + n)
+                        self.chunk
+                            .write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+                        // Компилируем разрешенные аргументы
+                        for arg in &resolved_args {
+                            match arg {
+                                Arg::Positional(expr) => self.compile_expr(expr)?,
+                                Arg::Named { value, .. } => self.compile_expr(value)?,
+                                Arg::UnpackObject(expr) => self.compile_expr(expr)?,
                             }
-                            // Теперь на стеке: [receiver, arg_1, ..., arg_n]
-                            
-                            // Загружаем объект обратно для получения метода
-                            self.chunk.write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
-                            // Теперь на стеке: [receiver, arg_1, ..., arg_n, object]
-                            
-                            // Получаем свойство объекта по имени метода
-                            let method_name_index = self.chunk.add_constant(Value::String(method.clone()));
-                            self.chunk.write_with_line(OpCode::Constant(method_name_index), *line);
-                            self.chunk.write_with_line(OpCode::GetArrayElement, *line);
-                            // Теперь на стеке: [receiver, arg_1, ..., arg_n, method]
-                            
-                            // Call(1 + n): method receives (receiver, arg_1, ...)
-                            self.chunk.write_with_line(OpCode::Call(1 + resolved_args.len()), *line);
                         }
+                        // Теперь на стеке: [receiver, arg_1, ..., arg_n]
+
+                        // Загружаем объект обратно для получения метода
+                        self.chunk
+                            .write_with_line(OpCode::LoadLocal(temp_object_slot), *line);
+                        // Теперь на стеке: [receiver, arg_1, ..., arg_n, object]
+
+                        // Получаем свойство объекта по имени метода
+                        let method_name_index =
+                            self.chunk.add_constant(Value::String(method.clone()));
+                        self.chunk
+                            .write_with_line(OpCode::Constant(method_name_index), *line);
+                        self.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                        // Теперь на стеке: [receiver, arg_1, ..., arg_n, method]
+
+                        // Call(1 + n): method receives (receiver, arg_1, ...)
+                        self.chunk
+                            .write_with_line(OpCode::Call(1 + resolved_args.len()), *line);
                     }
+                }
             }
             Expr::InterpolatedString { segments, line } => {
                 use crate::parser::ast::InterpolatedSegment;
@@ -2069,14 +2394,16 @@ impl Compiler {
                     }
                 }
             }
-            Expr::Lambda { .. } | Expr::CallValue { .. } | Expr::ExprReturn { .. } | Expr::Ireturn { .. } => {
+            Expr::Lambda { .. }
+            | Expr::CallValue { .. }
+            | Expr::ExprReturn { .. }
+            | Expr::Ireturn { .. } => {
                 let mut ctx = self.create_context();
                 expr::compile_expr(&mut ctx, expr)?;
             }
         }
         Ok(())
     }
-
 
     fn begin_scope(&mut self) {
         self.scope.begin_scope();
@@ -2093,9 +2420,4 @@ impl Compiler {
     fn resolve_local(&self, name: &str) -> Option<usize> {
         self.scope.resolve_local(name)
     }
-
-    
-
-
 }
-

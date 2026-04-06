@@ -84,12 +84,7 @@ fn assert_bool(v: Result<Value, data_code::LangError>, expected: bool) {
 
 fn assert_number(v: Result<Value, data_code::LangError>, n: f64) {
     match v {
-        Ok(Value::Number(x)) => assert!(
-            (x - n).abs() < 1e-9,
-            "expected number {}, got {}",
-            n,
-            x
-        ),
+        Ok(Value::Number(x)) => assert!((x - n).abs() < 1e-9, "expected number {}, got {}", n, x),
         Ok(o) => panic!("expected Number, got {:?}", o),
         Err(e) => panic!("unexpected error: {:?}", e),
     }

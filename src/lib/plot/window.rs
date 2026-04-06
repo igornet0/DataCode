@@ -41,7 +41,12 @@ pub struct Window {
 }
 
 impl Window {
-    pub fn new(window_handle: winit::window::Window, width: u32, height: u32, title: String) -> Self {
+    pub fn new(
+        window_handle: winit::window::Window,
+        width: u32,
+        height: u32,
+        title: String,
+    ) -> Self {
         Self {
             window_handle,
             width,
@@ -51,15 +56,15 @@ impl Window {
             image_view_state: Some(ImageViewState::new()),
         }
     }
-    
+
     pub fn request_redraw(&self) {
         self.window_handle.request_redraw();
     }
-    
+
     pub fn id(&self) -> winit::window::WindowId {
         self.window_handle.id()
     }
-    
+
     /// Get physical size of the window (accounting for DPI scaling)
     pub fn physical_size(&self) -> (u32, u32) {
         let size = self.window_handle.inner_size();
@@ -70,7 +75,7 @@ impl Window {
     pub fn scale_factor(&self) -> f32 {
         self.window_handle.scale_factor() as f32
     }
-    
+
     /// Update window size (called on resize event)
     pub fn update_size(&mut self) {
         let size = self.window_handle.inner_size();
@@ -78,4 +83,3 @@ impl Window {
         self.height = size.height;
     }
 }
-

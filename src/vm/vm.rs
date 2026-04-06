@@ -1,24 +1,30 @@
 // Виртуальная машина
 
 use crate::abi::NativeAbiFn;
-use crate::vm::native_loader::{PluginHookNames, ResolvedNativeParamMeta};
-use crate::debug_println;
 use crate::bytecode::Chunk;
-use crate::common::{error::LangError, table::Table, value::Value, value_store::{ValueStore, ValueCell, ValueId, NULL_VALUE_ID}, TaggedValue};
-use crate::vm::store_convert::tagged_to_value_id;
-use crate::vm::frame::CallFrame;
-use crate::vm::store_convert::load_value;
-use crate::vm::heavy_store::HeavyStore;
-use crate::vm::types::{ExplicitRelation, ExplicitPrimaryKey, ModuleInfo, VMStatus};
+use crate::common::{
+    error::LangError,
+    table::Table,
+    value::Value,
+    value_store::{ValueCell, ValueId, ValueStore, NULL_VALUE_ID},
+    TaggedValue,
+};
+use crate::debug_println;
+use crate::vm::calls;
 use crate::vm::exceptions::ExceptionHandler;
+use crate::vm::executor;
+use crate::vm::frame::CallFrame;
 use crate::vm::global_slot::{self, GlobalSlot};
 use crate::vm::globals;
-use crate::vm::calls;
-use crate::vm::executor;
+use crate::vm::heavy_store::HeavyStore;
 use crate::vm::host::HostEntry;
 use crate::vm::module_cache::CachedModule;
 use crate::vm::module_object::ModuleObject;
+use crate::vm::native_loader::{PluginHookNames, ResolvedNativeParamMeta};
 use crate::vm::permission_policy::PermissionPolicy;
+use crate::vm::store_convert::load_value;
+use crate::vm::store_convert::tagged_to_value_id;
+use crate::vm::types::{ExplicitPrimaryKey, ExplicitRelation, ModuleInfo, VMStatus};
 use libloading::Library;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -137,7 +143,8 @@ pub struct Vm {
     /// Policy for the built-in `system` module (`fs`, `process.exec`, `set_env`).
     permission_policy: PermissionPolicy,
     /// Parse-time operator table snapshot (for `debug.operators()`); set by hosts that preload [`crate::vm::operator_registry::OperatorRegistry`].
-    pub(crate) operator_registry_snapshot: Option<Arc<crate::vm::operator_registry::OperatorRegistry>>,
+    pub(crate) operator_registry_snapshot:
+        Option<Arc<crate::vm::operator_registry::OperatorRegistry>>,
     /// Перед шагом VM: потребляет [`OpCode::YieldAwaitInput`].
     pub(crate) pending_generator_send: Option<crate::vm::types::PendingGeneratorSend>,
     /// RHS последнего `YieldAwaitInput` (пока слот не заполнен). Нужен при повторном входе в opcode: стек уже пуст.
@@ -491,7 +498,9 @@ impl Vm {
     }
 
     /// Mutable borrow of executed module functions (canonical path -> functions). Used by file_import on cache hit to add and remap.
-    pub fn get_executed_module_functions_mut(&self) -> std::cell::RefMut<'_, HashMap<PathBuf, Vec<crate::bytecode::Function>>> {
+    pub fn get_executed_module_functions_mut(
+        &self,
+    ) -> std::cell::RefMut<'_, HashMap<PathBuf, Vec<crate::bytecode::Function>>> {
         self.executed_module_functions.borrow_mut()
     }
 
@@ -534,12 +543,20 @@ impl Vm {
 
     /// Добавляет в VM слоты для всех имён из chunk.global_names, которых ещё нет в VM.
     pub fn ensure_globals_from_chunk(&mut self, chunk: &crate::bytecode::Chunk) {
-        crate::vm::module_system::linker::ensure_globals_from_chunk(&mut self.globals, &mut self.global_names, chunk);
+        crate::vm::module_system::linker::ensure_globals_from_chunk(
+            &mut self.globals,
+            &mut self.global_names,
+            chunk,
+        );
     }
 
     /// Как ensure_globals_from_chunk, но сохраняет индексы из chunk.
     pub fn ensure_globals_from_chunk_preserve_indices(&mut self, chunk: &crate::bytecode::Chunk) {
-        crate::vm::module_system::linker::ensure_globals_from_chunk_preserve_indices(&mut self.globals, &mut self.global_names, chunk);
+        crate::vm::module_system::linker::ensure_globals_from_chunk_preserve_indices(
+            &mut self.globals,
+            &mut self.global_names,
+            chunk,
+        );
     }
 
     /// Fills global slots at index >= `BUILTIN_GLOBAL_COUNT` whose name is a builtin (e.g. "str", "path").
@@ -651,12 +668,12 @@ impl Vm {
         self.functions.extend(functions);
         start_index
     }
-    
+
     /// Получает количество функций в VM
     pub fn functions_count(&self) -> usize {
         self.functions.len()
     }
-    
+
     /// Получает функции VM (для использования при импорте модулей)
     pub fn get_functions(&self) -> &Vec<crate::bytecode::Function> {
         &self.functions
@@ -668,8 +685,13 @@ impl Vm {
     }
 
     pub fn register_native_globals(&mut self) {
-        globals::register_native_globals(&mut self.globals, &mut self.global_names, &mut self.value_store);
-        self.builtins.resize(BUILTIN_END, global_slot::default_global_slot());
+        globals::register_native_globals(
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+        );
+        self.builtins
+            .resize(BUILTIN_END, global_slot::default_global_slot());
         for i in 0..BUILTIN_END.min(self.globals.len()) {
             self.builtins[i] = self.globals[i];
         }
@@ -680,12 +702,54 @@ impl Vm {
     /// The `ml` module is not registered here: it loads from a native `.dylib`/`.so` when present (`import ml`).
     pub fn register_all_builtin_modules(&mut self) -> Result<(), LangError> {
         use crate::vm::modules;
-        modules::register_module("plot", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
-        modules::register_module("settings_env", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
-        modules::register_module("uuid", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
-        modules::register_module("database_engine", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
-        modules::register_module("system", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
-        modules::register_module("debug", &mut self.natives, &mut self.globals, &mut self.global_names, &mut self.value_store, &mut self.heavy_store)?;
+        modules::register_module(
+            "plot",
+            &mut self.natives,
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+            &mut self.heavy_store,
+        )?;
+        modules::register_module(
+            "settings_env",
+            &mut self.natives,
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+            &mut self.heavy_store,
+        )?;
+        modules::register_module(
+            "uuid",
+            &mut self.natives,
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+            &mut self.heavy_store,
+        )?;
+        modules::register_module(
+            "database_engine",
+            &mut self.natives,
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+            &mut self.heavy_store,
+        )?;
+        modules::register_module(
+            "system",
+            &mut self.natives,
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+            &mut self.heavy_store,
+        )?;
+        modules::register_module(
+            "debug",
+            &mut self.natives,
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+            &mut self.heavy_store,
+        )?;
         // So `import plot` / `ensure_module_loaded` does not call register_module again and shift natives.len(),
         // which would desync ml native indices (builtin_count) from abi_natives indexing.
         for name in modules::BUILTIN_MODULE_NAMES {
@@ -699,7 +763,11 @@ impl Vm {
     /// argv_patch: when Some((argv_slot_index, old_indices, argv_value_id)), the chunk is cloned and any LoadGlobal(old_idx)
     /// in the clone is replaced with LoadGlobal(argv_slot_index). If argv_value_id is Some(id), that value is written
     /// to globals[argv_slot_index] immediately before the execution loop so the argv slot is never overwritten by earlier code.
-    pub fn run(&mut self, chunk: &Chunk, argv_patch: Option<(usize, &[usize], Option<ValueId>)>) -> Result<Value, LangError> {
+    pub fn run(
+        &mut self,
+        chunk: &Chunk,
+        argv_patch: Option<(usize, &[usize], Option<ValueId>)>,
+    ) -> Result<Value, LangError> {
         crate::vm::run::execute_run(self, chunk, argv_patch)
     }
 
@@ -762,7 +830,9 @@ impl Vm {
     }
 
     /// Module cache: name/path -> ModuleObject. Used for import and isolated module globals.
-    pub fn get_modules_mut(&self) -> std::cell::RefMut<'_, HashMap<String, Rc<RefCell<ModuleObject>>>> {
+    pub fn get_modules_mut(
+        &self,
+    ) -> std::cell::RefMut<'_, HashMap<String, Rc<RefCell<ModuleObject>>>> {
         self.modules.borrow_mut()
     }
     pub fn get_modules(&self) -> std::cell::Ref<'_, HashMap<String, Rc<RefCell<ModuleObject>>>> {
@@ -811,7 +881,9 @@ impl Vm {
     }
 
     /// Take pending relations pushed by relate() native (VM-owned storage; replaces thread-local take_relations).
-    pub fn take_pending_relations(&mut self) -> Vec<(Rc<RefCell<Table>>, String, Rc<RefCell<Table>>, String)> {
+    pub fn take_pending_relations(
+        &mut self,
+    ) -> Vec<(Rc<RefCell<Table>>, String, Rc<RefCell<Table>>, String)> {
         std::mem::take(&mut self.pending_relations)
     }
 
@@ -838,7 +910,8 @@ impl Vm {
         }
         for (global_idx, fn_idx) in function_globals {
             if global_idx < self.globals.len() {
-                self.globals[global_idx] = GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(fn_idx)));
+                self.globals[global_idx] =
+                    GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(fn_idx)));
             }
         }
     }
@@ -926,7 +999,12 @@ impl Vm {
         target_functions: &[crate::bytecode::Function],
         store: &mut ValueStore,
     ) {
-        crate::vm::module_system::linker::ensure_entry_point_slots(target_globals, target_global_names, target_functions, store);
+        crate::vm::module_system::linker::ensure_entry_point_slots(
+            target_globals,
+            target_global_names,
+            target_functions,
+            store,
+        );
     }
 
     /// Legacy: merge module VM into caller's buffers. Not used with module isolation (ImportFrom only adds requested items).
@@ -1008,7 +1086,11 @@ impl Vm {
 
     /// Вызвать пользовательскую функцию по индексу с заданными аргументами
     /// Используется нативными функциями для вызова пользовательских функций
-    pub fn call_function_by_index(&mut self, function_index: usize, args: &[Value]) -> Result<Value, LangError> {
+    pub fn call_function_by_index(
+        &mut self,
+        function_index: usize,
+        args: &[Value],
+    ) -> Result<Value, LangError> {
         // Setup function call (creates frame, handles cache, sets up captured variables)
         if let Some(cached_result) = calls::setup_function_call(
             function_index,
@@ -1026,7 +1108,7 @@ impl Vm {
         // Execute the function using step()
         let initial_stack_size = self.stack.len();
         let initial_frames_count = self.frames.len();
-        
+
         loop {
             if self.frames.len() < initial_frames_count {
                 break;
@@ -1057,7 +1139,11 @@ impl Vm {
                 let id = tagged_to_value_id(tv, &mut self.value_store);
                 Ok(load_value(id, &self.value_store, &self.heavy_store))
             } else {
-                Ok(load_value(NULL_VALUE_ID, &self.value_store, &self.heavy_store))
+                Ok(load_value(
+                    NULL_VALUE_ID,
+                    &self.value_store,
+                    &self.heavy_store,
+                ))
             }
         } else {
             if self.stack.len() > initial_stack_size {
@@ -1065,9 +1151,12 @@ impl Vm {
                 let id = tagged_to_value_id(tv, &mut self.value_store);
                 Ok(load_value(id, &self.value_store, &self.heavy_store))
             } else {
-                Ok(load_value(NULL_VALUE_ID, &self.value_store, &self.heavy_store))
+                Ok(load_value(
+                    NULL_VALUE_ID,
+                    &self.value_store,
+                    &self.heavy_store,
+                ))
             }
         }
     }
 }
-

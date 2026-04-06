@@ -1,14 +1,13 @@
-/// Компиляция присваиваний (Assign, AssignOp, UnpackAssign)
-
-use crate::parser::ast::{Expr, IndexExpr};
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
 use crate::common::value::Value;
-use crate::lexer::TokenKind;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
 use crate::compiler::expr::array::emit_slice_bound;
 use crate::compiler::variable::VariableResolver;
+use crate::lexer::TokenKind;
+/// Компиляция присваиваний (Assign, AssignOp, UnpackAssign)
+use crate::parser::ast::{Expr, IndexExpr};
 
 pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), LangError> {
     match expr {
@@ -18,38 +17,41 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
             expr::compile_expr(ctx, value)?;
             // Не клонируем автоматически - переменные должны разделять ссылки на массивы/таблицы/объекты
             // Клонирование происходит только при явном вызове .clone()
-            
+
             // Проверяем, является ли это присваиванием к свойству объекта (например, "this.field" или "obj.field")
             if name.contains('.') {
                 // Это присваивание к свойству объекта
                 let parts: Vec<&str> = name.split('.').collect();
                 if parts.len() == 2 {
                     let (object_name, field_name) = (parts[0], parts[1]);
-                    
+
                     // На стеке уже есть value
                     // Нужно: [value, field_name, object] для SetArrayElement
                     // Но SetArrayElement ожидает: [value, index/key, container]
-                    
+
                     // Загружаем имя поля
-                    let field_name_index = ctx.chunk.add_constant(Value::String(field_name.to_string()));
-                    ctx.chunk.write_with_line(OpCode::Constant(field_name_index), *line);
-                    
+                    let field_name_index = ctx
+                        .chunk
+                        .add_constant(Value::String(field_name.to_string()));
+                    ctx.chunk
+                        .write_with_line(OpCode::Constant(field_name_index), *line);
+
                     // Загружаем объект
                     if object_name == "this" {
                         let slot = if let Some(s) = ctx.constructor_this_slot {
                             s
-                        } else if let Some(local_index) = ctx.scope.resolve_local("this") {
-                            local_index
                         } else {
-                            0
+                            ctx.scope.resolve_local("this").unwrap_or_default()
                         };
                         ctx.chunk.write_with_line(OpCode::LoadLocal(slot), *line);
                     } else {
                         // Загружаем переменную-объект
                         if let Some(local_index) = ctx.scope.resolve_local(object_name) {
-                            ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                            ctx.chunk
+                                .write_with_line(OpCode::LoadLocal(local_index), *line);
                         } else if let Some(&global_index) = ctx.scope.globals.get(object_name) {
-                            ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                            ctx.chunk
+                                .write_with_line(OpCode::LoadGlobal(global_index), *line);
                         } else {
                             return Err(LangError::ParseError {
                                 message: format!("Variable '{}' not found", object_name),
@@ -58,36 +60,40 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                             });
                         }
                     }
-                    
+
                     // Теперь на стеке: [value, field_name, object]
                     // SetArrayElement ожидает: [value, index/key, container]
                     // Вызываем SetArrayElement
                     ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
-                    
+
                     // SetArrayElement возвращает обновленный объект
                     // Сохраняем его обратно в переменную
                     if object_name == "this" {
                         let slot = if let Some(s) = ctx.constructor_this_slot {
                             s
-                        } else if let Some(local_index) = ctx.scope.resolve_local("this") {
-                            local_index
                         } else {
-                            0
+                            ctx.scope.resolve_local("this").unwrap_or_default()
                         };
                         ctx.chunk.write_with_line(OpCode::StoreLocal(slot), *line);
                         ctx.chunk.write_with_line(OpCode::LoadLocal(slot), *line);
                     } else {
                         // Сохраняем в переменную-объект
                         if let Some(local_index) = ctx.scope.resolve_local(object_name) {
-                            ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
-                            ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                            ctx.chunk
+                                .write_with_line(OpCode::StoreLocal(local_index), *line);
+                            ctx.chunk
+                                .write_with_line(OpCode::LoadLocal(local_index), *line);
                         } else if let Some(&global_index) = ctx.scope.globals.get(object_name) {
-                            ctx.chunk.global_names.insert(global_index, object_name.to_string());
-                            ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
-                            ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                            ctx.chunk
+                                .global_names
+                                .insert(global_index, object_name.to_string());
+                            ctx.chunk
+                                .write_with_line(OpCode::StoreGlobal(global_index), *line);
+                            ctx.chunk
+                                .write_with_line(OpCode::LoadGlobal(global_index), *line);
                         }
                     }
-                    
+
                     return Ok(());
                 } else {
                     return Err(LangError::ParseError {
@@ -97,19 +103,23 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                     });
                 }
             }
-            
+
             // Обычное присваивание переменной
             // Используем VariableResolver для разрешения переменной
             // Проверяем, является ли переменная локальной или глобальной
             if let Some(local_index) = ctx.scope.resolve_local(name) {
                 // Локальная переменная найдена - обновляем
-                ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), *line);
-                ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), *line);
+                ctx.chunk
+                    .write_with_line(OpCode::StoreLocal(local_index), *line);
+                ctx.chunk
+                    .write_with_line(OpCode::LoadLocal(local_index), *line);
             } else if let Some(&global_index) = ctx.scope.globals.get(name) {
                 // Глобальная переменная найдена (в т.ч. объявленная через global X = ...) — обновляем глобал даже внутри функции
                 ctx.chunk.global_names.insert(global_index, name.clone());
-                ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
-                ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                ctx.chunk
+                    .write_with_line(OpCode::StoreGlobal(global_index), *line);
+                ctx.chunk
+                    .write_with_line(OpCode::LoadGlobal(global_index), *line);
             } else if ctx.current_function.is_some() {
                 // Внутри функции, переменной нет в globals — создаём локальную переменную
                 let index = ctx.scope.declare_local(name);
@@ -127,17 +137,29 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                     let global_index = ctx.scope.globals.len();
                     ctx.scope.globals.insert(name.clone(), global_index);
                     ctx.chunk.global_names.insert(global_index, name.clone());
-                    ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), *line);
-                    ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), *line);
+                    ctx.chunk
+                        .write_with_line(OpCode::StoreGlobal(global_index), *line);
+                    ctx.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), *line);
                 }
             }
             Ok(())
         }
-        Expr::AssignOp { name, op, value, line } => {
+        Expr::AssignOp {
+            name,
+            op,
+            value,
+            line,
+        } => {
             *ctx.current_line = *line;
             compile_assign_op(ctx, name, op, value, *line)
         }
-        Expr::AssignArray { array, index, value, line } => {
+        Expr::AssignArray {
+            array,
+            index,
+            value,
+            line,
+        } => {
             *ctx.current_line = *line;
             expr::compile_expr(ctx, value)?;
             match index {
@@ -152,16 +174,22 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                     step,
                     line: sl,
                 } => {
-                    emit_slice_bound(ctx, start.as_ref(), *sl)?;
-                    emit_slice_bound(ctx, stop.as_ref(), *sl)?;
-                    emit_slice_bound(ctx, step.as_ref(), *sl)?;
+                    emit_slice_bound(ctx, start.as_deref(), *sl)?;
+                    emit_slice_bound(ctx, stop.as_deref(), *sl)?;
+                    emit_slice_bound(ctx, step.as_deref(), *sl)?;
                     expr::compile_expr(ctx, array)?;
                     ctx.chunk.write_with_line(OpCode::SetArraySlice, *line);
                 }
             }
             Ok(())
         }
-        Expr::AssignArrayOp { array, index, op, value, line } => {
+        Expr::AssignArrayOp {
+            array,
+            index,
+            op,
+            value,
+            line,
+        } => {
             *ctx.current_line = *line;
             let IndexExpr::Scalar(ie) = index else {
                 return Err(LangError::ParseError {
@@ -221,21 +249,24 @@ fn compile_assign_op(
         let parts: Vec<&str> = name.split('.').collect();
         if parts.len() == 2 {
             let (object_name, field_name) = (parts[0], parts[1]);
-            
+
             // Загружаем текущее значение свойства
             if object_name == "this" {
                 if let Some(slot) = ctx.constructor_this_slot {
                     ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
                 } else if let Some(local_index) = ctx.scope.resolve_local("this") {
-                    ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+                    ctx.chunk
+                        .write_with_line(OpCode::LoadLocal(local_index), line);
                 } else {
                     ctx.chunk.write_with_line(OpCode::LoadLocal(0), line);
                 }
             } else {
                 if let Some(local_index) = ctx.scope.resolve_local(object_name) {
-                    ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+                    ctx.chunk
+                        .write_with_line(OpCode::LoadLocal(local_index), line);
                 } else if let Some(&global_index) = ctx.scope.globals.get(object_name) {
-                    ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), line);
+                    ctx.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), line);
                 } else {
                     return Err(LangError::ParseError {
                         message: format!("Variable '{}' not found", object_name),
@@ -244,17 +275,20 @@ fn compile_assign_op(
                     });
                 }
             }
-            
+
             // Загружаем имя поля
-            let field_name_index = ctx.chunk.add_constant(Value::String(field_name.to_string()));
-            ctx.chunk.write_with_line(OpCode::Constant(field_name_index), line);
-            
+            let field_name_index = ctx
+                .chunk
+                .add_constant(Value::String(field_name.to_string()));
+            ctx.chunk
+                .write_with_line(OpCode::Constant(field_name_index), line);
+
             // Получаем текущее значение свойства
             ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-            
+
             // Компилируем правую часть
             expr::compile_expr(ctx, value)?;
-            
+
             // Выполняем операцию
             match op {
                 TokenKind::PlusEqual => ctx.chunk.write_with_line(OpCode::Add, line),
@@ -272,56 +306,70 @@ fn compile_assign_op(
                     });
                 }
             }
-            
+
             // Теперь на стеке: [new_value]
             // Нужно: [new_value, field_name, object] для SetArrayElement
             // Загружаем имя поля
-            let field_name_index = ctx.chunk.add_constant(Value::String(field_name.to_string()));
-            ctx.chunk.write_with_line(OpCode::Constant(field_name_index), line);
-            
+            let field_name_index = ctx
+                .chunk
+                .add_constant(Value::String(field_name.to_string()));
+            ctx.chunk
+                .write_with_line(OpCode::Constant(field_name_index), line);
+
             // Загружаем объект
             if object_name == "this" {
                 if let Some(slot) = ctx.constructor_this_slot {
                     ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
                 } else if let Some(local_index) = ctx.scope.resolve_local("this") {
-                    ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+                    ctx.chunk
+                        .write_with_line(OpCode::LoadLocal(local_index), line);
                 } else {
                     ctx.chunk.write_with_line(OpCode::LoadLocal(0), line);
                 }
             } else {
                 if let Some(local_index) = ctx.scope.resolve_local(object_name) {
-                    ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+                    ctx.chunk
+                        .write_with_line(OpCode::LoadLocal(local_index), line);
                 } else if let Some(&global_index) = ctx.scope.globals.get(object_name) {
-                    ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), line);
+                    ctx.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), line);
                 }
             }
-            
+
             // Устанавливаем новое значение
             ctx.chunk.write_with_line(OpCode::SetArrayElement, line);
-            
+
             // Сохраняем обновленный объект обратно
             if object_name == "this" {
                 if let Some(slot) = ctx.constructor_this_slot {
                     ctx.chunk.write_with_line(OpCode::StoreLocal(slot), line);
                     ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
                 } else if let Some(local_index) = ctx.scope.resolve_local("this") {
-                    ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), line);
-                    ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+                    ctx.chunk
+                        .write_with_line(OpCode::StoreLocal(local_index), line);
+                    ctx.chunk
+                        .write_with_line(OpCode::LoadLocal(local_index), line);
                 } else {
                     ctx.chunk.write_with_line(OpCode::StoreLocal(0), line);
                     ctx.chunk.write_with_line(OpCode::LoadLocal(0), line);
                 }
             } else {
                 if let Some(local_index) = ctx.scope.resolve_local(object_name) {
-                    ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), line);
-                    ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+                    ctx.chunk
+                        .write_with_line(OpCode::StoreLocal(local_index), line);
+                    ctx.chunk
+                        .write_with_line(OpCode::LoadLocal(local_index), line);
                 } else if let Some(&global_index) = ctx.scope.globals.get(object_name) {
-                    ctx.chunk.global_names.insert(global_index, object_name.to_string());
-                    ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), line);
-                    ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), line);
+                    ctx.chunk
+                        .global_names
+                        .insert(global_index, object_name.to_string());
+                    ctx.chunk
+                        .write_with_line(OpCode::StoreGlobal(global_index), line);
+                    ctx.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), line);
                 }
             }
-            
+
             return Ok(());
         } else {
             return Err(LangError::ParseError {
@@ -331,14 +379,14 @@ fn compile_assign_op(
             });
         }
     }
-    
+
     // Обычное присваивание переменной
     // Используем VariableResolver для разрешения переменной
     let is_local = VariableResolver::resolve_for_assign_op(ctx, name, line)?;
-    
+
     // Компилируем правую часть
     expr::compile_expr(ctx, value)?;
-    
+
     // Выполняем операцию
     match op {
         TokenKind::PlusEqual => ctx.chunk.write_with_line(OpCode::Add, line),
@@ -356,10 +404,10 @@ fn compile_assign_op(
             });
         }
     }
-    
+
     // Сохраняем результат обратно
     VariableResolver::store_after_operation(ctx, name, is_local, line)?;
-    
+
     Ok(())
 }
 
@@ -372,50 +420,56 @@ fn compile_unpack_assign(
     // Распаковка кортежа: a, b, c = tuple_expr
     // Компилируем правую часть (должна вернуть кортеж)
     expr::compile_expr(ctx, value)?;
-    
+
     // Сохраняем кортеж во временную переменную, чтобы можно было извлекать элементы
     let tuple_temp = ctx.scope.declare_local(&format!("__tuple_temp_{}", line));
-    ctx.chunk.write_with_line(OpCode::StoreLocal(tuple_temp), line);
-    
+    ctx.chunk
+        .write_with_line(OpCode::StoreLocal(tuple_temp), line);
+
     // Для каждой переменной извлекаем элемент кортежа и сохраняем
     for (index, name) in names.iter().enumerate() {
         // Загружаем кортеж
-        ctx.chunk.write_with_line(OpCode::LoadLocal(tuple_temp), line);
+        ctx.chunk
+            .write_with_line(OpCode::LoadLocal(tuple_temp), line);
         // Загружаем индекс
         let index_const = ctx.chunk.add_constant(Value::Number(index as f64));
-        ctx.chunk.write_with_line(OpCode::Constant(index_const), line);
+        ctx.chunk
+            .write_with_line(OpCode::Constant(index_const), line);
         // Получаем элемент по индексу
         ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
-        
+
         // Сохраняем в переменную
         if let Some(local_index) = ctx.scope.resolve_local(name) {
             // Локальная переменная найдена - обновляем
-            ctx.chunk.write_with_line(OpCode::StoreLocal(local_index), line);
+            ctx.chunk
+                .write_with_line(OpCode::StoreLocal(local_index), line);
         } else if ctx.current_function.is_some() {
             // Мы находимся внутри функции - создаем локальную переменную
             let var_index = ctx.scope.declare_local(name);
-            ctx.chunk.write_with_line(OpCode::StoreLocal(var_index), line);
+            ctx.chunk
+                .write_with_line(OpCode::StoreLocal(var_index), line);
         } else {
             // На верхнем уровне - проверяем, есть ли глобальная переменная
             if let Some(&global_index) = ctx.scope.globals.get(name) {
                 // Глобальная переменная найдена - обновляем
                 ctx.chunk.global_names.insert(global_index, name.clone());
-                ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), line);
+                ctx.chunk
+                    .write_with_line(OpCode::StoreGlobal(global_index), line);
             } else {
                 // Новая глобальная переменная на верхнем уровне
                 let global_index = ctx.scope.globals.len();
                 ctx.scope.globals.insert(name.clone(), global_index);
                 ctx.chunk.global_names.insert(global_index, name.clone());
-                ctx.chunk.write_with_line(OpCode::StoreGlobal(global_index), line);
+                ctx.chunk
+                    .write_with_line(OpCode::StoreGlobal(global_index), line);
             }
         }
     }
-    
+
     // Загружаем последнее значение на стек (для возврата результата)
     if let Some(last_name) = names.last() {
         VariableResolver::resolve_and_load(ctx, last_name, line)?;
     }
-    
+
     Ok(())
 }
-

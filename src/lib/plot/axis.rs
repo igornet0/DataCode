@@ -1,15 +1,15 @@
 // Axis structure for plot module
 
 use crate::plot::Image;
-use std::rc::Rc;
 use std::cell::RefCell;
+use std::rc::Rc;
 
 #[derive(Debug, Clone)]
 pub struct Axis {
     pub image: Option<Rc<RefCell<Image>>>,
     pub title: Option<String>,
     pub axis_visible: bool, // false for 'off', true for 'on'
-    pub cmap: String, // 'gray', 'viridis', etc.
+    pub cmap: String,       // 'gray', 'viridis', etc.
 }
 
 impl Axis {
@@ -22,4 +22,3 @@ impl Axis {
         }
     }
 }
-

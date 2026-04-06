@@ -22,20 +22,20 @@
 //! при непустом `register` — путь с callback. Предпочтительная точка входа — `datacode_module_entry`
 //! → [`AbiModuleDescriptor`]. Источник правды: крейт `datacode_abi`.
 
-pub mod version;
-pub mod value;
 pub mod error;
-pub mod vm_context;
 pub mod module;
+pub mod value;
+pub mod version;
+pub mod vm_context;
 
-pub use version::{AbiVersion, DATACODE_ABI_VERSION, abi_compatible};
-pub use value::{Value as AbiValue, NativeHandle};
 pub use error::DatacodeError;
-pub use vm_context::{VmContext, NativeAbiFn};
 pub use module::{
     AbiClassDescriptor, AbiExport, AbiExportTable, AbiGlobalDescriptor, AbiModuleDescriptor,
     AbiModuleDescriptorV4, AbiNativeParamMeta, AbiOpaqueTypeDescriptor, AbiPluginHooksDescriptor,
-    ABI_NATIVE_PARAM_META_SUPPORTS_NAMED_ARGS,
     DatacodeModule, DatacodeModuleEntryFn, DatacodeModuleFn, DatacodeModuleLegacy,
-    DATACODE_MODULE_ENTRY_SYMBOL, DATACODE_MODULE_SYMBOL,
+    ABI_NATIVE_PARAM_META_SUPPORTS_NAMED_ARGS, DATACODE_MODULE_ENTRY_SYMBOL,
+    DATACODE_MODULE_SYMBOL,
 };
+pub use value::{NativeHandle, Value as AbiValue};
+pub use version::{abi_compatible, AbiVersion, DATACODE_ABI_VERSION};
+pub use vm_context::{NativeAbiFn, VmContext};

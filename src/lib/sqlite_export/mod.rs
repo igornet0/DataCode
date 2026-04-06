@@ -1,12 +1,12 @@
 // Модуль для экспорта таблиц DataCode в SQLite
 
-use crate::common::{value::Value, table::Table};
+use crate::common::{table::Table, value::Value};
 use crate::vm::Vm;
-use rusqlite::{Connection, params, Result as SqliteResult};
-use std::rc::Rc;
+use chrono::Utc;
+use rusqlite::{params, Connection, Result as SqliteResult};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use chrono::Utc;
+use std::rc::Rc;
 
 /// Структура для хранения информации о таблице для экспорта
 struct TableInfo {
@@ -37,15 +37,15 @@ struct ForeignKeyInfo {
 pub fn export_to_sqlite(vm: &mut Vm, output_path: &str) -> Result<(), String> {
     // Получаем все таблицы из глобальных переменных
     let tables = get_global_tables(vm)?;
-    
+
     if tables.is_empty() {
         return Err("Нет таблиц для экспорта".to_string());
     }
 
     // Создаем базу данных
-    let mut conn = Connection::open(output_path)
-        .map_err(|e| format!("Ошибка создания базы данных: {}", e))?;
-    
+    let mut conn =
+        Connection::open(output_path).map_err(|e| format!("Ошибка создания базы данных: {}", e))?;
+
     // Включаем поддержку FOREIGN KEY constraints
     conn.execute("PRAGMA foreign_keys = ON", [])
         .map_err(|e| format!("Ошибка включения FOREIGN KEY: {}", e))?;
@@ -91,7 +91,9 @@ pub fn export_to_sqlite(vm: &mut Vm, output_path: &str) -> Result<(), String> {
 }
 
 /// Получить все таблицы из глобальных переменных VM (globals are GlobalSlot)
-pub fn get_global_tables(vm: &mut crate::vm::vm::Vm) -> Result<HashMap<String, Rc<RefCell<Table>>>, String> {
+pub fn get_global_tables(
+    vm: &mut crate::vm::vm::Vm,
+) -> Result<HashMap<String, Rc<RefCell<Table>>>, String> {
     use crate::vm::store_convert::load_value;
     let mut tables = HashMap::new();
     let globals = vm.get_globals();
@@ -99,7 +101,11 @@ pub fn get_global_tables(vm: &mut crate::vm::vm::Vm) -> Result<HashMap<String, R
     let to_scan: Vec<(usize, String)> = globals
         .iter()
         .enumerate()
-        .filter_map(|(index, _)| explicit_global_names.get(&index).map(|name| (index, name.clone())))
+        .filter_map(|(index, _)| {
+            explicit_global_names
+                .get(&index)
+                .map(|name| (index, name.clone()))
+        })
         .collect();
     for (index, var_name) in to_scan {
         let value_id = vm.resolve_global_to_value_id(index);
@@ -118,7 +124,13 @@ pub fn get_global_tables(vm: &mut crate::vm::vm::Vm) -> Result<HashMap<String, R
 fn sanitize_table_name(name: &str) -> String {
     // Заменяем недопустимые символы на подчеркивания
     name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -134,7 +146,8 @@ fn export_table(
         return Ok(());
     }
     let headers: Vec<String> = table_ref.headers().clone();
-    let column_types: Vec<String> = headers.iter()
+    let column_types: Vec<String> = headers
+        .iter()
         .map(|header| {
             let column = table_ref.get_column(header).unwrap();
             infer_column_type(column)
@@ -142,11 +155,11 @@ fn export_table(
         .collect();
 
     // Создаем SQL для создания таблицы
-    let columns_sql: Vec<String> = table_ref.headers().iter()
+    let columns_sql: Vec<String> = table_ref
+        .headers()
+        .iter()
         .zip(column_types.iter())
-        .map(|(header, sql_type)| {
-            format!("{} {}", sanitize_column_name(header), sql_type)
-        })
+        .map(|(header, sql_type)| format!("{} {}", sanitize_column_name(header), sql_type))
         .collect();
 
     let create_sql = format!(
@@ -165,7 +178,9 @@ fn export_table(
         let insert_sql = format!(
             "INSERT INTO {} ({}) VALUES ({})",
             sqlite_name,
-            table_ref.headers().iter()
+            table_ref
+                .headers()
+                .iter()
                 .map(|h| sanitize_column_name(h))
                 .collect::<Vec<_>>()
                 .join(", "),
@@ -173,7 +188,7 @@ fn export_table(
         );
 
         let mut stmt = conn.prepare(&insert_sql)?;
-        
+
         let rr = table_ref.rows_ref().unwrap();
         for row in rr.iter() {
             // Преобразуем значения в параметры SQLite
@@ -190,24 +205,18 @@ fn export_table(
                     Value::Bool(b) => {
                         Box::new(if *b { 1i64 } else { 0i64 }) as Box<dyn rusqlite::ToSql>
                     }
-                    Value::String(s) => {
-                        Box::new(s.clone()) as Box<dyn rusqlite::ToSql>
-                    }
-                    Value::Null => {
-                        Box::new(Option::<String>::None) as Box<dyn rusqlite::ToSql>
-                    }
+                    Value::String(s) => Box::new(s.clone()) as Box<dyn rusqlite::ToSql>,
+                    Value::Null => Box::new(Option::<String>::None) as Box<dyn rusqlite::ToSql>,
                     _ => {
                         let s = value.to_string();
                         Box::new(s) as Box<dyn rusqlite::ToSql>
                     }
                 });
             }
-            
+
             // Преобразуем в срез параметров
-            let params: Vec<&dyn rusqlite::ToSql> = params_vec.iter()
-                .map(|v| v.as_ref())
-                .collect();
-            
+            let params: Vec<&dyn rusqlite::ToSql> = params_vec.iter().map(|v| v.as_ref()).collect();
+
             stmt.execute(params.as_slice())?;
         }
     }
@@ -237,7 +246,7 @@ fn infer_column_type(column: &[Value]) -> String {
             }
             Value::String(_) => has_string = true,
             Value::Bool(_) => has_bool = true,
-            Value::Null => {}, // NULL значения не влияют на тип
+            Value::Null => {}       // NULL значения не влияют на тип
             _ => has_string = true, // Остальные типы как текст
         }
     }
@@ -245,10 +254,8 @@ fn infer_column_type(column: &[Value]) -> String {
     // Определяем тип по приоритету
     if has_float {
         "REAL".to_string()
-    } else if has_integer && !has_string {
-        "INTEGER".to_string()
-    } else if has_bool && !has_string && !has_integer {
-        "INTEGER".to_string() // Bool как INTEGER (0/1)
+    } else if !has_string && (has_integer || has_bool) {
+        "INTEGER".to_string() // Целые и bool как INTEGER (0/1)
     } else {
         "TEXT".to_string()
     }
@@ -257,30 +264,118 @@ fn infer_column_type(column: &[Value]) -> String {
 /// Санитизация имени колонки
 fn sanitize_column_name(name: &str) -> String {
     // Заменяем недопустимые символы
-    let sanitized: String = name.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+    let sanitized: String = name
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    
+
     // Проверяем на ключевые слова SQLite (основные)
     let upper = sanitized.to_uppercase();
-    let is_keyword = matches!(upper.as_str(),
-        "SELECT" | "FROM" | "WHERE" | "INSERT" | "UPDATE" | "DELETE" | 
-        "CREATE" | "DROP" | "TABLE" | "INDEX" | "PRIMARY" | "KEY" |
-        "FOREIGN" | "REFERENCES" | "INTEGER" | "REAL" | "TEXT" | "BLOB" |
-        "NULL" | "NOT" | "DEFAULT" | "UNIQUE" | "CHECK" | "AS" | "AND" |
-        "OR" | "ORDER" | "BY" | "GROUP" | "HAVING" | "LIMIT" | "OFFSET" |
-        "INNER" | "LEFT" | "RIGHT" | "JOIN" | "ON" | "UNION" | "ALL" |
-        "DISTINCT" | "EXISTS" | "CASE" | "WHEN" | "THEN" | "ELSE" | "END" |
-        "IS" | "LIKE" | "GLOB" | "REGEXP" | "MATCH" | "ESCAPE" | "CAST" |
-        "COLLATE" | "ASC" | "DESC" | "INTO" | "VALUES" | "SET" | "BEGIN" |
-        "COMMIT" | "ROLLBACK" | "TRANSACTION" | "SAVEPOINT" | "RELEASE" |
-        "ATTACH" | "DETACH" | "DATABASE" | "ALTER" | "RENAME" | "TO" |
-        "ADD" | "COLUMN" | "VACUUM" | "ANALYZE" | "EXPLAIN" | "PRAGMA" |
-        "WITH" | "RECURSIVE" | "WINDOW" | "OVER" | "PARTITION" | "RANGE" |
-        "ROWS" | "PRECEDING" | "FOLLOWING" | "CURRENT" | "ROW" | "UNBOUNDED" |
-        "FILTER" | "EXCLUDE" | "GROUPS" | "TIES" | "NO" | "OTHERS"
+    let is_keyword = matches!(
+        upper.as_str(),
+        "SELECT"
+            | "FROM"
+            | "WHERE"
+            | "INSERT"
+            | "UPDATE"
+            | "DELETE"
+            | "CREATE"
+            | "DROP"
+            | "TABLE"
+            | "INDEX"
+            | "PRIMARY"
+            | "KEY"
+            | "FOREIGN"
+            | "REFERENCES"
+            | "INTEGER"
+            | "REAL"
+            | "TEXT"
+            | "BLOB"
+            | "NULL"
+            | "NOT"
+            | "DEFAULT"
+            | "UNIQUE"
+            | "CHECK"
+            | "AS"
+            | "AND"
+            | "OR"
+            | "ORDER"
+            | "BY"
+            | "GROUP"
+            | "HAVING"
+            | "LIMIT"
+            | "OFFSET"
+            | "INNER"
+            | "LEFT"
+            | "RIGHT"
+            | "JOIN"
+            | "ON"
+            | "UNION"
+            | "ALL"
+            | "DISTINCT"
+            | "EXISTS"
+            | "CASE"
+            | "WHEN"
+            | "THEN"
+            | "ELSE"
+            | "END"
+            | "IS"
+            | "LIKE"
+            | "GLOB"
+            | "REGEXP"
+            | "MATCH"
+            | "ESCAPE"
+            | "CAST"
+            | "COLLATE"
+            | "ASC"
+            | "DESC"
+            | "INTO"
+            | "VALUES"
+            | "SET"
+            | "BEGIN"
+            | "COMMIT"
+            | "ROLLBACK"
+            | "TRANSACTION"
+            | "SAVEPOINT"
+            | "RELEASE"
+            | "ATTACH"
+            | "DETACH"
+            | "DATABASE"
+            | "ALTER"
+            | "RENAME"
+            | "TO"
+            | "ADD"
+            | "COLUMN"
+            | "VACUUM"
+            | "ANALYZE"
+            | "EXPLAIN"
+            | "PRAGMA"
+            | "WITH"
+            | "RECURSIVE"
+            | "WINDOW"
+            | "OVER"
+            | "PARTITION"
+            | "RANGE"
+            | "ROWS"
+            | "PRECEDING"
+            | "FOLLOWING"
+            | "CURRENT"
+            | "ROW"
+            | "UNBOUNDED"
+            | "FILTER"
+            | "EXCLUDE"
+            | "GROUPS"
+            | "TIES"
+            | "NO"
+            | "OTHERS"
     );
-    
+
     if is_keyword {
         format!("\"{}\"", sanitized)
     } else {
@@ -288,12 +383,8 @@ fn sanitize_column_name(name: &str) -> String {
     }
 }
 
-
 /// Получить явные первичные ключи из VM и преобразовать их в PrimaryKeyInfo
-fn get_explicit_primary_keys(
-    table_infos: &[TableInfo],
-    vm: &Vm,
-) -> Vec<PrimaryKeyInfo> {
+fn get_explicit_primary_keys(table_infos: &[TableInfo], vm: &Vm) -> Vec<PrimaryKeyInfo> {
     let explicit_primary_keys = vm.get_explicit_primary_keys();
     let mut primary_keys = Vec::new();
 
@@ -320,13 +411,13 @@ fn get_explicit_primary_keys(
 fn detect_primary_keys(table_infos: &[TableInfo], vm: &Vm) -> Result<Vec<PrimaryKeyInfo>, String> {
     // Сначала получаем явные первичные ключи из VM
     let explicit_primary_keys = get_explicit_primary_keys(table_infos, vm);
-    
+
     // Создаем множество таблиц, для которых уже указан явный первичный ключ
     let mut tables_with_explicit_pk: HashSet<String> = HashSet::new();
     for pk in &explicit_primary_keys {
         tables_with_explicit_pk.insert(pk.table_name.clone());
     }
-    
+
     let mut primary_keys = explicit_primary_keys;
 
     // Для таблиц без явного первичного ключа применяем автоматическое определение
@@ -387,10 +478,7 @@ fn detect_primary_keys(table_infos: &[TableInfo], vm: &Vm) -> Result<Vec<Primary
 }
 
 /// Получить явные связи из VM и преобразовать их в ForeignKeyInfo
-fn get_explicit_foreign_keys(
-    table_infos: &[TableInfo],
-    vm: &Vm,
-) -> Vec<ForeignKeyInfo> {
+fn get_explicit_foreign_keys(table_infos: &[TableInfo], vm: &Vm) -> Vec<ForeignKeyInfo> {
     let explicit_relations = vm.get_explicit_relations();
     let mut foreign_keys = Vec::new();
 
@@ -443,7 +531,7 @@ fn detect_foreign_keys(
         let headers: Vec<String> = table.headers().clone();
         for header in &headers {
             let column = table.get_column(header).ok_or("Колонка не найдена")?;
-            
+
             // Проверяем, является ли колонка ID-подобной
             if !is_id_like_column(header) {
                 continue;
@@ -455,7 +543,10 @@ fn detect_foreign_keys(
             }
 
             // Пропускаем, если эта связь уже определена явно
-            if explicit_fk_set.contains(&(table_info.sqlite_name.clone(), sanitize_column_name(header).clone())) {
+            if explicit_fk_set.contains(&(
+                table_info.sqlite_name.clone(),
+                sanitize_column_name(header).clone(),
+            )) {
                 continue;
             }
 
@@ -463,13 +554,17 @@ fn detect_foreign_keys(
             // Вариант 1: Имя колонки заканчивается на "_id", ищем таблицу без суффикса
             if header.to_lowercase().ends_with("_id") {
                 let base_name = header[..header.len() - 3].to_lowercase();
-                
+
                 // Ищем таблицу, имя которой совпадает с base_name
                 for other_table_info in table_infos {
                     let other_table_name = other_table_info.sqlite_name.to_lowercase();
-                    if other_table_name == base_name || other_table_name == format!("{}s", base_name) {
+                    if other_table_name == base_name
+                        || other_table_name == format!("{}s", base_name)
+                    {
                         // Проверяем, есть ли в этой таблице первичный ключ "id"
-                        if pk_index.contains_key(&(other_table_info.sqlite_name.clone(), "id".to_string())) {
+                        if pk_index
+                            .contains_key(&(other_table_info.sqlite_name.clone(), "id".to_string()))
+                        {
                             foreign_keys.push(ForeignKeyInfo {
                                 table_name: table_info.sqlite_name.clone(),
                                 column_name: sanitize_column_name(header),
@@ -496,11 +591,11 @@ fn detect_foreign_keys(
 /// Проверка, является ли колонка ID-подобной
 fn is_id_like_column(column_name: &str) -> bool {
     let lower = column_name.to_lowercase();
-    lower.ends_with("_id") || 
-    lower == "id" || 
-    lower.ends_with("id") ||
-    lower.ends_with("_id") ||
-    lower.contains("id")
+    lower.ends_with("_id")
+        || lower == "id"
+        || lower.ends_with("id")
+        || lower.ends_with("_id")
+        || lower.contains("id")
 }
 
 /// Проверка, является ли колонка целочисленной
@@ -528,7 +623,7 @@ fn is_integer_column(column: &[Value]) -> bool {
 fn is_unique_column(column: &[Value]) -> bool {
     use std::collections::HashSet;
     let mut seen = HashSet::new();
-    
+
     for value in column {
         if !matches!(value, Value::Null) {
             if !seen.insert(value) {
@@ -536,7 +631,7 @@ fn is_unique_column(column: &[Value]) -> bool {
             }
         }
     }
-    
+
     true
 }
 
@@ -547,17 +642,17 @@ fn topological_sort_tables(
     foreign_keys: &[ForeignKeyInfo],
 ) -> Result<Vec<usize>, String> {
     let n = table_infos.len();
-    
+
     // Создаем индекс таблиц по sqlite_name
     let mut table_index_map: HashMap<String, usize> = HashMap::new();
     for (i, table_info) in table_infos.iter().enumerate() {
         table_index_map.insert(table_info.sqlite_name.clone(), i);
     }
-    
+
     // Строим граф зависимостей: для каждой таблицы список таблиц, от которых она зависит
     let mut dependencies: Vec<Vec<usize>> = vec![Vec::new(); n];
     let mut in_degree: Vec<usize> = vec![0; n];
-    
+
     for fk in foreign_keys {
         // fk.table_name зависит от fk.referenced_table
         // Это означает, что fk.table_name должна быть создана ПОСЛЕ fk.referenced_table
@@ -572,22 +667,22 @@ fn topological_sort_tables(
             in_degree[dependent_idx] += 1;
         }
     }
-    
+
     // Алгоритм Кана (Kahn's algorithm) для топологической сортировки
     let mut queue: Vec<usize> = Vec::new();
     let mut result: Vec<usize> = Vec::new();
-    
+
     // Находим все таблицы без зависимостей (in_degree == 0)
     for (i, &degree) in in_degree.iter().enumerate() {
         if degree == 0 {
             queue.push(i);
         }
     }
-    
+
     // Обрабатываем таблицы без зависимостей
     while let Some(current) = queue.pop() {
         result.push(current);
-        
+
         // Уменьшаем in_degree для всех таблиц, которые зависят от current
         for &dependent in &dependencies[current] {
             in_degree[dependent] -= 1;
@@ -596,7 +691,7 @@ fn topological_sort_tables(
             }
         }
     }
-    
+
     // Проверяем, все ли таблицы обработаны
     if result.len() != n {
         // Есть циклические зависимости или таблицы, на которые ссылаются, но которых нет
@@ -611,7 +706,7 @@ fn topological_sort_tables(
             missing
         ));
     }
-    
+
     Ok(result)
 }
 
@@ -622,11 +717,13 @@ fn recreate_tables_with_foreign_keys(
     primary_keys: &[PrimaryKeyInfo],
     foreign_keys: &[ForeignKeyInfo],
 ) -> SqliteResult<()> {
-
     // Создаем индекс foreign keys по имени таблицы
     let mut fk_by_table: HashMap<String, Vec<&ForeignKeyInfo>> = HashMap::new();
     for fk in foreign_keys {
-        fk_by_table.entry(fk.table_name.clone()).or_insert_with(Vec::new).push(fk);
+        fk_by_table
+            .entry(fk.table_name.clone())
+            .or_insert_with(Vec::new)
+            .push(fk);
     }
 
     // Создаем индекс primary keys по имени таблицы
@@ -642,20 +739,27 @@ fn recreate_tables_with_foreign_keys(
     let mut saved_data: HashMap<String, Vec<Vec<Value>>> = HashMap::new();
     for table_info in table_infos {
         let table = table_info.table.borrow();
-        saved_data.insert(table_info.sqlite_name.clone(), table.rows_ref().unwrap().to_vec());
+        saved_data.insert(
+            table_info.sqlite_name.clone(),
+            table.rows_ref().unwrap().to_vec(),
+        );
     }
 
     // Удаляем все таблицы
     for table_info in table_infos {
-        tx.execute(&format!("DROP TABLE IF EXISTS {}", table_info.sqlite_name), [])?;
+        tx.execute(
+            &format!("DROP TABLE IF EXISTS {}", table_info.sqlite_name),
+            [],
+        )?;
     }
 
     // Сортируем таблицы в топологическом порядке (таблицы без зависимостей создаются первыми)
-    let sorted_indices = topological_sort_tables(table_infos, foreign_keys)
-        .map_err(|e| rusqlite::Error::SqliteFailure(
+    let sorted_indices = topological_sort_tables(table_infos, foreign_keys).map_err(|e| {
+        rusqlite::Error::SqliteFailure(
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
-            Some(e)
-        ))?;
+            Some(e),
+        )
+    })?;
 
     // Пересоздаем таблицы с FOREIGN KEY constraints в правильном порядке
     for &table_idx in &sorted_indices {
@@ -665,7 +769,8 @@ fn recreate_tables_with_foreign_keys(
             continue;
         }
         let headers: Vec<String> = table.headers().clone();
-        let column_types: Vec<String> = headers.iter()
+        let column_types: Vec<String> = headers
+            .iter()
             .map(|header| {
                 let column = table.get_column(header).unwrap();
                 infer_column_type(column)
@@ -676,7 +781,9 @@ fn recreate_tables_with_foreign_keys(
         let pk_column = pk_by_table.get(&table_info.sqlite_name);
 
         // Создаем SQL для создания таблицы с FOREIGN KEY constraints
-        let mut columns_sql: Vec<String> = table.headers().iter()
+        let mut columns_sql: Vec<String> = table
+            .headers()
+            .iter()
             .zip(column_types.iter())
             .map(|(header, sql_type)| {
                 let col_name = sanitize_column_name(header);
@@ -720,7 +827,9 @@ fn recreate_tables_with_foreign_keys(
                 let insert_sql = format!(
                     "INSERT INTO {} ({}) VALUES ({})",
                     table_info.sqlite_name,
-                    table.headers().iter()
+                    table
+                        .headers()
+                        .iter()
                         .map(|h| sanitize_column_name(h))
                         .collect::<Vec<_>>()
                         .join(", "),
@@ -728,7 +837,7 @@ fn recreate_tables_with_foreign_keys(
                 );
 
                 let mut stmt = tx.prepare(&insert_sql)?;
-                
+
                 for row in rows {
                     let mut params_vec: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
                     for value in row {
@@ -743,9 +852,7 @@ fn recreate_tables_with_foreign_keys(
                             Value::Bool(b) => {
                                 Box::new(if *b { 1i64 } else { 0i64 }) as Box<dyn rusqlite::ToSql>
                             }
-                            Value::String(s) => {
-                                Box::new(s.clone()) as Box<dyn rusqlite::ToSql>
-                            }
+                            Value::String(s) => Box::new(s.clone()) as Box<dyn rusqlite::ToSql>,
                             Value::Null => {
                                 Box::new(Option::<String>::None) as Box<dyn rusqlite::ToSql>
                             }
@@ -755,11 +862,10 @@ fn recreate_tables_with_foreign_keys(
                             }
                         });
                     }
-                    
-                    let params: Vec<&dyn rusqlite::ToSql> = params_vec.iter()
-                        .map(|v| v.as_ref())
-                        .collect();
-                    
+
+                    let params: Vec<&dyn rusqlite::ToSql> =
+                        params_vec.iter().map(|v| v.as_ref()).collect();
+
                     stmt.execute(params.as_slice())?;
                 }
             }
@@ -859,7 +965,11 @@ fn create_metadata_table(
     let to_export: Vec<(usize, String)> = globals
         .iter()
         .enumerate()
-        .filter_map(|(index, _)| explicit_global_names.get(&index).map(|name| (index, name.clone())))
+        .filter_map(|(index, _)| {
+            explicit_global_names
+                .get(&index)
+                .map(|name| (index, name.clone()))
+        })
         .collect();
     let created_at = Utc::now().to_rfc3339();
 
@@ -870,32 +980,37 @@ fn create_metadata_table(
     )?;
 
     for (index, var_name) in to_export {
-            let value_id = vm.resolve_global_to_value_id(index);
-            let value = crate::vm::store_convert::load_value(value_id, vm.value_store(), vm.heavy_store());
-            if matches!(&value, Value::NativeFunction(_) | Value::Function(_)) {
-                continue;
-            }
-            let var_type = get_value_type_name(&value);
-            let (table_name, row_count, column_count) = if let Value::Table(table) = &value {
-                let table_ref = table.borrow();
-                let sqlite_name = sanitize_table_name(&var_name);
-                (Some(sqlite_name), Some(table_ref.len() as i64), Some(table_ref.column_count() as i64))
-            } else {
-                (None, None, None)
-            };
-            let value_str = value.to_string();
-            let description = None::<String>; // Опциональное описание
+        let value_id = vm.resolve_global_to_value_id(index);
+        let value =
+            crate::vm::store_convert::load_value(value_id, vm.value_store(), vm.heavy_store());
+        if matches!(&value, Value::NativeFunction(_) | Value::Function(_)) {
+            continue;
+        }
+        let var_type = get_value_type_name(&value);
+        let (table_name, row_count, column_count) = if let Value::Table(table) = &value {
+            let table_ref = table.borrow();
+            let sqlite_name = sanitize_table_name(&var_name);
+            (
+                Some(sqlite_name),
+                Some(table_ref.len() as i64),
+                Some(table_ref.column_count() as i64),
+            )
+        } else {
+            (None, None, None)
+        };
+        let value_str = value.to_string();
+        let description = None::<String>; // Опциональное описание
 
-            stmt.execute(params![
-                var_name,
-                var_type,
-                table_name,
-                row_count,
-                column_count,
-                created_at,
-                description,
-                value_str
-            ])?;
+        stmt.execute(params![
+            var_name,
+            var_type,
+            table_name,
+            row_count,
+            column_count,
+            created_at,
+            description,
+            value_str
+        ])?;
     }
 
     Ok(())
@@ -930,4 +1045,3 @@ fn get_value_type_name(value: &Value) -> &str {
         Value::Ellipsis => "Ellipsis",
     }
 }
-

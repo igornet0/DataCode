@@ -95,21 +95,12 @@ fn try_load_native_module_direct_smoke() {
         &mut loaded_libs,
         None,
     );
-    assert!(
-        r.is_ok(),
-        "try_load_native_module: {:?}",
-        r.as_ref().err()
-    );
+    assert!(r.is_ok(), "try_load_native_module: {:?}", r.as_ref().err());
 }
 
 fn assert_number(v: Result<Value, data_code::LangError>, n: f64) {
     match v {
-        Ok(Value::Number(x)) => assert!(
-            (x - n).abs() < 1e-9,
-            "expected number {}, got {}",
-            n,
-            x
-        ),
+        Ok(Value::Number(x)) => assert!((x - n).abs() < 1e-9, "expected number {}, got {}", n, x),
         Ok(o) => panic!("expected Number, got {:?}", o),
         Err(e) => panic!("unexpected error: {:?}", e),
     }

@@ -149,10 +149,7 @@ impl DbType {
     }
     /// Whether to ask for username and password (false for SQLite, Redis, Memcached).
     fn asks_user_password(self) -> bool {
-        match self {
-            DbType::Sqlite | DbType::Redis | DbType::Memcached => false,
-            _ => true,
-        }
+        !matches!(self, DbType::Sqlite | DbType::Redis | DbType::Memcached)
     }
 }
 
@@ -167,7 +164,10 @@ fn colored_prompt(question: &str, bracket_content: &str) {
         bracket_content
     };
     if io::stdout().is_terminal() {
-        print!("{}{}{} [{}{}{}]: ", BLUE, question, RESET, GREEN, display, RESET);
+        print!(
+            "{}{}{} [{}{}{}]: ",
+            BLUE, question, RESET, GREEN, display, RESET
+        );
     } else {
         print!("{} [{}]: ", question, display);
     }
@@ -176,7 +176,9 @@ fn colored_prompt(question: &str, bracket_content: &str) {
 fn prompt(default: &str) -> Result<String, String> {
     io::stdout().flush().map_err(|e| e.to_string())?;
     let mut line = String::new();
-    io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
     let s = line.trim().to_string();
     if s.is_empty() {
         Ok(default.to_string())
@@ -188,10 +190,8 @@ fn prompt(default: &str) -> Result<String, String> {
 fn prompt_yes_no(default_yes: bool) -> Result<bool, String> {
     let default = if default_yes { "yes" } else { "no" };
     let s = prompt(default)?;
-    let y = s.is_empty()
-        || s.eq_ignore_ascii_case("y")
-        || s.eq_ignore_ascii_case("yes")
-        || s == "1";
+    let y =
+        s.is_empty() || s.eq_ignore_ascii_case("y") || s.eq_ignore_ascii_case("yes") || s == "1";
     Ok(y)
 }
 
@@ -205,7 +205,9 @@ fn prompt_password() -> Result<String, String> {
         io::stdout().flush().map_err(|e| e.to_string())?;
     }
     let mut line = String::new();
-    io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
+    io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
     Ok(line.trim().to_string())
 }
 
@@ -277,10 +279,7 @@ pub fn run_init_database(project_root: &Path, flags: &[String]) -> Result<(), St
         }
         colored_prompt("Enter number", "1");
         let num_str = prompt("1")?;
-        let idx: usize = num_str
-            .trim()
-            .parse()
-            .map_err(|_| "Invalid number")?;
+        let idx: usize = num_str.trim().parse().map_err(|_| "Invalid number")?;
         DB_TYPES
             .get(idx.wrapping_sub(1))
             .copied()
@@ -294,13 +293,8 @@ pub fn run_init_database(project_root: &Path, flags: &[String]) -> Result<(), St
     let (name_prompt_text, name_default) = db_type.name_prompt();
 
     // Step 2: connection params (SQLite: only file path; others: host, port, name)
-    let name = if db_type == DbType::Sqlite {
-        colored_prompt(name_prompt_text, name_default);
-        prompt(name_default)?
-    } else {
-        colored_prompt(name_prompt_text, name_default);
-        prompt(name_default)?
-    };
+    colored_prompt(name_prompt_text, name_default);
+    let name = prompt(name_default)?;
 
     let (user, password_expr) = if !db_type.asks_user_password() {
         (String::new(), "\"\"".to_string())
@@ -393,8 +387,11 @@ pub fn run_init_database(project_root: &Path, flags: &[String]) -> Result<(), St
         .map_err(|e| e.to_string())?;
     std::fs::write(base.join("engine.dc"), render_template(engine_tpl, &vars))
         .map_err(|e| e.to_string())?;
-    std::fs::write(base.join("connection.dc"), render_template(connection_tpl, &vars))
-        .map_err(|e| e.to_string())?;
+    std::fs::write(
+        base.join("connection.dc"),
+        render_template(connection_tpl, &vars),
+    )
+    .map_err(|e| e.to_string())?;
     std::fs::write(base.join("models.dc"), render_template(models_tpl, &vars))
         .map_err(|e| e.to_string())?;
     std::fs::write(base.join("__lib__.dc"), render_template(lib_tpl, &vars))
@@ -418,7 +415,8 @@ pub fn run_init_database(project_root: &Path, flags: &[String]) -> Result<(), St
     .map_err(|e| e.to_string())?;
 
     let adapters_lib_content = adapters_lib::render_adapters_lib(&[db_type_str]);
-    std::fs::write(adapters_dir.join("__lib__.dc"), adapters_lib_content).map_err(|e| e.to_string())?;
+    std::fs::write(adapters_dir.join("__lib__.dc"), adapters_lib_content)
+        .map_err(|e| e.to_string())?;
 
     let migrations_readme_tpl = embed_tpl!("/templates/database/migrations/README.md.tpl");
     std::fs::write(

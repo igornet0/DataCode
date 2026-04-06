@@ -28,6 +28,11 @@ impl SliceOrigin {
             SliceOrigin::Store { length, .. } | SliceOrigin::Heap { length, .. } => *length,
         }
     }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 /// Resolve container to a contiguous logical range for slicing/indexing.
@@ -71,7 +76,11 @@ pub fn resolve_slice_origin(
 }
 
 /// Narrow a view to `[local_offset .. local_offset + local_length)` within the view (zero-copy).
-pub fn subview(av: &ArrayViewData, local_offset: usize, local_length: usize) -> Option<ArrayViewData> {
+pub fn subview(
+    av: &ArrayViewData,
+    local_offset: usize,
+    local_length: usize,
+) -> Option<ArrayViewData> {
     if local_length == 0 {
         return Some(ArrayViewData {
             source: match &av.source {
@@ -98,12 +107,20 @@ pub fn subview(av: &ArrayViewData, local_offset: usize, local_length: usize) -> 
 /// Build [`ArrayViewData`] from origin (shared helper).
 pub fn origin_to_view_data(origin: &SliceOrigin) -> ArrayViewData {
     match origin {
-        SliceOrigin::Store { base_id, offset, length } => ArrayViewData {
+        SliceOrigin::Store {
+            base_id,
+            offset,
+            length,
+        } => ArrayViewData {
             source: ArrayViewSource::Store { base_id: *base_id },
             offset: *offset,
             length: *length,
         },
-        SliceOrigin::Heap { vec, offset, length } => ArrayViewData {
+        SliceOrigin::Heap {
+            vec,
+            offset,
+            length,
+        } => ArrayViewData {
             source: ArrayViewSource::Heap(vec.clone()),
             offset: *offset,
             length: *length,

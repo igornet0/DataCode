@@ -5,36 +5,30 @@ use std::path::PathBuf;
 
 // Helper function to safely get parent path
 pub fn safe_path_parent(path: &PathBuf) -> Option<PathBuf> {
-    use crate::websocket::{get_user_session_path, get_use_ve};
-    
+    use crate::websocket::{get_use_ve, get_user_session_path};
+
     if !get_use_ve() {
         // В обычном режиме просто возвращаем parent как есть
         return path.parent().map(|p| p.to_path_buf());
     }
-    
-    let session_path = match get_user_session_path() {
-        Some(p) => p,
-        None => return None, // Нет пути сессии - не возвращаем parent
-    };
-    
+
+    let session_path = get_user_session_path()?;
+
     // Нормализуем session_path для корректного сравнения
     let session_path_normalized = match session_path.canonicalize() {
         Ok(p) => p,
         Err(_) => session_path.clone(),
     };
-    
+
     // Получаем parent путь
-    let parent = match path.parent() {
-        Some(p) => p,
-        None => return None,
-    };
-    
+    let parent = path.parent()?;
+
     // Нормализуем parent для корректного сравнения
     let parent_normalized = match parent.canonicalize() {
         Ok(p) => p,
         Err(_) => parent.to_path_buf(),
     };
-    
+
     // Проверяем, что parent находится внутри session_path
     if parent_normalized.starts_with(&session_path_normalized) {
         Some(parent.to_path_buf())
@@ -49,7 +43,7 @@ pub fn native_path(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Path(PathBuf::new());
     }
-    
+
     match &args[0] {
         Value::String(s) => {
             // Создаем путь из строки
@@ -70,7 +64,7 @@ pub fn native_path_name(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::String(String::new());
     }
-    
+
     match &args[0] {
         Value::Path(p) => {
             if let Some(name) = p.file_name() {
@@ -87,7 +81,7 @@ pub fn native_path_parent(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Null;
     }
-    
+
     match &args[0] {
         Value::Path(p) => {
             // Используем безопасную функцию для получения parent
@@ -104,7 +98,7 @@ pub fn native_path_exists(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Bool(false);
     }
-    
+
     match &args[0] {
         Value::Path(p) => Value::Bool(p.exists()),
         _ => Value::Bool(false),
@@ -115,7 +109,7 @@ pub fn native_path_is_file(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Bool(false);
     }
-    
+
     match &args[0] {
         Value::Path(p) => Value::Bool(p.is_file()),
         _ => Value::Bool(false),
@@ -126,7 +120,7 @@ pub fn native_path_is_dir(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Bool(false);
     }
-    
+
     match &args[0] {
         Value::Path(p) => Value::Bool(p.is_dir()),
         _ => Value::Bool(false),
@@ -137,7 +131,7 @@ pub fn native_path_extension(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::String(String::new());
     }
-    
+
     match &args[0] {
         Value::Path(p) => {
             if let Some(ext) = p.extension() {
@@ -154,7 +148,7 @@ pub fn native_path_stem(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::String(String::new());
     }
-    
+
     match &args[0] {
         Value::Path(p) => {
             if let Some(stem) = p.file_stem() {
@@ -171,7 +165,7 @@ pub fn native_path_len(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Number(0.0);
     }
-    
+
     match &args[0] {
         Value::Path(p) => {
             let len = p.to_string_lossy().len();
@@ -180,4 +174,3 @@ pub fn native_path_len(args: &[Value]) -> Value {
         _ => Value::Number(0.0),
     }
 }
-

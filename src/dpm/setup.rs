@@ -173,14 +173,8 @@ pub fn run_setup(pkg_dir: &Path, desc: &SetupDescriptor) -> Result<(), String> {
         if let Some(parent) = to.parent() {
             std::fs::create_dir_all(parent).map_err(|e| format!("create_dir_all: {}", e))?;
         }
-        std::fs::copy(&from, &to).map_err(|e| {
-            format!(
-                "copy {} -> {}: {}",
-                from.display(),
-                to.display(),
-                e
-            )
-        })?;
+        std::fs::copy(&from, &to)
+            .map_err(|e| format!("copy {} -> {}: {}", from.display(), to.display(), e))?;
         eprintln!(
             "[dpm setup] installed {} -> {}",
             from.display(),
@@ -222,11 +216,7 @@ pub fn run_setup_if_present(pkg_dir: &Path) -> Result<(), String> {
 /// Run `setup.dcmodule` unconditionally (for `dpm setup <pkg>`). Fails if file is missing.
 pub fn run_setup_for_package(pkg_dir: &Path) -> Result<(), String> {
     let Some(desc) = load_setup_descriptor(pkg_dir)? else {
-        return Err(format!(
-            "No {} in {}",
-            SETUP_FILENAME,
-            pkg_dir.display()
-        ));
+        return Err(format!("No {} in {}", SETUP_FILENAME, pkg_dir.display()));
     };
     eprintln!(
         "[dpm setup] (manual) {} (module={:?})",
@@ -255,11 +245,8 @@ mod tests {
 
     #[test]
     fn when_matches_current_platform() {
-        let w: When = serde_json::from_str(&format!(
-            r#"{{"os":["{}"]}}"#,
-            super::current_os_tag()
-        ))
-        .unwrap();
+        let w: When =
+            serde_json::from_str(&format!(r#"{{"os":["{}"]}}"#, super::current_os_tag())).unwrap();
         assert!(matches_when(&Some(w)));
     }
 

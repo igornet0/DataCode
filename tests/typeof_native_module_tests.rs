@@ -2,10 +2,10 @@
 
 use data_code::common::value::Value;
 use data_code::common::value_store::ValueStore;
-use data_code::vm::heavy_store::HeavyStore;
-use data_code::vm::module_object::BUILTIN_END;
 use data_code::extract_globals_from_vm;
 use data_code::vm::file_import;
+use data_code::vm::heavy_store::HeavyStore;
+use data_code::vm::module_object::BUILTIN_END;
 use data_code::vm::native_loader::try_load_native_module;
 use data_code::vm::natives::basic::native_typeof;
 use data_code::vm::store_convert::{load_value, store_value};
@@ -49,11 +49,7 @@ fn try_load_ml_hashmap_roundtrip_typeof_is_module() {
         .expect("try_load ml");
     let mut vs = ValueStore::new();
     let mut hs = HeavyStore::new();
-    let id = store_value(
-        Value::Object(Rc::new(RefCell::new(m))),
-        &mut vs,
-        &mut hs,
-    );
+    let id = store_value(Value::Object(Rc::new(RefCell::new(m))), &mut vs, &mut hs);
     let v = load_value(id, &vs, &hs);
     let out = native_typeof(&[v]);
     assert_eq!(out, Value::String("module".to_string()));

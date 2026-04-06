@@ -16,7 +16,7 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "isinstance");
     register(globals, "date");
     register(globals, "money");
-    
+
     // Path функции
     register(globals, "path");
     register(globals, "path_name");
@@ -27,7 +27,7 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "path_extension");
     register(globals, "path_stem");
     register(globals, "path_len");
-    
+
     // Математические функции
     register(globals, "abs");
     register(globals, "sqrt");
@@ -35,7 +35,7 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "min");
     register(globals, "max");
     register(globals, "round");
-    
+
     // Строковые функции
     register(globals, "upper");
     register(globals, "lower");
@@ -45,7 +45,7 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "contains");
     register(globals, "isupper");
     register(globals, "islower");
-    
+
     // Функции массивов
     register(globals, "push");
     register(globals, "pop");
@@ -57,7 +57,7 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "count");
     register(globals, "any");
     register(globals, "all");
-    
+
     // Функции для работы с таблицами
     register(globals, "table");
     register(globals, "read_file");
@@ -73,7 +73,7 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "now");
     register(globals, "getcwd");
     register(globals, "list_files");
-    
+
     // JOIN операции
     register(globals, "inner_join");
     register(globals, "left_join");
@@ -116,7 +116,7 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
     match function_name {
         // Функции с переменным числом аргументов - именованные аргументы не поддерживаются
         "print" | "min" | "max" | "array" => None,
-        
+
         // Функции с одним параметром
         "len" => Some(vec!["value".to_string()]),
         "enum" => Some(vec!["iterable".to_string()]),
@@ -157,10 +157,18 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "array_with_capacity" => Some(vec!["n".to_string()]),
         "map" => Some(vec!["collection".to_string(), "fn".to_string()]),
         "filter" => Some(vec!["collection".to_string(), "predicate".to_string()]),
-        "reduce" => Some(vec!["collection".to_string(), "fn".to_string(), "initial".to_string()]),
-        
+        "reduce" => Some(vec![
+            "collection".to_string(),
+            "fn".to_string(),
+            "initial".to_string(),
+        ]),
+
         // Функции с двумя параметрами
-        "range" => Some(vec!["start".to_string(), "end".to_string(), "step".to_string()]),
+        "range" => Some(vec![
+            "start".to_string(),
+            "end".to_string(),
+            "step".to_string(),
+        ]),
         "pow" => Some(vec!["base".to_string(), "exp".to_string()]),
         "split" => Some(vec!["str".to_string(), "delim".to_string()]),
         "join" => Some(vec!["array".to_string(), "delim".to_string()]),
@@ -169,23 +177,42 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "isinstance" => Some(vec!["value".to_string(), "type".to_string()]),
         "money" => Some(vec!["amount".to_string(), "format".to_string()]),
         "list_files" => Some(vec!["path".to_string(), "regex".to_string()]),
-        
+
         // Функции с опциональными параметрами
         "table" => Some(vec!["data".to_string(), "headers".to_string()]),
-        "read_file" => Some(vec!["path".to_string(), "header_row".to_string(), "sheet_name".to_string(), "header".to_string()]),
+        "read_file" => Some(vec![
+            "path".to_string(),
+            "header_row".to_string(),
+            "sheet_name".to_string(),
+            "header".to_string(),
+        ]),
         "read_file_bin" => Some(vec!["path".to_string()]),
         "table_head" => Some(vec!["table".to_string(), "n".to_string()]),
         "table_tail" => Some(vec!["table".to_string(), "n".to_string()]),
         "table_select" => Some(vec!["table".to_string(), "cols".to_string()]),
-        "table_sort" => Some(vec!["table".to_string(), "col".to_string(), "asc".to_string()]),
-        "table_where" => Some(vec!["table".to_string(), "col".to_string(), "op".to_string(), "value".to_string()]),
+        "table_sort" => Some(vec![
+            "table".to_string(),
+            "col".to_string(),
+            "asc".to_string(),
+        ]),
+        "table_where" => Some(vec![
+            "table".to_string(),
+            "col".to_string(),
+            "op".to_string(),
+            "value".to_string(),
+        ]),
         "merge_tables" => Some(vec!["tables".to_string(), "mode".to_string()]),
         "cross_join" => Some(vec!["left".to_string(), "right".to_string()]),
-        "table_suffixes" => Some(vec!["left".to_string(), "right".to_string(), "left_suffix".to_string(), "right_suffix".to_string()]),
+        "table_suffixes" => Some(vec![
+            "left".to_string(),
+            "right".to_string(),
+            "left_suffix".to_string(),
+            "right_suffix".to_string(),
+        ]),
         "relate" => Some(vec!["col1".to_string(), "col2".to_string()]),
         "primary_key" => Some(vec!["col".to_string()]),
         "Table" => Some(vec!["path".to_string()]),
-        
+
         // database module (from database_engine import engine, ...)
         "engine" => Some(vec![
             "url".to_string(),
@@ -211,11 +238,16 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "nullable".to_string(),
             "onupdate".to_string(),
         ]),
-        
+
         // JOIN функции - они все имеют одинаковую структуру (left, right, on, type?, suffixes?)
-        "inner_join" | "left_join" | "right_join" | "full_join" | "semi_join" | "anti_join" | "zip_join" | "asof_join" | "join_on" | "apply_join" => {
-            Some(vec!["left".to_string(), "right".to_string(), "on".to_string(), "type".to_string(), "suffixes".to_string()])
-        },
+        "inner_join" | "left_join" | "right_join" | "full_join" | "semi_join" | "anti_join"
+        | "zip_join" | "asof_join" | "join_on" | "apply_join" => Some(vec![
+            "left".to_string(),
+            "right".to_string(),
+            "on".to_string(),
+            "type".to_string(),
+            "suffixes".to_string(),
+        ]),
 
         // Module methods
         "show" => Some(vec!["image".to_string(), "title".to_string()]),
@@ -227,7 +259,7 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "line_width".to_string(),
             "color".to_string(),
         ]),
-        
+
         // settings_env.Config(...) / Settings.config(...) — config dict for load_env
         "Config" | "config" => Some(vec![
             "env_prefix".to_string(),
@@ -237,7 +269,7 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "case_sensitive".to_string(),
             "env_nested_delimiter".to_string(),
         ]),
-        
+
         // settings_env.Field(...) — full Pydantic-style field descriptor
         "Field" => Some(vec![
             "default".to_string(),
@@ -263,14 +295,8 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "validate_default".to_string(),
             "frozen".to_string(),
         ]),
-        
+
         // Функция не найдена или не поддерживает именованные аргументы
         _ => None,
     }
 }
-
-
-
-
-
-

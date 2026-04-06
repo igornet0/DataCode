@@ -64,7 +64,8 @@ pub fn default_pool_size(db_type: &str) -> u32 {
     match db_type {
         "sqlite" => 5,
         "postgresql" => 10,
-        "mysql" | "mariadb" | "mssql" | "oracle" | "couchdb" | "memcached" | "neo4j" | "arangodb" | "cassandra" | "influxdb" => 5,
+        "mysql" | "mariadb" | "mssql" | "oracle" | "couchdb" | "memcached" | "neo4j"
+        | "arangodb" | "cassandra" | "influxdb" => 5,
         "mongodb" | "redis" => 10,
         "clickhouse" => 10,
         _ => 10,
@@ -75,7 +76,8 @@ pub fn default_pool_max_overflow(db_type: &str) -> u32 {
     match db_type {
         "sqlite" => 10,
         "postgresql" | "clickhouse" => 20,
-        "mysql" | "mariadb" | "mssql" | "couchdb" | "memcached" | "neo4j" | "arangodb" | "cassandra" | "influxdb" => 10,
+        "mysql" | "mariadb" | "mssql" | "couchdb" | "memcached" | "neo4j" | "arangodb"
+        | "cassandra" | "influxdb" => 10,
         "oracle" => 5,
         "mongodb" => 50,
         "redis" => 20,

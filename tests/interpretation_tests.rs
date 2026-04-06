@@ -620,7 +620,7 @@ mod tests {
             Ok(v) => panic!("Expected Bool(false), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
-        
+
         let result = run("!false");
         match result {
             Ok(Value::Bool(true)) => {}
@@ -879,7 +879,7 @@ mod tests {
             }
         "#;
         assert_number_result(source, 1.0);
-        
+
         let source = r#"
             if "hello" != "world" {
                 1
@@ -1086,7 +1086,7 @@ mod tests {
         // sum = 6 + 7 + 8 + 9 + 10 = 40
         assert_number_result(source, 40.0);
     }
-    
+
     #[test]
     fn test_for_loop_empty_array() {
         let source = r#"
@@ -1204,7 +1204,7 @@ mod tests {
             }
         "#;
         assert_number_result(source, 1.0);
-        
+
         let source = r#"
             if "abc" > "def" {
                 1
@@ -1235,7 +1235,7 @@ mod tests {
         // Сложные случаи унарных операторов
         assert_number_result("--10", 10.0);
         assert_number_result("---5", -5.0);
-        
+
         let result = run("!!true");
         match result {
             Ok(Value::Bool(true)) => {}
@@ -1280,7 +1280,7 @@ mod tests {
             len("hello")
         "#;
         assert_number_result(source, 5.0);
-        
+
         let source = r#"
             len("")
         "#;
@@ -1726,7 +1726,10 @@ mod tests {
         let result = run(source);
         match result {
             Ok(Value::String(s)) => {
-                assert_eq!(s, "helloworld", "concat('hello', 'world') should be 'helloworld'");
+                assert_eq!(
+                    s, "helloworld",
+                    "concat('hello', 'world') should be 'helloworld'"
+                );
             }
             Ok(v) => panic!("Expected String('helloworld'), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
@@ -1809,7 +1812,10 @@ mod tests {
         let result = run(source);
         match result {
             Ok(Value::Number(n)) => {
-                assert_eq!(n, 2.0, "list should have length 2 (not affected by push to list1)");
+                assert_eq!(
+                    n, 2.0,
+                    "list should have length 2 (not affected by push to list1)"
+                );
             }
             Ok(v) => panic!("Expected Number(2), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
@@ -1831,7 +1837,11 @@ mod tests {
         match result {
             Ok(Value::Number(n)) => {
                 // Reference semantics: same array, so 5+5=10. If copy semantics: 4+4=8.
-                assert!(n == 10.0 || n == 8.0, "Sum of lengths should be 10 (ref) or 8 (copy), got {}", n);
+                assert!(
+                    n == 10.0 || n == 8.0,
+                    "Sum of lengths should be 10 (ref) or 8 (copy), got {}",
+                    n
+                );
             }
             Ok(v) => panic!("Expected Number, got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
@@ -1851,7 +1861,11 @@ mod tests {
         match result {
             Ok(Value::Number(n)) => {
                 // Reference semantics: list[0] mutated, so len(list1[0])=3. If copy: 2.
-                assert!(n == 3.0 || n == 2.0, "list1[0] length should be 3 (ref) or 2 (copy), got {}", n);
+                assert!(
+                    n == 3.0 || n == 2.0,
+                    "list1[0] length should be 3 (ref) or 2 (copy), got {}",
+                    n
+                );
             }
             Ok(v) => panic!("Expected Number, got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
@@ -1870,7 +1884,10 @@ mod tests {
         let result = run(source);
         match result {
             Ok(Value::Number(n)) => {
-                assert_eq!(n, 2.0, "list1[0] should have length 2 (not affected by push to list[0])");
+                assert_eq!(
+                    n, 2.0,
+                    "list1[0] should have length 2 (not affected by push to list[0])"
+                );
             }
             Ok(v) => panic!("Expected Number(2), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
@@ -2005,4 +2022,3 @@ mod tests {
         assert_number_result(source, 2.8284271247461903); // sqrt(8) ≈ 2.828
     }
 }
-

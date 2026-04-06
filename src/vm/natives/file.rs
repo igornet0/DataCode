@@ -1,13 +1,13 @@
 // File operations native functions
 
 use crate::common::value::Value;
-use std::path::PathBuf;
-use std::rc::Rc;
-use std::cell::RefCell;
-use std::fs;
-use std::env;
 use chrono::Utc;
 use regex::Regex;
+use std::cell::RefCell;
+use std::env;
+use std::fs;
+use std::path::PathBuf;
+use std::rc::Rc;
 
 pub fn native_now(_args: &[Value]) -> Value {
     // Возвращаем текущее время в формате RFC3339 (ISO 8601)
@@ -18,7 +18,7 @@ pub fn native_now(_args: &[Value]) -> Value {
 
 pub fn native_getcwd(_args: &[Value]) -> Value {
     use crate::websocket::get_use_ve;
-    
+
     // Если включен режим use_ve, возвращаем пустой путь для безопасности
     if get_use_ve() {
         Value::Path(PathBuf::new()) // Пустой путь в режиме use_ve для безопасности
@@ -35,13 +35,16 @@ pub fn native_getcwd(_args: &[Value]) -> Value {
 /// В режиме --use-ve преобразует полный путь в относительный
 pub fn format_path_for_error(path: &PathBuf) -> String {
     use crate::websocket::{get_use_ve, get_user_session_path};
-    
+
     if get_use_ve() {
         if let Some(session_path) = get_user_session_path() {
             // Канонизируем оба пути для корректного сравнения
-            let canonical_session = session_path.canonicalize().ok().unwrap_or(session_path.clone());
+            let canonical_session = session_path
+                .canonicalize()
+                .ok()
+                .unwrap_or(session_path.clone());
             let canonical_path = path.canonicalize().ok().unwrap_or(path.clone());
-            
+
             // Проверяем, начинается ли путь с пути сессии
             if let Ok(stripped) = canonical_path.strip_prefix(&canonical_session) {
                 // Формируем относительный путь с префиксом ./
@@ -50,7 +53,7 @@ pub fn format_path_for_error(path: &PathBuf) -> String {
                     "./".to_string()
                 } else {
                     // Убираем начальные слеши и добавляем ./
-                    let trimmed = relative.trim_start_matches(|c| c == '/' || c == '\\');
+                    let trimmed = relative.trim_start_matches(['/', '\\']);
                     if trimmed.is_empty() {
                         "./".to_string()
                     } else {
@@ -73,18 +76,18 @@ pub fn format_path_for_error(path: &PathBuf) -> String {
 
 /// Безопасное разрешение пути относительно папки сессии в режиме --use-ve
 pub fn resolve_path_in_session(path: &PathBuf) -> Result<PathBuf, String> {
-    use crate::websocket::{get_user_session_path, get_use_ve};
-    
+    use crate::websocket::{get_use_ve, get_user_session_path};
+
     if !get_use_ve() {
         // В обычном режиме просто возвращаем путь как есть
         return Ok(path.clone());
     }
-    
+
     let session_path = match get_user_session_path() {
         Some(p) => p,
         None => return Err("Session path not available".to_string()),
     };
-    
+
     // Нормализуем session_path для корректного сравнения
     let session_path_normalized = match session_path.canonicalize() {
         Ok(p) => p,
@@ -92,20 +95,20 @@ pub fn resolve_path_in_session(path: &PathBuf) -> Result<PathBuf, String> {
             // Если канонизация не удалась, используем исходный путь
             // но нормализуем его (убираем лишние компоненты)
             session_path.clone()
-        },
+        }
     };
-    
+
     // Проверяем на directory traversal атаки
     let path_str = path.to_string_lossy().to_string();
     if path_str.contains("..") {
         return Err("Path traversal not allowed in --use-ve mode".to_string());
     }
-    
+
     // Обрабатываем пустой путь и "." как текущую директорию сессии
     if path_str.is_empty() || path_str == "." {
         return Ok(session_path_normalized.clone());
     }
-    
+
     // Проверяем абсолютные пути
     if path.is_absolute() {
         // Для абсолютных путей проверяем, что они внутри сессии
@@ -116,12 +119,13 @@ pub fn resolve_path_in_session(path: &PathBuf) -> Result<PathBuf, String> {
                 Err(_) => {
                     // Если канонизация не удалась, но путь существует,
                     // проверяем через starts_with с исходными путями
-                    if path.starts_with(&session_path) || path.starts_with(&session_path_normalized) {
+                    if path.starts_with(&session_path) || path.starts_with(&session_path_normalized)
+                    {
                         path.clone()
                     } else {
                         return Err("Access outside session directory not allowed".to_string());
                     }
-                },
+                }
             }
         } else {
             // Если файл не существует, пытаемся канонизировать родительскую директорию
@@ -134,11 +138,14 @@ pub fn resolve_path_in_session(path: &PathBuf) -> Result<PathBuf, String> {
                         } else {
                             // Дополнительная проверка через сравнение компонентов
                             let parent_components: Vec<_> = p.components().collect();
-                            let session_components: Vec<_> = session_path_normalized.components().collect();
+                            let session_components: Vec<_> =
+                                session_path_normalized.components().collect();
                             if parent_components.len() >= session_components.len() {
                                 let mut matches = true;
                                 for (i, session_comp) in session_components.iter().enumerate() {
-                                    if i >= parent_components.len() || parent_components[i] != *session_comp {
+                                    if i >= parent_components.len()
+                                        || parent_components[i] != *session_comp
+                                    {
                                         matches = false;
                                         break;
                                     }
@@ -146,22 +153,26 @@ pub fn resolve_path_in_session(path: &PathBuf) -> Result<PathBuf, String> {
                                 if matches {
                                     path.clone()
                                 } else {
-                                    return Err("Path resolved outside session directory".to_string());
+                                    return Err(
+                                        "Path resolved outside session directory".to_string()
+                                    );
                                 }
                             } else {
                                 return Err("Path resolved outside session directory".to_string());
                             }
                         }
-                    },
+                    }
                     Err(_) => {
                         // Если родительская директория не может быть канонизирована,
                         // проверяем через starts_with
-                        if parent.starts_with(&session_path) || parent.starts_with(&session_path_normalized) {
+                        if parent.starts_with(&session_path)
+                            || parent.starts_with(&session_path_normalized)
+                        {
                             path.clone()
                         } else {
                             return Err("Access outside session directory not allowed".to_string());
                         }
-                    },
+                    }
                 }
             } else {
                 // Нет родительской директории - проверяем напрямую
@@ -172,7 +183,7 @@ pub fn resolve_path_in_session(path: &PathBuf) -> Result<PathBuf, String> {
                 }
             }
         };
-        
+
         // Финальная проверка безопасности через канонизированные пути
         if path_normalized.starts_with(&session_path_normalized) {
             Ok(path_normalized)
@@ -203,7 +214,7 @@ pub fn resolve_path_in_session(path: &PathBuf) -> Result<PathBuf, String> {
     } else {
         // Относительный путь разрешаем относительно папки сессии
         let resolved = session_path.join(path);
-        
+
         // Нормализуем путь и проверяем, что он все еще внутри сессии
         let normalized = if resolved.exists() {
             match resolved.canonicalize() {
@@ -220,21 +231,22 @@ pub fn resolve_path_in_session(path: &PathBuf) -> Result<PathBuf, String> {
                         } else {
                             return Err("Path resolved outside session directory".to_string());
                         }
-                    },
+                    }
                     Err(_) => {
                         if parent.starts_with(&session_path) {
                             resolved
                         } else {
                             return Err("Path resolved outside session directory".to_string());
                         }
-                    },
+                    }
                 }
             } else {
                 resolved
             }
         };
-        
-        if normalized.starts_with(&session_path_normalized) || normalized.starts_with(&session_path) {
+
+        if normalized.starts_with(&session_path_normalized) || normalized.starts_with(&session_path)
+        {
             Ok(normalized)
         } else {
             Err("Path resolved outside session directory".to_string())
@@ -254,7 +266,7 @@ fn glob_to_regex(glob: &str) -> String {
             .collect();
         return format!("^({})$", regex_alternatives.join("|"));
     }
-    
+
     // Для одиночного паттерна добавляем якоря
     format!("^{}$", glob_to_regex_single(glob))
 }
@@ -264,7 +276,7 @@ fn glob_to_regex(glob: &str) -> String {
 fn glob_to_regex_single(glob: &str) -> String {
     let mut regex = String::new();
     let mut chars = glob.chars().peekable();
-    
+
     while let Some(ch) = chars.next() {
         match ch {
             '*' => {
@@ -289,7 +301,7 @@ fn glob_to_regex_single(glob: &str) -> String {
             }
         }
     }
-    
+
     regex
 }
 
@@ -301,78 +313,76 @@ fn list_files_recursive(
     session_path: &PathBuf,
 ) -> Vec<Value> {
     let mut files = Vec::new();
-    
+
     // Проверяем безопасность пути в режиме --use-ve
     let resolved_dir = match resolve_path_in_session(dir) {
         Ok(p) => p,
         Err(_) => return files, // Пропускаем недоступные пути
     };
-    
+
     if !resolved_dir.exists() || !resolved_dir.is_dir() {
         return files;
     }
-    
+
     match fs::read_dir(&resolved_dir) {
         Ok(entries) => {
-            for entry in entries {
-                if let Ok(entry) = entry {
-                    let entry_path = entry.path();
-                    
-                    // Пропускаем служебные файлы
-                    if let Some(file_name) = entry_path.file_name() {
-                        if let Some(name_str) = file_name.to_str() {
-                            if name_str.starts_with(".") || name_str == ".DS_Store" {
-                                continue;
-                            }
+            for entry in entries.filter_map(Result::ok) {
+                let entry_path = entry.path();
+
+                // Пропускаем служебные файлы
+                if let Some(file_name) = entry_path.file_name() {
+                    if let Some(name_str) = file_name.to_str() {
+                        if name_str.starts_with(".") || name_str == ".DS_Store" {
+                            continue;
                         }
                     }
-                    
-                    let metadata = match entry.metadata() {
-                        Ok(m) => m,
-                        Err(_) => continue,
-                    };
-                    
-                    if metadata.is_file() {
-                        // Для файлов проверяем regex фильтрацию
-                        if let Some(re) = regex {
-                            if let Some(file_name) = entry_path.file_name() {
-                                if let Some(name_str) = file_name.to_str() {
-                                    if !re.is_match(name_str) {
-                                        continue; // Файл не соответствует regex
-                                    }
-                                } else {
-                                    continue; // Невалидное имя файла
+                }
+
+                let metadata = match entry.metadata() {
+                    Ok(m) => m,
+                    Err(_) => continue,
+                };
+
+                if metadata.is_file() {
+                    // Для файлов проверяем regex фильтрацию
+                    if let Some(re) = regex {
+                        if let Some(file_name) = entry_path.file_name() {
+                            if let Some(name_str) = file_name.to_str() {
+                                if !re.is_match(name_str) {
+                                    continue; // Файл не соответствует regex
                                 }
                             } else {
-                                continue; // Нет имени файла
-                            }
-                        }
-                        files.push(Value::Path(entry_path));
-                    } else if metadata.is_dir() {
-                        // Для директорий проверяем regex фильтрацию (если задан)
-                        let should_include = if let Some(re) = regex {
-                            if let Some(dir_name) = entry_path.file_name() {
-                                if let Some(name_str) = dir_name.to_str() {
-                                    re.is_match(name_str)
-                                } else {
-                                    false // Невалидное имя директории
-                                }
-                            } else {
-                                false // Нет имени директории
+                                continue; // Невалидное имя файла
                             }
                         } else {
-                            true // Если regex не задан, включаем все директории
-                        };
-                        
-                        if should_include {
-                            // Добавляем директорию в результат
-                            files.push(Value::Path(entry_path.clone()));
+                            continue; // Нет имени файла
                         }
-                        
-                        // Рекурсивно обходим содержимое директории
-                        let sub_files = list_files_recursive(&entry_path, regex, session_path);
-                        files.extend(sub_files);
                     }
+                    files.push(Value::Path(entry_path));
+                } else if metadata.is_dir() {
+                    // Для директорий проверяем regex фильтрацию (если задан)
+                    let should_include = if let Some(re) = regex {
+                        if let Some(dir_name) = entry_path.file_name() {
+                            if let Some(name_str) = dir_name.to_str() {
+                                re.is_match(name_str)
+                            } else {
+                                false // Невалидное имя директории
+                            }
+                        } else {
+                            false // Нет имени директории
+                        }
+                    } else {
+                        true // Если regex не задан, включаем все директории
+                    };
+
+                    if should_include {
+                        // Добавляем директорию в результат
+                        files.push(Value::Path(entry_path.clone()));
+                    }
+
+                    // Рекурсивно обходим содержимое директории
+                    let sub_files = list_files_recursive(&entry_path, regex, session_path);
+                    files.extend(sub_files);
                 }
             }
         }
@@ -380,7 +390,7 @@ fn list_files_recursive(
             // Игнорируем ошибки чтения директории
         }
     }
-    
+
     files
 }
 
@@ -405,12 +415,12 @@ pub fn native_list_files(args: &[Value]) -> Value {
     } else {
         None
     };
-    
+
     // Компилируем regex, если он задан
     let regex = if let Some(pattern) = &regex_pattern {
         // Проверяем, является ли паттерн glob-подобным (содержит * или ?)
         let is_glob = pattern.contains('*') || pattern.contains('?');
-        
+
         let regex_pattern_str = if is_glob {
             // Конвертируем glob в regex
             glob_to_regex(pattern)
@@ -418,7 +428,7 @@ pub fn native_list_files(args: &[Value]) -> Value {
             // Используем как есть (предполагаем, что это уже regex)
             pattern.clone()
         };
-        
+
         match Regex::new(&regex_pattern_str) {
             Ok(re) => Some(re),
             Err(e) => {
@@ -439,14 +449,14 @@ pub fn native_list_files(args: &[Value]) -> Value {
         // Извлекаем имя шары и путь к директории
         let path_without_prefix = &dir_path_str[6..]; // Убираем "lib://"
         let parts: Vec<&str> = path_without_prefix.splitn(2, '/').collect();
-        
+
         if parts.is_empty() {
             return Value::Array(Rc::new(RefCell::new(Vec::new())));
         }
-        
+
         let share_name = parts[0];
         let dir_path_on_share = if parts.len() > 1 { parts[1] } else { "" };
-        
+
         // Получаем SmbManager из thread-local storage; hold lock only for list_files, then release before building result.
         if let Some(smb_manager) = crate::vm::file_ops::get_smb_manager() {
             let regex_str = regex_pattern.as_deref();
@@ -456,7 +466,8 @@ pub fn native_list_files(args: &[Value]) -> Value {
             };
             match list_result {
                 Ok(files) => {
-                    let file_values: Vec<Value> = files.iter()
+                    let file_values: Vec<Value> = files
+                        .iter()
                         .map(|f| {
                             // Конструируем полный путь для SMB
                             let full_path = if dir_path_on_share.is_empty() {
@@ -486,21 +497,20 @@ pub fn native_list_files(args: &[Value]) -> Value {
                 return Value::Array(Rc::new(RefCell::new(Vec::new())));
             }
         };
-        
+
         // Получаем путь сессии для проверки безопасности в рекурсивной функции
-        use crate::websocket::{get_user_session_path, get_use_ve};
+        use crate::websocket::{get_use_ve, get_user_session_path};
         let session_path = if get_use_ve() {
             get_user_session_path().unwrap_or_else(|| PathBuf::from("."))
         } else {
             PathBuf::from(".")
         };
-        
+
         // Используем рекурсивную функцию для обхода директории
         let files = list_files_recursive(&resolved_path, regex.as_ref(), &session_path);
         Value::Array(Rc::new(RefCell::new(files)))
     }
 }
-
 
 /// Reads a file as raw bytes. Path rules match `read_file` (local + `lib://` SMB).
 pub fn native_read_file_bin(args: &[Value]) -> Value {
@@ -533,7 +543,9 @@ pub fn native_read_file_bin(args: &[Value]) -> Value {
                 guard.read_file(share_name, file_path_on_share)
             };
             match read_result {
-                Ok(content) => Value::ByteBuffer(crate::common::value::ByteBuffer::from_vec(content)),
+                Ok(content) => {
+                    Value::ByteBuffer(crate::common::value::ByteBuffer::from_vec(content))
+                }
                 Err(_) => Value::Null,
             }
         } else {

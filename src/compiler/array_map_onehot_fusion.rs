@@ -44,7 +44,12 @@ pub fn try_match_array_map_onehot_fusion(expr: &Expr) -> Option<(Expr, Expr)> {
     }
     let param_name = &params[0].name;
 
-    let Expr::ArrayIndex { array: inner, index, .. } = body.as_ref() else {
+    let Expr::ArrayIndex {
+        array: inner,
+        index,
+        ..
+    } = body.as_ref()
+    else {
         return None;
     };
     let IndexExpr::Scalar(idx_expr) = index else {
@@ -149,10 +154,7 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
             match index {
                 IndexExpr::Scalar(e) => walk_expr(e, f),
                 IndexExpr::Slice {
-                    start,
-                    stop,
-                    step,
-                    ..
+                    start, stop, step, ..
                 } => {
                     if let Some(e) = start {
                         walk_expr(e, f);
@@ -166,15 +168,17 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
                 }
             }
         }
-        Expr::AssignArray { array, index, value, .. } => {
+        Expr::AssignArray {
+            array,
+            index,
+            value,
+            ..
+        } => {
             walk_expr(array, f);
             match index {
                 IndexExpr::Scalar(e) => walk_expr(e, f),
                 IndexExpr::Slice {
-                    start,
-                    stop,
-                    step,
-                    ..
+                    start, stop, step, ..
                 } => {
                     if let Some(e) = start {
                         walk_expr(e, f);
@@ -189,15 +193,17 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
             }
             walk_expr(value, f);
         }
-        Expr::AssignArrayOp { array, index, value, .. } => {
+        Expr::AssignArrayOp {
+            array,
+            index,
+            value,
+            ..
+        } => {
             walk_expr(array, f);
             match index {
                 IndexExpr::Scalar(e) => walk_expr(e, f),
                 IndexExpr::Slice {
-                    start,
-                    stop,
-                    step,
-                    ..
+                    start, stop, step, ..
                 } => {
                     if let Some(e) = start {
                         walk_expr(e, f);
@@ -268,7 +274,9 @@ fn walk_stmt(stmt: &Stmt, f: &mut impl FnMut(&Expr)) {
                 }
             }
         }
-        Stmt::While { condition, body, .. } => {
+        Stmt::While {
+            condition, body, ..
+        } => {
             walk_expr(condition, f);
             for s in body {
                 walk_stmt(s, f);

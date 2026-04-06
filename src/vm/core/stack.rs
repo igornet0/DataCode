@@ -1,7 +1,10 @@
 // Stack operations for VM: stack holds TaggedValue (immediates + heap refs).
 
-use crate::common::{error::LangError, value_store::{ValueId, ValueStore}};
 use crate::common::TaggedValue;
+use crate::common::{
+    error::LangError,
+    value_store::{ValueId, ValueStore},
+};
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::heavy_store::HeavyStore;
 
@@ -37,12 +40,16 @@ pub fn pop(
 
     if let Some(frame) = frames.last() {
         if stack.len() <= frame.stack_start {
-            let error = ExceptionHandler::runtime_error(
+            let error =
+                ExceptionHandler::runtime_error(frames, "Stack underflow".to_string(), line);
+            match ExceptionHandler::handle_exception(
+                stack,
                 frames,
-                "Stack underflow".to_string(),
-                line,
-            );
-            match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error.clone(), value_store, heavy_store) {
+                exception_handlers,
+                error.clone(),
+                value_store,
+                heavy_store,
+            ) {
                 Ok(_) => return Err(error),
                 Err(e) => return Err(e),
             }
@@ -50,19 +57,26 @@ pub fn pop(
     }
 
     stack.pop().ok_or_else(|| {
-        let error = ExceptionHandler::runtime_error(
+        let error = ExceptionHandler::runtime_error(frames, "Stack underflow".to_string(), line);
+        match ExceptionHandler::handle_exception(
+            stack,
             frames,
-            "Stack underflow".to_string(),
-            line,
-        );
-        match ExceptionHandler::handle_exception(stack, frames, exception_handlers, error.clone(), value_store, heavy_store) {
+            exception_handlers,
+            error.clone(),
+            value_store,
+            heavy_store,
+        ) {
             Ok(_) => error,
             Err(e) => e,
         }
     })
 }
 
-pub fn peek<'a>(stack: &'a [TaggedValue], distance: usize, frames: &[CallFrame]) -> Result<TaggedValue, LangError> {
+pub fn peek(
+    stack: &[TaggedValue],
+    distance: usize,
+    frames: &[CallFrame],
+) -> Result<TaggedValue, LangError> {
     if distance >= stack.len() {
         let line = if let Some(frame) = frames.last() {
             if frame.ip > 0 {

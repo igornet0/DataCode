@@ -417,4 +417,3 @@ mod tests {
         assert_number_result(source, 6.0);
     }
 }
-

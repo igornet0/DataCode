@@ -5,18 +5,14 @@ use crate::common::value::{ArrayViewData, ArrayViewSource, Value};
 use crate::common::value_store::{ValueCell, ValueId, ValueStore, NULL_VALUE_ID};
 use crate::common::TaggedValue;
 use std::cell::RefCell;
-use std::rc::Rc;
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use super::store::HeavyStore;
 
 /// Store a Value into ValueStore and HeavyStore; returns its ValueId.
 /// Recursive for Array and Object; heavy variants go to HeavyStore.
-pub fn store_value(
-    v: Value,
-    store: &mut ValueStore,
-    heap: &mut HeavyStore,
-) -> ValueId {
+pub fn store_value(v: Value, store: &mut ValueStore, heap: &mut HeavyStore) -> ValueId {
     match v {
         Value::Null => NULL_VALUE_ID,
         Value::Number(n) => store.allocate(ValueCell::Number(n)),
@@ -55,7 +51,13 @@ pub fn store_value(
             store.allocate(ValueCell::Tuple(arr))
         }
         Value::Function(i) => store.allocate(ValueCell::Function(i)),
-        Value::ModuleFunction { module_uid, local_index } => store.allocate(ValueCell::ModuleFunction { module_uid, local_index }),
+        Value::ModuleFunction {
+            module_uid,
+            local_index,
+        } => store.allocate(ValueCell::ModuleFunction {
+            module_uid,
+            local_index,
+        }),
         Value::NativeFunction(i) => store.allocate(ValueCell::NativeFunction(i)),
         Value::Path(p) => store.allocate(ValueCell::Path(p)),
         Value::Uuid(hi, lo) => store.allocate(ValueCell::Uuid(hi, lo)),
@@ -67,8 +69,26 @@ pub fn store_value(
             let map = rc.borrow();
             // MetaData and create_all have circular refs; store in HeavyStore without decomposing
             // Class objects (ORM models) must stay as one Rc so SetArrayElement mutations are visible to run_create_all
-            if map.get("__meta").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
-                || map.get("__create_all").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
+            if map
+                .get("__meta")
+                .and_then(|v| {
+                    if let Value::Bool(b) = v {
+                        Some(*b)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(false)
+                || map
+                    .get("__create_all")
+                    .and_then(|v| {
+                        if let Value::Bool(b) = v {
+                            Some(*b)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false)
                 || map.contains_key("__class_name")
             {
                 let idx = heap.push(Value::Object(rc.clone()));
@@ -154,8 +174,26 @@ pub fn update_cell_if_mutable(
         Value::Object(rc) => {
             let map_ref = rc.borrow();
             // MetaData and create_all have circular refs; store in HeavyStore without decomposing
-            if map_ref.get("__meta").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
-                || map_ref.get("__create_all").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
+            if map_ref
+                .get("__meta")
+                .and_then(|v| {
+                    if let Value::Bool(b) = v {
+                        Some(*b)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(false)
+                || map_ref
+                    .get("__create_all")
+                    .and_then(|v| {
+                        if let Value::Bool(b) = v {
+                            Some(*b)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false)
             {
                 let idx = heap.push(Value::Object(rc.clone()));
                 if let Some(ValueCell::Heavy(h)) = store.get_mut(id) {
@@ -176,11 +214,7 @@ pub fn update_cell_if_mutable(
 }
 
 /// Load a Value from ValueStore and HeavyStore by ValueId.
-pub fn load_value(
-    id: ValueId,
-    store: &ValueStore,
-    heap: &HeavyStore,
-) -> Value {
+pub fn load_value(id: ValueId, store: &ValueStore, heap: &HeavyStore) -> Value {
     if id == NULL_VALUE_ID {
         return Value::Null;
     }
@@ -193,9 +227,7 @@ pub fn load_value(
         ValueCell::Bool(b) => Value::Bool(*b),
         ValueCell::Null => Value::Null,
         // Value::String is owned; one .to_string() at VM→native boundary is required (no extra clone).
-        ValueCell::String(sid) => Value::String(
-            store.get_string(*sid).unwrap_or("").to_string(),
-        ),
+        ValueCell::String(sid) => Value::String(store.get_string(*sid).unwrap_or("").to_string()),
         ValueCell::Array(slots) => {
             let arr: Vec<Value> = slots
                 .iter()
@@ -213,10 +245,7 @@ pub fn load_value(
             length: *length,
         }),
         ValueCell::Tuple(ids) => {
-            let arr: Vec<Value> = ids
-                .iter()
-                .map(|&i| load_value(i, store, heap))
-                .collect();
+            let arr: Vec<Value> = ids.iter().map(|&i| load_value(i, store, heap)).collect();
             Value::Tuple(Rc::new(RefCell::new(arr)))
         }
         ValueCell::Object(map) => {
@@ -227,7 +256,13 @@ pub fn load_value(
             Value::Object(Rc::new(RefCell::new(hm)))
         }
         ValueCell::Function(i) => Value::Function(*i),
-        ValueCell::ModuleFunction { module_uid, local_index } => Value::ModuleFunction { module_uid: *module_uid, local_index: *local_index },
+        ValueCell::ModuleFunction {
+            module_uid,
+            local_index,
+        } => Value::ModuleFunction {
+            module_uid: *module_uid,
+            local_index: *local_index,
+        },
         ValueCell::NativeFunction(i) => Value::NativeFunction(*i),
         ValueCell::Path(p) => Value::Path(p.clone()),
         ValueCell::Uuid(hi, lo) => Value::Uuid(*hi, *lo),
@@ -246,15 +281,15 @@ pub fn load_value(
                 Value::Null
             }
         }
-        ValueCell::PluginOpaque { tag, id } => Value::PluginOpaque {
-            tag: *tag,
-            id: *id,
-        },
+        ValueCell::PluginOpaque { tag, id } => Value::PluginOpaque { tag: *tag, id: *id },
         ValueCell::Window(h) => Value::Window(*h),
         ValueCell::Enumerate { data_id, start } => {
             let data_val = load_value(*data_id, store, heap);
             if let Value::Array(rc) = data_val {
-                Value::Enumerate { data: rc, start: *start }
+                Value::Enumerate {
+                    data: rc,
+                    start: *start,
+                }
             } else {
                 Value::Null
             }
@@ -336,11 +371,7 @@ pub fn tagged_to_value_id_arena(tv: TaggedValue, store: &mut ValueStore) -> Valu
 }
 
 /// Store a Value into the heap arena (for globals / ephemeral heap). Same semantics as store_value but allocate_arena.
-pub fn store_value_arena(
-    v: Value,
-    store: &mut ValueStore,
-    heap: &mut HeavyStore,
-) -> ValueId {
+pub fn store_value_arena(v: Value, store: &mut ValueStore, heap: &mut HeavyStore) -> ValueId {
     match v {
         Value::Null => NULL_VALUE_ID,
         Value::Number(n) => store.allocate_arena(ValueCell::Number(n)),
@@ -367,7 +398,13 @@ pub fn store_value_arena(
             store.allocate_arena(ValueCell::Tuple(arr))
         }
         Value::Function(i) => store.allocate_arena(ValueCell::Function(i)),
-        Value::ModuleFunction { module_uid, local_index } => store.allocate_arena(ValueCell::ModuleFunction { module_uid, local_index }),
+        Value::ModuleFunction {
+            module_uid,
+            local_index,
+        } => store.allocate_arena(ValueCell::ModuleFunction {
+            module_uid,
+            local_index,
+        }),
         Value::NativeFunction(i) => store.allocate_arena(ValueCell::NativeFunction(i)),
         Value::Path(p) => store.allocate_arena(ValueCell::Path(p)),
         Value::Uuid(hi, lo) => store.allocate_arena(ValueCell::Uuid(hi, lo)),
@@ -378,8 +415,26 @@ pub fn store_value_arena(
         Value::Object(rc) => {
             let map = rc.borrow();
             // MetaData and create_all have circular refs; store in HeavyStore without decomposing
-            if map.get("__meta").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
-                || map.get("__create_all").and_then(|v| if let Value::Bool(b) = v { Some(*b) } else { None }).unwrap_or(false)
+            if map
+                .get("__meta")
+                .and_then(|v| {
+                    if let Value::Bool(b) = v {
+                        Some(*b)
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(false)
+                || map
+                    .get("__create_all")
+                    .and_then(|v| {
+                        if let Value::Bool(b) = v {
+                            Some(*b)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false)
             {
                 let idx = heap.push(Value::Object(rc.clone()));
                 return store.allocate_arena(ValueCell::Heavy(idx));
@@ -403,7 +458,9 @@ pub fn store_value_arena(
                 column_name,
             })
         }
-        Value::PluginOpaque { tag, id } => store.allocate_arena(ValueCell::PluginOpaque { tag, id }),
+        Value::PluginOpaque { tag, id } => {
+            store.allocate_arena(ValueCell::PluginOpaque { tag, id })
+        }
         Value::Window(h) => store.allocate_arena(ValueCell::Window(h)),
         Value::Image(rc) => {
             let idx = heap.push(Value::Image(rc));

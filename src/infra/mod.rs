@@ -5,6 +5,7 @@ pub mod cli;
 pub mod gui;
 pub mod http_server;
 pub mod repl;
+pub mod self_update;
 pub mod websocket;
 pub mod window_events;
 

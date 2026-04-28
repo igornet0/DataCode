@@ -3,18 +3,25 @@ DataCode — установка (Linux, архив .tar.gz)
 
 1) Распакуйте архив в удобную папку.
 
-2) Установка интерпретатора в систему (нужны права администратора):
+2) Установка в систему (нужны права администратора для /usr/local/bin):
      chmod +x install.sh
      ./install.sh
 
-   Скрипт копирует бинарник «datacode» в /usr/local/bin.
+   Скрипт копирует в /usr/local/bin: datacode, dpm, datacode-server (из папки bin/).
 
-   Либо вручную:
-     chmod +x datacode
-     sudo mv datacode /usr/local/bin/
+   Либо вручную (пример):
+     sudo cp bin/datacode bin/dpm bin/datacode-server /usr/local/bin/
+     sudo chmod 0755 /usr/local/bin/datacode /usr/local/bin/dpm /usr/local/bin/datacode-server
 
 3) Откройте новый терминал и проверьте:
      datacode --version
      datacode путь/к/скрипту.dc
+
+Удаление (из того же распакованного каталога):
+     chmod +x uninstall.sh
+     ./uninstall.sh
+
+Проверка обновления с GitHub (нужен сетевой доступ):
+     datacode --update-version
 
 Если команда не находится, проверьте: echo $PATH — в нём должен быть /usr/local/bin.

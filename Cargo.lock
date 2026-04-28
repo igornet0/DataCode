@@ -698,6 +698,7 @@ dependencies = [
  "rand",
  "regex",
  "rusqlite",
+ "semver",
  "serde",
  "serde_json",
  "sha2",

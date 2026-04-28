@@ -9,11 +9,16 @@ DataCode — установка (Windows, архив .zip)
        Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
        .\install.ps1
 
-   Скрипт копирует datacode.exe в Program Files\Datacode и добавляет каталог в системную переменную Path.
+   Скрипт копирует datacode.exe, dpm.exe, datacode-server.exe из bin\ в Program Files\Datacode и добавляет каталог в системную переменную Path.
 
 3) Закройте и снова откройте командную строку или PowerShell, затем проверьте:
      datacode --version
      datacode путь\к\скрипту.dc
+
+Удаление (PowerShell от администратора, в папке с скриптом):
+     .\uninstall.ps1
+
+Проверка обновления: datacode --update-version
 
 Если команда не находится, перезагрузите компьютер или вручную добавьте в PATH папку:
   C:\Program Files\Datacode

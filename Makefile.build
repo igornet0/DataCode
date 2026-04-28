@@ -1,0 +1,425 @@
+SHELL := /bin/bash
+
+# This Makefile uses GNU make features (ifeq/define/call).
+# On macOS `make` is usually BSD make (Xcode), so use `gmake`.
+
+# Usage:
+#   make -f Makefile.build help
+#   make -f Makefile.build package-all
+#   make -f Makefile.build package-linux-amd64
+#   make -f Makefile.build msi-windows-amd64
+#   make -f Makefile.build dmg-macos-arm64
+#
+# Notes:
+# - Cross-compiling may require extra toolchains (e.g. llvm/musl/mingw). This Makefile focuses on
+#   Rust targets + packaging; install OS-specific deps as needed.
+
+.PHONY: help dist clean-dist clean \
+	guard-gnu-make \
+	build-linux-amd64 build-linux-arm64 build-windows-amd64 build-windows-arm64 build-macos-amd64 build-macos-arm64 \
+	package-linux-amd64 package-linux-arm64 package-windows-amd64 package-windows-arm64 package-macos-amd64 package-macos-arm64 \
+	package-all \
+	docker-check \
+	msi-windows-amd64 msi-windows-arm64 \
+	dmg-macos-amd64 dmg-macos-arm64
+
+CARGO ?= cargo
+RUSTUP ?= rustup
+PYTHON ?= python3
+DOCKER ?= docker
+
+DIST_DIR ?= dist
+STAGE_ROOT := $(DIST_DIR)/_stage
+DOCKER_CACHE := $(DIST_DIR)/_docker
+
+# When building on macOS arm64, we use Docker for non-macOS targets.
+HOST_OS := $(shell uname -s)
+HOST_ARCH := $(shell uname -m)
+USE_DOCKER ?= 1
+RUST_IMAGE ?= rust:1-bookworm
+DOCKER_HOST_BUILD := $(if $(filter Darwin,$(HOST_OS)),$(if $(filter arm64,$(HOST_ARCH)),$(if $(filter 1,$(USE_DOCKER)),1,0),0),0)
+
+# Build profile & extra cargo args
+PROFILE ?= release
+CARGO_FLAGS ?=
+
+# Binaries to include in packages (defaults to all bins in Cargo.toml)
+BINS ?= datacode dpm datacode-server
+
+# --- Metadata (name/version) from Cargo.toml via cargo metadata (no jq needed)
+# We select the root package `data-code` (the one defining bins).
+PKG_NAME := $(shell $(CARGO) metadata --no-deps --format-version 1 2>/dev/null | $(PYTHON) -c 'import json,sys; m=json.load(sys.stdin); p=next((p for p in m["packages"] if p["name"]=="data-code"), None); print(p["name"] if p else "")')
+PKG_VERSION := $(shell $(CARGO) metadata --no-deps --format-version 1 2>/dev/null | $(PYTHON) -c 'import json,sys; m=json.load(sys.stdin); p=next((p for p in m["packages"] if p["name"]=="data-code"), None); print(p["version"] if p else "")')
+PKG_SLUG := $(PKG_NAME)-$(PKG_VERSION)
+
+ifeq ($(strip $(PKG_NAME)),)
+$(error Could not read package metadata. Ensure cargo works in this repo.)
+endif
+
+# --- Targets
+LINUX_AMD64_TARGET  := x86_64-unknown-linux-gnu
+LINUX_ARM64_TARGET  := aarch64-unknown-linux-gnu
+WIN_AMD64_TARGET    := x86_64-pc-windows-msvc
+WIN_ARM64_TARGET    := aarch64-pc-windows-msvc
+MAC_AMD64_TARGET    := x86_64-apple-darwin
+MAC_ARM64_TARGET    := aarch64-apple-darwin
+
+define ensure_target
+	@$(RUSTUP) target add $(1) >/dev/null
+endef
+
+define cargo_build
+	@echo "==> build $(1) ($(PROFILE))"
+	@$(CARGO) build --profile $(PROFILE) --target $(1) --bins $(CARGO_FLAGS)
+endef
+
+define docker_run
+	mkdir -p "$(DOCKER_CACHE)/cargo" "$(DOCKER_CACHE)/rustup"
+	$(DOCKER) run --rm \
+		--platform "$(1)" \
+		-u "$$(id -u):$$(id -g)" \
+		-e HOME=/tmp \
+		-e CARGO_HOME=/cache/cargo \
+		-e RUSTUP_HOME=/cache/rustup \
+		-e PATH=/usr/local/cargo/bin:/cache/cargo/bin:/usr/local/rustup/bin:$$PATH \
+		-e CARGO_INCREMENTAL=0 \
+		-e RUST_BACKTRACE=1 \
+		-v "$(CURDIR)":/work \
+		-v "$(CURDIR)/$(DOCKER_CACHE)/cargo":/cache/cargo \
+		-v "$(CURDIR)/$(DOCKER_CACHE)/rustup":/cache/rustup \
+		-w /work \
+		"$(RUST_IMAGE)" bash -c 'set -euo pipefail; $(2)'
+endef
+
+define docker_run_root
+	mkdir -p "$(DOCKER_CACHE)/cargo" "$(DOCKER_CACHE)/rustup"
+	$(DOCKER) run --rm \
+		--platform "$(1)" \
+		-e HOST_UID="$$(id -u)" \
+		-e HOST_GID="$$(id -g)" \
+		-e HOME=/tmp \
+		-e CARGO_HOME=/cache/cargo \
+		-e RUSTUP_HOME=/cache/rustup \
+		-e PATH=/usr/local/cargo/bin:/cache/cargo/bin:/usr/local/rustup/bin:$$PATH \
+		-e CARGO_INCREMENTAL=0 \
+		-e RUST_BACKTRACE=1 \
+		-v "$(CURDIR)":/work \
+		-v "$(CURDIR)/$(DOCKER_CACHE)/cargo":/cache/cargo \
+		-v "$(CURDIR)/$(DOCKER_CACHE)/rustup":/cache/rustup \
+		-w /work \
+		"$(RUST_IMAGE)" bash -c 'set -euo pipefail; $(2)'
+endef
+
+define docker_build_linux
+	echo "==> docker build linux target $(1) ($(PROFILE))"
+	$(MAKE) -f Makefile.build docker-check
+	$(call docker_run,$(2), \
+		rustup toolchain install stable --profile minimal >/dev/null 2>&1 || true; \
+		rustup default stable >/dev/null; \
+		cargo build --profile $(PROFILE) --target $(1) --bins $(CARGO_FLAGS) \
+	)
+endef
+
+define docker_build_windows_msvc
+	echo "==> docker build windows target $(1) ($(PROFILE)) via cargo-xwin"
+	$(MAKE) -f Makefile.build docker-check
+	$(call docker_run_root,$(2), \
+		apt-get update -y >/dev/null; \
+		mkdir -p /var/lib/apt/lists/partial; \
+		DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends clang lld ca-certificates pkg-config zip curl >/dev/null; \
+		if ! command -v rustup >/dev/null 2>&1; then \
+			curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal; \
+		fi; \
+		rustup target add $(1) >/dev/null; \
+		if ! command -v cargo-xwin >/dev/null 2>&1; then cargo install cargo-xwin --locked; fi; \
+		cargo xwin build --profile $(PROFILE) --target $(1) --bins $(CARGO_FLAGS); \
+		chown -R "$$HOST_UID:$$HOST_GID" /work/target /cache/cargo /cache/rustup || true \
+	)
+endef
+
+help:
+	@printf '%s\n' \
+		'Makefile.build targets:' \
+		'' \
+		'  dist                       Create dist/ folder' \
+		'  clean-dist                 Remove dist/ folder' \
+		'' \
+		'  build-<os>-<arch>          Build for a specific OS/arch' \
+		'  package-<os>-<arch>        Build + create archive into dist/' \
+		'  package-all                Package linux/windows/macos for amd64+arm64' \
+		'' \
+		'  msi-windows-<arch>         Build + create MSI (requires cargo-wix + WiX toolset; run on Windows)' \
+		'  dmg-macos-<arch>           Build + create DMG (requires create-dmg; run on macOS)' \
+		'' \
+		'OS/arch combos:' \
+		'  linux:   amd64, arm64' \
+		'  windows: amd64, arm64' \
+		'  macos:   amd64, arm64' \
+		'' \
+		'Variables:' \
+		'  PROFILE=release|dev         (default: release)' \
+		'  BINS="datacode dpm ..."     (default: datacode dpm datacode-server)' \
+		'  CARGO_FLAGS="..."           extra flags passed to cargo build' \
+		'' \
+		'Examples:' \
+		'  gmake -f Makefile.build package-linux-amd64' \
+		'  gmake -f Makefile.build package-all'
+
+guard-gnu-make:
+	@v="$$($(MAKE) --version 2>/dev/null | head -n 1 || true)"; \
+	case "$$v" in \
+		*"GNU Make"*) exit 0 ;; \
+		*) echo "GNU make is required. Install with: brew install make"; echo "Then run: gmake -f Makefile.build package-all"; exit 1 ;; \
+	esac
+
+dist:
+	@mkdir -p "$(DIST_DIR)"
+
+docker-check:
+	@$(DOCKER) version >/dev/null 2>&1 || { \
+		echo "Docker is not available. Start Docker Desktop and ensure your user can access the Docker socket."; \
+		exit 1; \
+	}
+
+clean-dist:
+	@rm -rf "$(DIST_DIR)"
+
+clean: clean-dist
+
+# --------------------
+# Build targets
+# --------------------
+
+build-linux-amd64: guard-gnu-make
+ifeq ($(DOCKER_HOST_BUILD),1)
+	$(call docker_build_linux,$(LINUX_AMD64_TARGET),linux/amd64)
+else
+	$(call ensure_target,$(LINUX_AMD64_TARGET))
+	$(call cargo_build,$(LINUX_AMD64_TARGET))
+endif
+
+build-linux-arm64: guard-gnu-make
+ifeq ($(DOCKER_HOST_BUILD),1)
+	$(call docker_build_linux,$(LINUX_ARM64_TARGET),linux/arm64)
+else
+	$(call ensure_target,$(LINUX_ARM64_TARGET))
+	$(call cargo_build,$(LINUX_ARM64_TARGET))
+endif
+
+build-windows-amd64: guard-gnu-make
+ifeq ($(DOCKER_HOST_BUILD),1)
+	$(call docker_build_windows_msvc,$(WIN_AMD64_TARGET),linux/amd64)
+else
+	$(call ensure_target,$(WIN_AMD64_TARGET))
+	$(call cargo_build,$(WIN_AMD64_TARGET))
+endif
+
+build-windows-arm64: guard-gnu-make
+ifeq ($(DOCKER_HOST_BUILD),1)
+	$(call docker_build_windows_msvc,$(WIN_ARM64_TARGET),linux/amd64)
+else
+	$(call ensure_target,$(WIN_ARM64_TARGET))
+	$(call cargo_build,$(WIN_ARM64_TARGET))
+endif
+
+build-macos-amd64: guard-gnu-make
+	$(call ensure_target,$(MAC_AMD64_TARGET))
+	$(call cargo_build,$(MAC_AMD64_TARGET))
+
+build-macos-arm64: guard-gnu-make
+	$(call ensure_target,$(MAC_ARM64_TARGET))
+	$(call cargo_build,$(MAC_ARM64_TARGET))
+
+# --------------------
+# Package targets (archives in dist/)
+# --------------------
+
+package-linux-amd64: guard-gnu-make dist build-linux-amd64
+	@stage="$(STAGE_ROOT)/$(PKG_SLUG)-linux-amd64"; \
+	out="$(DIST_DIR)/$(PKG_SLUG)-linux-amd64.tar.gz"; \
+	echo "==> package $$out"; \
+	rm -rf "$$stage"; \
+	mkdir -p "$$stage/bin"; \
+	[ -f "README.md" ] && cp "README.md" "$$stage/" || true; \
+	[ -f "LICENSE" ] && cp "LICENSE" "$$stage/" || true; \
+	[ -f "LICENSE.md" ] && cp "LICENSE.md" "$$stage/" || true; \
+	cp "packaging/linux/install.sh" "$$stage/install.sh" && chmod +x "$$stage/install.sh"; \
+	cp "packaging/linux/uninstall.sh" "$$stage/uninstall.sh" && chmod +x "$$stage/uninstall.sh"; \
+	[ -f "packaging/INSTALL-Linux.txt" ] && cp "packaging/INSTALL-Linux.txt" "$$stage/INSTALL.txt" || true; \
+	for b in $(BINS); do \
+		src="target/$(LINUX_AMD64_TARGET)/$(PROFILE)/$$b"; \
+		[ -f "$$src" ] || { echo "Missing $$src" >&2; exit 1; }; \
+		cp "$$src" "$$stage/bin/"; \
+	done; \
+	tar -C "$$stage" -czf "$$out" .
+
+package-linux-arm64: guard-gnu-make dist build-linux-arm64
+	@stage="$(STAGE_ROOT)/$(PKG_SLUG)-linux-arm64"; \
+	out="$(DIST_DIR)/$(PKG_SLUG)-linux-arm64.tar.gz"; \
+	echo "==> package $$out"; \
+	rm -rf "$$stage"; \
+	mkdir -p "$$stage/bin"; \
+	[ -f "README.md" ] && cp "README.md" "$$stage/" || true; \
+	[ -f "LICENSE" ] && cp "LICENSE" "$$stage/" || true; \
+	[ -f "LICENSE.md" ] && cp "LICENSE.md" "$$stage/" || true; \
+	cp "packaging/linux/install.sh" "$$stage/install.sh" && chmod +x "$$stage/install.sh"; \
+	cp "packaging/linux/uninstall.sh" "$$stage/uninstall.sh" && chmod +x "$$stage/uninstall.sh"; \
+	[ -f "packaging/INSTALL-Linux.txt" ] && cp "packaging/INSTALL-Linux.txt" "$$stage/INSTALL.txt" || true; \
+	for b in $(BINS); do \
+		src="target/$(LINUX_ARM64_TARGET)/$(PROFILE)/$$b"; \
+		[ -f "$$src" ] || { echo "Missing $$src" >&2; exit 1; }; \
+		cp "$$src" "$$stage/bin/"; \
+	done; \
+	tar -C "$$stage" -czf "$$out" .
+
+package-windows-amd64: guard-gnu-make dist build-windows-amd64
+	@stage="$(STAGE_ROOT)/$(PKG_SLUG)-windows-amd64"; \
+	out="$(DIST_DIR)/$(PKG_SLUG)-windows-amd64.zip"; \
+	echo "==> package $$out"; \
+	rm -rf "$$stage"; \
+	mkdir -p "$$stage/bin"; \
+	[ -f "README.md" ] && cp "README.md" "$$stage/" || true; \
+	[ -f "LICENSE" ] && cp "LICENSE" "$$stage/" || true; \
+	[ -f "LICENSE.md" ] && cp "LICENSE.md" "$$stage/" || true; \
+	cp "packaging/win/install.ps1" "$$stage/install.ps1"; \
+	cp "packaging/win/uninstall.ps1" "$$stage/uninstall.ps1"; \
+	[ -f "packaging/INSTALL-Windows.txt" ] && cp "packaging/INSTALL-Windows.txt" "$$stage/INSTALL.txt" || true; \
+	for b in $(BINS); do \
+		src="target/$(WIN_AMD64_TARGET)/$(PROFILE)/$$b.exe"; \
+		[ -f "$$src" ] || { echo "Missing $$src" >&2; exit 1; }; \
+		cp "$$src" "$$stage/bin/"; \
+	done; \
+	(cd "$$stage" && zip -q -r "../$$(basename "$$out")" .)
+
+package-windows-arm64: guard-gnu-make dist build-windows-arm64
+	@stage="$(STAGE_ROOT)/$(PKG_SLUG)-windows-arm64"; \
+	out="$(DIST_DIR)/$(PKG_SLUG)-windows-arm64.zip"; \
+	echo "==> package $$out"; \
+	rm -rf "$$stage"; \
+	mkdir -p "$$stage/bin"; \
+	[ -f "README.md" ] && cp "README.md" "$$stage/" || true; \
+	[ -f "LICENSE" ] && cp "LICENSE" "$$stage/" || true; \
+	[ -f "LICENSE.md" ] && cp "LICENSE.md" "$$stage/" || true; \
+	cp "packaging/win/install.ps1" "$$stage/install.ps1"; \
+	cp "packaging/win/uninstall.ps1" "$$stage/uninstall.ps1"; \
+	[ -f "packaging/INSTALL-Windows.txt" ] && cp "packaging/INSTALL-Windows.txt" "$$stage/INSTALL.txt" || true; \
+	for b in $(BINS); do \
+		src="target/$(WIN_ARM64_TARGET)/$(PROFILE)/$$b.exe"; \
+		[ -f "$$src" ] || { echo "Missing $$src" >&2; exit 1; }; \
+		cp "$$src" "$$stage/bin/"; \
+	done; \
+	(cd "$$stage" && zip -q -r "../$$(basename "$$out")" .)
+
+package-macos-amd64: guard-gnu-make dist build-macos-amd64
+	@stage="$(STAGE_ROOT)/$(PKG_SLUG)-macos-amd64"; \
+	out="$(DIST_DIR)/$(PKG_SLUG)-macos-amd64.tar.gz"; \
+	echo "==> package $$out"; \
+	rm -rf "$$stage"; \
+	mkdir -p "$$stage/bin"; \
+	[ -f "README.md" ] && cp "README.md" "$$stage/" || true; \
+	[ -f "LICENSE" ] && cp "LICENSE" "$$stage/" || true; \
+	[ -f "LICENSE.md" ] && cp "LICENSE.md" "$$stage/" || true; \
+	cp "packaging/macos/install.sh" "$$stage/install.sh" && chmod +x "$$stage/install.sh"; \
+	cp "packaging/macos/uninstall.sh" "$$stage/uninstall.sh" && chmod +x "$$stage/uninstall.sh"; \
+	[ -f "packaging/INSTALL-macOS-tarball.txt" ] && cp "packaging/INSTALL-macOS-tarball.txt" "$$stage/INSTALL.txt" || true; \
+	for b in $(BINS); do \
+		src="target/$(MAC_AMD64_TARGET)/$(PROFILE)/$$b"; \
+		[ -f "$$src" ] || { echo "Missing $$src" >&2; exit 1; }; \
+		cp "$$src" "$$stage/bin/"; \
+	done; \
+	tar -C "$$stage" -czf "$$out" .
+
+package-macos-arm64: guard-gnu-make dist build-macos-arm64
+	@stage="$(STAGE_ROOT)/$(PKG_SLUG)-macos-arm64"; \
+	out="$(DIST_DIR)/$(PKG_SLUG)-macos-arm64.tar.gz"; \
+	echo "==> package $$out"; \
+	rm -rf "$$stage"; \
+	mkdir -p "$$stage/bin"; \
+	[ -f "README.md" ] && cp "README.md" "$$stage/" || true; \
+	[ -f "LICENSE" ] && cp "LICENSE" "$$stage/" || true; \
+	[ -f "LICENSE.md" ] && cp "LICENSE.md" "$$stage/" || true; \
+	cp "packaging/macos/install.sh" "$$stage/install.sh" && chmod +x "$$stage/install.sh"; \
+	cp "packaging/macos/uninstall.sh" "$$stage/uninstall.sh" && chmod +x "$$stage/uninstall.sh"; \
+	[ -f "packaging/INSTALL-macOS-tarball.txt" ] && cp "packaging/INSTALL-macOS-tarball.txt" "$$stage/INSTALL.txt" || true; \
+	for b in $(BINS); do \
+		src="target/$(MAC_ARM64_TARGET)/$(PROFILE)/$$b"; \
+		[ -f "$$src" ] || { echo "Missing $$src" >&2; exit 1; }; \
+		cp "$$src" "$$stage/bin/"; \
+	done; \
+	tar -C "$$stage" -czf "$$out" .
+
+package-all: guard-gnu-make \
+	package-linux-amd64 package-linux-arm64 \
+	package-windows-amd64 package-windows-arm64 \
+	package-macos-amd64 package-macos-arm64
+
+# --------------------
+# Windows MSI (cargo-wix)
+# --------------------
+
+msi-windows-amd64: guard-gnu-make dist build-windows-amd64
+	@command -v cargo-wix >/dev/null 2>&1 || { echo "cargo-wix not found. Install: cargo install cargo-wix" >&2; exit 1; }
+	@echo "==> msi $(WIN_AMD64_TARGET)"
+	@$(CARGO) wix --no-build --target $(WIN_AMD64_TARGET)
+	@msi="$$(ls -1 target/wix/*.msi 2>/dev/null | tail -n 1)"; \
+	if [ -z "$$msi" ]; then echo "MSI not found under target/wix/*.msi" >&2; exit 1; fi; \
+	out="$(DIST_DIR)/$(PKG_NAME)-$(PKG_VERSION)-windows-amd64.msi"; \
+	cp "$$msi" "$$out"; \
+	echo "==> wrote $$out"
+
+msi-windows-arm64: guard-gnu-make dist build-windows-arm64
+	@command -v cargo-wix >/dev/null 2>&1 || { echo "cargo-wix not found. Install: cargo install cargo-wix" >&2; exit 1; }
+	@echo "==> msi $(WIN_ARM64_TARGET)"
+	@$(CARGO) wix --no-build --target $(WIN_ARM64_TARGET)
+	@msi="$$(ls -1 target/wix/*.msi 2>/dev/null | tail -n 1)"; \
+	if [ -z "$$msi" ]; then echo "MSI not found under target/wix/*.msi" >&2; exit 1; fi; \
+	out="$(DIST_DIR)/$(PKG_NAME)-$(PKG_VERSION)-windows-arm64.msi"; \
+	cp "$$msi" "$$out"; \
+	echo "==> wrote $$out"
+
+# --------------------
+# macOS DMG (create-dmg)
+# --------------------
+
+dmg-macos-amd64: guard-gnu-make dist build-macos-amd64
+	@command -v create-dmg >/dev/null 2>&1 || { echo "create-dmg not found. Install: brew install create-dmg" >&2; exit 1; }
+	stage="$(STAGE_ROOT)/$(PKG_SLUG)-macos-amd64-dmg"
+	out="$(DIST_DIR)/$(PKG_SLUG)-macos-amd64.dmg"
+	rm -rf "$$stage"
+	mkdir -p "$$stage/bin"
+	[ -f "README.md" ] && cp "README.md" "$$stage/" || true
+	[ -f "LICENSE" ] && cp "LICENSE" "$$stage/" || true
+	[ -f "LICENSE.md" ] && cp "LICENSE.md" "$$stage/" || true
+	cp "packaging/macos/install-from-dmg.sh" "$$stage/install-from-dmg.sh" && chmod +x "$$stage/install-from-dmg.sh"
+	cp "packaging/macos/uninstall-from-dmg.sh" "$$stage/uninstall-from-dmg.sh" && chmod +x "$$stage/uninstall-from-dmg.sh"
+	[ -f "packaging/macos/README-DMG.txt" ] && cp "packaging/macos/README-DMG.txt" "$$stage/INSTALL-dmg.txt" || true
+	for b in $(BINS); do
+		src="target/$(MAC_AMD64_TARGET)/$(PROFILE)/$$b"
+		[ -f "$$src" ] || { echo "Missing $$src" >&2; exit 1; }
+		cp "$$src" "$$stage/bin/"
+	done
+	rm -f "$$out"
+	echo "==> dmg $$out"
+	create-dmg --overwrite --volname "$(PKG_NAME) $(PKG_VERSION)" "$$out" "$$stage"
+
+dmg-macos-arm64: guard-gnu-make dist build-macos-arm64
+	@command -v create-dmg >/dev/null 2>&1 || { echo "create-dmg not found. Install: brew install create-dmg" >&2; exit 1; }
+	stage="$(STAGE_ROOT)/$(PKG_SLUG)-macos-arm64-dmg"
+	out="$(DIST_DIR)/$(PKG_SLUG)-macos-arm64.dmg"
+	rm -rf "$$stage"
+	mkdir -p "$$stage/bin"
+	[ -f "README.md" ] && cp "README.md" "$$stage/" || true
+	[ -f "LICENSE" ] && cp "LICENSE" "$$stage/" || true
+	[ -f "LICENSE.md" ] && cp "LICENSE.md" "$$stage/" || true
+	cp "packaging/macos/install-from-dmg.sh" "$$stage/install-from-dmg.sh" && chmod +x "$$stage/install-from-dmg.sh"
+	cp "packaging/macos/uninstall-from-dmg.sh" "$$stage/uninstall-from-dmg.sh" && chmod +x "$$stage/uninstall-from-dmg.sh"
+	[ -f "packaging/macos/README-DMG.txt" ] && cp "packaging/macos/README-DMG.txt" "$$stage/INSTALL-dmg.txt" || true
+	for b in $(BINS); do
+		src="target/$(MAC_ARM64_TARGET)/$(PROFILE)/$$b"
+		[ -f "$$src" ] || { echo "Missing $$src" >&2; exit 1; }
+		cp "$$src" "$$stage/bin/"
+	done
+	rm -f "$$out"
+	echo "==> dmg $$out"
+	create-dmg --overwrite --volname "$(PKG_NAME) $(PKG_VERSION)" "$$out" "$$stage"
+

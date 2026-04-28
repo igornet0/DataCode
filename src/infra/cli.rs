@@ -46,6 +46,7 @@ pub struct FileExecutionConfig {
 pub enum CliArgs {
     Help,
     Version,
+    UpdateVersion,
     WebSocket(WebSocketConfig),
     HttpServer(HttpServerConfig),
     FileExecution(FileExecutionConfig),
@@ -68,6 +69,7 @@ pub fn print_help() {
     println!("  datacode --websocket       # Start WebSocket server for remote code execution");
     println!("  datacode --http            # Start HTTP server (or use datacode-server binary)");
     println!("  datacode --help            # Show this help");
+    println!("  datacode --update-version  # Проверить релиз на GitHub и обновить бинарники в каталоге datacode");
     println!();
     println!("File Execution:");
     println!("  • Create files with .dc extension");
@@ -271,6 +273,14 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
             }
             "-v" | "--version" => {
                 return Ok(CliArgs::Version);
+            }
+            "--update-version" | "--update_version" => {
+                if args.len() > 2 {
+                    return Err(
+                        "Опция --update-version не принимает аргументы".to_string()
+                    );
+                }
+                return Ok(CliArgs::UpdateVersion);
             }
             "--websocket" => {
                 let mut host = "127.0.0.1".to_string();

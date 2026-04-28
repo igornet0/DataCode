@@ -7,12 +7,17 @@ DataCode — установка (macOS, архив .tar.gz, без DMG)
      chmod +x install.sh
      ./install.sh
 
+   Скрипт копирует: datacode, dpm, datacode-server (из папки bin/).
+
    Либо вручную:
-     chmod +x datacode
-     sudo mv datacode /usr/local/bin/
+     sudo cp bin/datacode bin/dpm bin/datacode-server /usr/local/bin/
 
 3) Новый терминал, проверка:
      datacode --version
      datacode путь/к/скрипту.dc
+
+Удаление: ./uninstall.sh (в каталоге бандла)
+
+Обновление с GitHub: datacode --update-version
 
 Образ .dmg с приложением DataCode.app см. на сайте проекта — там же инструкция для ярлыка в /Applications.

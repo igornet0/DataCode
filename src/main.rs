@@ -16,6 +16,12 @@ fn main() {
         Ok(cli::CliArgs::Version) => {
             cli::print_version();
         }
+        Ok(cli::CliArgs::UpdateVersion) => {
+            if let Err(e) = data_code::infra::self_update::run() {
+                eprintln!("{}", e);
+                std::process::exit(1);
+            }
+        }
         Ok(cli::CliArgs::WebSocket(config)) => {
             if let Err(e) = websocket::start_websocket_server(config) {
                 eprintln!("{}", e);

@@ -10,7 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
-      - run: git submodule update --init --recursive
       - run: cargo test -p data-code --no-run
       - run: cargo test -p data-code

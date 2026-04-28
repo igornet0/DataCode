@@ -216,19 +216,37 @@ pub fn register_builtin_natives(natives: &mut Vec<HostEntry>) {
     natives.push(HostEntry::Builtin(Arc::new(MapHostFunction))); // 76 - map(...)
     natives.push(HostEntry::Builtin(Arc::new(FilterHostFunction))); // 77 - filter(...)
     natives.push(HostEntry::Builtin(Arc::new(ReduceHostFunction))); // 78 - reduce(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_sha256,
+    )))); // 79 - sha256(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_sha512,
+    )))); // 80 - sha512(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_hmac_sha256,
+    )))); // 81 - hmac_sha256(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_hmac_sha512,
+    )))); // 82 - hmac_sha512(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_random_bytes,
+    )))); // 83 - random_bytes(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_random_int,
+    )))); // 84 - random_int(...)
     let value_error = Arc::new(FnWrapper(natives::native_value_error_new));
     while natives.len() < builtin::VALUE_ERROR {
         natives.push(HostEntry::Builtin(value_error.clone())); // placeholder so indices line up
     }
-    natives.push(HostEntry::Builtin(value_error)); // 79 - ValueError::new_1 for raise ValueError("...")
+    natives.push(HostEntry::Builtin(value_error)); // 85 - ValueError::new_1 for raise ValueError("...")
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_chunk,
-    )))); // 80 - array.chunk(n)
+    )))); // 86 - array.chunk(n)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_generator_final,
-    )))); // 81 - generator.final()
-    natives.push(HostEntry::Builtin(Arc::new(NativeGeneratorNext))); // 82 - generator.next()
-    natives.push(HostEntry::Builtin(Arc::new(NativeGeneratorSend))); // 83 - generator.send()
+    )))); // 87 - generator.final()
+    natives.push(HostEntry::Builtin(Arc::new(NativeGeneratorNext))); // 88 - generator.next()
+    natives.push(HostEntry::Builtin(Arc::new(NativeGeneratorSend))); // 89 - generator.send()
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 //! Tests for disk bytecode cache (.dcb), fingerprint invalidation, executed_modules singleton, and dependency order.
 
+use data_code::vm::module_cache::canonical_module_cache_key;
 use data_code::{run_with_base_path, Value};
 use std::fs;
 use std::path::PathBuf;
@@ -32,8 +33,8 @@ fn test_dcb_file_created_after_import() {
     assert!(result.is_ok(), "first run should succeed: {:?}", result);
     assert_eq!(result.unwrap(), Value::Number(1.0));
 
-    let canonical = mod_path.canonicalize().unwrap_or_else(|_| mod_path.clone());
-    let dcb_path = data_code::vm::dcb::dcb_cache_path(&canonical);
+    let cache_key = canonical_module_cache_key(&mod_path);
+    let dcb_path = data_code::vm::dcb::dcb_cache_path(&cache_key);
     assert!(
         dcb_path.exists(),
         ".dcb should exist after first run: {}",

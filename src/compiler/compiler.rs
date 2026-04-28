@@ -43,6 +43,8 @@ pub struct Compiler {
     class_superclass: std::collections::HashMap<String, String>,
     /// Class name -> true if extends Table (directly or indirectly). Used for isinstance(x, Table).
     class_extends_table: std::collections::HashMap<String, bool>,
+    /// Class name -> true if extends SQLEnum (directly or indirectly).
+    class_extends_sqenum: std::collections::HashMap<String, bool>,
     /// Class name -> (constructor_name, function_index). For extends_table classes with implicit field constructor; used to resolve named-arg calls.
     class_constructor: std::collections::HashMap<String, (String, usize)>,
     /// Class names marked with @Abstract (so calls load class object for VM __abstract check).
@@ -99,6 +101,7 @@ impl Compiler {
             class_protected_methods: std::collections::HashMap::new(),
             class_superclass: std::collections::HashMap::new(),
             class_extends_table: std::collections::HashMap::new(),
+            class_extends_sqenum: std::collections::HashMap::new(),
             class_constructor: std::collections::HashMap::new(),
             abstract_classes: std::collections::HashSet::new(),
             class_settings_env_prefix: std::collections::HashMap::new(),
@@ -529,6 +532,7 @@ impl Compiler {
             class_protected_methods: &mut self.class_protected_methods,
             class_superclass: &mut self.class_superclass,
             class_extends_table: &mut self.class_extends_table,
+            class_extends_sqenum: &mut self.class_extends_sqenum,
             class_constructor: &mut self.class_constructor,
             abstract_classes: &mut self.abstract_classes,
             class_settings_env_prefix: &mut self.class_settings_env_prefix,

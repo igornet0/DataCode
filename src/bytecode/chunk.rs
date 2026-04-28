@@ -62,9 +62,25 @@ impl Chunk {
     }
 
     pub fn add_constant(&mut self, value: Value) -> usize {
-        // Оптимизация: проверяем, есть ли уже такая константа
-        if let Some(index) = self.constants.iter().position(|v| v == &value) {
-            return index;
+        // Оптимизация: проверяем, есть ли уже такая константа.
+        // Object: only dedupe by Rc identity — deep `==` can recurse on cyclic graphs (e.g. SQLEnum class ↔ members).
+        match &value {
+            Value::Object(rc) => {
+                if let Some(index) = self.constants.iter().position(|v| {
+                    if let Value::Object(or) = v {
+                        std::rc::Rc::ptr_eq(or, rc)
+                    } else {
+                        false
+                    }
+                }) {
+                    return index;
+                }
+            }
+            _ => {
+                if let Some(index) = self.constants.iter().position(|v| v == &value) {
+                    return index;
+                }
+            }
         }
         self.constants.push(value);
         self.constants.len() - 1

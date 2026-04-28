@@ -66,10 +66,13 @@ pub fn store_value(v: Value, store: &mut ValueStore, heap: &mut HeavyStore) -> V
             store.allocate(ValueCell::Heavy(idx))
         }
         Value::Object(rc) => {
-            let map = rc.borrow();
+            // Snapshot and drop the RefCell borrow before recursing into store_value. Holding a borrow
+            // of the outer object (e.g. Column) while storing nested values (e.g. SQLEnum class) used
+            // to blow the stack in pathological cases (re-entrancy / deep drop glue during clone).
+            let snap: HashMap<String, Value> = rc.borrow().clone();
             // MetaData and create_all have circular refs; store in HeavyStore without decomposing
             // Class objects (ORM models) must stay as one Rc so SetArrayElement mutations are visible to run_create_all
-            if map
+            if snap
                 .get("__meta")
                 .and_then(|v| {
                     if let Value::Bool(b) = v {
@@ -79,7 +82,7 @@ pub fn store_value(v: Value, store: &mut ValueStore, heap: &mut HeavyStore) -> V
                     }
                 })
                 .unwrap_or(false)
-                || map
+                || snap
                     .get("__create_all")
                     .and_then(|v| {
                         if let Value::Bool(b) = v {
@@ -89,14 +92,14 @@ pub fn store_value(v: Value, store: &mut ValueStore, heap: &mut HeavyStore) -> V
                         }
                     })
                     .unwrap_or(false)
-                || map.contains_key("__class_name")
+                || snap.contains_key("__class_name")
             {
                 let idx = heap.push(Value::Object(rc.clone()));
                 return store.allocate(ValueCell::Heavy(idx));
             }
-            let map: HashMap<String, ValueId> = map
-                .iter()
-                .map(|(k, v)| (k.clone(), store_value(v.clone(), store, heap)))
+            let map: HashMap<String, ValueId> = snap
+                .into_iter()
+                .map(|(k, v)| (k, store_value(v, store, heap)))
                 .collect();
             store.allocate(ValueCell::Object(map))
         }
@@ -173,7 +176,10 @@ pub fn update_cell_if_mutable(
         }
         Value::Object(rc) => {
             let map_ref = rc.borrow();
-            // MetaData and create_all have circular refs; store in HeavyStore without decomposing
+            // MetaData and create_all have circular refs; store in HeavyStore without decomposing.
+            // Class objects (Table models, SQLEnum classes, etc.) must stay one Heavy blob — same as
+            // `store_value` / `store_value_arena`. Otherwise `update_cell_if_mutable` walks every field
+            // and can recurse unboundedly on enum class ↔ member graphs.
             if map_ref
                 .get("__meta")
                 .and_then(|v| {
@@ -194,6 +200,7 @@ pub fn update_cell_if_mutable(
                         }
                     })
                     .unwrap_or(false)
+                || map_ref.contains_key("__class_name")
             {
                 let idx = heap.push(Value::Object(rc.clone()));
                 if let Some(ValueCell::Heavy(h)) = store.get_mut(id) {

@@ -210,11 +210,10 @@ pub(crate) fn op_get_array_element(
         Value::ByteBuffer(bb) => {
             if let Value::String(key) = &index_value {
                 if key.as_str() == "chunk" {
-                    const NATIVE_CHUNK: usize = 80;
                     stack::push_id(
                         stack,
                         store_value(
-                            Value::NativeFunction(NATIVE_CHUNK),
+                            Value::NativeFunction(crate::vm::native_indices::builtin::CHUNK),
                             value_store,
                             heavy_store,
                         ),

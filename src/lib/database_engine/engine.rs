@@ -1,5 +1,6 @@
 // Database engine abstraction for multiple backend types
 
+use crate::common::value::ByteBuffer;
 use crate::common::value::Value;
 use rusqlite::Connection;
 use std::collections::HashMap;
@@ -134,6 +135,10 @@ fn value_to_sql_param(v: &Value) -> Box<dyn rusqlite::ToSql> {
         Value::Bool(b) => Box::new(if *b { 1i64 } else { 0i64 }) as Box<dyn rusqlite::ToSql>,
         Value::String(s) => Box::new(s.clone()) as Box<dyn rusqlite::ToSql>,
         Value::Null => Box::new(Option::<String>::None) as Box<dyn rusqlite::ToSql>,
+        Value::ByteBuffer(b) => {
+            let blob = b.bytes[b.offset..b.offset + b.len].to_vec();
+            Box::new(blob) as Box<dyn rusqlite::ToSql>
+        }
         _ => Box::new(v.to_string()) as Box<dyn rusqlite::ToSql>,
     }
 }
@@ -148,7 +153,7 @@ fn row_get_value(row: &rusqlite::Row, idx: usize) -> Value {
         SqlValue::Integer(i) => Value::Number(i as f64),
         SqlValue::Real(r) => Value::Number(r),
         SqlValue::Text(s) => Value::String(s),
-        SqlValue::Blob(_) => Value::Null, // Blob as null for now
+        SqlValue::Blob(bytes) => Value::ByteBuffer(ByteBuffer::from_vec(bytes)),
         SqlValue::Null => Value::Null,
     }
 }

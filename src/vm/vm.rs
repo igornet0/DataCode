@@ -727,6 +727,14 @@ impl Vm {
             &mut self.heavy_store,
         )?;
         modules::register_module(
+            "crypto",
+            &mut self.natives,
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+            &mut self.heavy_store,
+        )?;
+        modules::register_module(
             "database_engine",
             &mut self.natives,
             &mut self.globals,

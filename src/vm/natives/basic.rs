@@ -560,6 +560,11 @@ fn object_class_chain_contains(obj: &Value, target_class: &str) -> bool {
                 return true;
             }
         }
+        if target_class == "SQLEnum" {
+            if let Some(Value::Bool(true)) = map.get("__extends_sqenum") {
+                return true;
+            }
+        }
     }
     false
 }

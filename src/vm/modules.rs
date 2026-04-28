@@ -14,6 +14,7 @@ pub const BUILTIN_MODULE_NAMES: &[&str] = &[
     "plot",
     "settings_env",
     "uuid",
+    "crypto",
     "database_engine",
     "system",
     "debug",
@@ -54,6 +55,7 @@ pub fn register_module(
         "plot" => register_plot_module(natives, globals, global_names, store, heap),
         "settings_env" => register_settings_env_module(natives, globals, global_names, store, heap),
         "uuid" => register_uuid_module(natives, globals, global_names, store, heap),
+        "crypto" => register_crypto_module(natives, globals, global_names, store, heap),
         "database_engine" => register_database_module(natives, globals, global_names, store, heap),
         "system" => register_system_module(natives, globals, global_names, store, heap),
         "debug" => register_debug_module(natives, globals, global_names, store, heap),
@@ -366,6 +368,65 @@ fn register_uuid_module(
     Ok(())
 }
 
+fn register_crypto_module(
+    natives: &mut Vec<HostEntry>,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
+) -> Result<(), LangError> {
+    use crate::crypto::natives as crypto_natives;
+
+    let crypto_start = natives.len();
+    natives.push(HostEntry::Extended(crypto_natives::native_crypto_argon2_hash));
+    natives.push(HostEntry::Extended(crypto_natives::native_crypto_argon2_verify));
+    natives.push(HostEntry::Extended(crypto_natives::native_crypto_bcrypt_hash));
+    natives.push(HostEntry::Extended(crypto_natives::native_crypto_bcrypt_verify));
+    natives.push(HostEntry::Extended(crypto_natives::native_crypto_secure_compare));
+
+    let s = crypto_start;
+    let mut argon2_obj = HashMap::new();
+    argon2_obj.insert("hash".to_string(), Value::NativeFunction(s + 0));
+    argon2_obj.insert("verify".to_string(), Value::NativeFunction(s + 1));
+    let mut bcrypt_obj = HashMap::new();
+    bcrypt_obj.insert("hash".to_string(), Value::NativeFunction(s + 2));
+    bcrypt_obj.insert("verify".to_string(), Value::NativeFunction(s + 3));
+
+    let mut crypto_object = HashMap::new();
+    crypto_object.insert(
+        "Argon2".to_string(),
+        Value::Object(Rc::new(RefCell::new(argon2_obj))),
+    );
+    crypto_object.insert(
+        "bcrypt".to_string(),
+        Value::Object(Rc::new(RefCell::new(bcrypt_obj))),
+    );
+    crypto_object.insert(
+        "secure_compare".to_string(),
+        Value::NativeFunction(s + 4),
+    );
+
+    let crypto_index = if let Some(idx) = global_index_by_name(global_names, "crypto") {
+        if idx >= globals.len() {
+            globals.resize(idx + 1, default_global_slot());
+        }
+        idx
+    } else {
+        let idx = globals.len();
+        globals.push(default_global_slot());
+        global_names.insert(idx, "crypto".to_string());
+        idx
+    };
+
+    globals[crypto_index] = GlobalSlot::Heap(store_value_arena(
+        Value::Object(Rc::new(RefCell::new(crypto_object))),
+        store,
+        heap,
+    ));
+
+    Ok(())
+}
+
 fn register_database_module(
     natives: &mut Vec<HostEntry>,
     globals: &mut Vec<GlobalSlot>,
@@ -374,6 +435,7 @@ fn register_database_module(
     heap: &mut HeavyStore,
 ) -> Result<(), LangError> {
     use crate::database_engine::natives;
+    use crate::database_engine::sqenum;
 
     let db_native_start = natives.len();
     natives.push(HostEntry::Extended(natives::native_engine));
@@ -390,8 +452,70 @@ fn register_database_module(
     natives.push(HostEntry::Extended(natives::native_cluster_get));
     natives.push(HostEntry::Extended(natives::native_cluster_names));
 
+    let sqenum_add_idx = natives.len();
+    natives.push(HostEntry::Extended(sqenum::native_sqenum_add_member));
+    natives.push(HostEntry::Extended(sqenum::native_sqenum_finalize));
+
+    use crate::database_engine::validators as db_validators;
+    let v0 = natives.len();
+    natives.push(HostEntry::Extended(db_validators::native_validator_min_length));
+    natives.push(HostEntry::Extended(db_validators::native_validator_max_length));
+    natives.push(HostEntry::Extended(db_validators::native_validator_length_between));
+    natives.push(HostEntry::Extended(db_validators::native_validator_regex));
+    natives.push(HostEntry::Extended(db_validators::native_validator_email));
+    natives.push(HostEntry::Extended(db_validators::native_validator_url));
+    natives.push(HostEntry::Extended(db_validators::native_validator_username));
+    natives.push(HostEntry::Extended(db_validators::native_validator_password_policy));
+    natives.push(HostEntry::Extended(db_validators::native_validator_one_of));
+    natives.push(HostEntry::Extended(db_validators::native_validator_min_value));
+    natives.push(HostEntry::Extended(db_validators::native_validator_max_value));
+    natives.push(HostEntry::Extended(db_validators::native_validator_range_value));
+    natives.push(HostEntry::Extended(db_validators::native_validator_custom));
+
+    let mut validators_obj = HashMap::new();
+    validators_obj.insert("min_length".to_string(), Value::NativeFunction(v0));
+    validators_obj.insert("max_length".to_string(), Value::NativeFunction(v0 + 1));
+    validators_obj.insert("length_between".to_string(), Value::NativeFunction(v0 + 2));
+    validators_obj.insert("regex".to_string(), Value::NativeFunction(v0 + 3));
+    validators_obj.insert("email".to_string(), Value::NativeFunction(v0 + 4));
+    validators_obj.insert("url".to_string(), Value::NativeFunction(v0 + 5));
+    validators_obj.insert("username".to_string(), Value::NativeFunction(v0 + 6));
+    validators_obj.insert("password_policy".to_string(), Value::NativeFunction(v0 + 7));
+    validators_obj.insert("one_of".to_string(), Value::NativeFunction(v0 + 8));
+    validators_obj.insert("min_value".to_string(), Value::NativeFunction(v0 + 9));
+    validators_obj.insert("max_value".to_string(), Value::NativeFunction(v0 + 10));
+    validators_obj.insert("range_value".to_string(), Value::NativeFunction(v0 + 11));
+    validators_obj.insert("custom".to_string(), Value::NativeFunction(v0 + 12));
+
     let start = db_native_start;
     let mut database_object = HashMap::new();
+
+    let mut sqenum_marker = HashMap::new();
+    sqenum_marker.insert(
+        "__class_name".to_string(),
+        Value::String("SQLEnum".to_string()),
+    );
+    sqenum_marker.insert(
+        crate::database_engine::sqenum::KEY_BUILTIN_SQENUM.to_string(),
+        Value::Bool(true),
+    );
+    sqenum_marker.insert(
+        crate::database_engine::sqenum::KEY_EXTENDS_SQENUM.to_string(),
+        Value::Bool(true),
+    );
+    sqenum_marker.insert(
+        "add_member".to_string(),
+        Value::NativeFunction(sqenum_add_idx),
+    );
+    sqenum_marker.insert(
+        "finalize".to_string(),
+        Value::NativeFunction(sqenum_add_idx + 1),
+    );
+    database_object.insert(
+        "SQLEnum".to_string(),
+        Value::Object(Rc::new(RefCell::new(sqenum_marker))),
+    );
+
     database_object.insert("engine".to_string(), Value::NativeFunction(start + 0));
     database_object.insert("MetaData".to_string(), Value::NativeFunction(start + 4));
     database_object.insert("Column".to_string(), Value::NativeFunction(start + 5));
@@ -411,6 +535,10 @@ fn register_database_module(
     database_object.insert("bool".to_string(), Value::NativeFunction(5));
     database_object.insert("str".to_string(), Value::NativeFunction(6));
     database_object.insert("date".to_string(), Value::NativeFunction(10));
+    database_object.insert(
+        "validators".to_string(),
+        Value::Object(Rc::new(RefCell::new(validators_obj))),
+    );
 
     let database_index = if let Some(idx) = global_index_by_name(global_names, "database_engine") {
         if idx >= globals.len() {

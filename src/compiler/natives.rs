@@ -95,6 +95,12 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "map");
     register(globals, "filter");
     register(globals, "reduce");
+    register(globals, "sha256");
+    register(globals, "sha512");
+    register(globals, "hmac_sha256");
+    register(globals, "hmac_sha512");
+    register(globals, "random_bytes");
+    register(globals, "random_int");
 
     // Built-in module globals (plot, uuid, debug, …) so `uuid.foo()` / `debug.operators()` resolve without `import`.
     // Order matches `crate::vm::modules::BUILTIN_MODULE_NAMES` (deterministic indices for chunk/linker).
@@ -162,6 +168,12 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "fn".to_string(),
             "initial".to_string(),
         ]),
+        "sha256" => Some(vec!["data".to_string()]),
+        "sha512" => Some(vec!["data".to_string()]),
+        "hmac_sha256" => Some(vec!["key".to_string(), "data".to_string()]),
+        "hmac_sha512" => Some(vec!["key".to_string(), "data".to_string()]),
+        "random_bytes" => Some(vec!["size".to_string()]),
+        "random_int" => Some(vec!["min".to_string(), "max".to_string()]),
 
         // Функции с двумя параметрами
         "range" => Some(vec![
@@ -237,6 +249,8 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "default".to_string(),
             "nullable".to_string(),
             "onupdate".to_string(),
+            "transform".to_string(),
+            "validators".to_string(),
         ]),
 
         // JOIN функции - они все имеют одинаковую структуру (left, right, on, type?, suffixes?)

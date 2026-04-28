@@ -301,6 +301,64 @@ impl std::fmt::Debug for Value {
                 {
                     return write!(f, "Object(<create_all>)");
                 }
+                // ORM `Column(...)` / SQLEnum graphs: full `Debug` would recurse (e.g. member → class → members).
+                if map
+                    .get("__column")
+                    .and_then(|v| {
+                        if let Value::Bool(b) = v {
+                            Some(*b)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false)
+                {
+                    return write!(f, "Object(<column>)");
+                }
+                if map_is_sqenum_member(&map) {
+                    let name = map
+                        .get(crate::database_engine::sqenum::KEY_ENUM_NAME)
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "?".to_string());
+                    return write!(f, "Object(<enum_member {}>)", name);
+                }
+                let sqenumish = map
+                    .get(crate::database_engine::sqenum::KEY_SQENUM)
+                    .and_then(|v| {
+                        if let Value::Bool(b) = v {
+                            Some(*b)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false)
+                    || map
+                        .get(crate::database_engine::sqenum::KEY_EXTENDS_SQENUM)
+                        .and_then(|v| {
+                            if let Value::Bool(b) = v {
+                                Some(*b)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(false)
+                    || map
+                        .get(crate::database_engine::sqenum::KEY_BUILTIN_SQENUM)
+                        .and_then(|v| {
+                            if let Value::Bool(b) = v {
+                                Some(*b)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(false);
+                if sqenumish {
+                    let cn = map
+                        .get("__class_name")
+                        .map(|v| v.to_string())
+                        .unwrap_or_else(|| "?".to_string());
+                    return write!(f, "Object(<SQLEnum {}>)", cn);
+                }
                 f.debug_map().entries(map.iter()).finish()
             }
             _ => match self {
@@ -366,8 +424,103 @@ impl std::fmt::Debug for Value {
     }
 }
 
+fn map_is_sqenum_member(m: &HashMap<String, Value>) -> bool {
+    m.get("__enum_member")
+        .and_then(|v| {
+            if let Value::Bool(b) = v {
+                Some(*b)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(false)
+}
+
+fn enum_stored_eq_scalar(stored: &Value, other: &Value) -> bool {
+    match (stored, other) {
+        (Value::String(a), Value::String(b)) => a == b,
+        (Value::Number(a), Value::Number(b)) => a == b,
+        (Value::String(a), Value::Number(b)) => a
+            .parse::<f64>()
+            .ok()
+            .map(|x| (x - b).abs() < f64::EPSILON || x == *b)
+            .unwrap_or(false),
+        (Value::Number(a), Value::String(b)) => b
+            .parse::<f64>()
+            .ok()
+            .map(|x| (x - a).abs() < f64::EPSILON || x == *a)
+            .unwrap_or(false),
+        _ => false,
+    }
+}
+
+/// SQLEnum member vs member / vs scalar (`UserRole.ADMIN == "admin"`).
+fn try_sqenum_member_eq(a: &Value, b: &Value) -> Option<bool> {
+    match (a, b) {
+        (Value::Object(oa), Value::Object(ob)) => {
+            let am = oa.borrow();
+            let bm = ob.borrow();
+            let a_mem = map_is_sqenum_member(&am);
+            let b_mem = map_is_sqenum_member(&bm);
+            if a_mem && b_mem {
+                let c1 = am.get("__enum_class").and_then(|v| {
+                    if let Value::Object(o) = v {
+                        Some(o)
+                    } else {
+                        None
+                    }
+                });
+                let c2 = bm.get("__enum_class").and_then(|v| {
+                    if let Value::Object(o) = v {
+                        Some(o)
+                    } else {
+                        None
+                    }
+                });
+                let v1 = am.get("__enum_value")?;
+                let v2 = bm.get("__enum_value")?;
+                if let (Some(c1), Some(c2)) = (c1, c2) {
+                    return Some(Rc::ptr_eq(c1, c2) && v1 == v2);
+                }
+                return Some(false);
+            }
+            if a_mem || b_mem {
+                // Enum members are never `==` arbitrary objects (e.g. class map); avoids
+                // recursive Object/Object equality on graphs with CLASS↔MEMBER cycles.
+                return Some(false);
+            }
+            None
+        }
+        (Value::Object(oa), other) => {
+            let am = oa.borrow();
+            if map_is_sqenum_member(&am) {
+                let stored = am.get("__enum_value")?;
+                return Some(enum_stored_eq_scalar(stored, other));
+            }
+            None
+        }
+        (other, Value::Object(ob)) => {
+            let bm = ob.borrow();
+            if map_is_sqenum_member(&bm) {
+                let stored = bm.get("__enum_value")?;
+                return Some(enum_stored_eq_scalar(stored, other));
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
+        if let (Value::Object(a), Value::Object(b)) = (self, other) {
+            if Rc::ptr_eq(a, b) {
+                return true;
+            }
+        }
+        if let Some(r) = try_sqenum_member_eq(self, other) {
+            return r;
+        }
         match (self, other) {
             (Value::Number(a), Value::Number(b)) => a == b,
             (Value::Bool(a), Value::Bool(b)) => a == b,
@@ -393,6 +546,80 @@ impl PartialEq for Value {
             (Value::Object(a), Value::Object(b)) => {
                 let am = a.borrow();
                 let bm = b.borrow();
+                // Finalized SQLEnum class objects (`__sqenum`): structural HashMap equality can recurse
+                // through member ↔ enum_class cycles; identity is the intended semantics for `==`.
+                let a_sqenum = am
+                    .get("__sqenum")
+                    .and_then(|v| {
+                        if let Value::Bool(x) = v {
+                            Some(*x)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
+                let b_sqenum = bm
+                    .get("__sqenum")
+                    .and_then(|v| {
+                        if let Value::Bool(x) = v {
+                            Some(*x)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
+                if a_sqenum && b_sqenum {
+                    return std::rc::Rc::ptr_eq(a, b);
+                }
+                // `cls E(SQLEnum)` sets `__extends_sqenum` in class metadata before finalize; marker
+                // `SQLEnum` also has it. Structural equality would recurse like unfinalized enum graphs.
+                let a_ext_sqenum = am
+                    .get(crate::database_engine::sqenum::KEY_EXTENDS_SQENUM)
+                    .and_then(|v| {
+                        if let Value::Bool(x) = v {
+                            Some(*x)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
+                let b_ext_sqenum = bm
+                    .get(crate::database_engine::sqenum::KEY_EXTENDS_SQENUM)
+                    .and_then(|v| {
+                        if let Value::Bool(x) = v {
+                            Some(*x)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
+                if a_ext_sqenum && b_ext_sqenum {
+                    return std::rc::Rc::ptr_eq(a, b);
+                }
+                // `__enum_by_value` lookup map (values are enum members pointing back at the class).
+                let a_lookup = am
+                    .get("__sqenum_by_value_lookup")
+                    .and_then(|v| {
+                        if let Value::Bool(x) = v {
+                            Some(*x)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
+                let b_lookup = bm
+                    .get("__sqenum_by_value_lookup")
+                    .and_then(|v| {
+                        if let Value::Bool(x) = v {
+                            Some(*x)
+                        } else {
+                            None
+                        }
+                    })
+                    .unwrap_or(false);
+                if a_lookup && b_lookup {
+                    return std::rc::Rc::ptr_eq(a, b);
+                }
                 // MetaData and create_all have circular refs; compare by pointer to avoid recursion
                 let a_meta = am
                     .get("__meta")
@@ -620,6 +847,11 @@ impl Value {
             }
             Value::Object(map_rc) => {
                 let map = map_rc.borrow();
+                if map_is_sqenum_member(&map) {
+                    if let Some(v) = map.get("__enum_value") {
+                        return v.to_string();
+                    }
+                }
                 if map
                     .get("__meta")
                     .and_then(|v| {

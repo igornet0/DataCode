@@ -86,12 +86,18 @@ pub mod builtin {
     pub const MAP: usize = 76;
     pub const FILTER: usize = 77;
     pub const REDUCE: usize = 78;
+    pub const SHA256: usize = 79;
+    pub const SHA512: usize = 80;
+    pub const HMAC_SHA256: usize = 81;
+    pub const HMAC_SHA512: usize = 82;
+    pub const RANDOM_BYTES: usize = 83;
+    pub const RANDOM_INT: usize = 84;
     /// `ValueError::new_1` — must match [`crate::vm::vm::Vm::VALUE_ERROR_NATIVE_INDEX`].
-    pub const VALUE_ERROR: usize = 79;
-    pub const CHUNK: usize = 80;
-    pub const GENERATOR_FINAL: usize = 81;
-    pub const GENERATOR_NEXT: usize = 82;
-    pub const GENERATOR_SEND: usize = 83;
+    pub const VALUE_ERROR: usize = 85;
+    pub const CHUNK: usize = 86;
+    pub const GENERATOR_FINAL: usize = 87;
+    pub const GENERATOR_NEXT: usize = 88;
+    pub const GENERATOR_SEND: usize = 89;
 }
 
 /// First `table(data, headers)` fast path in `native_call/execute.rs` (uses index `43`; registry slot `43` is `any` — kept for behavioral parity).

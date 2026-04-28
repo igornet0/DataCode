@@ -128,24 +128,25 @@ pub(crate) fn execute_native_call(
     }
 
     use crate::database_engine::natives as db_natives;
-    let is_db_connect = native_index < builtin_count
-        && natives[native_index].as_fn_ptr()
-            == Some(db_natives::native_engine_connect as *const ());
-    let is_db_execute = native_index < builtin_count
-        && natives[native_index].as_fn_ptr()
-            == Some(db_natives::native_engine_execute as *const ());
-    let is_db_query = native_index < builtin_count
-        && natives[native_index].as_fn_ptr() == Some(db_natives::native_engine_query as *const ());
-    let is_db_run = native_index < builtin_count
-        && natives[native_index].as_fn_ptr() == Some(db_natives::native_engine_run as *const ());
-    let is_db_cluster_add = native_index < builtin_count
-        && natives[native_index].as_fn_ptr() == Some(db_natives::native_cluster_add as *const ());
-    let is_db_cluster_get = native_index < builtin_count
-        && natives[native_index].as_fn_ptr() == Some(db_natives::native_cluster_get as *const ());
-    let is_db_cluster_names = native_index < builtin_count
-        && natives[native_index].as_fn_ptr() == Some(db_natives::native_cluster_names as *const ());
-    let is_db_column = native_index < builtin_count
-        && natives[native_index].as_fn_ptr() == Some(db_natives::native_column as *const ());
+    use crate::database_engine::sqenum;
+    let is_sqenum_add_member = natives
+        .get(native_index)
+        .and_then(HostEntry::as_fn_ptr)
+        == Some(sqenum::native_sqenum_add_member as *const ());
+    let is_sqenum_finalize = natives
+        .get(native_index)
+        .and_then(HostEntry::as_fn_ptr)
+        == Some(sqenum::native_sqenum_finalize as *const ());
+    // Database module registers these as HostEntry::Extended after builtins; match by pointer, not index.
+    let native_ptr = natives.get(native_index).and_then(HostEntry::as_fn_ptr);
+    let is_db_connect = native_ptr == Some(db_natives::native_engine_connect as *const ());
+    let is_db_execute = native_ptr == Some(db_natives::native_engine_execute as *const ());
+    let is_db_query = native_ptr == Some(db_natives::native_engine_query as *const ());
+    let is_db_run = native_ptr == Some(db_natives::native_engine_run as *const ());
+    let is_db_cluster_add = native_ptr == Some(db_natives::native_cluster_add as *const ());
+    let is_db_cluster_get = native_ptr == Some(db_natives::native_cluster_get as *const ());
+    let is_db_cluster_names = native_ptr == Some(db_natives::native_cluster_names as *const ());
+    let is_db_column = native_ptr == Some(db_natives::native_column as *const ());
     let is_db_engine_method = is_db_connect
         || is_db_execute
         || is_db_query
@@ -406,6 +407,8 @@ pub(crate) fn execute_native_call(
         || second_is_class
         || (native_index == builtin::LEN && native_args_buffer.len() == 1)
         || is_db_column
+        || is_sqenum_add_member
+        || is_sqenum_finalize
         || is_plot_line_bar_pie_heatmap;
     if !skip_drop && !native_args_buffer.is_empty() {
         if let Value::Object(_) = &native_args_buffer[0] {
@@ -573,10 +576,18 @@ pub(crate) fn execute_native_call(
                 if native_index == builtin::PUSH && arity == 2 && i == 1 {
                     continue;
                 }
+                // ORM Column(...) does not mutate its arguments. Write-back would resynthesize cells
+                // from Values and, for SQLEnum class objects, can recurse deeply on member graphs.
+                if is_db_column {
+                    continue;
+                }
                 update_cell_if_mutable(id, &native_args_buffer[i], value_store, heavy_store);
             }
         }
     }
+
+    // Drop argument clones before materializing the return value (smaller peak stack at return).
+    native_args_buffer.clear();
 
     stack::push_id(stack, store_value(result, value_store, heavy_store));
     Ok(VMStatus::Continue)

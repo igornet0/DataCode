@@ -3,8 +3,9 @@
 use crate::common::value::Value;
 use crate::database_engine::cluster::DatabaseCluster;
 use crate::database_engine::engine::DatabaseEngine;
+use crate::database_engine::sqenum;
 use crate::vm::globals;
-use crate::vm::natives::utils::{call_user_function, resolve_global_by_name};
+use crate::vm::natives::utils::{call_user_function, invoke_value_callable, resolve_global_by_name};
 use crate::vm::vm::current_vm_ptr;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -259,7 +260,7 @@ pub fn native_metadata(args: &[Value]) -> Value {
     Value::Object(meta_rc)
 }
 
-/// Column(type?, primary_key?, autoincrement?, unique?, default?, nullable?, onupdate?) - column descriptor
+/// Column(type?, primary_key?, autoincrement?, unique?, default?, nullable?, onupdate?, transform?, validators?) - column descriptor
 pub fn native_column(args: &[Value]) -> Value {
     let mut col = HashMap::new();
     col.insert("__column".to_string(), Value::Bool(true));
@@ -290,6 +291,16 @@ pub fn native_column(args: &[Value]) -> Value {
     col.insert(
         "onupdate".to_string(),
         args.get(6).cloned().unwrap_or(Value::Null),
+    );
+    col.insert(
+        "transform".to_string(),
+        args.get(7).cloned().unwrap_or(Value::Null),
+    );
+    col.insert(
+        "validators".to_string(),
+        args.get(8).cloned().unwrap_or_else(|| {
+            Value::Array(Rc::new(RefCell::new(Vec::new())))
+        }),
     );
     Value::Object(Rc::new(RefCell::new(col)))
 }
@@ -438,6 +449,7 @@ pub fn native_engine_run(args: &[Value]) -> Value {
                         .get("__class_name")
                         .and_then(get_string)
                         .unwrap_or_default();
+                    let select_classes = get_classes_from_class_chain(&model_class);
                     drop(obj);
                     match engine_ref.query(&sql, &[]) {
                         Ok(table) => {
@@ -464,7 +476,34 @@ pub fn native_engine_run(args: &[Value]) -> Value {
                                     Value::Object(Rc::clone(&model_class)),
                                 );
                                 for (col_idx, col_name) in headers.iter().enumerate() {
-                                    let val = row_vals.get(col_idx).cloned().unwrap_or(Value::Null);
+                                    let mut val =
+                                        row_vals.get(col_idx).cloned().unwrap_or(Value::Null);
+                                    if let Some(cm) = select_classes.as_ref() {
+                                        if let Some(desc) = column_descriptor_for_name(
+                                            &model_class,
+                                            cm,
+                                            col_name,
+                                        ) {
+                                            if let Some(ec) =
+                                                sqenum_class_from_column_descriptor(&desc)
+                                            {
+                                                if !matches!(val, Value::Null) {
+                                                    match sqenum::hydrate_sqenum_cell(&ec, &val) {
+                                                        Ok(v) => val = v,
+                                                        Err(e) => {
+                                                            crate::websocket::set_native_error(
+                                                                format!(
+                                                                    "engine.run select hydration: {}",
+                                                                    e
+                                                                ),
+                                                            );
+                                                            return Value::Null;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                     instance.insert(col_name.clone(), val);
                                 }
                                 instance.insert(
@@ -509,9 +548,14 @@ pub fn native_engine_run(args: &[Value]) -> Value {
             obj.get("__class_name").and_then(|v| get_string(v))
         });
         if let Some(table_name) = table_name {
-            let (sql, params) = build_insert_from_instance(&arg, &table_name);
-            match engine_ref.execute(&sql, &params) {
-                Ok(count) => return Value::Number(count as f64),
+            match build_insert_from_instance(&arg, &table_name) {
+                Ok((sql, params)) => match engine_ref.execute(&sql, &params) {
+                    Ok(count) => return Value::Number(count as f64),
+                    Err(e) => {
+                        crate::websocket::set_native_error(format!("engine.run insert: {}", e));
+                        return Value::Null;
+                    }
+                },
                 Err(e) => {
                     crate::websocket::set_native_error(format!("engine.run insert: {}", e));
                     return Value::Null;
@@ -649,9 +693,41 @@ fn get_table_name_from_class_object(instance: &Value) -> Option<String> {
     })
 }
 
-fn build_insert_from_instance(instance: &Value, table_name: &str) -> (String, Vec<Value>) {
+fn looks_like_password_hash(s: &str) -> bool {
+    s.starts_with("$2a$")
+        || s.starts_with("$2b$")
+        || s.starts_with("$2y$")
+        || s.starts_with("$argon2")
+}
+
+fn apply_column_transform(transform: &Value, val: Value) -> Value {
+    if matches!(transform, Value::Null) {
+        return val;
+    }
+    if matches!(val, Value::Null) {
+        return val;
+    }
+    if let Value::String(ref s) = val {
+        if looks_like_password_hash(s) {
+            return val;
+        }
+    }
+    let args = [val.clone()];
+    match invoke_value_callable(transform, &args) {
+        Ok(out) => out,
+        Err(e) => {
+            crate::websocket::set_native_error(format!("Column transform: {}", e));
+            val
+        }
+    }
+}
+
+fn build_insert_from_instance(
+    instance: &Value,
+    table_name: &str,
+) -> Result<(String, Vec<Value>), String> {
     let Value::Object(rc) = instance else {
-        return (String::new(), vec![]);
+        return Ok((String::new(), vec![]));
     };
     let obj = rc.borrow();
     // Must use __class.__col_names: order and set of columns come from the model, not instance.keys().
@@ -715,6 +791,45 @@ fn build_insert_from_instance(instance: &Value, table_name: &str) -> (String, Ve
                 })
             })
             .unwrap_or(Value::Null);
+        let mut val = val;
+        if let Some(ref class_rc) = class_opt {
+            let classes_map = get_classes_from_class_chain(class_rc);
+            if let Some(desc_val) =
+                column_descriptor_for_name_or_local(class_rc, classes_map.as_ref(), k)
+            {
+                if let Value::Object(desc_cell) = desc_val {
+                    let (transform, validators_field) = {
+                        let desc = desc_cell.borrow();
+                        (
+                            desc.get("transform").cloned(),
+                            desc
+                                .get("validators")
+                                .cloned()
+                                .unwrap_or(Value::Null),
+                        )
+                    };
+                    // Order: 1) validators on raw value, 2) transform (e.g. hash), 3) SQLEnum normalize, 4) persist.
+                    if !matches!(val, Value::Null) {
+                        crate::database_engine::validators::run_column_validators(
+                            &validators_field,
+                            &val,
+                            k,
+                        )?;
+                    }
+                    if let Some(tf) = transform {
+                        if !matches!(tf, Value::Null) {
+                            val = apply_column_transform(&tf, val);
+                        }
+                    }
+                    let desc_for_enum = Value::Object(Rc::clone(&desc_cell));
+                    if let Some(enum_cls) = sqenum_class_from_column_descriptor(&desc_for_enum) {
+                        if !matches!(val, Value::Null) {
+                            val = sqenum::normalize_sqenum_column_value(&enum_cls, &val, k)?;
+                        }
+                    }
+                }
+            }
+        }
         cols.push(k.clone());
         vals.push(val);
     }
@@ -725,10 +840,52 @@ fn build_insert_from_instance(instance: &Value, table_name: &str) -> (String, Ve
         "INSERT INTO {} ({}) VALUES ({})",
         table_name, col_list, placeholders
     );
-    (sql, vals)
+    Ok((sql, vals))
 }
 
-/// Build chain of ancestor class objects from root to current (current last), using metadata.classes.
+/// Most-specific column descriptor for `col_name` along the model inheritance chain.
+fn column_descriptor_for_name(
+    model_class: &Rc<RefCell<HashMap<String, Value>>>,
+    classes: &HashMap<String, Value>,
+    col_name: &str,
+) -> Option<Value> {
+    let chain = build_class_chain(model_class, classes);
+    for anc in chain.iter().rev() {
+        let k = format!("__col_{}", col_name);
+        if let Some(v) = anc.borrow().get(&k).cloned() {
+            return Some(v);
+        }
+    }
+    None
+}
+
+fn column_descriptor_for_name_or_local(
+    model_class: &Rc<RefCell<HashMap<String, Value>>>,
+    classes: Option<&HashMap<String, Value>>,
+    col_name: &str,
+) -> Option<Value> {
+    if let Some(cm) = classes {
+        column_descriptor_for_name(model_class, cm, col_name)
+    } else {
+        let k = format!("__col_{}", col_name);
+        model_class.borrow().get(&k).cloned()
+    }
+}
+
+/// If the column type is a finalized SQLEnum class, return its class object.
+fn sqenum_class_from_column_descriptor(desc: &Value) -> Option<Rc<RefCell<HashMap<String, Value>>>> {
+    let Value::Object(desc_rc) = desc else {
+        return None;
+    };
+    let typ = desc_rc.borrow().get("type").cloned()?;
+    if let Value::Object(enum_rc) = typ {
+        if sqenum::is_sqenum_class_object(&Value::Object(Rc::clone(&enum_rc))) {
+            return Some(enum_rc);
+        }
+    }
+    None
+}
+
 fn build_class_chain(
     class_rc: &Rc<RefCell<HashMap<String, Value>>>,
     classes: &HashMap<String, Value>,
@@ -812,7 +969,7 @@ fn collect_column_specs_for_class(
                     let sql_type = if pk && auto {
                         "INTEGER".to_string()
                     } else {
-                        column_type_to_sql(attr_val)
+                        column_type_to_sql(attr_val, Some(name.as_str()))
                     };
                     let uq = col
                         .get("unique")
@@ -908,7 +1065,7 @@ fn collect_column_specs_for_class(
                 let sql_type = if pk && auto {
                     "INTEGER".to_string()
                 } else {
-                    column_type_to_sql(attr_val)
+                    column_type_to_sql(attr_val, Some(col_name.as_str()))
                 };
                 let uq = col
                     .get("unique")
@@ -1068,17 +1225,42 @@ fn default_value_to_sql(v: &Value) -> Option<String> {
             // now_call() is stored as native fn ref; treat as current timestamp for SQLite
             Some("CURRENT_TIMESTAMP".to_string())
         }
+        Value::Object(om) => {
+            let member_val = Value::Object(Rc::clone(om));
+            if sqenum::is_enum_member_value(&member_val) {
+                if let Some(stored) = om.borrow().get(sqenum::KEY_ENUM_VALUE).cloned() {
+                    return default_value_to_sql(&stored);
+                }
+            }
+            None
+        }
         _ => None,
     }
 }
 
-fn column_type_to_sql(col_val: &Value) -> String {
+fn column_type_to_sql(col_val: &Value, sqlite_column_name: Option<&str>) -> String {
     let Value::Object(rc) = col_val else {
         return "TEXT".to_string();
     };
     let col = rc.borrow();
     let type_val = col.get("type").cloned().unwrap_or(Value::Null);
     drop(col);
+
+    if let Value::Object(enum_rc) = &type_val {
+        if sqenum::is_sqenum_class_object(&Value::Object(Rc::clone(enum_rc))) {
+            let affinity = enum_rc
+                .borrow()
+                .get("__sqenum_sqlite_affinity")
+                .and_then(get_string)
+                .unwrap_or_else(|| "TEXT".to_string());
+            if let Some(col_sql_name) = sqlite_column_name {
+                if let Some(chk) = sqenum::sqlite_check_in_clause_for_column(enum_rc, col_sql_name) {
+                    return format!("{} {}", affinity, chk);
+                }
+            }
+            return affinity;
+        }
+    }
     if let Value::Object(type_rc) = &type_val {
         let t = type_rc.borrow();
         if t.get("__type").and_then(|v| {

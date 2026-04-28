@@ -643,6 +643,175 @@ mod tests {
     }
 
     #[test]
+    fn test_run_insert_with_column_transform_sha256() {
+        let source = r#"
+            from database_engine import engine, MetaData, Column, int, str
+
+            cls User(Table) {
+                metadata = MetaData()
+                public:
+                    id: int = Column(primary_key=true, autoincrement=true)
+                    pw: str = Column(str, transform=sha256)
+                fn __tablename__(@class) -> str { return "users" }
+            }
+
+            let e = engine("sqlite:///:memory:")
+            e.run(User.metadata.create_all)
+            let u = User(pw = "secret")
+            e.run(u)
+            let tbl = e.query("SELECT pw FROM users", [])
+            len(tbl.rows) == 1 and len(tbl.rows[0][0]) == 32
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
+    fn test_column_transform_skips_string_that_looks_like_bcrypt() {
+        let source = r#"
+            from database_engine import engine, MetaData, Column, int, str
+
+            cls User(Table) {
+                metadata = MetaData()
+                public:
+                    id: int = Column(primary_key=true, autoincrement=true)
+                    pw: str = Column(str, transform=sha256)
+                fn __tablename__(@class) -> str { return "users" }
+            }
+
+            let e = engine("sqlite:///:memory:")
+            e.run(User.metadata.create_all)
+            let existing = "$2b$12$xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            let u = User(pw = existing)
+            e.run(u)
+            let tbl = e.query("SELECT pw FROM users", [])
+            tbl.rows[0][0] == existing
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
+    fn test_column_validators_min_length_ok() {
+        let source = r#"
+            from database_engine import engine, MetaData, Column, int, str
+            from database_engine.validators import min_length
+
+            cls User(Table) {
+                metadata = MetaData()
+                public:
+                    id: int = Column(primary_key=true, autoincrement=true)
+                    name: str = Column(str, validators=[min_length(1)])
+                fn __tablename__(@class) -> str { return "users" }
+            }
+
+            let e = engine("sqlite:///:memory:")
+            e.run(User.metadata.create_all)
+            let u = User(name = "a")
+            e.run(u)
+            let tbl = e.query("SELECT * FROM users", [])
+            len(tbl.rows) == 1
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
+    fn test_column_validators_min_length_fails() {
+        let source = r#"
+            from database_engine import engine, MetaData, Column, int, str
+            from database_engine.validators import min_length
+
+            cls User(Table) {
+                metadata = MetaData()
+                public:
+                    id: int = Column(primary_key=true, autoincrement=true)
+                    name: str = Column(str, validators=[min_length(5)])
+                fn __tablename__(@class) -> str { return "users" }
+            }
+
+            let e = engine("sqlite:///:memory:")
+            e.run(User.metadata.create_all)
+            let u = User(name = "ab")
+            e.run(u)
+        "#;
+        assert!(
+            run_plain(source).is_err(),
+            "expected validation error on insert"
+        );
+    }
+
+    #[test]
+    fn test_column_validators_custom_fn() {
+        let source = r#"
+            from database_engine import engine, MetaData, Column, int, str
+            from database_engine.validators import custom
+
+            fn not_weak(v) {
+                return v != "123456"
+            }
+
+            cls User(Table) {
+                metadata = MetaData()
+                public:
+                    id: int = Column(primary_key=true, autoincrement=true)
+                    pw: str = Column(str, validators=[custom(not_weak)])
+                fn __tablename__(@class) -> str { return "users" }
+            }
+
+            let e = engine("sqlite:///:memory:")
+            e.run(User.metadata.create_all)
+            e.run(User(pw = "secretok"))
+            let tbl = e.query("SELECT * FROM users", [])
+            len(tbl.rows) == 1
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
+    fn test_column_validators_one_of() {
+        let source = r#"
+            from database_engine import engine, MetaData, Column, int, str
+            from database_engine.validators import one_of
+
+            cls User(Table) {
+                metadata = MetaData()
+                public:
+                    id: int = Column(primary_key=true, autoincrement=true)
+                    role: str = Column(str, validators=[one_of(["user", "admin"])])
+                fn __tablename__(@class) -> str { return "users" }
+            }
+
+            let e = engine("sqlite:///:memory:")
+            e.run(User.metadata.create_all)
+            e.run(User(role = "admin"))
+            let tbl = e.query("SELECT * FROM users", [])
+            len(tbl.rows) == 1
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
+    fn test_column_validators_min_value() {
+        let source = r#"
+            from database_engine import engine, MetaData, Column, int, str
+            from database_engine.validators import min_value
+
+            cls Score(Table) {
+                metadata = MetaData()
+                public:
+                    id: int = Column(primary_key=true, autoincrement=true)
+                    points: int = Column(int, validators=[min_value(0)])
+                fn __tablename__(@class) -> str { return "scores" }
+            }
+
+            let e = engine("sqlite:///:memory:")
+            e.run(Score.metadata.create_all)
+            e.run(Score(points = 10))
+            let tbl = e.query("SELECT * FROM scores", [])
+            len(tbl.rows) == 1
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
     fn test_run_select_model() {
         let source = r#"
             from database_engine import engine, MetaData, Column, select, int, str
@@ -883,5 +1052,81 @@ mod tests {
         "#;
 
         assert_bool_result(source, true);
+    }
+
+    #[test]
+    fn test_sqenum_import() {
+        let source = r#"
+            from database_engine import SQLEnum
+            typeof(SQLEnum) == "object"
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
+    fn test_sqenum_column_insert_select_and_string_equality() {
+        let source = r#"
+            from database_engine import engine, MetaData, Column, select, SQLEnum
+
+            cls Role(SQLEnum) {
+                MEMBER = "member"
+                ADMIN = "admin"
+            }
+
+            @Abstract
+            cls Base(Table) {
+                metadata = MetaData()
+            }
+
+            cls User(Base) {
+                public:
+                    id: Column[int] = Column(int, primary_key=true, autoincrement=true)
+                    role: Column[Role] = Column(Role, default=Role.MEMBER)
+                fn __tablename__(@class) -> str { return "users" }
+            }
+
+            let e = engine("sqlite:///:memory:")
+            e.run(User.metadata.create_all)
+
+            let u = User(role = Role.ADMIN)
+            e.run(u)
+
+            let tbl = e.run(select(User))
+            let inst = tbl.data[0]
+            inst.role == "admin" and str(inst.role) == "admin"
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
+    fn test_sqenum_insert_rejects_invalid_scalar() {
+        let source = r#"
+            from database_engine import engine, MetaData, Column, SQLEnum
+
+            cls Role(SQLEnum) {
+                MEMBER = "member"
+                ADMIN = "admin"
+            }
+
+            @Abstract
+            cls Base(Table) {
+                metadata = MetaData()
+            }
+
+            cls User(Base) {
+                public:
+                    id: Column[int] = Column(int, primary_key=true, autoincrement=true)
+                    role: Column[Role] = Column(Role)
+                fn __tablename__(@class) -> str { return "users" }
+            }
+
+            let e = engine("sqlite:///:memory:")
+            e.run(User.metadata.create_all)
+            e.run(User(role = "not_a_role"))
+        "#;
+        assert!(
+            run_plain(source).is_err(),
+            "expected error when enum column value is not in the set"
+        );
     }
 }

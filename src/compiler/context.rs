@@ -48,6 +48,8 @@ pub struct CompilationContext<'a> {
     pub class_superclass: &'a mut std::collections::HashMap<String, String>,
     /// Class name -> true if the class extends Table (directly or indirectly). Used for isinstance(x, Table).
     pub class_extends_table: &'a mut std::collections::HashMap<String, bool>,
+    /// Class name -> true if the class extends SQLEnum (directly or indirectly).
+    pub class_extends_sqenum: &'a mut std::collections::HashMap<String, bool>,
     /// Class name -> (constructor_name, function_index). Used to resolve named-arg constructor calls (e.g. User(name="Alice")) for extends_table classes.
     pub class_constructor: &'a mut std::collections::HashMap<String, (String, usize)>,
     /// Class names marked with @Abstract; calls to these must load the class object (not constructor) so VM can check __abstract.

@@ -4,7 +4,7 @@ use crate::common::value_store::{ValueCell, ValueStore};
 use crate::vm::global_slot::{default_global_slot, GlobalSlot};
 
 /// Количество встроенных глобалов (индексы `0..BUILTIN_GLOBAL_COUNT`).
-pub const BUILTIN_GLOBAL_COUNT: usize = 79;
+pub const BUILTIN_GLOBAL_COUNT: usize = 85;
 
 /// Канонические имена встроенных глобалов по индексу `0..BUILTIN_GLOBAL_COUNT` (для legacy `legacy_merge::merge_globals_from`: не перезаписывать правильное значение ошибочным).
 pub const BUILTIN_GLOBAL_NAMES: [&str; BUILTIN_GLOBAL_COUNT] = [
@@ -87,6 +87,12 @@ pub const BUILTIN_GLOBAL_NAMES: [&str; BUILTIN_GLOBAL_COUNT] = [
     "map",
     "filter",
     "reduce",
+    "sha256",
+    "sha512",
+    "hmac_sha256",
+    "hmac_sha512",
+    "random_bytes",
+    "random_int",
 ];
 
 /// Возвращает каноническое имя встроенной глобальной переменной по индексу (`0..BUILTIN_GLOBAL_COUNT`).

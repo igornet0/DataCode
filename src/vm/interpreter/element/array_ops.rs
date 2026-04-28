@@ -37,17 +37,17 @@ pub fn get_array(
 ) -> Result<VMStatus, LangError> {
     if let Value::String(key) = &index_value {
         let method_index = match key.as_str() {
-            "push" => Some(35),
-            "pop" => Some(36),
-            "unique" => Some(37),
-            "reverse" => Some(38),
-            "sort" => Some(39),
-            "sum" => Some(40),
-            "average" => Some(41),
-            "count" => Some(42),
-            "any" => Some(43),
-            "all" => Some(44),
-            "chunk" => Some(80),
+            "push" => Some(crate::vm::native_indices::builtin::PUSH),
+            "pop" => Some(crate::vm::native_indices::builtin::POP),
+            "unique" => Some(crate::vm::native_indices::builtin::UNIQUE),
+            "reverse" => Some(crate::vm::native_indices::builtin::REVERSE),
+            "sort" => Some(crate::vm::native_indices::builtin::SORT),
+            "sum" => Some(crate::vm::native_indices::builtin::SUM),
+            "average" => Some(crate::vm::native_indices::builtin::AVERAGE),
+            "count" => Some(crate::vm::native_indices::builtin::COUNT),
+            "any" => Some(crate::vm::native_indices::builtin::ANY),
+            "all" => Some(crate::vm::native_indices::builtin::ALL),
+            "chunk" => Some(crate::vm::native_indices::builtin::CHUNK),
             _ => None,
         };
         if let Some(idx) = method_index {
@@ -206,17 +206,17 @@ pub fn get_array_view(
 ) -> Result<VMStatus, LangError> {
     if let Value::String(key) = &index_value {
         let method_index = match key.as_str() {
-            "push" => Some(35),
-            "pop" => Some(36),
-            "unique" => Some(37),
-            "reverse" => Some(38),
-            "sort" => Some(39),
-            "sum" => Some(40),
-            "average" => Some(41),
-            "count" => Some(42),
-            "any" => Some(43),
-            "all" => Some(44),
-            "chunk" => Some(80),
+            "push" => Some(crate::vm::native_indices::builtin::PUSH),
+            "pop" => Some(crate::vm::native_indices::builtin::POP),
+            "unique" => Some(crate::vm::native_indices::builtin::UNIQUE),
+            "reverse" => Some(crate::vm::native_indices::builtin::REVERSE),
+            "sort" => Some(crate::vm::native_indices::builtin::SORT),
+            "sum" => Some(crate::vm::native_indices::builtin::SUM),
+            "average" => Some(crate::vm::native_indices::builtin::AVERAGE),
+            "count" => Some(crate::vm::native_indices::builtin::COUNT),
+            "any" => Some(crate::vm::native_indices::builtin::ANY),
+            "all" => Some(crate::vm::native_indices::builtin::ALL),
+            "chunk" => Some(crate::vm::native_indices::builtin::CHUNK),
             _ => None,
         };
         if let Some(idx) = method_index {

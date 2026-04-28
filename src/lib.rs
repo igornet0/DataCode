@@ -17,6 +17,8 @@ pub mod parser;
 pub mod semantic;
 pub mod vm;
 
+#[path = "lib/crypto/mod.rs"]
+pub mod crypto;
 #[path = "lib/database_engine/mod.rs"]
 pub mod database_engine;
 #[path = "lib/plot/mod.rs"]

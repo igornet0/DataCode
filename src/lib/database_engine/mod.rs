@@ -3,3 +3,6 @@
 pub mod cluster;
 pub mod engine;
 pub mod natives;
+pub mod sqenum;
+pub mod sqenum_ddl;
+pub mod validators;

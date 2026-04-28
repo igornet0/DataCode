@@ -1,6 +1,7 @@
 use crate::bytecode::{Function, OpCode};
 use crate::common::error::LangError;
 use crate::common::value::Value;
+use crate::database_engine::sqenum;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
 use crate::compiler::stmt;
@@ -94,6 +95,76 @@ fn emit_instance_extends_table(
     ctx.chunk.write_with_line(OpCode::SetArrayElement, line);
     ctx.chunk
         .write_with_line(OpCode::StoreLocal(this_slot), line);
+}
+
+/// String or integer literal allowed as `cls E(SQLEnum) { MEMBER = ... }`.
+fn sqenum_class_variable_literal(expr: &Expr) -> Option<Value> {
+    match expr {
+        Expr::Literal { value, .. } => match value {
+            Value::String(_) => Some(value.clone()),
+            Value::Number(n) if n.is_finite() && n.fract() == 0.0 => Some(value.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn emit_sqenum_add_member_call(
+    ctx: &mut CompilationContext,
+    line: usize,
+    class_global_index: usize,
+    member_name: &str,
+    literal: &Value,
+) -> Result<(), LangError> {
+    let sqenum_slot = *ctx.scope.globals.get("SQLEnum").ok_or_else(|| LangError::ParseError {
+        message: "SQLEnum enum classes require: from database_engine import SQLEnum"
+            .to_string(),
+        line,
+        file: ctx.source_name.map(|s| s.to_string()),
+    })?;
+    ctx.chunk
+        .write_with_line(OpCode::LoadGlobal(class_global_index), line);
+    let name_c = ctx
+        .chunk
+        .add_constant(Value::String(member_name.to_string()));
+    ctx.chunk.write_with_line(OpCode::Constant(name_c), line);
+    let val_c = ctx.chunk.add_constant(literal.clone());
+    ctx.chunk.write_with_line(OpCode::Constant(val_c), line);
+    ctx.chunk
+        .write_with_line(OpCode::LoadGlobal(sqenum_slot), line);
+    let add_c = ctx
+        .chunk
+        .add_constant(Value::String("add_member".to_string()));
+    ctx.chunk.write_with_line(OpCode::Constant(add_c), line);
+    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
+    ctx.chunk.write_with_line(OpCode::Call(3), line);
+    ctx.chunk.write_with_line(OpCode::Pop, line);
+    Ok(())
+}
+
+fn emit_sqenum_finalize_call(
+    ctx: &mut CompilationContext,
+    line: usize,
+    class_global_index: usize,
+) -> Result<(), LangError> {
+    let sqenum_slot = *ctx.scope.globals.get("SQLEnum").ok_or_else(|| LangError::ParseError {
+        message: "SQLEnum enum classes require: from database_engine import SQLEnum"
+            .to_string(),
+        line,
+        file: ctx.source_name.map(|s| s.to_string()),
+    })?;
+    ctx.chunk
+        .write_with_line(OpCode::LoadGlobal(class_global_index), line);
+    ctx.chunk
+        .write_with_line(OpCode::LoadGlobal(sqenum_slot), line);
+    let fin_c = ctx
+        .chunk
+        .add_constant(Value::String("finalize".to_string()));
+    ctx.chunk.write_with_line(OpCode::Constant(fin_c), line);
+    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
+    ctx.chunk.write_with_line(OpCode::Call(1), line);
+    ctx.chunk.write_with_line(OpCode::Pop, line);
+    Ok(())
 }
 
 /// Emit bytecode to set this.__private_fields, this.__private_field_defining_class, and this.__class_name on the instance (for VM privacy checks).
@@ -438,6 +509,19 @@ pub fn compile_class(
             .unwrap_or(false);
         ctx.class_extends_table.insert(name.clone(), extends_table);
 
+        let extends_sqenum = superclass
+            .as_ref()
+            .map(|s| {
+                if s == "SQLEnum" {
+                    true
+                } else {
+                    *ctx.class_extends_sqenum.get(s).unwrap_or(&false)
+                }
+            })
+            .unwrap_or(false);
+        ctx.class_extends_sqenum
+            .insert(name.clone(), extends_sqenum);
+
         // Settings chain: set env_prefix early so we can add __nested_specs to class object (for subclasses in other modules to load at runtime).
         let is_settings_chain_early = superclass
             .as_ref()
@@ -484,6 +568,11 @@ pub fn compile_class(
                 "__superclass".to_string(),
                 Value::String(super_name.clone()),
             );
+        }
+        // Set early so `Value::Object` equality uses pointer identity before `SQLEnum.finalize`
+        // (structural HashMap `==` would recurse through member ↔ `__enum_class` cycles).
+        if extends_sqenum {
+            class_metadata.insert(sqenum::KEY_EXTENDS_SQENUM.to_string(), Value::Bool(true));
         }
         class_metadata.insert(
             "__private_fields".to_string(),
@@ -2405,13 +2494,37 @@ pub fn compile_class(
             .chain(protected_variables.iter())
             .chain(public_variables.iter())
         {
-            expr::compile_expr(ctx, &var.value)?;
-            let name_const = ctx.chunk.add_constant(Value::String(var.name.clone()));
-            ctx.chunk
-                .write_with_line(OpCode::Constant(name_const), *line);
-            ctx.chunk
-                .write_with_line(OpCode::LoadGlobal(class_global_index), *line);
-            ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+            if extends_sqenum {
+                if let Some(lit) = sqenum_class_variable_literal(&var.value) {
+                    emit_sqenum_add_member_call(
+                        ctx,
+                        *line,
+                        class_global_index,
+                        &var.name,
+                        &lit,
+                    )?;
+                } else {
+                    return Err(LangError::ParseError {
+                        message: format!(
+                            "SQLEnum class variable '{}' must be a string or integer literal",
+                            var.name
+                        ),
+                        line: *line,
+                        file: ctx.source_name.map(|s| s.to_string()),
+                    });
+                }
+            } else {
+                expr::compile_expr(ctx, &var.value)?;
+                let name_const = ctx.chunk.add_constant(Value::String(var.name.clone()));
+                ctx.chunk
+                    .write_with_line(OpCode::Constant(name_const), *line);
+                ctx.chunk
+                    .write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+            }
+        }
+        if extends_sqenum {
+            emit_sqenum_finalize_call(ctx, *line, class_global_index)?;
         }
         // Settings: set __nested_specs on class object at runtime so it's present after merge/export.
         if let Some(ref val) = nested_specs_for_class_value {

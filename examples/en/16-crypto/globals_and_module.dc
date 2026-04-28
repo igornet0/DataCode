@@ -1,0 +1,18 @@
+# Cryptographic builtins (global) and `crypto` module (Argon2id, bcrypt)
+
+let d = sha256("hello")
+print("sha256 len:", len(d))
+
+let token = random_bytes(32)
+print("token len:", len(token))
+
+let r = random_int(1, 100)
+print("random_int in [1,100]:", r)
+
+from crypto import Argon2, bcrypt
+
+let ah = Argon2.hash("mypassword")
+print("Argon2 verify:", Argon2.verify("mypassword", ah))
+
+let bh = bcrypt.hash("mypassword")
+print("bcrypt verify:", bcrypt.verify("mypassword", bh))

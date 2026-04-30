@@ -98,14 +98,22 @@ pub fn get_global_tables(
     let mut tables = HashMap::new();
     let globals = vm.get_globals();
     let explicit_global_names = vm.get_explicit_global_names();
+
+    // В большинстве сценариев мы хотим экспортировать только переменные,
+    // которые пользователь явно объявил через `global ...` (explicit_global_names).
+    // Но в некоторых режимах выполнения (например, строковое выполнение через WebSocket)
+    // explicit_global_names может оказаться пустым, хотя таблицы реально присутствуют в глобалах.
+    // Тогда делаем мягкий fallback на global_names и всё равно фильтруем по Value::Table.
+    let names = if explicit_global_names.is_empty() {
+        vm.get_global_names()
+    } else {
+        explicit_global_names
+    };
+
     let to_scan: Vec<(usize, String)> = globals
         .iter()
         .enumerate()
-        .filter_map(|(index, _)| {
-            explicit_global_names
-                .get(&index)
-                .map(|name| (index, name.clone()))
-        })
+        .filter_map(|(index, _)| names.get(&index).map(|name| (index, name.clone())))
         .collect();
     for (index, var_name) in to_scan {
         let value_id = vm.resolve_global_to_value_id(index);
@@ -118,6 +126,30 @@ pub fn get_global_tables(
         }
     }
     Ok(tables)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_global_tables;
+
+    #[test]
+    fn get_global_tables_falls_back_to_global_names() {
+        let source = r#"
+global users = table([
+    [1, "Алиса", "Разработка"],
+    [2, "Боб", "Маркетинг"]
+], ["id", "name", "department"])
+print(len(users))
+"#;
+
+        let (_v, mut vm) = crate::run_with_vm(source).expect("run_with_vm should succeed");
+        let tables = get_global_tables(&mut vm).expect("get_global_tables should succeed");
+        assert!(
+            tables.contains_key("users"),
+            "expected users table in globals, got keys={:?}",
+            tables.keys().collect::<Vec<_>>()
+        );
+    }
 }
 
 /// Санитизация имени таблицы для SQLite

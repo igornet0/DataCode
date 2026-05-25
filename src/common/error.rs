@@ -11,6 +11,7 @@ pub enum ErrorType {
     KeyError,
     StateError,
     OverflowError,
+    ZeroDivisionError,
     // IOError и его подтипы
     IOError,
     FileNotFoundError,
@@ -39,6 +40,7 @@ impl ErrorType {
             ErrorType::KeyError => "KeyError",
             ErrorType::StateError => "StateError",
             ErrorType::OverflowError => "OverflowError",
+            ErrorType::ZeroDivisionError => "ZeroDivisionError",
             ErrorType::IOError => "IOError",
             ErrorType::FileNotFoundError => "FileNotFoundError",
             ErrorType::PermissionError => "PermissionError",
@@ -74,6 +76,8 @@ impl ErrorType {
             (ErrorType::StateError, ErrorType::RuntimeError) => true,
             // OverflowError является RuntimeError
             (ErrorType::OverflowError, ErrorType::RuntimeError) => true,
+            // ZeroDivisionError является RuntimeError
+            (ErrorType::ZeroDivisionError, ErrorType::RuntimeError) => true,
             // ProtectError является RuntimeError
             (ErrorType::ProtectError, ErrorType::RuntimeError) => true,
 
@@ -113,6 +117,7 @@ impl ErrorType {
             "KeyError" => Some(ErrorType::KeyError),
             "StateError" => Some(ErrorType::StateError),
             "OverflowError" => Some(ErrorType::OverflowError),
+            "ZeroDivisionError" => Some(ErrorType::ZeroDivisionError),
             "IOError" => Some(ErrorType::IOError),
             "FileNotFoundError" => Some(ErrorType::FileNotFoundError),
             "PermissionError" => Some(ErrorType::PermissionError),

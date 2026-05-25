@@ -93,14 +93,9 @@ pub fn compile_super_method_call(
         };
 
         // Load this (first argument for method call)
-        // In methods, this is at slot 0; in constructors, use constructor_this_slot
-        if let Some(slot) = ctx.constructor_this_slot {
-            ctx.chunk.write_with_line(OpCode::LoadLocal(slot), *line);
-        } else if let Some(local_index) = ctx.scope.resolve_local("this") {
-            ctx.chunk
-                .write_with_line(OpCode::LoadLocal(local_index), *line);
-        } else {
-            ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
+        match ctx.this_local_slot_for_member_access() {
+            Some(slot) => ctx.chunk.write_with_line(OpCode::LoadLocal(slot), *line),
+            None => ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line),
         }
 
         // Compile arguments

@@ -48,7 +48,7 @@ mod tests {
     #[test]
     fn test_push_basic() {
         let source = r#"
-            let arr = [1, 2, 3]
+            arr = [1, 2, 3]
             push(arr, 4)
         "#;
         assert_array_result(
@@ -65,7 +65,7 @@ mod tests {
     #[test]
     fn test_push_empty_array() {
         let source = r#"
-            let arr = []
+            arr = []
             push(arr, 1)
         "#;
         assert_array_result(source, &[Value::Number(1.0)]);
@@ -74,7 +74,7 @@ mod tests {
     #[test]
     fn test_push_multiple() {
         let source = r#"
-            let arr = [1]
+            arr = [1]
             push(arr, 2)
             push(arr, 3)
         "#;
@@ -87,7 +87,7 @@ mod tests {
     #[test]
     fn test_push_string() {
         let source = r#"
-            let arr = ["a", "b"]
+            arr = ["a", "b"]
             push(arr, "c")
         "#;
         assert_array_result(
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn test_pop_basic() {
         let source = r#"
-            let arr = [1, 2, 3]
+            arr = [1, 2, 3]
             pop(arr)
         "#;
         assert_number_result(source, 3.0);
@@ -116,7 +116,7 @@ mod tests {
         // pop возвращает последний элемент, но не модифицирует массив
         // (так как значения передаются по значению)
         let source = r#"
-            let arr = [1, 2, 3]
+            arr = [1, 2, 3]
             pop(arr)
         "#;
         assert_number_result(source, 3.0);
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn test_pop_empty_array() {
         let source = r#"
-            let arr = []
+            arr = []
             pop(arr)
         "#;
         let result = run(source);
@@ -139,7 +139,7 @@ mod tests {
     #[test]
     fn test_pop_single_element() {
         let source = r#"
-            let arr = [42]
+            arr = [42]
             pop(arr)
         "#;
         assert_number_result(source, 42.0);
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn test_pop_string() {
         let source = r#"
-            let arr = ["a", "b", "c"]
+            arr = ["a", "b", "c"]
             pop(arr)
         "#;
         assert_string_result(source, "c");
@@ -218,7 +218,7 @@ mod tests {
     #[test]
     fn test_reverse_basic() {
         let source = r#"
-            let arr = [1, 2, 3]
+            arr = [1, 2, 3]
             reverse(arr)
         "#;
         assert_array_result(
@@ -230,7 +230,7 @@ mod tests {
     #[test]
     fn test_reverse_empty() {
         let source = r#"
-            let arr = []
+            arr = []
             reverse(arr)
         "#;
         assert_array_result(source, &[]);
@@ -239,7 +239,7 @@ mod tests {
     #[test]
     fn test_reverse_single() {
         let source = r#"
-            let arr = [42]
+            arr = [42]
             reverse(arr)
         "#;
         assert_array_result(source, &[Value::Number(42.0)]);
@@ -248,7 +248,7 @@ mod tests {
     #[test]
     fn test_reverse_strings() {
         let source = r#"
-            let arr = ["a", "b", "c"]
+            arr = ["a", "b", "c"]
             reverse(arr)
         "#;
         assert_array_result(
@@ -266,7 +266,7 @@ mod tests {
     #[test]
     fn test_sort_numbers() {
         let source = r#"
-            let arr = [3, 1, 4, 1, 5]
+            arr = [3, 1, 4, 1, 5]
             sort(arr)
         "#;
         assert_array_result(
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn test_sort_strings() {
         let source = r#"
-            let arr = ["c", "a", "b"]
+            arr = ["c", "a", "b"]
             sort(arr)
         "#;
         assert_array_result(
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn test_sort_empty() {
         let source = r#"
-            let arr = []
+            arr = []
             sort(arr)
         "#;
         assert_array_result(source, &[]);
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn test_sort_already_sorted() {
         let source = r#"
-            let arr = [1, 2, 3]
+            arr = [1, 2, 3]
             sort(arr)
         "#;
         assert_array_result(
@@ -458,7 +458,7 @@ mod tests {
     #[test]
     fn test_count_equals_len() {
         let source = r#"
-            let arr = [1, 2, 3, 4, 5]
+            arr = [1, 2, 3, 4, 5]
             count(arr) == len(arr)
         "#;
         let result = run(source);
@@ -474,8 +474,8 @@ mod tests {
     #[test]
     fn test_push_pop_combination() {
         let source = r#"
-            let arr = [1, 2]
-            let arr2 = []
+            arr = [1, 2]
+            arr2 = []
             push(arr2, 3)
             pop(arr2)
         "#;
@@ -485,8 +485,8 @@ mod tests {
     #[test]
     fn test_unique_sort_combination() {
         let source = r#"
-            let arr = [3, 1, 2, 3, 1]
-            let unique_arr = unique(arr)
+            arr = [3, 1, 2, 3, 1]
+            unique_arr = unique(arr)
             sort(unique_arr)
         "#;
         assert_array_result(
@@ -510,9 +510,9 @@ mod tests {
     #[test]
     fn test_sum_average_relationship() {
         let source = r#"
-            let arr = [1, 2, 3, 4, 5]
-            let s = sum(arr)
-            let c = count(arr)
+            arr = [1, 2, 3, 4, 5]
+            s = sum(arr)
+            c = count(arr)
             s / c
         "#;
         assert_number_result(source, 3.0);
@@ -521,8 +521,8 @@ mod tests {
     #[test]
     fn test_reverse_twice() {
         let source = r#"
-            let arr = [1, 2, 3]
-            let arr2 = reverse(arr)
+            arr = [1, 2, 3]
+            arr2 = reverse(arr)
             reverse(arr2)
         "#;
         assert_array_result(

@@ -1,0 +1,20 @@
+import heapq
+fn a(rows, cols, start, goal, blocked) {
+    start_id = start[0] * cols + start[1]
+    goal_r, goal_c = goal
+    g_score = {start_id: 0}
+    f_score = {start_id: 1}
+    came_from = {}
+    open_heap = [(1, start_id)]
+    open_set = {start_id}
+    while open_heap {
+        current_f, current = heapq.heappop(open_heap)
+        if current_f != f_score.get(current): continue
+        open_set.discard(current)
+        r, c = divmod(current, cols)
+        came_from[start_id] = current
+        return 1
+    }
+    return null
+}
+print(a(20, 20, (0, 0), (5, 7), set()))

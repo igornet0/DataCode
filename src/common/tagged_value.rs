@@ -1,9 +1,10 @@
-// Tagged value representation (NaN-boxing): one u64 for numbers, bool, null, or heap reference.
-// Avoids ValueStore lookup for primitives on the hot path.
+// Tagged value representation (NaN-boxing): one u64 for numbers, bool, null, int infinities, or heap reference.
+// Float domain (+ IEEE non-finite) uses raw f64 bits. Integer ∞ uses tagged immediates — never ieee inf.
 
+use crate::common::numeric::{FloatValue, IntValue};
 use crate::common::value_store::ValueId;
 
-/// Single-word value: either an f64 (using NaN-boxing) or a tagged immediate/heap ref.
+/// Single-word value: either an f64 (including IEEE ±inf/nan), or a tagged immediate/heap ref.
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
 pub struct TaggedValue(pub u64);
@@ -18,17 +19,26 @@ const PAYLOAD_MASK: u64 = 0x0000_FFFF_FFFF_FFFF;
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Tag {
-    Null = 0,
+    /// Must not be 0: `TAG_VALUE | (0<<48)` equals IEEE `+inf` bits — would alias float +∞ with null.
+    Null = 7,
     False = 1,
     True = 2,
-    Int = 3,  // signed 32-bit in payload
-    Heap = 4, // ValueId in low 32 bits
+    Int = 3, // signed 32-bit in payload
+    Heap = 4,
+    IntPosInfinity = 5,
+    IntNegInfinity = 6,
 }
 
 impl TaggedValue {
     #[inline]
     pub fn from_f64(n: f64) -> Self {
         TaggedValue(n.to_bits())
+    }
+
+    /// Float domain (+ IEEE semantics for non-finite on the tagged stack word).
+    #[inline]
+    pub fn from_float_value(fv: FloatValue) -> Self {
+        Self::from_f64(fv.as_raw_f64())
     }
 
     #[inline]
@@ -51,37 +61,94 @@ impl TaggedValue {
         TaggedValue(TAG_VALUE | ((Tag::Heap as u64) << 48) | (id as u64))
     }
 
-    /// True if this word is a number (including Inf, -0); false if tagged.
+    #[inline]
+    pub fn int_pos_inf() -> Self {
+        TaggedValue(TAG_VALUE | ((Tag::IntPosInfinity as u64) << 48))
+    }
+
+    #[inline]
+    pub fn int_neg_inf() -> Self {
+        TaggedValue(TAG_VALUE | ((Tag::IntNegInfinity as u64) << 48))
+    }
+
+    #[inline]
+    pub fn try_from_int_iv(iv: IntValue) -> Option<Self> {
+        Some(match iv {
+            IntValue::Finite(n)
+                if n >= i32::MIN as i64 && n <= i32::MAX as i64 =>
+            {
+                Self::from_i32(n as i32)
+            }
+            IntValue::PosInfinity => Self::int_pos_inf(),
+            IntValue::NegInfinity => Self::int_neg_inf(),
+            _ => return None,
+        })
+    }
+
+    /// True if this word carries float-domain IEEE semantics (finite or ±inf or nan raw bits).
     #[inline]
     pub fn is_number(self) -> bool {
-        (self.0 & TAG_MASK) != TAG_VALUE
+        let bits = self.0;
+        if (bits & TAG_MASK) != TAG_VALUE {
+            return true;
+        }
+        // Exponent all-1s: either IEEE non-finite (tag nibble 0) or NaN-boxed immediate (tag nibble != 0).
+        ((bits >> 48) & 0xF) == 0
+    }
+
+    /// True when this word is a NaN-boxed immediate (not raw IEEE `f64` in the float domain).
+    #[inline]
+    pub fn is_nan_boxed(self) -> bool {
+        (self.0 & TAG_MASK) == TAG_VALUE
     }
 
     #[inline]
     pub fn is_null(self) -> bool {
-        self.0 == (TAG_VALUE | ((Tag::Null as u64) << 48))
+        self.is_nan_boxed() && ((self.0 >> 48) & 0xF) == Tag::Null as u64
     }
 
     #[inline]
     pub fn is_bool(self) -> bool {
+        if !self.is_nan_boxed() {
+            return false;
+        }
         let tag = (self.0 >> 48) & 0xF;
         tag == Tag::False as u64 || tag == Tag::True as u64
     }
 
     #[inline]
     pub fn is_heap(self) -> bool {
-        ((self.0 >> 48) & 0xF) == Tag::Heap as u64
+        self.is_nan_boxed() && ((self.0 >> 48) & 0xF) == Tag::Heap as u64
     }
 
     #[inline]
     pub fn is_int(self) -> bool {
-        ((self.0 >> 48) & 0xF) == Tag::Int as u64
+        self.is_nan_boxed() && ((self.0 >> 48) & 0xF) == Tag::Int as u64
+    }
+
+    #[inline]
+    pub fn is_int_pos_inf(self) -> bool {
+        self.is_nan_boxed() && ((self.0 >> 48) & 0xF) == Tag::IntPosInfinity as u64
+    }
+
+    #[inline]
+    pub fn is_int_neg_inf(self) -> bool {
+        self.is_nan_boxed() && ((self.0 >> 48) & 0xF) == Tag::IntNegInfinity as u64
     }
 
     #[inline]
     pub fn get_f64(self) -> f64 {
         debug_assert!(self.is_number());
         f64::from_bits(self.0)
+    }
+
+    #[inline]
+    pub fn get_float_value_domain(self) -> FloatValue {
+        debug_assert!(
+            self.is_number(),
+            "get_float_value_domain only for float-domain words"
+        );
+        FloatValue::from_f64_for_stack(self.get_f64())
     }
 
     #[inline]
@@ -102,27 +169,58 @@ impl TaggedValue {
         (self.0 & 0xFFFF_FFFF) as i32
     }
 
-    /// Returns true if this is an immediate (number, bool, null, int) that does not need store lookup.
+    /// Returns true if this is an immediate (number, bool, null, finite int31, ±int∞) that does not need store lookup for itself.
+    /// Heap references need store lookup; float-domain IEEE values are encoded as raw f64 (`is_number()`).
     #[inline]
     pub fn is_immediate(self) -> bool {
         if self.is_number() {
             return true;
         }
-        let tag = (self.0 >> 48) & 0xF;
-        tag <= Tag::Int as u64
+        self.is_nan_boxed()
+            && matches!(
+                (self.0 >> 48) & 0xF,
+                x if x == Tag::Null as u64
+                    || x == Tag::False as u64
+                    || x == Tag::True as u64
+                    || x == Tag::Int as u64
+                    || x == Tag::IntPosInfinity as u64
+                    || x == Tag::IntNegInfinity as u64
+            )
+    }
+
+    #[inline]
+    pub fn int_value_domain(self) -> Option<IntValue> {
+        if self.is_int_pos_inf() {
+            return Some(IntValue::PosInfinity);
+        }
+        if self.is_int_neg_inf() {
+            return Some(IntValue::NegInfinity);
+        }
+        if self.is_int() {
+            return Some(IntValue::Finite(self.get_i32() as i64));
+        }
+        None
     }
 }
 
 impl std::fmt::Debug for TaggedValue {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if self.is_number() {
-            write!(f, "TaggedValue::Number({})", self.get_f64())
+            write!(
+                f,
+                "TaggedValue::FloatBits({:?})",
+                FloatValue::from_f64_for_stack(self.get_f64())
+            )
         } else if self.is_null() {
             write!(f, "TaggedValue::Null")
         } else if self.is_bool() {
             write!(f, "TaggedValue::Bool({})", self.get_bool())
         } else if self.is_int() {
             write!(f, "TaggedValue::Int({})", self.get_i32())
+        } else if self.is_int_pos_inf() {
+            write!(f, "TaggedValue::Int(+inf)")
+        } else if self.is_int_neg_inf() {
+            write!(f, "TaggedValue::Int(-inf)")
         } else if self.is_heap() {
             write!(f, "TaggedValue::Heap({})", self.get_heap_id())
         } else {

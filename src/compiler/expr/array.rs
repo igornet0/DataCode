@@ -35,17 +35,36 @@ pub fn compile_array(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
         Expr::ObjectLiteral { pairs, line } => {
             *ctx.current_line = *line;
             use crate::common::value::Value;
-            use crate::parser::ast::ObjectPair;
+            use crate::parser::ast::{ObjectLiteralKey, ObjectPair};
             let has_spread = pairs.iter().any(|p| matches!(p, ObjectPair::Spread(_)));
             if !has_spread {
+                let n_pairs = pairs
+                    .iter()
+                    .filter(|p| {
+                        matches!(
+                            p,
+                            ObjectPair::KeyValue(_, _) | ObjectPair::KeyValueExpr(_, _)
+                        )
+                    })
+                    .count();
                 for p in pairs.iter().rev() {
                     if let ObjectPair::KeyValue(key, value) = p {
-                        let key_index = ctx.chunk.add_constant(Value::String(key.clone()));
+                        let key_val = match key {
+                            ObjectLiteralKey::Ident(s) | ObjectLiteralKey::String(s) => {
+                                Value::String(s.clone())
+                            }
+                            ObjectLiteralKey::Number(n) => Value::Number(*n),
+                        };
+                        let key_index = ctx.chunk.add_constant(key_val);
                         ctx.chunk.write_with_line(OpCode::Constant(key_index), *line);
+                        expr::compile_expr(ctx, value)?;
+                    } else if let ObjectPair::KeyValueExpr(key, value) = p {
+                        expr::compile_expr(ctx, key)?;
                         expr::compile_expr(ctx, value)?;
                     }
                 }
-                ctx.chunk.write_with_line(OpCode::MakeObject(pairs.len()), *line);
+                ctx.chunk
+                    .write_with_line(OpCode::MakeObject(n_pairs), *line);
             } else {
                 let count_slot = ctx.scope.declare_local("__object_pair_count");
                 let zero_index = ctx.chunk.add_constant(Value::Number(0.0));
@@ -54,8 +73,23 @@ pub fn compile_array(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
                 for p in pairs {
                     match p {
                         ObjectPair::KeyValue(key, value) => {
-                            let key_index = ctx.chunk.add_constant(Value::String(key.clone()));
+                            let key_val = match &key {
+                                ObjectLiteralKey::Ident(s) | ObjectLiteralKey::String(s) => {
+                                    Value::String(s.clone())
+                                }
+                                ObjectLiteralKey::Number(n) => Value::Number(*n),
+                            };
+                            let key_index = ctx.chunk.add_constant(key_val);
                             ctx.chunk.write_with_line(OpCode::Constant(key_index), *line);
+                            expr::compile_expr(ctx, value)?;
+                            ctx.chunk.write_with_line(OpCode::LoadLocal(count_slot), *line);
+                            let one_index = ctx.chunk.add_constant(Value::Number(1.0));
+                            ctx.chunk.write_with_line(OpCode::Constant(one_index), *line);
+                            ctx.chunk.write_with_line(OpCode::Add, *line);
+                            ctx.chunk.write_with_line(OpCode::StoreLocal(count_slot), *line);
+                        }
+                        ObjectPair::KeyValueExpr(key, value) => {
+                            expr::compile_expr(ctx, key)?;
                             expr::compile_expr(ctx, value)?;
                             ctx.chunk.write_with_line(OpCode::LoadLocal(count_slot), *line);
                             let one_index = ctx.chunk.add_constant(Value::Number(1.0));
@@ -80,7 +114,8 @@ pub fn compile_array(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
             match index {
                 IndexExpr::Scalar(e) => {
                     expr::compile_expr(ctx, e)?;
-                    ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                    ctx.chunk
+                        .write_with_line(OpCode::ObjectIndexIntegral, *line);
                 }
                 IndexExpr::Slice {
                     start,

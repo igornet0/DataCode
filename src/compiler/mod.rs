@@ -1,11 +1,13 @@
 pub mod args;
 pub mod array_map_onehot_fusion;
+pub mod builtin_methods;
 pub mod closure;
 pub mod compiler;
 pub mod constant_fold;
 pub mod context;
 pub mod expr;
 pub mod labels;
+pub mod nested_chunk;
 pub mod natives;
 pub mod scope;
 pub mod stmt;

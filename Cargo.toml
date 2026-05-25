@@ -22,8 +22,9 @@ keywords = ["programming-language", "interpreter", "repl", "data-processing"]
 categories = ["command-line-utilities", "development-tools"]
 
 [features]
-default = []
+default = ["threaded_dispatch"]
 profile = []  # Счётчики: opcodes, store allocations, store get (вывод в конце run)
+threaded_dispatch = []  # Hot-first opcode dispatch in executor (reordered match)
 allocator_jemalloc = ["jemallocator"]
 # Reserved for embedders that need the legacy global-merge API re-exported at crate boundary (see `legacy_merge` module).
 legacy_vm_merge = []

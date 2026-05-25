@@ -137,10 +137,40 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
         }
         Expr::ObjectLiteral { pairs, .. } => {
             for p in pairs {
-                if let crate::parser::ast::ObjectPair::KeyValue(_, e) = p {
-                    walk_expr(e, f);
-                } else if let crate::parser::ast::ObjectPair::Spread(e) = p {
-                    walk_expr(e, f);
+                match p {
+                    crate::parser::ast::ObjectPair::KeyValue(_, e) => walk_expr(e, f),
+                    crate::parser::ast::ObjectPair::KeyValueExpr(k, e) => {
+                        walk_expr(k, f);
+                        walk_expr(e, f);
+                    }
+                    crate::parser::ast::ObjectPair::Spread(e) => walk_expr(e, f),
+                }
+            }
+        }
+        Expr::DictComprehension {
+            key_expr,
+            value_expr,
+            iterable,
+            condition,
+            ..
+        } => {
+            walk_expr(key_expr, f);
+            walk_expr(value_expr, f);
+            walk_expr(iterable, f);
+            if let Some(c) = condition {
+                walk_expr(c, f);
+            }
+        }
+        Expr::ListComprehension { elt, clauses, .. } => {
+            walk_expr(elt, f);
+            for cl in clauses {
+                match cl {
+                    crate::parser::ast::ListComprehensionClause::For { iterable, .. } => {
+                        walk_expr(iterable, f);
+                    }
+                    crate::parser::ast::ListComprehensionClause::If { condition } => {
+                        walk_expr(condition, f);
+                    }
                 }
             }
         }
@@ -249,6 +279,30 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
         Expr::ExprReturn { value, .. } | Expr::Ireturn { value, .. } => {
             if let Some(e) = value {
                 walk_expr(e, f);
+            }
+        }
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            walk_expr(condition, f);
+            match then_branch {
+                crate::parser::ast::IfBranch::Expr(e) => walk_expr(e, f),
+                crate::parser::ast::IfBranch::Block(stmts) => {
+                    for s in stmts {
+                        walk_stmt(s, f);
+                    }
+                }
+            }
+            match else_branch {
+                crate::parser::ast::IfBranch::Expr(e) => walk_expr(e, f),
+                crate::parser::ast::IfBranch::Block(stmts) => {
+                    for s in stmts {
+                        walk_stmt(s, f);
+                    }
+                }
             }
         }
     }

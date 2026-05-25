@@ -3,7 +3,6 @@
 #[cfg(test)]
 mod tests {
     use data_code::{run, Value};
-    use std::collections::HashMap;
 
     fn run_ok(source: &str) -> Value {
         run(source).expect("expected Ok")
@@ -25,21 +24,31 @@ mod tests {
         );
     }
 
-    /// Получить объект как HashMap (только простые ключи без __meta и т.д.).
-    fn object_map(v: &Value) -> Option<std::cell::Ref<'_, HashMap<String, Value>>> {
+    fn object_len(v: &Value) -> Option<usize> {
         match v {
-            Value::Object(rc) => Some(rc.borrow()),
+            Value::Object(rc) => Some(rc.borrow().len()),
             _ => None,
         }
     }
 
-    fn object_has_key_with_number(obj: &Value, key: &str, expected: f64) -> bool {
-        if let Some(map) = object_map(obj) {
-            if let Some(Value::Number(n)) = map.get(key) {
-                return (n - expected).abs() < 1e-10;
-            }
+    fn object_str_key_contains(v: &Value, key: &str) -> bool {
+        match v {
+            Value::Object(rc) => rc.borrow().str_key_contains(key),
+            _ => false,
         }
-        false
+    }
+
+    fn object_has_key_with_number(obj: &Value, key: &str, expected: f64) -> bool {
+        match obj {
+            Value::Object(rc) => {
+                if let Some(Value::Number(n)) = rc.borrow().str_key_get(key) {
+                    (n - expected).abs() < 1e-10
+                } else {
+                    false
+                }
+            }
+            _ => false,
+        }
     }
 
     // ========== Object literal spread: { **x, "c": 3 } ==========
@@ -53,8 +62,7 @@ mod tests {
             y
         "#;
         let v = run_ok(source);
-        let map = object_map(&v).expect("expected Object");
-        assert_eq!(map.len(), 3, "expected 3 keys");
+        assert_eq!(object_len(&v).expect("expected Object"), 3, "expected 3 keys");
         assert!(object_has_key_with_number(&v, "a", 1.0));
         assert!(object_has_key_with_number(&v, "b", 2.0));
         assert!(object_has_key_with_number(&v, "c", 3.0));
@@ -71,10 +79,9 @@ mod tests {
             z
         "#;
         let v = run_ok(source);
-        let map = object_map(&v).expect("expected Object (result)");
-        assert!(map.contains_key("a"));
-        assert!(map.contains_key("b"));
-        assert!(map.contains_key("c"));
+        assert!(object_str_key_contains(&v, "a"));
+        assert!(object_str_key_contains(&v, "b"));
+        assert!(object_str_key_contains(&v, "c"));
         assert!(object_has_key_with_number(&v, "a", 1.0));
         assert!(object_has_key_with_number(&v, "b", 2.0));
         assert!(object_has_key_with_number(&v, "c", 3.0));
@@ -90,7 +97,7 @@ mod tests {
             fn SettingsConfigDict(opts) { return opts }
             model_config = SettingsConfigDict(**_config)
         "#;
-        assert_runtime_error_contains(source, "Object keys must match function parameters");
+        assert_runtime_error_contains(source, "unexpected keys");
     }
 
     #[test]
@@ -103,9 +110,8 @@ mod tests {
             model_config
         "#;
         let v = run_ok(source);
-        let map = object_map(&v).expect("expected Object (model_config)");
-        assert!(map.contains_key("a"));
-        assert!(map.contains_key("b"));
+        assert!(object_str_key_contains(&v, "a"));
+        assert!(object_str_key_contains(&v, "b"));
         assert!(object_has_key_with_number(&v, "a", 1.0));
         assert!(object_has_key_with_number(&v, "b", 2.0));
     }
@@ -124,9 +130,8 @@ mod tests {
             x.model_config
         "#;
         let v = run_ok(source);
-        let map = object_map(&v).expect("expected Object (model_config)");
-        assert!(map.contains_key("a"));
-        assert!(map.contains_key("b"));
+        assert!(object_str_key_contains(&v, "a"));
+        assert!(object_str_key_contains(&v, "b"));
         assert!(object_has_key_with_number(&v, "a", 1.0));
         assert!(object_has_key_with_number(&v, "b", 2.0));
     }
@@ -159,7 +164,7 @@ mod tests {
             }
             x = DevSettings()
         "#;
-        assert_runtime_error_contains(source, "Object keys must match function parameters");
+        assert_runtime_error_contains(source, "unexpected keys");
     }
 
     #[test]
@@ -173,6 +178,6 @@ mod tests {
             }
             x = DevSettings()
         "#;
-        assert_runtime_error_contains(source, "Object keys must match function parameters");
+        assert_runtime_error_contains(source, "unexpected keys");
     }
 }

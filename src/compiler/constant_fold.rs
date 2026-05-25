@@ -2,22 +2,36 @@ use crate::common::error::LangError;
 use crate::common::value::Value;
 use crate::lexer::TokenKind;
 /// Константное сворачивание (constant folding) - вычисление константных выражений во время компиляции
-use crate::parser::ast::{BinaryOpKind, Expr};
+use crate::parser::ast::{BinaryOpKind, Expr, IfBranch};
+
+/// Only finite IEEE pairs participate in arithmetic / ordered-compare folding.
+fn finite_ieee_pair(l: &Value, r: &Value) -> Option<(f64, f64)> {
+    let x = l.as_ieee_f64()?;
+    let y = r.as_ieee_f64()?;
+    (x.is_finite() && y.is_finite()).then_some((x, y))
+}
+
+fn numeric_string_concat(n: &Value) -> Option<String> {
+    let x = n.as_ieee_f64()?;
+    if x.is_nan() || x.is_infinite() {
+        return None;
+    }
+    Some(x.to_string())
+}
 
 /// Оптимизация: вычисляет константные выражения во время компиляции
 pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
     match expr {
         Expr::Literal { value, .. } => Ok(Some(value.clone())),
-        Expr::ArrayLiteral { .. } => Ok(None), // Не можем вычислить во время компиляции
-        Expr::ObjectLiteral { .. } => Ok(None), // Не можем вычислить во время компиляции
-        Expr::TupleLiteral { .. } => Ok(None), // Не можем вычислить во время компиляции
-        Expr::Property { .. } => Ok(None),     // Не можем вычислить во время компиляции
-        Expr::MethodCall { .. } => Ok(None),   // Не можем вычислить во время компиляции
-        Expr::InterpolatedString { .. } => Ok(None), // Содержит выражения — вычисляем в рантайме
+        Expr::ArrayLiteral { .. } => Ok(None),
+        Expr::ObjectLiteral { .. } | Expr::DictComprehension { .. } | Expr::ListComprehension { .. } => Ok(None),
+        Expr::TupleLiteral { .. } => Ok(None),
+        Expr::Property { .. } => Ok(None),
+        Expr::MethodCall { .. } => Ok(None),
+        Expr::InterpolatedString { .. } => Ok(None),
         Expr::Binary {
             left, op, right, ..
         } => {
-            // Пытаемся вычислить бинарное выражение, если оба операнда константы
             let left_val = evaluate_constant_expr(left)?;
             let right_val = evaluate_constant_expr(right)?;
 
@@ -27,51 +41,61 @@ pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
                     BinaryOpKind::Plugin { .. } => return Ok(None),
                 };
                 match op {
-                    TokenKind::Plus => match (l, r) {
-                        (Value::Number(n1), Value::Number(n2)) => Ok(Some(Value::Number(n1 + n2))),
-                        (Value::String(s1), Value::String(s2)) => {
-                            Ok(Some(Value::String(format!("{}{}", s1, s2))))
+                    TokenKind::Plus => {
+                        if let Some((n1, n2)) = finite_ieee_pair(&l, &r) {
+                            return Ok(Some(Value::Number(n1 + n2)));
                         }
-                        (Value::String(s), Value::Number(n)) => {
-                            Ok(Some(Value::String(format!("{}{}", s, n))))
+                        if let (Value::String(s1), Value::String(s2)) = (&l, &r) {
+                            return Ok(Some(Value::String(format!("{}{}", s1, s2))));
                         }
-                        (Value::Number(n), Value::String(s)) => {
-                            Ok(Some(Value::String(format!("{}{}", n, s))))
+                        if let Value::String(s) = &l {
+                            if let Some(ns) = numeric_string_concat(&r) {
+                                return Ok(Some(Value::String(format!("{}{}", s, ns))));
+                            }
                         }
-                        _ => Ok(None),
-                    },
+                        if let Value::String(s) = &r {
+                            if let Some(ns) = numeric_string_concat(&l) {
+                                return Ok(Some(Value::String(format!("{}{}", ns, s))));
+                            }
+                        }
+                        Ok(None)
+                    }
                     TokenKind::Minus => {
-                        if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
+                        if let Some((n1, n2)) = finite_ieee_pair(&l, &r) {
                             Ok(Some(Value::Number(n1 - n2)))
                         } else {
                             Ok(None)
                         }
                     }
-                    TokenKind::Star => match (&l, &r) {
-                        (Value::Number(n1), Value::Number(n2)) => Ok(Some(Value::Number(n1 * n2))),
-                        (Value::String(s), Value::Number(n)) => {
-                            let count = *n as i64;
-                            if count <= 0 {
-                                Ok(Some(Value::String(String::new())))
-                            } else {
-                                Ok(Some(Value::String(s.repeat(count as usize))))
+                    TokenKind::Star => {
+                        if let Some((n1, n2)) = finite_ieee_pair(&l, &r) {
+                            return Ok(Some(Value::Number(n1 * n2)));
+                        }
+                        if let Value::String(s) = &l {
+                            if let Some(ix) = r.as_finite_f64() {
+                                let count = ix as i64;
+                                return Ok(Some(if count <= 0 {
+                                    Value::String(String::new())
+                                } else {
+                                    Value::String(s.repeat(count as usize))
+                                }));
                             }
                         }
-                        (Value::Number(n), Value::String(s)) => {
-                            let count = *n as i64;
-                            if count <= 0 {
-                                Ok(Some(Value::String(String::new())))
-                            } else {
-                                Ok(Some(Value::String(s.repeat(count as usize))))
+                        if let Value::String(s) = &r {
+                            if let Some(ix) = l.as_finite_f64() {
+                                let count = ix as i64;
+                                return Ok(Some(if count <= 0 {
+                                    Value::String(String::new())
+                                } else {
+                                    Value::String(s.repeat(count as usize))
+                                }));
                             }
                         }
-                        _ => Ok(None),
-                    },
+                        Ok(None)
+                    }
                     TokenKind::Slash => {
-                        if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
+                        if let Some((n1, n2)) = finite_ieee_pair(&l, &r) {
                             if n2 == 0.0 {
-                                // Don't constant-fold division by zero - let it be a runtime error
-                                // so we can provide proper stack traces
                                 return Ok(None);
                             }
                             Ok(Some(Value::Number(n1 / n2)))
@@ -80,7 +104,7 @@ pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
                         }
                     }
                     TokenKind::SlashSlash => {
-                        if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
+                        if let Some((n1, n2)) = finite_ieee_pair(&l, &r) {
                             if n2 == 0.0 {
                                 return Ok(None);
                             }
@@ -91,34 +115,32 @@ pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
                     }
                     TokenKind::EqualEqual => Ok(Some(Value::Bool(l == r))),
                     TokenKind::BangEqual => Ok(Some(Value::Bool(l != r))),
-                    TokenKind::Greater => {
-                        if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
-                            Ok(Some(Value::Bool(n1 > n2)))
-                        } else {
-                            Ok(None)
-                        }
-                    }
-                    TokenKind::Less => {
-                        if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
-                            Ok(Some(Value::Bool(n1 < n2)))
-                        } else {
-                            Ok(None)
-                        }
-                    }
-                    TokenKind::GreaterEqual => {
-                        if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
-                            Ok(Some(Value::Bool(n1 >= n2)))
-                        } else {
-                            Ok(None)
-                        }
-                    }
-                    TokenKind::LessEqual => {
-                        if let (Value::Number(n1), Value::Number(n2)) = (l, r) {
-                            Ok(Some(Value::Bool(n1 <= n2)))
-                        } else {
-                            Ok(None)
-                        }
-                    }
+                    TokenKind::Greater => Ok(Some(if let Some((n1, n2)) =
+                        finite_ieee_pair(&l, &r)
+                    {
+                        Value::Bool(n1 > n2)
+                    } else {
+                        return Ok(None);
+                    })),
+                    TokenKind::Less => Ok(Some(if let Some((n1, n2)) = finite_ieee_pair(&l, &r) {
+                        Value::Bool(n1 < n2)
+                    } else {
+                        return Ok(None);
+                    })),
+                    TokenKind::GreaterEqual => Ok(Some(if let Some((n1, n2)) =
+                        finite_ieee_pair(&l, &r)
+                    {
+                        Value::Bool(n1 >= n2)
+                    } else {
+                        return Ok(None);
+                    })),
+                    TokenKind::LessEqual => Ok(Some(if let Some((n1, n2)) =
+                        finite_ieee_pair(&l, &r)
+                    {
+                        Value::Bool(n1 <= n2)
+                    } else {
+                        return Ok(None);
+                    })),
                     _ => Ok(None),
                 }
             } else {
@@ -129,13 +151,11 @@ pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
             let right_val = evaluate_constant_expr(right)?;
             if let Some(r) = right_val {
                 match op {
-                    TokenKind::Minus => {
-                        if let Value::Number(n) = r {
-                            Ok(Some(Value::Number(-n)))
-                        } else {
-                            Ok(None)
-                        }
-                    }
+                    TokenKind::Minus => Ok(Some(match r {
+                        Value::Int(iv) => Value::Int(iv.neg()),
+                        Value::Float(fv) => Value::Float(fv.neg()),
+                        _ => return Ok(None),
+                    })),
                     TokenKind::Bang => Ok(Some(Value::Bool(!r.is_truthy()))),
                     _ => Ok(None),
                 }
@@ -143,6 +163,23 @@ pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
                 Ok(None)
             }
         }
-        _ => Ok(None), // Переменные, вызовы функций и присваивания не могут быть вычислены во время компиляции
+        Expr::If {
+            condition,
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            let cond_val = evaluate_constant_expr(condition)?;
+            if let Some(Value::Bool(b)) = cond_val {
+                let branch = if b { then_branch } else { else_branch };
+                match branch {
+                    IfBranch::Expr(e) => evaluate_constant_expr(e),
+                    IfBranch::Block(_) => Ok(None),
+                }
+            } else {
+                Ok(None)
+            }
+        }
+        _ => Ok(None),
     }
 }

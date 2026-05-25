@@ -1,8 +1,12 @@
 // Единый тип значений для VM
 
+use crate::common::numeric::{self, FloatValue, IntValue};
+use crate::common::object_map::ObjectMap;
+use crate::common::set_map::SetMap;
 use crate::common::table::Table;
 use crate::common::value_host_types::{Axis, DatabaseCluster, DatabaseEngine, Figure, Image, PlotWindowHandle};
-use crate::common::value_store::ValueId;
+use chrono::{DateTime, Duration, FixedOffset};
+use crate::common::value_store::{ObjectProjectionKind, ValueId};
 use crate::common::TaggedValue;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -19,7 +23,7 @@ pub enum ArrayViewSource {
     Heap(Rc<RefCell<Vec<Value>>>),
 }
 
-/// Dense byte payload (e.g. `read_file_bin`): one `Vec<u8>` shared by slice views, no per-byte `Value::Number`.
+/// Dense byte payload (e.g. `read_file_bin`): one `Vec<u8>` shared by slice views.
 #[derive(Debug, Clone)]
 pub struct ByteBuffer {
     pub bytes: Rc<Vec<u8>>,
@@ -110,6 +114,9 @@ impl Clone for GeneratorState {
 }
 
 pub enum Value {
+    Int(IntValue),
+    Float(FloatValue),
+    /// IEEE `f64` scalar from literals / stack / FFI (±inf, NaN); distinct from typed [`IntValue`] ∞.
     Number(f64),
     Bool(bool),
     String(String),
@@ -125,8 +132,15 @@ pub enum Value {
     NativeFunction(usize), // Индекс нативной функции
     Path(PathBuf),         // Путь к файлу или директории
     Uuid(u64, u64),        // 128-bit UUID (hi, lo), value-type, ABI-friendly
+    /// Calendar instant with fixed UTC offset (RFC3339 `to_rfc3339` / print).
+    Date(DateTime<FixedOffset>),
+    /// Signed time span (`Date ± Duration`, `Date - Date`).
+    Duration(Duration),
     Table(Rc<RefCell<Table>>),
-    Object(Rc<RefCell<HashMap<String, Value>>>), // Словарь/объект: ключ-значение (обернут в Rc<RefCell> для мутабельности)
+    /// Dict (bucket map) or legacy string map for classes / metadata.
+    Object(Rc<RefCell<ObjectKind>>),
+    /// Unique hashable values (unordered).
+    Set(Rc<RefCell<SetMap>>),
     ColumnReference {
         table: Rc<RefCell<Table>>,
         column_name: String,
@@ -150,12 +164,194 @@ pub enum Value {
     ArrayView(ArrayViewData),
     /// Raw bytes from a file or similar; slice with `ByteBuffer::slice_range` / VM slice ops.
     ByteBuffer(ByteBuffer),
+    /// Read-only view over a plain dict's keys or value cells ([`ValueCell::ObjectFieldList`]).
+    ObjectFieldList {
+        source_object_id: ValueId,
+        projection: ObjectProjectionKind,
+        element_ids: Rc<Vec<ValueId>>,
+    },
     /// Lazy functional pipeline (`map` / `filter`); single-pass iteration, no intermediate array.
     Iterable(Rc<RefCell<IterableInner>>),
     /// Результат вызова `stream fn`: ленивый генератор с фиксированным состоянием.
     Generator(Rc<RefCell<GeneratorState>>),
     Null,
     Ellipsis, // ... (e.g. Field(...) for required field)
+}
+
+/// Result of lexer `parse::<f64>()`: prefers [`Value::Int`] for finite whole numbers in `i64` range.
+#[inline]
+pub fn value_from_lex_number(n: f64) -> Value {
+    if !n.is_finite() {
+        return Value::Number(n);
+    }
+    if n.fract() == 0.0 && n >= i64::MIN as f64 && n <= i64::MAX as f64 {
+        Value::Int(IntValue::Finite(n as i64))
+    } else {
+        Value::Number(n)
+    }
+}
+
+/// Class / ORM metadata uses string-key [`HashMap`]; plain dicts use bucket [`ObjectMap`].
+#[derive(Debug, Clone)]
+pub enum ObjectKind {
+    /// Class metadata, modules, ORM: string keys only.
+    Legacy(HashMap<String, Value>),
+    /// VM store bucket map (keys/values are [`ValueId`]).
+    Bucket(ObjectMap),
+    /// Materialized entries after [`crate::vm::memory::convert::load_value`] (host/tests).
+    Inline(Vec<(Value, Value)>),
+}
+
+pub type ObjectHandle = Rc<RefCell<ObjectKind>>;
+
+impl ObjectKind {
+    #[inline]
+    pub fn legacy(map: HashMap<String, Value>) -> Self {
+        ObjectKind::Legacy(map)
+    }
+
+    #[inline]
+    pub fn bucket(map: ObjectMap) -> Self {
+        ObjectKind::Bucket(map)
+    }
+
+    pub fn len(&self) -> usize {
+        match self {
+            ObjectKind::Legacy(m) => m.len(),
+            ObjectKind::Bucket(b) => b.len(),
+            ObjectKind::Inline(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        match self {
+            ObjectKind::Legacy(m) => m.is_empty(),
+            ObjectKind::Bucket(b) => b.is_empty(),
+            ObjectKind::Inline(v) => v.is_empty(),
+        }
+    }
+
+    pub fn legacy_get(&self, key: &str) -> Option<&Value> {
+        match self {
+            ObjectKind::Legacy(m) => m.get(key),
+            ObjectKind::Bucket(_) | ObjectKind::Inline(_) => None,
+        }
+    }
+
+    pub fn legacy_contains_key(&self, key: &str) -> bool {
+        match self {
+            ObjectKind::Legacy(m) => m.contains_key(key),
+            ObjectKind::Bucket(_) | ObjectKind::Inline(_) => false,
+        }
+    }
+
+    /// Lookup by full [`Value`] key (linear scan for [`ObjectKind::Inline`]).
+    pub fn get_by_value_key(&self, key: &Value) -> Option<Value> {
+        match self {
+            ObjectKind::Legacy(m) => {
+                if let Value::String(s) = key {
+                    m.get(s.as_str()).cloned()
+                } else {
+                    None
+                }
+            }
+            ObjectKind::Bucket(_) => None,
+            ObjectKind::Inline(v) => v.iter().find(|(k, _)| k == key).map(|(_, val)| val.clone()),
+        }
+    }
+
+    /// Empty plain dict (bucket-backed).
+    pub fn empty_bucket() -> Self {
+        ObjectKind::Bucket(ObjectMap::new())
+    }
+
+    #[inline]
+    pub fn legacy_ref(&self) -> Option<&HashMap<String, Value>> {
+        match self {
+            ObjectKind::Legacy(m) => Some(m),
+            ObjectKind::Bucket(_) | ObjectKind::Inline(_) => None,
+        }
+    }
+
+    #[inline]
+    pub fn legacy_mut(&mut self) -> Option<&mut HashMap<String, Value>> {
+        match self {
+            ObjectKind::Legacy(m) => Some(m),
+            ObjectKind::Bucket(_) | ObjectKind::Inline(_) => None,
+        }
+    }
+
+    /// String-key lookup (ORM / host metadata); includes [`ObjectKind::Inline`] string-key entries.
+    pub fn str_key_get(&self, key: &str) -> Option<&Value> {
+        match self {
+            ObjectKind::Legacy(m) => m.get(key),
+            ObjectKind::Inline(v) => v.iter().find_map(|(k, val)| {
+                if let Value::String(sk) = k {
+                    (sk.as_str() == key).then_some(val)
+                } else {
+                    None
+                }
+            }),
+            ObjectKind::Bucket(_) => None,
+        }
+    }
+
+    /// Upsert plain string-key field (legacy + inline-with-string-keys only).
+    pub fn str_key_insert(&mut self, key: String, value: Value) -> Option<Option<Value>> {
+        match self {
+            ObjectKind::Legacy(m) => Some(m.insert(key, value)),
+            ObjectKind::Inline(v) => {
+                let idx = v
+                    .iter()
+                    .position(|(k, _)| matches!(k, Value::String(s) if *s == key));
+                Some(if let Some(i) = idx {
+                    Some(std::mem::replace(&mut v[i].1, value))
+                } else {
+                    v.push((Value::String(key), value));
+                    None
+                })
+            }
+            ObjectKind::Bucket(_) => None,
+        }
+    }
+
+    #[inline]
+    pub fn str_key_contains(&self, key: &str) -> bool {
+        self.str_key_get(key).is_some()
+    }
+
+    /// Borrowed `(string_key, value)` pairs for iteration (ORM layouts).
+    pub fn str_key_pairs(&self) -> Vec<(String, &Value)> {
+        match self {
+            ObjectKind::Legacy(m) => m.iter().map(|(k, v)| (k.clone(), v)).collect(),
+            ObjectKind::Inline(v) => v
+                .iter()
+                .filter_map(|(k, val)| {
+                    if let Value::String(sk) = k {
+                        Some((sk.clone(), val))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+            ObjectKind::Bucket(_) => vec![],
+        }
+    }
+
+    /// Owned `(string_key, copy_of_value)` pairs (ORM iteration / INSERT builder).
+    pub fn str_key_entries_cloned(&self) -> Vec<(String, Value)> {
+        match self {
+            ObjectKind::Legacy(m) => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+            ObjectKind::Inline(v) => v
+                .iter()
+                .filter_map(|(k, val)| match k {
+                    Value::String(sk) => Some((sk.clone(), val.clone())),
+                    _ => None,
+                })
+                .collect(),
+            ObjectKind::Bucket(_) => vec![],
+        }
+    }
 }
 
 /// Callback reference for lazy iterators (avoids storing full [`Value`] in [`IterableInner`]).
@@ -208,9 +404,32 @@ pub enum IterableInner {
         chunk_size: usize,
         chunk_index: usize,
     },
+    /// Row-by-row iteration over [`Value::Table`] (each row as [`Value::Object`]).
+    TableRows {
+        table: Rc<RefCell<Table>>,
+        index: usize,
+    },
+    /// `enum(table)` / lazy zip: yields `(start + n, element)` by wrapping any inner lazy iterator.
+    EnumerateIter {
+        source: Rc<RefCell<IterableInner>>,
+        start: i64,
+        next_index: usize,
+    },
     /// `stream fn` / [`Value::Generator`]: один проход через [`crate::vm::generator::run_generator_next`].
     StreamGenerator {
         state: Rc<RefCell<GeneratorState>>,
+    },
+    /// `for x in obj.keys` / `obj.values`: yields loaded values from snapshot cell ids.
+    ObjectFieldList {
+        element_ids: Rc<Vec<ValueId>>,
+        index: usize,
+    },
+    /// `for x in set`: yields elements; detects mutation via [`SetMap::generation`].
+    Set {
+        set: Rc<RefCell<SetMap>>,
+        element_ids: Rc<Vec<ValueId>>,
+        index: usize,
+        start_generation: u64,
     },
 }
 
@@ -259,8 +478,32 @@ impl Clone for IterableInner {
                 chunk_size: *chunk_size,
                 chunk_index: 0,
             },
+            Self::TableRows { table, .. } => Self::TableRows {
+                table: table.clone(),
+                index: 0,
+            },
+            Self::EnumerateIter { source, start, .. } => Self::EnumerateIter {
+                source: Rc::new(RefCell::new(source.borrow().clone())),
+                start: *start,
+                next_index: 0,
+            },
             Self::StreamGenerator { state } => Self::StreamGenerator {
                 state: Rc::clone(state),
+            },
+            Self::ObjectFieldList { element_ids, .. } => Self::ObjectFieldList {
+                element_ids: Rc::clone(element_ids),
+                index: 0,
+            },
+            Self::Set {
+                set,
+                element_ids,
+                start_generation,
+                ..
+            } => Self::Set {
+                set: Rc::clone(set),
+                element_ids: Rc::clone(element_ids),
+                index: 0,
+                start_generation: *start_generation,
             },
         }
     }
@@ -270,99 +513,115 @@ impl std::fmt::Debug for Value {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Value::Object(map_rc) => {
-                let map = map_rc.borrow();
-                if map
-                    .get("__meta")
-                    .and_then(|v| {
-                        if let Value::Bool(b) = v {
-                            Some(*b)
-                        } else {
-                            None
+                let kind = map_rc.borrow();
+                match &*kind {
+                    ObjectKind::Legacy(map) => {
+                        if map
+                            .get("__meta")
+                            .and_then(|v| {
+                                if let Value::Bool(b) = v {
+                                    Some(*b)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(false)
+                        {
+                            let schema = map
+                                .get("schema")
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "?".to_string());
+                            return write!(f, "Object(<metadata: schema={}>)", schema);
                         }
-                    })
-                    .unwrap_or(false)
-                {
-                    let schema = map
-                        .get("schema")
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "?".to_string());
-                    return write!(f, "Object(<metadata: schema={}>)", schema);
-                }
-                if map
-                    .get("__create_all")
-                    .and_then(|v| {
-                        if let Value::Bool(b) = v {
-                            Some(*b)
-                        } else {
-                            None
+                        if map
+                            .get("__create_all")
+                            .and_then(|v| {
+                                if let Value::Bool(b) = v {
+                                    Some(*b)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(false)
+                        {
+                            return write!(f, "Object(<create_all>)");
                         }
-                    })
-                    .unwrap_or(false)
-                {
-                    return write!(f, "Object(<create_all>)");
-                }
-                // ORM `Column(...)` / SQLEnum graphs: full `Debug` would recurse (e.g. member → class → members).
-                if map
-                    .get("__column")
-                    .and_then(|v| {
-                        if let Value::Bool(b) = v {
-                            Some(*b)
-                        } else {
-                            None
+                        if map
+                            .get("__column")
+                            .and_then(|v| {
+                                if let Value::Bool(b) = v {
+                                    Some(*b)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(false)
+                        {
+                            return write!(f, "Object(<column>)");
                         }
-                    })
-                    .unwrap_or(false)
-                {
-                    return write!(f, "Object(<column>)");
-                }
-                if map_is_sqenum_member(&map) {
-                    let name = map
-                        .get(crate::database_engine::sqenum::KEY_ENUM_NAME)
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "?".to_string());
-                    return write!(f, "Object(<enum_member {}>)", name);
-                }
-                let sqenumish = map
-                    .get(crate::database_engine::sqenum::KEY_SQENUM)
-                    .and_then(|v| {
-                        if let Value::Bool(b) = v {
-                            Some(*b)
-                        } else {
-                            None
+                        if map_is_sqenum_member_legacy(map) {
+                            let name = map
+                                .get(crate::database_engine::sqenum::KEY_ENUM_NAME)
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "?".to_string());
+                            return write!(f, "Object(<enum_member {}>)", name);
                         }
-                    })
-                    .unwrap_or(false)
-                    || map
-                        .get(crate::database_engine::sqenum::KEY_EXTENDS_SQENUM)
-                        .and_then(|v| {
-                            if let Value::Bool(b) = v {
-                                Some(*b)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or(false)
-                    || map
-                        .get(crate::database_engine::sqenum::KEY_BUILTIN_SQENUM)
-                        .and_then(|v| {
-                            if let Value::Bool(b) = v {
-                                Some(*b)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or(false);
-                if sqenumish {
-                    let cn = map
-                        .get("__class_name")
-                        .map(|v| v.to_string())
-                        .unwrap_or_else(|| "?".to_string());
-                    return write!(f, "Object(<SQLEnum {}>)", cn);
+                        let sqenumish = map
+                            .get(crate::database_engine::sqenum::KEY_SQENUM)
+                            .and_then(|v| {
+                                if let Value::Bool(b) = v {
+                                    Some(*b)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(false)
+                            || map
+                                .get(crate::database_engine::sqenum::KEY_EXTENDS_SQENUM)
+                                .and_then(|v| {
+                                    if let Value::Bool(b) = v {
+                                        Some(*b)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(false)
+                            || map
+                                .get(crate::database_engine::sqenum::KEY_BUILTIN_SQENUM)
+                                .and_then(|v| {
+                                    if let Value::Bool(b) = v {
+                                        Some(*b)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(false);
+                        if sqenumish {
+                            let cn = map
+                                .get("__class_name")
+                                .map(|v| v.to_string())
+                                .unwrap_or_else(|| "?".to_string());
+                            return write!(f, "Object(<SQLEnum {}>)", cn);
+                        }
+                        f.debug_map().entries(map.iter()).finish()
+                    }
+                    ObjectKind::Bucket(b) => write!(
+                        f,
+                        "Object(<dict buckets={} entries={} frozen={}>)",
+                        b.buckets_ref().len(),
+                        b.len(),
+                        b.is_frozen()
+                    ),
+                    ObjectKind::Inline(entries) => f
+                        .debug_struct("Object")
+                        .field("inline_entries", &entries.len())
+                        .finish_non_exhaustive(),
                 }
-                f.debug_map().entries(map.iter()).finish()
             }
             _ => match self {
-                Value::Number(n) => std::fmt::Debug::fmt(n, f),
+                Value::Number(n) => write!(f, "Number({:?})", n),
+                Value::Int(i) => write!(f, "{:?}", i),
+                Value::Float(v) => write!(f, "{:?}", v),
                 Value::Bool(b) => std::fmt::Debug::fmt(b, f),
                 Value::String(s) => std::fmt::Debug::fmt(s, f),
                 Value::Array(arr) => f.debug_tuple("Array").field(&arr.borrow()).finish(),
@@ -379,7 +638,18 @@ impl std::fmt::Debug for Value {
                 Value::NativeFunction(i) => f.debug_tuple("NativeFunction").field(i).finish(),
                 Value::Path(p) => f.debug_tuple("Path").field(p).finish(),
                 Value::Uuid(hi, lo) => f.debug_tuple("Uuid").field(hi).field(lo).finish(),
+                Value::Date(d) => write!(f, "Date({})", d.to_rfc3339()),
+                Value::Duration(d) => write!(
+                    f,
+                    "Duration({}.{:09}s)",
+                    d.num_seconds(),
+                    d.subsec_nanos()
+                ),
                 Value::Table(t) => f.debug_tuple("Table").field(&t.borrow()).finish(),
+                Value::Set(s) => f
+                    .debug_struct("Set")
+                    .field("len", &s.borrow().len())
+                    .finish(),
                 Value::Object(_) => unreachable!(),
                 Value::ColumnReference { table, column_name } => f
                     .debug_struct("ColumnReference")
@@ -417,6 +687,15 @@ impl std::fmt::Debug for Value {
                     .debug_struct("ByteBuffer")
                     .field("len", &b.len)
                     .finish_non_exhaustive(),
+                Value::ObjectFieldList {
+                    projection,
+                    element_ids,
+                    ..
+                } => f
+                    .debug_struct("ObjectFieldList")
+                    .field("projection", projection)
+                    .field("len", &element_ids.len())
+                    .finish_non_exhaustive(),
                 Value::Null => write!(f, "Null"),
                 Value::Ellipsis => write!(f, "Ellipsis"),
             },
@@ -424,7 +703,31 @@ impl std::fmt::Debug for Value {
     }
 }
 
-fn map_is_sqenum_member(m: &HashMap<String, Value>) -> bool {
+fn inline_dict_pairs_eq(a: &[(Value, Value)], b: &[(Value, Value)]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut used = vec![false; b.len()];
+    for (ka, va) in a {
+        let mut matched = false;
+        for (j, (kb, vb)) in b.iter().enumerate() {
+            if used[j] {
+                continue;
+            }
+            if ka == kb && va == vb {
+                used[j] = true;
+                matched = true;
+                break;
+            }
+        }
+        if !matched {
+            return false;
+        }
+    }
+    true
+}
+
+fn map_is_sqenum_member_legacy(m: &HashMap<String, Value>) -> bool {
     m.get("__enum_member")
         .and_then(|v| {
             if let Value::Bool(b) = v {
@@ -436,73 +739,88 @@ fn map_is_sqenum_member(m: &HashMap<String, Value>) -> bool {
         .unwrap_or(false)
 }
 
+/// Stored scalar (`__enum_value`) for SQLEnum members stored as [`ObjectKind::Legacy`] or [`ObjectKind::Inline`]
+/// (`ObjectKind::Bucket` has no [`ObjectKind::str_key_get`]).
+fn sqenum_member_stored_value_ref(kind: &ObjectKind) -> Option<&Value> {
+    match kind.str_key_get(crate::database_engine::sqenum::KEY_ENUM_MEMBER)? {
+        Value::Bool(true) => kind.str_key_get(crate::database_engine::sqenum::KEY_ENUM_VALUE),
+        _ => None,
+    }
+}
+
 fn enum_stored_eq_scalar(stored: &Value, other: &Value) -> bool {
     match (stored, other) {
         (Value::String(a), Value::String(b)) => a == b,
-        (Value::Number(a), Value::Number(b)) => a == b,
-        (Value::String(a), Value::Number(b)) => a
+        (Value::Int(ai), Value::Int(bi)) => ai == bi,
+        (Value::Float(af), Value::Float(bf)) => *af == *bf,
+        (Value::Int(i), Value::Float(f)) | (Value::Float(f), Value::Int(i)) => {
+            numeric::numeric_eq_int_float(*i, *f)
+        }
+        (Value::String(a), v) => a
             .parse::<f64>()
             .ok()
-            .map(|x| (x - b).abs() < f64::EPSILON || x == *b)
+            .map(|x| value_from_lex_number(x) == *v || Value::Number(x) == *v)
             .unwrap_or(false),
-        (Value::Number(a), Value::String(b)) => b
+        (v, Value::String(a)) => a
             .parse::<f64>()
             .ok()
-            .map(|x| (x - a).abs() < f64::EPSILON || x == *a)
+            .map(|x| value_from_lex_number(x) == *v || Value::Number(x) == *v)
             .unwrap_or(false),
         _ => false,
     }
 }
 
 /// SQLEnum member vs member / vs scalar (`UserRole.ADMIN == "admin"`).
+///
+/// Handles [`ObjectKind::Legacy`] and [`ObjectKind::Inline`] (bucket materialization from VM store).
 fn try_sqenum_member_eq(a: &Value, b: &Value) -> Option<bool> {
     match (a, b) {
         (Value::Object(oa), Value::Object(ob)) => {
-            let am = oa.borrow();
-            let bm = ob.borrow();
-            let a_mem = map_is_sqenum_member(&am);
-            let b_mem = map_is_sqenum_member(&bm);
-            if a_mem && b_mem {
-                let c1 = am.get("__enum_class").and_then(|v| {
-                    if let Value::Object(o) = v {
-                        Some(o)
-                    } else {
-                        None
-                    }
-                });
-                let c2 = bm.get("__enum_class").and_then(|v| {
-                    if let Value::Object(o) = v {
-                        Some(o)
-                    } else {
-                        None
-                    }
-                });
-                let v1 = am.get("__enum_value")?;
-                let v2 = bm.get("__enum_value")?;
+            let ak = oa.borrow();
+            let bk = ob.borrow();
+            let a_sv = sqenum_member_stored_value_ref(&*ak);
+            let b_sv = sqenum_member_stored_value_ref(&*bk);
+            let a_mem = a_sv.is_some();
+            let b_mem = b_sv.is_some();
+            if let (Some(v1), Some(v2)) = (a_sv, b_sv) {
+                let c1 = ak.str_key_get(crate::database_engine::sqenum::KEY_ENUM_CLASS).and_then(
+                    |v| {
+                        if let Value::Object(o) = v {
+                            Some(o)
+                        } else {
+                            None
+                        }
+                    },
+                );
+                let c2 = bk.str_key_get(crate::database_engine::sqenum::KEY_ENUM_CLASS).and_then(
+                    |v| {
+                        if let Value::Object(o) = v {
+                            Some(o)
+                        } else {
+                            None
+                        }
+                    },
+                );
                 if let (Some(c1), Some(c2)) = (c1, c2) {
                     return Some(Rc::ptr_eq(c1, c2) && v1 == v2);
                 }
                 return Some(false);
             }
             if a_mem || b_mem {
-                // Enum members are never `==` arbitrary objects (e.g. class map); avoids
-                // recursive Object/Object equality on graphs with CLASS↔MEMBER cycles.
                 return Some(false);
             }
             None
         }
         (Value::Object(oa), other) => {
-            let am = oa.borrow();
-            if map_is_sqenum_member(&am) {
-                let stored = am.get("__enum_value")?;
+            let ak = oa.borrow();
+            if let Some(stored) = sqenum_member_stored_value_ref(&*ak) {
                 return Some(enum_stored_eq_scalar(stored, other));
             }
             None
         }
         (other, Value::Object(ob)) => {
-            let bm = ob.borrow();
-            if map_is_sqenum_member(&bm) {
-                let stored = bm.get("__enum_value")?;
+            let bk = ob.borrow();
+            if let Some(stored) = sqenum_member_stored_value_ref(&*bk) {
                 return Some(enum_stored_eq_scalar(stored, other));
             }
             None
@@ -523,6 +841,17 @@ impl PartialEq for Value {
         }
         match (self, other) {
             (Value::Number(a), Value::Number(b)) => a == b,
+            (Value::Number(a), Value::Int(i)) | (Value::Int(i), Value::Number(a)) => {
+                numeric::numeric_eq_int_float(*i, FloatValue::from_f64_for_stack(*a))
+            }
+            (Value::Number(a), Value::Float(f)) | (Value::Float(f), Value::Number(a)) => {
+                FloatValue::from_f64_for_stack(*a) == *f
+            }
+            (Value::Int(a), Value::Int(b)) => a == b,
+            (Value::Float(a), Value::Float(b)) => *a == *b,
+            (Value::Int(i), Value::Float(f)) | (Value::Float(f), Value::Int(i)) => {
+                numeric::numeric_eq_int_float(*i, *f)
+            }
             (Value::Bool(a), Value::Bool(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
             (Value::Array(a), Value::Array(b)) => *a.borrow() == *b.borrow(),
@@ -542,131 +871,134 @@ impl PartialEq for Value {
             (Value::NativeFunction(a), Value::NativeFunction(b)) => a == b,
             (Value::Path(a), Value::Path(b)) => a == b,
             (Value::Uuid(hi_a, lo_a), Value::Uuid(hi_b, lo_b)) => hi_a == hi_b && lo_a == lo_b,
+            (Value::Date(a), Value::Date(b)) => a == b,
+            (Value::Duration(a), Value::Duration(b)) => a == b,
             (Value::Table(a), Value::Table(b)) => *a.borrow() == *b.borrow(),
-            (Value::Object(a), Value::Object(b)) => {
-                let am = a.borrow();
-                let bm = b.borrow();
-                // Finalized SQLEnum class objects (`__sqenum`): structural HashMap equality can recurse
-                // through member ↔ enum_class cycles; identity is the intended semantics for `==`.
-                let a_sqenum = am
-                    .get("__sqenum")
-                    .and_then(|v| {
-                        if let Value::Bool(x) = v {
-                            Some(*x)
+            (Value::Set(a), Value::Set(b)) => Rc::ptr_eq(a, b),
+            (Value::Object(a), Value::Object(b)) => match (&*a.borrow(), &*b.borrow()) {
+                (ObjectKind::Legacy(am), ObjectKind::Legacy(bm)) => {
+                    let a_sqenum = am
+                        .get("__sqenum")
+                        .and_then(|v| {
+                            if let Value::Bool(x) = v {
+                                Some(*x)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(false);
+                    let b_sqenum = bm
+                        .get("__sqenum")
+                        .and_then(|v| {
+                            if let Value::Bool(x) = v {
+                                Some(*x)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(false);
+                    if a_sqenum && b_sqenum {
+                        std::rc::Rc::ptr_eq(a, b)
+                    } else {
+                        let a_ext_sqenum = am
+                            .get(crate::database_engine::sqenum::KEY_EXTENDS_SQENUM)
+                            .and_then(|v| {
+                                if let Value::Bool(x) = v {
+                                    Some(*x)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(false);
+                        let b_ext_sqenum = bm
+                            .get(crate::database_engine::sqenum::KEY_EXTENDS_SQENUM)
+                            .and_then(|v| {
+                                if let Value::Bool(x) = v {
+                                    Some(*x)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(false);
+                        if a_ext_sqenum && b_ext_sqenum {
+                            std::rc::Rc::ptr_eq(a, b)
                         } else {
-                            None
+                            let a_lookup = am
+                                .get("__sqenum_by_value_lookup")
+                                .and_then(|v| {
+                                    if let Value::Bool(x) = v {
+                                        Some(*x)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(false);
+                            let b_lookup = bm
+                                .get("__sqenum_by_value_lookup")
+                                .and_then(|v| {
+                                    if let Value::Bool(x) = v {
+                                        Some(*x)
+                                    } else {
+                                        None
+                                    }
+                                })
+                                .unwrap_or(false);
+                            if a_lookup && b_lookup {
+                                std::rc::Rc::ptr_eq(a, b)
+                            } else {
+                                let a_meta = am
+                                    .get("__meta")
+                                    .and_then(|v| {
+                                        if let Value::Bool(x) = v {
+                                            Some(*x)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .unwrap_or(false);
+                                let a_create_all = am
+                                    .get("__create_all")
+                                    .and_then(|v| {
+                                        if let Value::Bool(x) = v {
+                                            Some(*x)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .unwrap_or(false);
+                                let b_meta = bm
+                                    .get("__meta")
+                                    .and_then(|v| {
+                                        if let Value::Bool(x) = v {
+                                            Some(*x)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .unwrap_or(false);
+                                let b_create_all = bm
+                                    .get("__create_all")
+                                    .and_then(|v| {
+                                        if let Value::Bool(x) = v {
+                                            Some(*x)
+                                        } else {
+                                            None
+                                        }
+                                    })
+                                    .unwrap_or(false);
+                                if (a_meta || a_create_all) && (b_meta || b_create_all) {
+                                    std::rc::Rc::ptr_eq(a, b)
+                                } else {
+                                    *am == *bm
+                                }
+                            }
                         }
-                    })
-                    .unwrap_or(false);
-                let b_sqenum = bm
-                    .get("__sqenum")
-                    .and_then(|v| {
-                        if let Value::Bool(x) = v {
-                            Some(*x)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false);
-                if a_sqenum && b_sqenum {
-                    return std::rc::Rc::ptr_eq(a, b);
+                    }
                 }
-                // `cls E(SQLEnum)` sets `__extends_sqenum` in class metadata before finalize; marker
-                // `SQLEnum` also has it. Structural equality would recurse like unfinalized enum graphs.
-                let a_ext_sqenum = am
-                    .get(crate::database_engine::sqenum::KEY_EXTENDS_SQENUM)
-                    .and_then(|v| {
-                        if let Value::Bool(x) = v {
-                            Some(*x)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false);
-                let b_ext_sqenum = bm
-                    .get(crate::database_engine::sqenum::KEY_EXTENDS_SQENUM)
-                    .and_then(|v| {
-                        if let Value::Bool(x) = v {
-                            Some(*x)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false);
-                if a_ext_sqenum && b_ext_sqenum {
-                    return std::rc::Rc::ptr_eq(a, b);
-                }
-                // `__enum_by_value` lookup map (values are enum members pointing back at the class).
-                let a_lookup = am
-                    .get("__sqenum_by_value_lookup")
-                    .and_then(|v| {
-                        if let Value::Bool(x) = v {
-                            Some(*x)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false);
-                let b_lookup = bm
-                    .get("__sqenum_by_value_lookup")
-                    .and_then(|v| {
-                        if let Value::Bool(x) = v {
-                            Some(*x)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false);
-                if a_lookup && b_lookup {
-                    return std::rc::Rc::ptr_eq(a, b);
-                }
-                // MetaData and create_all have circular refs; compare by pointer to avoid recursion
-                let a_meta = am
-                    .get("__meta")
-                    .and_then(|v| {
-                        if let Value::Bool(x) = v {
-                            Some(*x)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false);
-                let a_create_all = am
-                    .get("__create_all")
-                    .and_then(|v| {
-                        if let Value::Bool(x) = v {
-                            Some(*x)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false);
-                let b_meta = bm
-                    .get("__meta")
-                    .and_then(|v| {
-                        if let Value::Bool(x) = v {
-                            Some(*x)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false);
-                let b_create_all = bm
-                    .get("__create_all")
-                    .and_then(|v| {
-                        if let Value::Bool(x) = v {
-                            Some(*x)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false);
-                if (a_meta || a_create_all) && (b_meta || b_create_all) {
-                    std::rc::Rc::ptr_eq(a, b)
-                } else {
-                    *am == *bm
-                }
-            }
+                (ObjectKind::Bucket(_), ObjectKind::Bucket(_)) => std::rc::Rc::ptr_eq(a, b),
+                (ObjectKind::Inline(ai), ObjectKind::Inline(bi)) => inline_dict_pairs_eq(ai, bi),
+                _ => false,
+            },
             (
                 Value::ColumnReference {
                     table: a,
@@ -694,6 +1026,18 @@ impl PartialEq for Value {
             (Value::ByteBuffer(a), Value::ByteBuffer(b)) => {
                 a.len == b.len && a.bytes.as_ptr() == b.bytes.as_ptr() && a.offset == b.offset
             }
+            (
+                Value::ObjectFieldList {
+                    source_object_id: sa,
+                    projection: pa,
+                    element_ids: ea,
+                },
+                Value::ObjectFieldList {
+                    source_object_id: sb,
+                    projection: pb,
+                    element_ids: eb,
+                },
+            ) => sa == sb && pa == pb && ea.as_ref() == eb.as_ref(),
             (Value::Null, Value::Null) => true,
             (Value::Ellipsis, Value::Ellipsis) => true,
             _ => false,
@@ -702,18 +1046,47 @@ impl PartialEq for Value {
 }
 
 impl Value {
-    /// Проверяет, можно ли использовать это значение как ключ кэша
-    /// (только простые типы: Number, Bool, String, Null)
+    /// Back-compat constructor: same semantics as [`value_from_lex_number`].
+    #[inline]
+    pub fn number(n: f64) -> Self {
+        Value::Number(n)
+    }
+
+    /// Extract a finite IEEE `f64` if this value represents a finite real number (int or float domain).
+    #[inline]
+    pub fn as_finite_f64(&self) -> Option<f64> {
+        match self {
+            Value::Number(n) => n.is_finite().then_some(*n),
+            Value::Int(IntValue::Finite(n)) => Some(*n as f64),
+            Value::Float(FloatValue::Finite(f)) => Some(*f),
+            _ => None,
+        }
+    }
+
+    /// Coerce numeric value to IEEE `f64` including ±inf; `NaN` only on float-domain NaN.
+    #[inline]
+    pub fn as_ieee_f64(&self) -> Option<f64> {
+        match self {
+            Value::Number(n) => Some(*n),
+            Value::Int(i) => Some(match *i {
+                IntValue::Finite(n) => n as f64,
+                IntValue::PosInfinity => f64::INFINITY,
+                IntValue::NegInfinity => f64::NEG_INFINITY,
+            }),
+            Value::Float(f) => Some((*f).as_raw_f64()),
+            _ => None,
+        }
+    }
+
+    /// String-key namespace map (modules, classes, host metadata).
+    #[inline]
+    pub fn legacy_object(map: HashMap<String, Value>) -> Self {
+        Value::Object(Rc::new(RefCell::new(ObjectKind::Legacy(map))))
+    }
+
+    /// Hashable values for caches and stable keys (includes tuples of hashables; see [`crate::common::type_model`]).
     pub fn is_hashable(&self) -> bool {
-        matches!(
-            self,
-            Value::Number(_)
-                | Value::Bool(_)
-                | Value::String(_)
-                | Value::Uuid(_, _)
-                | Value::Null
-                | Value::Ellipsis
-        )
+        crate::common::type_model::is_hashable_value(self)
     }
 
     pub fn is_truthy(&self) -> bool {
@@ -721,14 +1094,24 @@ impl Value {
             Value::Null => false,
             Value::Bool(false) => false,
             Value::Number(n) => *n != 0.0,
+            Value::Int(i) => match *i {
+                IntValue::Finite(n) => n != 0,
+                IntValue::PosInfinity | IntValue::NegInfinity => true,
+            },
+            Value::Float(f) => match *f {
+                FloatValue::Finite(n) => n != 0.0,
+                FloatValue::NaN | FloatValue::PosInfinity | FloatValue::NegInfinity => true,
+            },
             Value::String(s) => !s.is_empty(), // Пустая строка = false
             Value::Array(arr) => !arr.borrow().is_empty(),
             Value::ArrayView(av) => av.length > 0,
             Value::Tuple(tuple) => !tuple.borrow().is_empty(),
             Value::Path(p) => !p.as_os_str().is_empty(), // Путь не пустой = true
             Value::Uuid(_, _) => true,                   // UUID всегда truthy
+            Value::Date(_) => true,
+            Value::Duration(d) => !d.is_zero(),
             Value::Table(table) => table.borrow().len() > 0, // Таблица не пустая = true
-            Value::Object(map_rc) => !map_rc.borrow().is_empty(), // Объект не пустой = true
+            Value::Object(map_rc) => !map_rc.borrow().is_empty(),
             Value::ColumnReference { table, column_name } => {
                 if let Some(column) = table.borrow_mut().get_column(column_name) {
                     !column.is_empty()
@@ -746,6 +1129,7 @@ impl Value {
             Value::Enumerate { data, .. } => !data.borrow().is_empty(),
             Value::Iterable(_) => true,
             Value::ByteBuffer(b) => b.len > 0,
+            Value::Set(s) => !s.borrow().is_empty(),
             Value::Ellipsis => true,
             _ => true,
         }
@@ -754,12 +1138,14 @@ impl Value {
     pub fn to_string(&self) -> String {
         match self {
             Value::Number(n) => {
-                if n.fract() == 0.0 {
+                if n.fract() == 0.0 && n.is_finite() && n.abs() <= i64::MAX as f64 {
                     format!("{}", *n as i64)
                 } else {
                     format!("{}", n)
                 }
             }
+            Value::Int(i) => i.to_display_string(),
+            Value::Float(n) => n.to_display_string(),
             Value::Bool(b) => format!("{}", b),
             Value::String(s) => s.clone(),
             Value::Array(arr) => {
@@ -772,6 +1158,9 @@ impl Value {
             }
             Value::ByteBuffer(b) => {
                 format!("<bytes len={}>", b.len)
+            }
+            Value::ObjectFieldList { element_ids, .. } => {
+                format!("<dict field view len={}>", element_ids.len())
             }
             Value::Tuple(tuple) => {
                 let tuple_ref = tuple.borrow();
@@ -818,6 +1207,11 @@ impl Value {
                     p.to_string_lossy().to_string()
                 }
             }
+            Value::Date(d) => d.to_rfc3339(),
+            Value::Duration(d) => format!(
+                "{}s",
+                d.num_seconds() as f64 + d.subsec_nanos() as f64 * 1e-9
+            ),
             Value::Table(table) => {
                 let t = table.borrow();
                 format!("<table: {} rows, {} columns>", t.len(), t.column_count())
@@ -845,36 +1239,51 @@ impl Value {
                     )
                 }
             }
+            Value::Set(s) => format!("set(<{} elements>)", s.borrow().len()),
             Value::Object(map_rc) => {
-                let map = map_rc.borrow();
-                if map_is_sqenum_member(&map) {
-                    if let Some(v) = map.get("__enum_value") {
-                        return v.to_string();
+                let kind = map_rc.borrow();
+                if let Some(v) = sqenum_member_stored_value_ref(&*kind) {
+                    return v.to_string();
+                }
+                match &*kind {
+                    ObjectKind::Legacy(map) => {
+                        if map
+                            .get("__meta")
+                            .and_then(|v| {
+                                if let Value::Bool(b) = v {
+                                    Some(*b)
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(false)
+                        {
+                            return format!(
+                                "<metadata: schema={}>",
+                                map.get("schema")
+                                    .map(|v| v.to_string())
+                                    .unwrap_or_else(|| "?".to_string())
+                            );
+                        }
+                        let pairs: Vec<String> = map
+                            .iter()
+                            .map(|(k, v)| format!("\"{}\": {}", k, v.to_string()))
+                            .collect();
+                        format!("{{{}}}", pairs.join(", "))
+                    }
+                    ObjectKind::Bucket(b) => format!(
+                        "<dict entries={} frozen={}>",
+                        b.len(),
+                        b.is_frozen()
+                    ),
+                    ObjectKind::Inline(entries) => {
+                        let pairs: Vec<String> = entries
+                            .iter()
+                            .map(|(k, v)| format!("{}: {}", k.to_string(), v.to_string()))
+                            .collect();
+                        format!("{{{}}}", pairs.join(", "))
                     }
                 }
-                if map
-                    .get("__meta")
-                    .and_then(|v| {
-                        if let Value::Bool(b) = v {
-                            Some(*b)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(false)
-                {
-                    return format!(
-                        "<metadata: schema={}>",
-                        map.get("schema")
-                            .map(|v| v.to_string())
-                            .unwrap_or_else(|| "?".to_string())
-                    );
-                }
-                let pairs: Vec<String> = map
-                    .iter()
-                    .map(|(k, v)| format!("\"{}\": {}", k, v.to_string()))
-                    .collect();
-                format!("{{{}}}", pairs.join(", "))
             }
             Value::PluginOpaque { tag, id } => {
                 format!("<plugin_opaque tag={} id={}>", tag, id)
@@ -911,8 +1320,12 @@ impl Value {
                     IterableInner::Filter { .. } => "filter",
                     IterableInner::Enumerate { .. } => "enumerate",
                     IterableInner::Chunks { .. } => "chunk",
+                    IterableInner::TableRows { .. } => "table_rows",
+                    IterableInner::EnumerateIter { .. } => "enumerate_iter",
                     IterableInner::Array { .. } | IterableInner::ArrayView { .. } => "iterable",
                     IterableInner::StreamGenerator { .. } => "stream_generator",
+                    IterableInner::ObjectFieldList { .. } => "dict_field_view",
+                    IterableInner::Set { .. } => "set_iter",
                 };
                 format!("<{} object at {:p}>", kind, ptr)
             }
@@ -957,9 +1370,16 @@ impl Hash for Value {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self {
             Value::Number(n) => {
-                // Хешируем число как байты для точности
-                state.write_u8(0); // Тег для Number
+                state.write_u8(0);
                 state.write_u64(n.to_bits());
+            }
+            Value::Int(i) => {
+                state.write_u8(11);
+                state.write_u64(numeric::hash_int_value(*i));
+            }
+            Value::Float(n) => {
+                state.write_u8(12);
+                state.write_u64(numeric::hash_float_value(*n));
             }
             Value::Bool(b) => {
                 state.write_u8(1); // Тег для Bool
@@ -980,9 +1400,47 @@ impl Hash for Value {
                 state.write_u64(*hi);
                 state.write_u64(*lo);
             }
-            // Для остальных типов не реализуем Hash - они не могут быть ключами кэша
+            Value::Date(d) => {
+                state.write_u8(6); // Тег для Date
+                state.write_i64(d.timestamp());
+                state.write_u32(d.timestamp_subsec_nanos());
+                state.write_i32(d.offset().local_minus_utc());
+            }
+            Value::Duration(d) => {
+                state.write_u8(7); // Тег для Duration
+                state.write_i64(d.num_seconds());
+                state.write_u32(d.subsec_nanos() as u32);
+            }
+            Value::Path(p) => {
+                state.write_u8(8);
+                p.hash(state);
+            }
+            Value::Tuple(t) => {
+                if !crate::common::type_model::is_hashable_value(self) {
+                    panic!("Cannot hash tuple with mutable/non-hashable elements");
+                }
+                state.write_u8(9);
+                let r = t.borrow();
+                r.len().hash(state);
+                for item in r.iter() {
+                    item.hash(state);
+                }
+            }
+            Value::Object(rc) => match &*rc.borrow() {
+                ObjectKind::Bucket(m) if m.is_frozen() => {
+                    if let Some(h) = crate::common::type_model::object_key_hash_value(self) {
+                        state.write_u8(10);
+                        h.hash(state);
+                    } else {
+                        panic!("Cannot hash frozen object map");
+                    }
+                }
+                _ => {
+                    panic!("Cannot hash complex types (Array, Tuple with mutable elems, Table, Object, Function, Iterable)");
+                }
+            },
             _ => {
-                panic!("Cannot hash complex types (Array, Tuple, Table, Object, Function, Path, Iterable)");
+                panic!("Cannot hash complex types (Array, Tuple with mutable elems, Table, Object, Function, Iterable)");
             }
         }
     }
@@ -993,6 +1451,8 @@ impl Eq for Value {}
 impl Clone for Value {
     fn clone(&self) -> Self {
         match self {
+            Value::Int(i) => Value::Int(*i),
+            Value::Float(n) => Value::Float(*n),
             Value::Number(n) => Value::Number(*n),
             Value::Bool(b) => Value::Bool(*b),
             Value::String(s) => Value::String(s.clone()),
@@ -1019,6 +1479,8 @@ impl Clone for Value {
             Value::NativeFunction(idx) => Value::NativeFunction(*idx),
             Value::Path(p) => Value::Path(p.clone()),
             Value::Uuid(hi, lo) => Value::Uuid(*hi, *lo),
+            Value::Date(d) => Value::Date(*d),
+            Value::Duration(d) => Value::Duration(*d),
             Value::Table(table) => {
                 // Создаем новый Rc с глубокой копией таблицы
                 Value::Table(Rc::new(RefCell::new(table.borrow().clone())))
@@ -1034,6 +1496,7 @@ impl Clone for Value {
                 // Клонируем Rc (shallow copy), чтобы изменения сохранялись
                 Value::Object(map_rc.clone())
             }
+            Value::Set(s) => Value::Set(Rc::new(RefCell::new(s.borrow().clone()))),
             Value::PluginOpaque { tag, id } => Value::PluginOpaque { tag: *tag, id: *id },
             Value::Window(handle) => {
                 // WindowHandle is Copy, so just copy it
@@ -1062,6 +1525,15 @@ impl Clone for Value {
             Value::Iterable(rc) => Value::Iterable(Rc::clone(rc)),
             Value::Generator(rc) => Value::Generator(Rc::clone(rc)),
             Value::ByteBuffer(b) => Value::ByteBuffer(b.clone()),
+            Value::ObjectFieldList {
+                source_object_id,
+                projection,
+                element_ids,
+            } => Value::ObjectFieldList {
+                source_object_id: *source_object_id,
+                projection: *projection,
+                element_ids: Rc::clone(element_ids),
+            },
             Value::Null => Value::Null,
             Value::Ellipsis => Value::Ellipsis,
         }

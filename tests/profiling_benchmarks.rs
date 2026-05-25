@@ -17,6 +17,9 @@
 #[cfg(test)]
 mod tests {
     use data_code::run;
+    use rand::rngs::StdRng;
+    use rand::{Rng, SeedableRng};
+    use std::collections::HashSet;
     use std::sync::Arc;
     use std::thread;
     use std::time::Instant;
@@ -401,6 +404,225 @@ acc
 
         println!(
             "--- Peak memory: run with /usr/bin/time -v or heaptrack and fill table manually ---"
+        );
+    }
+
+    /// Same blocked layout as Python `stress_test` (seed 42, 10_000 cells, start/goal cleared).
+    fn python_stress_blocked_literal(rows: u32, cols: u32, goal_r: u32, goal_c: u32) -> String {
+        let mut rng = StdRng::seed_from_u64(42);
+        let mut blocked: HashSet<(u32, u32)> = HashSet::new();
+        for _ in 0..10_000 {
+            blocked.insert((
+                rng.gen_range(0..rows),
+                rng.gen_range(0..cols),
+            ));
+        }
+        blocked.remove(&(0, 0));
+        blocked.remove(&(goal_r, goal_c));
+        let mut pairs: Vec<(u32, u32)> = blocked.into_iter().collect();
+        pairs.sort_unstable();
+        let cells: String = pairs
+            .iter()
+            .map(|(r, c)| format!("({}, {})", r, c))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            r#"
+import heapq
+
+fn a_star(rows, cols, start, goal, blocked) {{
+    start_id = start[0] * cols + start[1]
+    goal_id = goal[0] * cols + goal[1]
+    goal_r, goal_c = goal
+    blocked_ids = {{r * cols + c for r, c in blocked}}
+    if start_id in blocked_ids or goal_id in blocked_ids: return null
+    g_score = {{start_id: 0}}
+    f_score = {{start_id: abs(start[0] - goal_r) + abs(start[1] - goal_c)}}
+    closed_set = set()
+    open_heap = [(f_score[start_id], start_id)]
+    open_set = {{start_id}}
+    neighbors_delta = ((-1, 0), (1, 0), (0, -1), (0, 1))
+    while open_heap {{
+        current_f, current = heapq.heappop(open_heap)
+        if current_f != f_score.get(current): continue
+        open_set.discard(current)
+        if current in closed_set: continue
+        if current == goal_id {{ return 1 }}
+        closed_set.add(current)
+        r, c = divmod(current, cols)
+        for dr, dc in neighbors_delta {{
+            nr, nc = r + dr, c + dc
+            if !(0 <= nr < rows and 0 <= nc < cols): continue
+            neighbor = nr * cols + nc
+            if neighbor in blocked_ids or neighbor in closed_set: continue
+            tentative_g = g_score[current] + 1
+            if tentative_g < g_score.get(neighbor, float(inf)) {{
+                g_score[neighbor] = tentative_g
+                h = abs(nr - goal_r) + abs(nc - goal_c)
+                f = tentative_g + h
+                f_score[neighbor] = f
+                if !neighbor in open_set {{
+                    heapq.heappush(open_heap, (f, neighbor))
+                    open_set.add(neighbor)
+                }}
+            }}
+        }}
+    }}
+    return null
+}}
+
+let blocked = set([{cells}])
+a_star({rows}, {cols}, (0, 0), ({goal_r}, {goal_c}), blocked)
+"#,
+            cells = cells,
+            rows = rows,
+            cols = cols,
+            goal_r = goal_r,
+            goal_c = goal_c
+        )
+    }
+
+    fn astar_grid_script(rows: u32, cols: u32, goal_r: u32, goal_c: u32) -> String {
+        format!(
+            r#"
+import heapq
+
+fn a_star(rows, cols, start, goal, blocked) {{
+    start_id = start[0] * cols + start[1]
+    goal_id = goal[0] * cols + goal[1]
+    goal_r, goal_c = goal
+    blocked_ids = {{r * cols + c for r, c in blocked}}
+    if start_id in blocked_ids or goal_id in blocked_ids: return null
+    g_score = {{start_id: 0}}
+    f_score = {{start_id: abs(start[0] - goal_r) + abs(start[1] - goal_c)}}
+    closed_set = set()
+    open_heap = [(f_score[start_id], start_id)]
+    open_set = {{start_id}}
+    neighbors_delta = ((-1, 0), (1, 0), (0, -1), (0, 1))
+    while open_heap {{
+        current_f, current = heapq.heappop(open_heap)
+        if current_f != f_score.get(current): continue
+        open_set.discard(current)
+        if current in closed_set: continue
+        if current == goal_id {{ return 1 }}
+        closed_set.add(current)
+        r, c = divmod(current, cols)
+        for dr, dc in neighbors_delta {{
+            nr, nc = r + dr, c + dc
+            if !(0 <= nr < rows and 0 <= nc < cols): continue
+            neighbor = nr * cols + nc
+            if neighbor in blocked_ids or neighbor in closed_set: continue
+            tentative_g = g_score[current] + 1
+            if tentative_g < g_score.get(neighbor, float(inf)) {{
+                g_score[neighbor] = tentative_g
+                h = abs(nr - goal_r) + abs(nc - goal_c)
+                f = tentative_g + h
+                f_score[neighbor] = f
+                if !neighbor in open_set {{
+                    heapq.heappush(open_heap, (f, neighbor))
+                    open_set.add(neighbor)
+                }}
+            }}
+        }}
+    }}
+    return null
+}}
+
+a_star({rows}, {cols}, (0, 0), ({goal_r}, {goal_c}), set())
+"#,
+            rows = rows,
+            cols = cols,
+            goal_r = goal_r,
+            goal_c = goal_c
+        )
+    }
+
+    #[test]
+    fn bench_astar_mini_20x20() {
+        let source = astar_grid_script(20, 20, 5, 7);
+        let start = Instant::now();
+        assert!(run(&source).is_ok());
+        println!("bench_astar_mini_20x20: elapsed={:?}", start.elapsed());
+    }
+
+    #[test]
+    fn bench_astar_small_50x50() {
+        let source = astar_grid_script(50, 50, 12, 34);
+        let start = Instant::now();
+        assert!(run(&source).is_ok());
+        println!("bench_astar_small_50x50: elapsed={:?}", start.elapsed());
+    }
+
+    #[test]
+    fn bench_astar_medium_200x200() {
+        let source = astar_grid_script(200, 200, 50, 150);
+        let start = Instant::now();
+        assert!(run(&source).is_ok());
+        println!("bench_astar_medium_200x200: elapsed={:?}", start.elapsed());
+    }
+
+    /// Baseline (release, same script): ~74–87 s wall, ~3–5 GiB peak RSS.
+    /// Measure: `/usr/bin/time -l cargo test bench_astar_adv_2_single --release -- --ignored --nocapture --test-threads=1`
+    #[test]
+    #[ignore = "1000x5000 A*; run: cargo test bench_astar_adv_2_single --release -- --ignored --nocapture --test-threads=1 (wall limit ~300s via /usr/bin/time -l)"]
+    fn bench_astar_adv_2_single() {
+        let source = astar_grid_script(1000, 5000, 559, 1234);
+        let start = Instant::now();
+        assert!(run(&source).is_ok());
+        println!("bench_astar_adv_2_single: elapsed={:?}", start.elapsed());
+    }
+
+    #[test]
+    #[ignore = "1000x5000 A* with 10k blocked (Python stress layout); cargo test bench_astar_adv_2_blocked_single --release -- --ignored --nocapture --test-threads=1 (wall limit ~600s via /usr/bin/time -l)"]
+    fn bench_astar_adv_2_blocked_single() {
+        let source = python_stress_blocked_literal(1000, 5000, 559, 1234);
+        let start = Instant::now();
+        assert!(run(&source).is_ok());
+        println!(
+            "bench_astar_adv_2_blocked_single: elapsed={:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    #[ignore = "10 sequential A* runs; cargo test bench_astar_stress_10_sequential --release -- --ignored --nocapture --test-threads=1 (wall limit ~3600s via /usr/bin/time -l)"]
+    fn bench_astar_stress_10_sequential() {
+        const RUNS: u32 = 10;
+        let source = astar_grid_script(1000, 5000, 559, 1234);
+        let start = Instant::now();
+        for i in 0..RUNS {
+            assert!(run(&source).is_ok(), "run {} failed", i + 1);
+        }
+        let total = start.elapsed();
+        println!(
+            "bench_astar_stress_10_sequential: total={:?}, avg={:?}",
+            total,
+            total / RUNS
+        );
+    }
+
+    #[test]
+    #[ignore = "10 parallel A* runs (one Vm per thread); cargo test bench_astar_stress_10_parallel --release -- --ignored --nocapture (wall limit ~3600s via /usr/bin/time -l)"]
+    fn bench_astar_stress_10_parallel() {
+        const RUNS: usize = 10;
+        let source = Arc::new(astar_grid_script(1000, 5000, 559, 1234));
+        let start = Instant::now();
+        let handles: Vec<_> = (0..RUNS)
+            .map(|_| {
+                let script = Arc::clone(&source);
+                thread::spawn(move || {
+                    assert!(run(script.as_str()).is_ok());
+                })
+            })
+            .collect();
+        for h in handles {
+            h.join().expect("thread panicked");
+        }
+        let total = start.elapsed();
+        println!(
+            "bench_astar_stress_10_parallel: total={:?}, avg={:?}",
+            total,
+            total / RUNS as u32
         );
     }
 }

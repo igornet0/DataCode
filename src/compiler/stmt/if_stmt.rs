@@ -33,13 +33,11 @@ pub fn compile_if(
         ctx.labels
             .emit_jump(ctx.chunk, *ctx.current_line, true, target_label)?;
 
-        // Компилируем then ветку (с новой областью видимости)
-        ctx.scope.begin_scope();
+        // Same as Python: bindings in then/else branches live in the enclosing scope.
         for (i, stmt) in then_branch.iter().enumerate() {
             let is_last = i == then_branch.len() - 1;
             stmt::compile_stmt(ctx, stmt, !is_last || pop_value)?;
         }
-        ctx.scope.end_scope();
 
         // Jump к end после then
         ctx.labels
@@ -49,13 +47,10 @@ pub fn compile_if(
         if else_branch.is_some() {
             ctx.labels.mark_label(else_label, ctx.chunk.code.len());
 
-            // Компилируем else ветку (с новой областью видимости)
-            ctx.scope.begin_scope();
             for (i, stmt) in else_branch.as_ref().unwrap().iter().enumerate() {
                 let is_last = i == else_branch.as_ref().unwrap().len() - 1;
                 stmt::compile_stmt(ctx, stmt, !is_last || pop_value)?;
             }
-            ctx.scope.end_scope();
         }
 
         // Помечаем метку end

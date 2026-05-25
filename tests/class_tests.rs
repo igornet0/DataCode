@@ -20,10 +20,10 @@ mod tests {
 
     fn assert_number(source: &str, expected: f64) {
         let v = run_ok(source);
-        if let Value::Number(n) = v {
+        if let Some(n) = v.as_ieee_f64() {
             assert_eq!(n, expected, "expected {}, got {}", expected, n);
         } else {
-            panic!("expected Number({}), got {:?}", expected, v);
+            panic!("expected numeric({}), got {:?}", expected, v);
         }
     }
 

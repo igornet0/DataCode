@@ -45,6 +45,18 @@ mod tests {
     }
 
     #[test]
+    fn random_seed_reproducible() {
+        let source = r#"
+            random_seed(42)
+            let a = random_int(0, 999999)
+            random_seed(42)
+            let b = random_int(0, 999999)
+            a == b
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
     fn random_int_inclusive_range() {
         let source = r#"
             let ok = true

@@ -39,11 +39,11 @@ pub fn compile_interpolated_string(
                     ctx.chunk.write_with_line(OpCode::Add, *line);
                 }
                 expr::compile_expr(ctx, e)?;
-                if let Some(ref fmt) = format {
-                    let fmt_idx = ctx.chunk.add_constant(Value::String(fmt.clone()));
-                    ctx.chunk
-                        .write_with_line(OpCode::FormatInterp(fmt_idx), *line);
-                }
+                let fmt_idx = ctx.chunk.add_constant(Value::String(
+                    format.clone().unwrap_or_default(),
+                ));
+                ctx.chunk
+                    .write_with_line(OpCode::FormatInterp(fmt_idx), *line);
                 if *include_name {
                     ctx.chunk.write_with_line(OpCode::Add, *line);
                 }

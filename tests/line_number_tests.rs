@@ -7,8 +7,8 @@ mod tests {
     #[test]
     fn test_undefined_variable_line_number() {
         let source = r#"
-            let x = 10
-            let y = undefined_var
+            x = 10
+            y = undefined_var
         "#;
         let result = run(source);
         assert!(result.is_err());
@@ -31,8 +31,8 @@ mod tests {
     #[test]
     fn test_division_by_zero_line_number() {
         let source = r#"
-            let x = 10
-            let y = x / 0
+            x = 10
+            y = x // 0
         "#;
         let result = run(source);
         assert!(result.is_err());
@@ -47,8 +47,8 @@ mod tests {
     #[test]
     fn test_type_error_line_number() {
         let source = r#"
-            let x = "hello"
-            let y = x - 5
+            x = "hello"
+            y = x - 5
         "#;
         let result = run(source);
         assert!(result.is_err());
@@ -82,7 +82,7 @@ mod tests {
     fn test_stack_trace_has_line_numbers() {
         let source = r#"
             fn inner() {
-                let x = 10 / 0
+                x = 10 // 0
                 return x
             }
             fn outer() {

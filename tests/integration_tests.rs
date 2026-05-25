@@ -75,8 +75,8 @@ mod tests {
     #[test]
     fn test_if_statement() {
         let source = r#"
-            let x = 10
-            let result = 0
+            x = 10
+            result = 0
             if x > 5 {
                 result = 1
             }
@@ -88,8 +88,8 @@ mod tests {
     #[test]
     fn test_if_else_statement() {
         let source = r#"
-            let x = 3
-            let result = 0
+            x = 3
+            result = 0
             if x > 5 {
                 result = 1
             } else {
@@ -103,9 +103,9 @@ mod tests {
     #[test]
     fn test_nested_if() {
         let source = r#"
-            let x = 10
-            let y = 5
-            let result = 0
+            x = 10
+            y = 5
+            result = 0
             if x > 5 {
                 if y > 3 {
                     result = 1
@@ -121,8 +121,8 @@ mod tests {
     #[test]
     fn test_if_else_if_else() {
         let source = r#"
-            let x = 15
-            let result = 0
+            x = 15
+            result = 0
             if x > 20 {
                 result = 1
             } else if x > 10 {
@@ -138,8 +138,8 @@ mod tests {
     #[test]
     fn test_if_else_if() {
         let source = r#"
-            let x = 25
-            let result = 0
+            x = 25
+            result = 0
             if x > 30 {
                 result = 1
             } else if x > 20 {
@@ -153,8 +153,8 @@ mod tests {
     #[test]
     fn test_multiple_else_if() {
         let source = r#"
-            let score = 85
-            let grade = 0
+            score = 85
+            grade = 0
             if score >= 90 {
                 grade = 5
             } else if score >= 80 {
@@ -174,9 +174,9 @@ mod tests {
     #[test]
     fn test_nested_else_if() {
         let source = r#"
-            let x = 10
-            let y = 5
-            let result = 0
+            x = 10
+            y = 5
+            result = 0
             if x > 5 {
                 if y > 10 {
                     result = 1
@@ -198,8 +198,8 @@ mod tests {
     #[test]
     fn test_else_if_first_condition_true() {
         let source = r#"
-            let x = 10
-            let result = 0
+            x = 10
+            result = 0
             if x > 5 {
                 result = 1
             } else if x > 15 {
@@ -215,8 +215,8 @@ mod tests {
     #[test]
     fn test_else_if_last_condition_true() {
         let source = r#"
-            let x = 25
-            let result = 0
+            x = 25
+            result = 0
             if x > 30 {
                 result = 1
             } else if x > 20 {
@@ -234,8 +234,8 @@ mod tests {
     #[test]
     fn test_else_if_final_else() {
         let source = r#"
-            let x = 3
-            let result = 0
+            x = 3
+            result = 0
             if x > 10 {
                 result = 1
             } else if x > 5 {
@@ -253,7 +253,7 @@ mod tests {
     #[test]
     fn test_while_loop() {
         let source = r#"
-            let x = 10
+            x = 10
             while x > 0 {
                 x = x - 1
             }
@@ -265,8 +265,8 @@ mod tests {
     #[test]
     fn test_while_loop_counter() {
         let source = r#"
-            let counter = 0
-            let x = 5
+            counter = 0
+            x = 5
             while x > 0 {
                 counter = counter + 1
                 x = x - 1
@@ -279,8 +279,8 @@ mod tests {
     #[test]
     fn test_while_loop_sum() {
         let source = r#"
-            let sum = 0
-            let i = 1
+            sum = 0
+            i = 1
             while i <= 10 {
                 sum = sum + i
                 i = i + 1
@@ -307,7 +307,7 @@ mod tests {
     fn test_function_with_local_variables() {
         let source = r#"
             fn multiply(a, b) {
-                let result = a * b
+                result = a * b
                 return result
             }
             multiply(4, 5)
@@ -363,9 +363,9 @@ mod tests {
     #[test]
     fn test_global_variables() {
         let source = r#"
-            let global_x = 100
-            let global_y = 200
-            let sum = global_x + global_y
+            global_x = 100
+            global_y = 200
+            sum = global_x + global_y
         "#;
         let result = run_and_get_result(source);
         assert!(result.is_ok() || result.is_err());
@@ -374,12 +374,12 @@ mod tests {
     #[test]
     fn test_local_variables_in_function() {
         let source = r#"
-            let global_x = 100
+            global_x = 100
             fn test() {
-                let local_x = 10
+                local_x = 10
                 return local_x
             }
-            let result = test()
+            result = test()
         "#;
         let result = run_and_get_result(source);
         assert!(result.is_ok() || result.is_err());
@@ -388,11 +388,11 @@ mod tests {
     #[test]
     fn test_global_access_from_function() {
         let source = r#"
-            let global_x = 100
+            global_x = 100
             fn test() {
                 return global_x
             }
-            let result = test()
+            result = test()
         "#;
         let result = run_and_get_result(source);
         assert!(result.is_ok() || result.is_err());
@@ -403,8 +403,8 @@ mod tests {
     #[test]
     fn test_string_literals() {
         let source = r#"
-            let s = "hello"
-            let t = "world"
+            s = "hello"
+            t = "world"
         "#;
         let result = run_and_get_result(source);
         assert!(result.is_ok() || result.is_err());
@@ -413,8 +413,8 @@ mod tests {
     #[test]
     fn test_string_concatenation() {
         let source = r#"
-            let a = "hello"
-            let b = "world"
+            a = "hello"
+            b = "world"
             a + " " + b
         "#;
         let result = run_and_get_result(source);
@@ -432,9 +432,9 @@ mod tests {
     #[test]
     fn test_complex_expression() {
         let source = r#"
-            let a = 10
-            let b = 20
-            let c = 30
+            a = 10
+            b = 20
+            c = 30
             (a + b) * c / 2
         "#;
         // (10 + 20) * 30 / 2 = 30 * 30 / 2 = 900 / 2 = 450
@@ -461,8 +461,8 @@ mod tests {
             fn square(n) {
                 return n * n
             }
-            let sum = 0
-            let i = 1
+            sum = 0
+            i = 1
             while i <= 5 {
                 sum = sum + square(i)
                 i = i + 1
@@ -490,7 +490,7 @@ mod tests {
     fn test_function_without_return() {
         let source = r#"
             fn no_return() {
-                let x = 10
+                x = 10
             }
             no_return()
         "#;
@@ -501,7 +501,7 @@ mod tests {
     #[test]
     fn test_zero_division_handling() {
         let source = r#"
-            let x = 10 / 0
+            x = 10 // 0
         "#;
         let result = run_and_get_result(source);
         // Должна быть ошибка деления на ноль
@@ -513,7 +513,7 @@ mod tests {
     #[test]
     fn test_undefined_variable_error() {
         let source = r#"
-            let x = undefined_var
+            x = undefined_var
         "#;
         let result = run_and_get_result(source);
         // Должна быть ошибка неопределенной переменной
@@ -559,7 +559,7 @@ mod tests {
     #[test]
     fn test_type_error_in_arithmetic() {
         let source = r#"
-            let x = "hello"
+            x = "hello"
             x - 5
         "#;
         let result = run_and_get_result(source);
@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn test_string_multiplication() {
         let source = r#"
-            let x = "-"
+            x = "-"
             x * 10
         "#;
         let result = run_and_get_result(source);
@@ -583,7 +583,7 @@ mod tests {
         }
 
         let source = r#"
-            let x = "hello"
+            x = "hello"
             x * 3
         "#;
         let result = run_and_get_result(source);
@@ -603,7 +603,7 @@ mod tests {
     #[test]
     fn test_type_error_in_division() {
         let source = r#"
-            let x = "hello"
+            x = "hello"
             x / 5
         "#;
         let result = run_and_get_result(source);
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn test_type_error_in_comparison() {
         let source = r#"
-            let x = "hello"
+            x = "hello"
             x > 5
         "#;
         let result = run_and_get_result(source);
@@ -627,8 +627,8 @@ mod tests {
     #[test]
     fn test_boolean_literals() {
         let source = r#"
-            let t = true
-            let f = false
+            t = true
+            f = false
         "#;
         let result = run_and_get_result(source);
         assert!(result.is_ok() || result.is_err());
@@ -647,7 +647,7 @@ mod tests {
     #[test]
     fn test_variable_reassignment() {
         let source = r#"
-            let x = 10
+            x = 10
             x = 20
             x
         "#;
@@ -669,7 +669,7 @@ mod tests {
     fn test_function_without_return_statement() {
         let source = r#"
             fn no_return() {
-                let x = 10
+                x = 10
             }
             no_return()
         "#;
@@ -685,10 +685,10 @@ mod tests {
     #[test]
     fn test_nested_loops() {
         let source = r#"
-            let sum = 0
-            let i = 1
+            sum = 0
+            i = 1
             while i <= 3 {
-                let j = 1
+                j = 1
                 while j <= 2 {
                     sum = sum + i * j
                     j = j + 1
@@ -722,9 +722,9 @@ mod tests {
     #[test]
     fn test_arithmetic_with_variables() {
         let source = r#"
-            let a = 5
-            let b = 3
-            let c = 2
+            a = 5
+            b = 3
+            c = 2
             a * b + c
         "#;
         // 5 * 3 + 2 = 15 + 2 = 17
@@ -764,8 +764,8 @@ mod tests {
     #[test]
     fn test_string_number_concatenation() {
         let source = r#"
-            let s = "Number: "
-            let n = 42
+            s = "Number: "
+            n = 42
             s + n
         "#;
         let result = run_and_get_result(source);
@@ -781,8 +781,8 @@ mod tests {
     #[test]
     fn test_number_string_concatenation() {
         let source = r#"
-            let n = 42
-            let s = " is the answer"
+            n = 42
+            s = " is the answer"
             n + s
         "#;
         let result = run_and_get_result(source);
@@ -810,7 +810,7 @@ mod tests {
     #[test]
     fn test_truthiness() {
         let source = r#"
-            let x = 0
+            x = 0
             if x {
                 "truthy"
             } else {
@@ -830,7 +830,7 @@ mod tests {
     #[test]
     fn test_null_comparison() {
         let source = r#"
-            let x = null
+            x = null
             x == null
         "#;
         assert_bool_result(source, true);
@@ -839,8 +839,8 @@ mod tests {
     #[test]
     fn test_loop_break_condition() {
         let source = r#"
-            let counter = 0
-            let x = 5
+            counter = 0
+            x = 5
             while x > 0 {
                 counter = counter + 1
                 x = x - 1
@@ -853,9 +853,9 @@ mod tests {
     #[test]
     fn test_function_with_local_shadowing() {
         let source = r#"
-            let x = 100
+            x = 100
             fn test() {
-                let x = 10
+                x = 10
                 return x
             }
             test()
@@ -895,9 +895,9 @@ mod tests {
     #[test]
     fn test_complex_arithmetic_expression() {
         let source = r#"
-            let a = 10
-            let b = 5
-            let c = 2
+            a = 10
+            b = 5
+            c = 2
             (a + b) * c - (a - b) / c
         "#;
         // (10 + 5) * 2 - (10 - 5) / 2 = 15 * 2 - 5 / 2 = 30 - 2.5 = 27.5
@@ -925,8 +925,8 @@ mod tests {
         // Но у нас нет оператора %, поэтому тест может не работать
         // Заменим на другой тест
         let source = r#"
-            let sum = 0
-            let i = 1
+            sum = 0
+            i = 1
             while i <= 10 {
                 if i > 5 {
                     sum = sum + i
@@ -1116,7 +1116,7 @@ mod tests {
     #[test]
     fn test_list_files() {
         let source = r#"
-            let test_dir = path("tests/test_data")
+            test_dir = path("tests/test_data")
             list_files(test_dir)
         "#;
         let result = run_and_get_result(source);
@@ -1182,13 +1182,13 @@ mod tests {
     fn test_uuid_script_stability_repeated_runs() {
         let source = r#"
 import uuid
-let u = uuid.v7()
+u = uuid.v7()
 print(typeof(u))
 print(uuid.to_string(u))
 print(uuid.version(u))
-let u4 = uuid.v4()
+u4 = uuid.v4()
 print(uuid.to_string(u4))
-let parsed = uuid.parse("550e8400-e29b-41d4-a716-446655440000")
+parsed = uuid.parse("550e8400-e29b-41d4-a716-446655440000")
 print(uuid.to_string(parsed))
 print(uuid.DNS)
 print(uuid.to_string(uuid.v5(uuid.DNS, "example.com")))

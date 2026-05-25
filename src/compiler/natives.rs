@@ -101,6 +101,12 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "hmac_sha512");
     register(globals, "random_bytes");
     register(globals, "random_int");
+    register(globals, "random_seed");
+    register(globals, "date_to_unix");
+    register(globals, "duration");
+    register(globals, "set");
+    register(globals, "divmod");
+    register(globals, "isinf");
 
     // Built-in module globals (plot, uuid, debug, …) so `uuid.foo()` / `debug.operators()` resolve without `import`.
     // Order matches `crate::vm::modules::BUILTIN_MODULE_NAMES` (deterministic indices for chunk/linker).
@@ -117,17 +123,22 @@ fn register(globals: &mut std::collections::HashMap<String, usize>, name: &str) 
 }
 
 /// Возвращает имена параметров для нативной функции, если она поддерживает именованные аргументы
-/// None возвращается для функций с переменным числом аргументов (print, min, max, array)
+/// None — когда kwargs не задаются здесь (`print`, `array`, …). У `min`/`max` два параметра `(iterable, key)` для `key=…`; при этом многозначные только-числовые вызовы по-прежнему поддерживаются (см. `resolve_function_args`).
 pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
     match function_name {
-        // Функции с переменным числом аргументов - именованные аргументы не поддерживаются
-        "print" | "min" | "max" | "array" => None,
+        // Функции с переменным числом аргументов — kwargs не задаём здесь
+        "print" | "array" | "set" => None,
+
+        // iterable + опциональный key (именованный key= поддерживается; varargs через позиционные вызовы)
+        "min" => Some(vec!["iterable".to_string(), "key".to_string()]),
+        "max" => Some(vec!["iterable".to_string(), "key".to_string()]),
 
         // Функции с одним параметром
         "len" => Some(vec!["value".to_string()]),
         "enum" => Some(vec!["iterable".to_string()]),
         "int" => Some(vec!["value".to_string()]),
         "float" => Some(vec!["value".to_string()]),
+        "isinf" => Some(vec!["value".to_string()]),
         "bool" => Some(vec!["value".to_string()]),
         "str" => Some(vec!["value".to_string()]),
         "typeof" => Some(vec!["value".to_string()]),
@@ -149,10 +160,10 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "trim" => Some(vec!["str".to_string()]),
         "isupper" => Some(vec!["str".to_string()]),
         "islower" => Some(vec!["str".to_string()]),
-        "pop" => Some(vec!["array".to_string()]),
+        "pop" => Some(vec!["array".to_string(), "idx".to_string()]),
         "unique" => Some(vec!["array".to_string()]),
         "reverse" => Some(vec!["array".to_string()]),
-        "sort" => Some(vec!["array".to_string()]),
+        "sort" => Some(vec!["iterable".to_string()]),
         "sum" => Some(vec!["array".to_string()]),
         "average" => Some(vec!["array".to_string()]),
         "count" => Some(vec!["array".to_string()]),
@@ -174,6 +185,15 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "hmac_sha512" => Some(vec!["key".to_string(), "data".to_string()]),
         "random_bytes" => Some(vec!["size".to_string()]),
         "random_int" => Some(vec!["min".to_string(), "max".to_string()]),
+        "random_seed" => Some(vec!["seed".to_string()]),
+        "date_to_unix" => Some(vec!["value".to_string()]),
+        "duration" => Some(vec![
+            "seconds".to_string(),
+            "minutes".to_string(),
+            "hours".to_string(),
+            "days".to_string(),
+            "milliseconds".to_string(),
+        ]),
 
         // Функции с двумя параметрами
         "range" => Some(vec![
@@ -182,6 +202,7 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "step".to_string(),
         ]),
         "pow" => Some(vec!["base".to_string(), "exp".to_string()]),
+        "divmod" => Some(vec!["a".to_string(), "b".to_string()]),
         "split" => Some(vec!["str".to_string(), "delim".to_string()]),
         "join" => Some(vec!["array".to_string(), "delim".to_string()]),
         "contains" => Some(vec!["str".to_string(), "substr".to_string()]),

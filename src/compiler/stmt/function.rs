@@ -96,12 +96,23 @@ pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
         let parent_locals_snapshot: Vec<std::collections::HashMap<String, usize>> =
             ctx.scope.locals.iter().map(|scope| scope.clone()).collect();
 
+        let ancestor_bindings = closure::ancestor_bindings_for_function_check(
+            &parent_locals_snapshot,
+            ctx.current_function.is_some(),
+        );
+        closure::check_illegal_outer_assignments_in_function_body(
+            body,
+            &ancestor_bindings,
+            &param_names,
+        )?;
+
         // Компилируем тело функции в chunk функции
         let function_chunk_clone = function.chunk.clone();
         let saved_chunk = std::mem::replace(&mut *ctx.chunk, function_chunk_clone);
         let saved_exception_handlers = ctx.exception_handlers.clone();
         let saved_error_type_table = ctx.error_type_table.clone();
         let saved_function = ctx.current_function;
+        let enclosing_function_index = saved_function.unwrap_or(usize::MAX);
         let saved_local_count = ctx.scope.local_count;
 
         // ВАЖНО: Сохраняем состояние меток перед компиляцией функции
@@ -109,9 +120,11 @@ pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
         let saved_label_counter = ctx.labels.label_counter;
         let saved_labels = ctx.labels.labels.clone();
         let saved_pending_jumps = ctx.labels.pending_jumps.clone();
+        let saved_pending_for_range = ctx.labels.pending_for_range.clone();
         ctx.labels.label_counter = 0;
         ctx.labels.labels.clear();
         ctx.labels.pending_jumps.clear();
+        ctx.labels.pending_for_range.clear();
 
         ctx.current_function = Some(function_index);
         ctx.scope.local_count = 0;
@@ -167,6 +180,7 @@ pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
                 parent_slot_index: parent_slot,
                 local_slot_index,
                 ancestor_depth,
+                parent_function_index: enclosing_function_index,
             });
         }
 
@@ -209,6 +223,7 @@ pub fn compile_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(),
         ctx.labels.label_counter = saved_label_counter;
         ctx.labels.labels = saved_labels;
         ctx.labels.pending_jumps = saved_pending_jumps;
+        ctx.labels.pending_for_range = saved_pending_for_range;
 
         // Сохраняем функцию в глобальную таблицу (уже сделано в первом проходе)
         let global_index = *ctx.scope.globals.get(name).unwrap();
@@ -322,6 +337,16 @@ pub fn compile_stream_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Res
         let parent_locals_snapshot: Vec<std::collections::HashMap<String, usize>> =
             ctx.scope.locals.iter().map(|scope| scope.clone()).collect();
 
+        let ancestor_bindings = closure::ancestor_bindings_for_function_check(
+            &parent_locals_snapshot,
+            ctx.current_function.is_some(),
+        );
+        closure::check_illegal_outer_assignments_in_function_body(
+            body,
+            &ancestor_bindings,
+            &param_names,
+        )?;
+
         let function_chunk_clone = function.chunk.clone();
         let saved_chunk = std::mem::replace(&mut *ctx.chunk, function_chunk_clone);
         let saved_exception_handlers = ctx.exception_handlers.clone();
@@ -332,9 +357,11 @@ pub fn compile_stream_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Res
         let saved_label_counter = ctx.labels.label_counter;
         let saved_labels = ctx.labels.labels.clone();
         let saved_pending_jumps = ctx.labels.pending_jumps.clone();
+        let saved_pending_for_range = ctx.labels.pending_for_range.clone();
         ctx.labels.label_counter = 0;
         ctx.labels.labels.clear();
         ctx.labels.pending_jumps.clear();
+        ctx.labels.pending_for_range.clear();
 
         ctx.current_function = Some(function_index);
         ctx.scope.local_count = 0;
@@ -344,9 +371,15 @@ pub fn compile_stream_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Res
         ctx.scope.begin_scope();
 
         let current_scope = ctx.scope.locals.last().cloned().unwrap_or_default();
+        let parent_locals_for_capture: &[std::collections::HashMap<String, usize>] =
+            if saved_function.is_some() {
+                &parent_locals_snapshot
+            } else {
+                &[]
+            };
         let captured_vars = closure::find_captured_variables(
             body,
-            &parent_locals_snapshot,
+            parent_locals_for_capture,
             &param_names,
             &current_scope,
         );
@@ -382,6 +415,7 @@ pub fn compile_stream_function(ctx: &mut CompilationContext, stmt: &Stmt) -> Res
         ctx.labels.label_counter = saved_label_counter;
         ctx.labels.labels = saved_labels;
         ctx.labels.pending_jumps = saved_pending_jumps;
+        ctx.labels.pending_for_range = saved_pending_for_range;
 
         let global_index = *ctx.scope.globals.get(name).unwrap();
         ctx.chunk.global_names.insert(global_index, name.clone());

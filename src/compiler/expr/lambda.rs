@@ -66,14 +66,17 @@ pub fn compile_lambda(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
         let saved_exception_handlers = ctx.exception_handlers.clone();
         let saved_error_type_table = ctx.error_type_table.clone();
         let saved_function = ctx.current_function;
+        let enclosing_function_index = saved_function.unwrap_or(usize::MAX);
         let saved_local_count = ctx.scope.local_count;
 
         let saved_label_counter = ctx.labels.label_counter;
         let saved_labels = ctx.labels.labels.clone();
         let saved_pending_jumps = ctx.labels.pending_jumps.clone();
+        let saved_pending_for_range = ctx.labels.pending_for_range.clone();
         ctx.labels.label_counter = 0;
         ctx.labels.labels.clear();
         ctx.labels.pending_jumps.clear();
+        ctx.labels.pending_for_range.clear();
 
         ctx.current_function = Some(function_index);
         ctx.scope.local_count = 0;
@@ -84,6 +87,13 @@ pub fn compile_lambda(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
 
         let parent_locals_snapshot: Vec<std::collections::HashMap<String, usize>> =
             ctx.scope.locals.iter().map(|s| s.clone()).collect();
+
+        let ancestor_bindings = closure::flatten_parent_binding_names(&parent_locals_snapshot);
+        closure::check_illegal_outer_assignments_in_lambda_expr(
+            body.as_ref(),
+            &ancestor_bindings,
+            &param_names,
+        )?;
 
         ctx.scope.begin_scope();
 
@@ -126,6 +136,7 @@ pub fn compile_lambda(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                 parent_slot_index: parent_slot,
                 local_slot_index,
                 ancestor_depth,
+                parent_function_index: enclosing_function_index,
             });
         }
 
@@ -154,6 +165,7 @@ pub fn compile_lambda(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
         ctx.labels.label_counter = saved_label_counter;
         ctx.labels.labels = saved_labels;
         ctx.labels.pending_jumps = saved_pending_jumps;
+        ctx.labels.pending_for_range = saved_pending_for_range;
 
         let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
         ctx.chunk

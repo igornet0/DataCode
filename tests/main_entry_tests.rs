@@ -376,7 +376,7 @@ mod tests {
         let source = r#"
             fn __main__(a, b) {
                 try {
-                    return int(a) / int(b)
+                    return int(a) // int(b)
                 } catch {
                     return 999
                 }
@@ -424,8 +424,8 @@ mod tests {
         match &value {
             Value::Object(rc) => {
                 let o = rc.borrow();
-                assert_eq!(o.get("env"), Some(&Value::String("prod".into())));
-                assert_eq!(o.get("count"), Some(&Value::Number(42.0)));
+                assert_eq!(o.str_key_get("env"), Some(&Value::String("prod".into())));
+                assert_eq!(o.str_key_get("count"), Some(&Value::Number(42.0)));
             }
             v => panic!("expected Object, got {:?}", v),
         }

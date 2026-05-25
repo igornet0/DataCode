@@ -3,9 +3,10 @@
 // Stack, globals, frame slots are Vec<ValueId>; no Rc/RefCell in hot path.
 // Strings are interned in StringPool (per ValueStore) to cut heap fragmentation and duplicate allocations.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+use super::numeric::{FloatValue, IntValue};
 use super::tagged_value::TaggedValue;
 
 /// Handle into ValueStore; executor uses only ids in hot path (no Rc/RefCell/borrow per value).
@@ -25,6 +26,9 @@ pub const ARENA_BASE: ValueId = 0x8000_0000;
 
 /// Max recycled chunks to keep in free list (lazy shrink: avoid unbounded retention after many resets).
 const MAX_FREE_CHUNKS: usize = 4;
+
+/// Soft cap on recycled `(f, node)` shells; overflow drops oldest ids (heappop uses [`scratch_heap_pair_id`]).
+const MAX_HEAP_PAIR_FREE: usize = 65536;
 
 /// Bump-style arena for heap globals and frame-slot values. Reduces fragmentation and allows bulk free on reset.
 /// Supports partial chunk recycling and configurable chunk size for large arrays/tables.
@@ -166,6 +170,13 @@ impl StringPool {
     }
 }
 
+/// Which cells are listed by [`ValueCell::ObjectFieldList`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ObjectProjectionKind {
+    Keys,
+    Values,
+}
+
 /// One cell in the store; composite types refer to other cells by ValueId.
 /// Heavy types (Table, etc.) are stored in HeavyStore and referenced by index.
 /// Array and Object are index-only here (no Rc<RefCell> in hot path); Value materialization
@@ -173,6 +184,9 @@ impl StringPool {
 /// Strings are stored as StringId (index into ValueStore's StringPool).
 #[derive(Debug, Clone)]
 pub enum ValueCell {
+    Int(IntValue),
+    Float(FloatValue),
+    /// Raw IEEE heap cell (distinct from typed [`FloatValue`] on [`Value`]).
     Number(f64),
     Bool(bool),
     Null,
@@ -186,7 +200,8 @@ pub enum ValueCell {
         length: usize,
     },
     Tuple(Vec<ValueId>),
-    Object(HashMap<String, ValueId>),
+    Object(crate::common::object_map::ObjectMap),
+    Set(crate::common::set_map::SetMap),
     Function(usize),
     ModuleFunction {
         module_uid: u64,
@@ -195,6 +210,17 @@ pub enum ValueCell {
     NativeFunction(usize),
     Path(PathBuf),
     Uuid(u64, u64),
+    /// Instants in [`chrono::DateTime<chrono::FixedOffset>`] as (unix secs, subsec nanos, offset from UTC in seconds).
+    Date {
+        secs: i64,
+        nanos: u32,
+        offset_secs: i32,
+    },
+    /// Signed span as whole seconds + subsecond nanoseconds (chrono [`chrono::Duration`]).
+    Duration {
+        secs: i64,
+        nanos: u32,
+    },
     /// Index into HeavyStore (Table, Image, etc.)
     Heavy(usize),
     ColumnReference {
@@ -211,6 +237,12 @@ pub enum ValueCell {
         data_id: ValueId,
         start: i64,
     },
+    /// Read-only snapshot view over a plain bucket dict's key or value cell ids.
+    ObjectFieldList {
+        source_object_id: ValueId,
+        projection: ObjectProjectionKind,
+        element_ids: Vec<ValueId>,
+    },
     Ellipsis,
 }
 
@@ -225,6 +257,16 @@ pub struct ValueStore {
     string_pool: StringPool,
     /// Bump arena for heap globals and ephemeral heap values; ids >= ARENA_BASE.
     arena: HeapArena,
+    /// Canonical whole numbers → one [`ValueCell`] per `i64` (avoids millions of duplicate `Number` allocs).
+    whole_i64_cache: HashMap<i64, ValueId>,
+    /// Non-whole `f64` bit patterns (`inf`, `nan`, …) → one cell each (A* `float(inf)` defaults).
+    f64_bits_cache: HashMap<u64, ValueId>,
+    /// Recycled 2-slot heap items (`Array` len 2 / compacted tuple pairs) for `heapq`.
+    heap_pair_free_list: Vec<ValueId>,
+    /// Single reused 2-slot cell for `heappop` → tuple-unpack (`current_f, current = …`) hot path.
+    scratch_heap_pair: Option<ValueId>,
+    /// Heap arrays using flat `[f,n,f,n,…]` storage (A* open_heap); not inferred from slot shape alone.
+    flat_heap_ids: HashSet<ValueId>,
 }
 
 impl Default for ValueStore {
@@ -241,6 +283,11 @@ impl ValueStore {
             chunks: vec![first],
             string_pool: StringPool::new(),
             arena: HeapArena::new(),
+            whole_i64_cache: HashMap::new(),
+            f64_bits_cache: HashMap::new(),
+            heap_pair_free_list: Vec::new(),
+            scratch_heap_pair: None,
+            flat_heap_ids: HashSet::new(),
         }
     }
 
@@ -311,6 +358,57 @@ impl ValueStore {
         self.chunks.get(c).and_then(|ch| ch.get(i))
     }
 
+    /// Plain dict write for whole-number keys: O(1) integral map + bucket sync, no whole-map `take`/`clone`.
+    pub fn plain_object_upsert_integral(
+        &mut self,
+        container_id: ValueId,
+        canonical: i64,
+        key_id: ValueId,
+        value_id: ValueId,
+    ) -> bool {
+        let Some(ValueCell::Object(omap)) = self.get_mut(container_id) else {
+            return false;
+        };
+        omap.upsert_integral(canonical, key_id, value_id);
+        true
+    }
+
+    /// Plain dict write storing an immediate score (no new [`ValueCell`] when `value_tv` is inline).
+    pub fn plain_object_upsert_integral_tagged(
+        &mut self,
+        container_id: ValueId,
+        canonical: i64,
+        key_id: ValueId,
+        value_tv: crate::common::TaggedValue,
+    ) -> bool {
+        let Some(ValueCell::Object(omap)) = self.get_mut(container_id) else {
+            return false;
+        };
+        omap.upsert_integral_tagged(canonical, key_id, value_tv);
+        true
+    }
+
+    /// Plain set insert for whole-number keys (see [`Self::plain_object_upsert_integral`]).
+    pub fn plain_set_insert_integral(
+        &mut self,
+        container_id: ValueId,
+        canonical: i64,
+        key_id: ValueId,
+    ) -> bool {
+        let Some(ValueCell::Set(smap)) = self.get_mut(container_id) else {
+            return false;
+        };
+        smap.insert_integral_only(canonical, key_id)
+    }
+
+    /// Plain set `discard` for whole-number keys — no whole-set clone.
+    pub fn plain_set_discard_integral(&mut self, container_id: ValueId, canonical: i64) -> bool {
+        let Some(ValueCell::Set(smap)) = self.get_mut(container_id) else {
+            return false;
+        };
+        smap.discard_integral(canonical)
+    }
+
     #[inline]
     pub fn get_mut(&mut self, id: ValueId) -> Option<&mut ValueCell> {
         if id >= ARENA_BASE {
@@ -345,5 +443,101 @@ impl ValueStore {
         self.chunks = vec![first];
         self.string_pool.clear();
         self.arena.clear();
+        self.whole_i64_cache.clear();
+        self.f64_bits_cache.clear();
+        self.heap_pair_free_list.clear();
+        self.scratch_heap_pair = None;
+        self.flat_heap_ids.clear();
+    }
+
+    #[inline]
+    pub fn mark_flat_heap(&mut self, id: ValueId) {
+        if id != NULL_VALUE_ID {
+            self.flat_heap_ids.insert(id);
+        }
+    }
+
+    #[inline]
+    pub fn is_flat_heap(&self, id: ValueId) -> bool {
+        self.flat_heap_ids.contains(&id)
+    }
+
+    #[inline]
+    pub fn holds_scratch_heap_pair(&self, id: ValueId) -> bool {
+        self.scratch_heap_pair == Some(id)
+    }
+
+    /// One persistent 2-slot array for `heappop` results (avoids millions of alloc/free in A* loops).
+    pub fn scratch_heap_pair_id(&mut self, a: TaggedValue, b: TaggedValue) -> ValueId {
+        if let Some(id) = self.scratch_heap_pair {
+            if let Some(ValueCell::Array(slots)) = self.get_mut(id) {
+                slots[0] = a;
+                slots[1] = b;
+                return id;
+            }
+        }
+        let id = self.allocate(ValueCell::Array(vec![a, b]));
+        self.scratch_heap_pair = Some(id);
+        id
+    }
+
+    /// One [`ValueCell::Number`] per distinct `f64` bit pattern (whole ints, `inf`, `nan`, …).
+    pub fn intern_number_f64(&mut self, n: f64) -> ValueId {
+        if n.is_finite() && n.fract() == 0.0 {
+            return self.intern_whole_i64(super::numeric::f64_trunc_to_i64_clamped(n));
+        }
+        let bits = n.to_bits();
+        if let Some(&id) = self.f64_bits_cache.get(&bits) {
+            return id;
+        }
+        let id = self.allocate(ValueCell::Number(n));
+        self.f64_bits_cache.insert(bits, id);
+        id
+    }
+
+    /// One store cell per canonical whole number (`int` / whole `number` / whole `float` key).
+    pub fn intern_whole_i64(&mut self, canonical: i64) -> ValueId {
+        if let Some(&id) = self.whole_i64_cache.get(&canonical) {
+            return id;
+        }
+        let id = self.allocate(ValueCell::Number(canonical as f64));
+        self.whole_i64_cache.insert(canonical, id);
+        id
+    }
+
+    /// Reuse or allocate a 2-slot heap item for `heapq` `(priority, item)` pairs.
+    pub fn alloc_heap_pair(&mut self, a: TaggedValue, b: TaggedValue) -> ValueId {
+        while let Some(id) = self.heap_pair_free_list.pop() {
+            if let Some(ValueCell::Array(slots)) = self.get_mut(id) {
+                slots.clear();
+                slots.push(a);
+                slots.push(b);
+                return id;
+            }
+        }
+        self.allocate(ValueCell::Array(vec![a, b]))
+    }
+
+    /// True when `id` is a compact 2-slot [`ValueCell::Array`] used by `heapq` `(priority, item)` pairs.
+    #[inline]
+    pub fn is_recyclable_heap_pair(&self, id: ValueId) -> bool {
+        if id == NULL_VALUE_ID {
+            return false;
+        }
+        matches!(self.get(id), Some(ValueCell::Array(v)) if v.len() == 2)
+    }
+
+    /// Return a compact heap-pair cell to the free list (best-effort).
+    pub fn recycle_heap_pair(&mut self, id: ValueId) {
+        if id == NULL_VALUE_ID || !self.is_recyclable_heap_pair(id) {
+            return;
+        }
+        if self.scratch_heap_pair == Some(id) {
+            return;
+        }
+        if self.heap_pair_free_list.len() >= MAX_HEAP_PAIR_FREE {
+            let _ = self.heap_pair_free_list.remove(0);
+        }
+        self.heap_pair_free_list.push(id);
     }
 }

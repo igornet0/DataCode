@@ -881,22 +881,22 @@ mod tests {
                 Value::Object(rc) => rc.borrow(),
                 _ => panic!("expected Object (cfg), got {:?}", value),
             };
-            match obj.get("env") {
+            match obj.str_key_get("env") {
                 Some(Value::String(s)) => assert_eq!(s, "dev", "cfg.env"),
                 Some(v) => panic!("cfg.env expected String(\"dev\"), got {:?}", v),
                 None => panic!("cfg.env missing"),
             }
-            match obj.get("debug") {
+            match obj.str_key_get("debug") {
                 Some(Value::Bool(b)) => assert!(b, "cfg.debug should be true"),
                 Some(v) => panic!("cfg.debug expected Bool(true), got {:?}", v),
                 None => panic!("cfg.debug missing"),
             }
-            let db = obj.get("db").expect("cfg.db missing");
+            let db = obj.str_key_get("db").expect("cfg.db missing");
             let db_obj = match db {
                 Value::Object(rc) => rc.borrow(),
                 _ => panic!("cfg.db expected Object, got {:?}", db),
             };
-            match db_obj.get("url") {
+            match db_obj.str_key_get("url") {
                 Some(Value::String(s)) => {
                     assert_eq!(s, "postgresql://dev.server/dev", "cfg.db.url")
                 }
@@ -929,12 +929,12 @@ env
                 Value::Object(rc) => rc.borrow(),
                 _ => panic!("expected Object (env), got {:?}", value),
             };
-            match obj.get("app__env") {
+            match obj.str_key_get("app__env") {
                 Some(Value::String(s)) => assert_eq!(s, "dev", "app__env"),
                 Some(Value::Null) => panic!("app__env must not be null"),
                 other => panic!("app__env expected String(\"dev\"), got {:?}", other),
             }
-            match obj.get("db__url") {
+            match obj.str_key_get("db__url") {
                 Some(Value::String(s)) => assert_eq!(s, "postgresql://dev.server/dev", "db__url"),
                 Some(Value::Null) => panic!("db__url must not be null"),
                 other => panic!("db__url expected String, got {:?}", other),
@@ -964,7 +964,7 @@ cfg
                 Value::Object(rc) => rc.borrow(),
                 _ => panic!("expected Object (cfg), got {:?}", value),
             };
-            match obj.get("env") {
+            match obj.str_key_get("env") {
                 Some(Value::String(s)) => assert_eq!(s, "dev", "cfg.env"),
                 Some(Value::Null) => {
                     panic!("cfg.env must not be null (base_path should resolve settings/dev.env)")
@@ -972,18 +972,18 @@ cfg
                 Some(v) => panic!("cfg.env expected String(\"dev\"), got {:?}", v),
                 None => panic!("cfg.env missing"),
             }
-            match obj.get("debug") {
+            match obj.str_key_get("debug") {
                 Some(Value::Bool(b)) => assert!(b, "cfg.debug should be true"),
                 Some(Value::Null) => panic!("cfg.debug must not be null"),
                 Some(v) => panic!("cfg.debug expected Bool(true), got {:?}", v),
                 None => panic!("cfg.debug missing"),
             }
-            let db = obj.get("db").expect("cfg.db missing");
+            let db = obj.str_key_get("db").expect("cfg.db missing");
             let db_obj = match db {
                 Value::Object(rc) => rc.borrow(),
                 _ => panic!("cfg.db expected Object, got {:?}", db),
             };
-            match db_obj.get("url") {
+            match db_obj.str_key_get("url") {
                 Some(Value::String(s)) => {
                     assert_eq!(s, "postgresql://dev.server/dev", "cfg.db.url")
                 }

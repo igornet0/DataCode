@@ -1,7 +1,13 @@
+pub mod numeric;
 pub mod error;
+pub mod integral_map;
+pub mod object_map;
+pub mod set_map;
 pub mod span;
 pub mod tagged_value;
+pub mod type_model;
 pub mod value;
+pub mod value_ord;
 pub mod value_host_types;
 pub mod value_store;
 pub use tagged_value::TaggedValue;

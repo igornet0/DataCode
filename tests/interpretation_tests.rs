@@ -9,10 +9,8 @@ mod tests {
     fn assert_number_result(source: &str, expected: f64) {
         let result = run(source);
         match result {
-            Ok(Value::Number(n)) => {
-                assert_eq!(n, expected, "Expected {}, got {}", expected, n);
-            }
-            Ok(v) => panic!("Expected Number({}), got {:?}", expected, v),
+            Ok(v) if v.as_ieee_f64() == Some(expected) => {}
+            Ok(v) => panic!("Expected numeric({}), got {:?}", expected, v),
             Err(e) => panic!("Error: {:?}", e),
         }
     }
@@ -187,7 +185,7 @@ mod tests {
     #[test]
     fn test_empty_while_loop() {
         let source = r#"
-            let x = 5
+            x = 5
             while x > 10 {
                 x = x + 1
             }
@@ -200,7 +198,7 @@ mod tests {
     #[test]
     fn test_while_loop_with_break_condition() {
         let source = r#"
-            let x = 0
+            x = 0
             while x < 5 {
                 x = x + 1
             }
@@ -212,10 +210,10 @@ mod tests {
     #[test]
     fn test_nested_while_loops() {
         let source = r#"
-            let sum = 0
-            let i = 1
+            sum = 0
+            i = 1
             while i <= 2 {
-                let j = 1
+                j = 1
                 while j <= 2 {
                     sum = sum + i * j
                     j = j + 1
@@ -233,7 +231,7 @@ mod tests {
     #[test]
     fn test_if_without_else() {
         let source = r#"
-            let x = 10
+            x = 10
             if x > 5 {
                 x = 20
             }
@@ -245,7 +243,7 @@ mod tests {
     #[test]
     fn test_if_without_else_false() {
         let source = r#"
-            let x = 3
+            x = 3
             if x > 5 {
                 x = 20
             }
@@ -257,9 +255,9 @@ mod tests {
     #[test]
     fn test_nested_conditionals() {
         let source = r#"
-            let x = 10
-            let y = 5
-            let result = 0
+            x = 10
+            y = 5
+            result = 0
             if x > 5 {
                 if y > 3 {
                     result = 1
@@ -277,8 +275,8 @@ mod tests {
     #[test]
     fn test_ternary_like_expression() {
         let source = r#"
-            let x = 10
-            let result = 0
+            x = 10
+            result = 0
             if x > 5 {
                 result = 100
             } else {
@@ -331,7 +329,7 @@ mod tests {
 
     #[test]
     fn test_division_by_zero() {
-        assert_error("10 / 0");
+        assert_error("10 // 0");
     }
 
     #[test]
@@ -469,9 +467,9 @@ mod tests {
     #[test]
     fn test_variable_shadowing() {
         let source = r#"
-            let x = 100
+            x = 100
             fn test() {
-                let x = 10
+                x = 10
                 return x
             }
             test()
@@ -483,9 +481,9 @@ mod tests {
     #[test]
     fn test_global_after_local() {
         let source = r#"
-            let x = 100
+            x = 100
             fn test() {
-                let y = 10
+                y = 10
                 return x
             }
             test()
@@ -497,9 +495,9 @@ mod tests {
     #[test]
     fn test_multiple_global_variables() {
         let source = r#"
-            let a = 10
-            let b = 20
-            let c = 30
+            a = 10
+            b = 20
+            c = 30
             a + b + c
         "#;
         assert_number_result(source, 60.0);
@@ -534,9 +532,9 @@ mod tests {
     #[test]
     fn test_complex_nested_expressions() {
         let source = r#"
-            let a = 10
-            let b = 20
-            let c = 30
+            a = 10
+            b = 20
+            c = 30
             (a + b) * c - (a * b) / c
         "#;
         // (10 + 20) * 30 - (10 * 20) / 30 = 30 * 30 - 200 / 30 = 900 - 6.666... = 893.333...
@@ -546,8 +544,8 @@ mod tests {
     #[test]
     fn test_boolean_logic() {
         let source = r#"
-            let x = 10
-            let y = 5
+            x = 10
+            y = 5
             if x > 5 and y < 10 {
                 1
             } else {
@@ -556,8 +554,8 @@ mod tests {
         "#;
         // // У нас нет оператора &&, поэтому упростим
         // let source = r#"
-        //     let x = 10
-        //     let y = 5
+        //     x = 10
+        //     y = 5
         //     if x > 5 {
         //         if y < 10 {
         //             1
@@ -574,8 +572,8 @@ mod tests {
     #[test]
     fn test_loop_with_conditional() {
         let source = r#"
-            let sum = 0
-            let i = 1
+            sum = 0
+            i = 1
             while i <= 10 {
                 if i > 5 {
                     sum = sum + i
@@ -635,8 +633,8 @@ mod tests {
     fn test_logical_and_equivalent() {
         // Эмулируем && через вложенные if
         let source = r#"
-            let x = 10
-            let y = 5
+            x = 10
+            y = 5
             if x > 5 {
                 if y < 10 {
                     1
@@ -654,8 +652,8 @@ mod tests {
     fn test_logical_or_equivalent() {
         // Эмулируем || через if-else
         let source = r#"
-            let x = 3
-            let result = 0
+            x = 3
+            result = 0
             if x > 5 {
                 result = 1
             } else {
@@ -676,7 +674,7 @@ mod tests {
     fn test_and_short_circuit() {
         // false and (1/0) — правая часть не должна вычисляться, иначе division by zero
         let source = r#"
-            let x = false and (1 / 0)
+            x = false and (1 / 0)
             if x == false { 1 } else { 0 }
         "#;
         assert_number_result(source, 1.0);
@@ -686,7 +684,7 @@ mod tests {
     fn test_or_short_circuit() {
         // true or (1/0) — правая часть не должна вычисляться
         let source = r#"
-            let x = true or (1 / 0)
+            x = true or (1 / 0)
             if x == true { 1 } else { 0 }
         "#;
         assert_number_result(source, 1.0);
@@ -729,6 +727,66 @@ mod tests {
     #[test]
     fn test_in_operator_empty_array() {
         assert_bool_result("1 in []", false);
+    }
+
+    #[test]
+    fn test_in_operator_dict_integral_key() {
+        assert_bool_result("1 in {1: 10, 2: 20}", true);
+        assert_bool_result("3 in {1: 10, 2: 20}", false);
+    }
+
+    #[test]
+    fn test_for_loop_body_binding_visible_after_loop() {
+        assert_number_result(
+            r#"
+fn test() {
+    for i in range(3) {
+        elapsed = i
+    }
+    return elapsed
+}
+test()
+"#,
+            2.0,
+        );
+    }
+
+    #[test]
+    fn test_if_branch_binding_visible_after_if() {
+        assert_number_result(
+            r#"
+fn test() {
+    n = 10
+    if n % 2 == 1 {
+        median = 3.0
+    } else {
+        median = 2.5
+    }
+    return median
+}
+test()
+"#,
+            2.5,
+        );
+    }
+
+    #[test]
+    fn test_if_branch_binding_visible_after_if_odd() {
+        assert_number_result(
+            r#"
+fn test() {
+    n = 9
+    if n % 2 == 1 {
+        median = 3.0
+    } else {
+        median = 2.5
+    }
+    return median
+}
+test()
+"#,
+            3.0,
+        );
     }
 
     // ========== Тесты для операторов сравнения ==========
@@ -799,7 +857,7 @@ mod tests {
     #[test]
     fn test_function_modifying_global() {
         let source = r#"
-            let x = 10
+            x = 10
             fn double() {
                 x = x * 2
                 return x
@@ -850,8 +908,8 @@ mod tests {
     #[test]
     fn test_while_with_break_logic() {
         let source = r#"
-            let x = 0
-            let found = false
+            x = 0
+            found = false
             while x < 10 {
                 if x == 5 {
                     found = true
@@ -903,7 +961,7 @@ mod tests {
     #[test]
     fn test_null_comparison() {
         let source = r#"
-            let x = null
+            x = null
             if x == null {
                 1
             } else {
@@ -950,7 +1008,7 @@ mod tests {
     #[test]
     fn test_variable_reassignment_in_loop() {
         let source = r#"
-            let x = 0
+            x = 0
             while x < 5 {
                 x = x + 1
             }
@@ -962,9 +1020,9 @@ mod tests {
     #[test]
     fn test_multiple_variable_reassignments() {
         let source = r#"
-            let a = 1
-            let b = 2
-            let c = 3
+            a = 1
+            b = 2
+            c = 3
             a = b + c
             b = a + c
             c = a + b
@@ -982,7 +1040,7 @@ mod tests {
     #[test]
     fn test_function_no_params_with_globals() {
         let source = r#"
-            let x = 100
+            x = 100
             fn get_x() {
                 return x
             }
@@ -996,10 +1054,10 @@ mod tests {
     #[test]
     fn test_deeply_nested_conditionals() {
         let source = r#"
-            let x = 10
-            let y = 5
-            let z = 3
-            let result = 0
+            x = 10
+            y = 5
+            z = 3
+            result = 0
             if x > 5 {
                 if y > 3 {
                     if z > 2 {
@@ -1021,10 +1079,10 @@ mod tests {
     #[test]
     fn test_nested_loops_with_conditionals() {
         let source = r#"
-            let sum = 0
-            let i = 1
+            sum = 0
+            i = 1
             while i <= 3 {
-                let j = 1
+                j = 1
                 while j <= 2 {
                     if i * j > 2 {
                         sum = sum + i * j
@@ -1047,7 +1105,7 @@ mod tests {
     #[test]
     fn test_for_loop_basic() {
         let source = r#"
-            let sum = 0
+            sum = 0
             for i in [1, 2, 3, 4, 5] {
                 sum += i
             }
@@ -1060,7 +1118,7 @@ mod tests {
     #[test]
     fn test_for_loop_nested() {
         let source = r#"
-            let sum = 0
+            sum = 0
             for i in [1, 2] {
                 for j in [1, 2] {
                     sum += i * j
@@ -1075,7 +1133,7 @@ mod tests {
     #[test]
     fn test_for_loop_with_conditional() {
         let source = r#"
-            let sum = 0
+            sum = 0
             for i in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] {
                 if i > 5 {
                     sum += i
@@ -1090,7 +1148,7 @@ mod tests {
     #[test]
     fn test_for_loop_empty_array() {
         let source = r#"
-            let count = 0
+            count = 0
             for i in [] {
                 count = count + 1
             }
@@ -1103,7 +1161,7 @@ mod tests {
     fn test_for_loop_string_array() {
         // Проверяем, что цикл работает со строками
         let source = r#"
-            let count = 0
+            count = 0
             for item in ["hello", "world"] {
                 count = count + 1
             }
@@ -1115,7 +1173,7 @@ mod tests {
     #[test]
     fn test_for_loop_mixed_array() {
         let source = r#"
-            let count = 0
+            count = 0
             for item in [1, "hello", true] {
                 count = count + 1
             }
@@ -1127,8 +1185,8 @@ mod tests {
     #[test]
     fn test_for_loop_variable_array() {
         let source = r#"
-            let arr = [1, 2, 3]
-            let sum = 0
+            arr = [1, 2, 3]
+            sum = 0
             for i in arr {
                 sum = sum + i
             }
@@ -1141,7 +1199,7 @@ mod tests {
     #[test]
     fn test_for_loop_complex() {
         let source = r#"
-            let result = 0
+            result = 0
             for i in [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] {
                 if i > 5 {
                     result = result + i
@@ -1156,7 +1214,7 @@ mod tests {
     #[test]
     fn test_for_loop_decrement() {
         let source = r#"
-            let sum = 0
+            sum = 0
             for i in [5, 4, 3, 2, 1] {
                 sum = sum + i
             }
@@ -1169,9 +1227,9 @@ mod tests {
     #[test]
     fn test_for_loop_multiple_variables() {
         let source = r#"
-            let sum = 0
+            sum = 0
             for i in [1, 2, 3] {
-                let j = i * 2
+                j = i * 2
                 sum = sum + j
             }
             sum
@@ -1264,7 +1322,7 @@ mod tests {
     fn test_native_print_function() {
         // Проверяем, что print доступна как функция
         let source = r#"
-            let result = 0
+            result = 0
             print(42)
             result
         "#;
@@ -1288,16 +1346,15 @@ mod tests {
     }
 
     #[test]
-    #[ignore]
     fn test_array_with_capacity() {
         // array_with_capacity(n) returns empty array; push works; len is correct
         let source = r#"
-            let a = array_with_capacity(10)
+            a = array_with_capacity(10)
             len(a)
         "#;
         assert_number_result(source, 0.0);
         let source = r#"
-            let a = array_with_capacity(5)
+            a = array_with_capacity(5)
             push(a, 1)
             push(a, 2)
             push(a, 3)
@@ -1312,9 +1369,9 @@ mod tests {
     fn test_for_and_while_nested() {
         // Вложенные циклы for и while
         let source = r#"
-            let sum = 0
+            sum = 0
             for i in [1, 2] {
-                let j = 1
+                j = 1
                 while j <= 2 {
                     sum = sum + i * j
                     j = j + 1
@@ -1333,7 +1390,7 @@ mod tests {
             fn double(x) {
                 return x * 2
             }
-            let sum = 0
+            sum = 0
             for i in [1, 2, 3] {
                 sum = sum + double(i)
             }
@@ -1353,11 +1410,28 @@ mod tests {
                 }
                 return n * factorial(n - 1)
             }
-            let sum = 0
+            sum = 0
             for i in [1, 2, 3] {
                 sum = sum + factorial(i)
             }
             sum
+        "#;
+        // sum = 1! + 2! + 3! = 1 + 2 + 6 = 9
+        assert_number_result(source, 9.0);
+    }
+
+    #[test]
+    fn test_for_loop_with_recursive_function_list() {
+        // Цикл for с рекурсивной функцией
+        let source = r#"
+            fn factorial(n) {
+                if n <= 1 {
+                    return 1
+                }
+                return n * factorial(n - 1)
+            }
+            suma = sum([factorial(i) for i in [1, 2, 3]])
+            suma
         "#;
         // sum = 1! + 2! + 3! = 1 + 2 + 6 = 9
         assert_number_result(source, 9.0);
@@ -1372,7 +1446,7 @@ mod tests {
     fn test_range_basic() {
         // range(1, 5) должен вернуть [1, 2, 3, 4]
         let source = r#"
-            let arr = range(1, 5)
+            arr = range(1, 5)
             len(arr)
         "#;
         assert_number_result(source, 4.0);
@@ -1382,7 +1456,7 @@ mod tests {
     fn test_range_in_for_loop() {
         // Использование range в цикле for
         let source = r#"
-            let sum = 0
+            sum = 0
             for i in range(1, 6) {
                 sum = sum + i
             }
@@ -1396,7 +1470,7 @@ mod tests {
     fn test_range_in_for_loop_complex() {
         // Как в примере complex.dc
         let source = r#"
-            let count = 0
+            count = 0
             for i in range(1, 11) {
                 count = count + 1
             }
@@ -1411,7 +1485,7 @@ mod tests {
         // Использование range внутри функции
         let source = r#"
             fn sum_range(start, end) {
-                let sum = 0
+                sum = 0
                 for i in range(start, end) {
                     sum = sum + i
                 }
@@ -1427,7 +1501,7 @@ mod tests {
     fn test_range_without_loop() {
         // Использование range без цикла - просто получение массива и проверка длины
         let source = r#"
-            let arr = range(0, 3)
+            arr = range(0, 3)
             len(arr)
         "#;
         // Длина массива [0, 1, 2] = 3
@@ -1438,7 +1512,7 @@ mod tests {
     fn test_range_single_element() {
         // range(5, 6) должен вернуть [5]
         let source = r#"
-            let arr = range(5, 6)
+            arr = range(5, 6)
             len(arr)
         "#;
         assert_number_result(source, 1.0);
@@ -1448,7 +1522,7 @@ mod tests {
     fn test_range_empty() {
         // range(5, 5) должен вернуть пустой массив
         let source = r#"
-            let arr = range(5, 5)
+            arr = range(5, 5)
             len(arr)
         "#;
         assert_number_result(source, 0.0);
@@ -1458,8 +1532,8 @@ mod tests {
     fn test_range_zero_start() {
         // range(0, 3) должен вернуть [0, 1, 2]
         let source = r#"
-            let arr = range(0, 3)
-            let sum = 0
+            arr = range(0, 3)
+            sum = 0
             for i in arr {
                 sum = sum + i
             }
@@ -1473,7 +1547,7 @@ mod tests {
     fn test_range_negative_numbers() {
         // range(-2, 2) должен вернуть [-2, -1, 0, 1]
         let source = r#"
-            let arr = range(-2, 2)
+            arr = range(-2, 2)
             len(arr)
         "#;
         assert_number_result(source, 4.0);
@@ -1483,7 +1557,7 @@ mod tests {
     fn test_range_nested_loops() {
         // Вложенные циклы с range
         let source = r#"
-            let sum = 0
+            sum = 0
             for i in range(1, 4) {
                 for j in range(1, 3) {
                     sum = sum + i * j
@@ -1502,7 +1576,7 @@ mod tests {
     fn test_range_with_conditional() {
         // range в цикле с условием
         let source = r#"
-            let sum = 0
+            sum = 0
             for i in range(1, 11) {
                 if i > 5 {
                     sum = sum + i
@@ -1518,7 +1592,7 @@ mod tests {
     fn test_range_large_range() {
         // Большой диапазон
         let source = r#"
-            let sum = 0
+            sum = 0
             for i in range(1, 101) {
                 sum = sum + i
             }
@@ -1532,8 +1606,8 @@ mod tests {
     fn test_range_as_variable() {
         // Сохранение результата range в переменную
         let source = r#"
-            let r = range(1, 4)
-            let sum = 0
+            r = range(1, 4)
+            sum = 0
             for i in r {
                 sum = sum + i
             }
@@ -1551,7 +1625,7 @@ mod tests {
                 if n <= 0 {
                     return 0
                 }
-                let sum = 0
+                sum = 0
                 for i in range(1, n + 1) {
                     sum = sum + i
                 }
@@ -1577,7 +1651,7 @@ mod tests {
     fn test_range_one_argument() {
         // range(10) должен вернуть [0, 1, 2, ..., 9]
         let source = r#"
-            let arr = range(10)
+            arr = range(10)
             len(arr)
         "#;
         assert_number_result(source, 10.0);
@@ -1587,8 +1661,8 @@ mod tests {
     fn test_range_one_argument_values() {
         // Проверка значений range(10)
         let source = r#"
-            let arr = range(10)
-            let sum = 0
+            arr = range(10)
+            sum = 0
             for i in arr {
                 sum = sum + i
             }
@@ -1602,7 +1676,7 @@ mod tests {
     fn test_range_three_arguments() {
         // range(1, 10, 2) должен вернуть [1, 3, 5, 7, 9]
         let source = r#"
-            let arr = range(1, 10, 2)
+            arr = range(1, 10, 2)
             len(arr)
         "#;
         assert_number_result(source, 5.0);
@@ -1612,8 +1686,8 @@ mod tests {
     fn test_range_three_arguments_values() {
         // Проверка значений range(1, 10, 2)
         let source = r#"
-            let arr = range(1, 10, 2)
-            let sum = 0
+            arr = range(1, 10, 2)
+            sum = 0
             for i in arr {
                 sum = sum + i
             }
@@ -1627,7 +1701,7 @@ mod tests {
     fn test_range_negative_step() {
         // range(10, 0, -1) должен вернуть [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]
         let source = r#"
-            let arr = range(10, 0, -1)
+            arr = range(10, 0, -1)
             len(arr)
         "#;
         assert_number_result(source, 10.0);
@@ -1637,8 +1711,8 @@ mod tests {
     fn test_range_negative_step_values() {
         // Проверка значений range(10, 0, -1)
         let source = r#"
-            let arr = range(10, 0, -1)
-            let sum = 0
+            arr = range(10, 0, -1)
+            sum = 0
             for i in arr {
                 sum = sum + i
             }
@@ -1699,8 +1773,8 @@ mod tests {
         fn add(a, b) {
             return a + b
         }
-        let result1 = add(1, 2)
-        let result2 = add(1, 2)
+        result1 = add(1, 2)
+        result2 = add(1, 2)
         result2
         "#;
         let result = run(source);
@@ -1784,8 +1858,8 @@ mod tests {
     fn test_array_independence_separate_empty_arrays() {
         // Два отдельных пустых массива должны быть независимыми
         let source = r#"
-        let list = []
-        let list1 = []
+        list = []
+        list1 = []
         push(list, 1)
         push(list, 2)
         len(list1)
@@ -1804,8 +1878,8 @@ mod tests {
     fn test_array_independence_reverse_case() {
         // Проверяем независимость в обратном направлении
         let source = r#"
-        let list = [1, 2]
-        let list1 = list.clone()
+        list = [1, 2]
+        list1 = list.clone()
         push(list1, 3)
         len(list)
         "#;
@@ -1827,8 +1901,8 @@ mod tests {
         // With ValueStore: let list1 = list shares the same ValueId; push mutates in place and we write back after native.
         // Expect: both list and list1 have length 5 after push(list,4) and push(list1,5), sum = 10.
         let source = r#"
-        let list = [1, 2, 3]
-        let list1 = list
+        list = [1, 2, 3]
+        list1 = list
         push(list, 4)
         push(list1, 5)
         len(list) + len(list1)
@@ -1852,8 +1926,8 @@ mod tests {
     fn test_array_independence_nested_arrays() {
         // With ValueStore: list[0] and list1[0] share the same ValueId when we push element id from store.
         let source = r#"
-        let list = [[1, 2], [3, 4]]
-        let list1 = list
+        list = [[1, 2], [3, 4]]
+        list1 = list
         push(list[0], 5)
         len(list1[0])
         "#;
@@ -1876,8 +1950,8 @@ mod tests {
     fn test_array_independence_nested_arrays_clone() {
         // Проверяем зависимость для вложенных массивов
         let source = r#"
-        let list = [[1, 2], [3, 4]]
-        let list1 = list.clone()
+        list = [[1, 2], [3, 4]]
+        list1 = list.clone()
         push(list[0], 5)
         len(list1[0])
         "#;
@@ -2014,7 +2088,7 @@ mod tests {
     #[test]
     fn test_exponentiation_assignment_complex() {
         let source = r#"
-        let x = 2
+        x = 2
         x **= 3
         x **= 0.5
         x

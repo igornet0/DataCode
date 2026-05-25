@@ -4,6 +4,7 @@ use crate::common::value::Value;
 use crate::database_engine::sqenum;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
+use crate::compiler::nested_chunk;
 use crate::compiler::stmt;
 /// Компиляция class statements
 use crate::debug_println;
@@ -37,15 +38,10 @@ fn has_column_field(
         || public_fields.iter().any(field_has_column_default)
 }
 
-/// True if any TypeName in the annotation satisfies the predicate (LiteralStr is ignored for type-name checks).
-fn type_parts_any(tys: Option<&Vec<TypePart>>, pred: impl Fn(&str) -> bool) -> bool {
-    tys.map(|tys| {
-        tys.iter().any(|t| match t {
-            TypePart::TypeName(s) => pred(s),
-            TypePart::LiteralStr(_) => false,
-        })
-    })
-    .unwrap_or(false)
+/// True if any TypeName/base in the annotation satisfies the predicate.
+fn type_parts_any(tys: Option<&Vec<TypePart>>, mut pred: impl FnMut(&str) -> bool) -> bool {
+    tys.map(|parts| TypePart::slice_walk_type_names(parts, &mut pred))
+        .unwrap_or(false)
 }
 
 /// Build type suffix for constructor/function overloading: "int_str_int" from params with type annotations.
@@ -55,10 +51,7 @@ fn param_types_suffix(params: &[Param]) -> Option<String> {
         .iter()
         .map(|p| {
             p.type_annotation.as_ref().and_then(|tys| {
-                tys.first().map(|t| match t {
-                    TypePart::TypeName(s) => s.clone(),
-                    TypePart::LiteralStr(s) => format!("\"{}\"", s),
-                })
+                tys.first().map(|t| t.format_display())
             })
         })
         .collect::<Option<Vec<_>>>()?;
@@ -201,7 +194,7 @@ fn emit_instance_private_metadata(
         .iter()
         .map(|(k, v)| (k.clone(), Value::String(v.clone())))
         .collect();
-    let defining_class_value = Value::Object(Rc::new(RefCell::new(defining_class_map)));
+    let defining_class_value = Value::legacy_object(defining_class_map);
     let defining_class_const = ctx.chunk.add_constant(defining_class_value);
     ctx.chunk
         .write_with_line(OpCode::Constant(defining_class_const), line);
@@ -233,20 +226,35 @@ fn emit_instance_private_metadata(
         .write_with_line(OpCode::StoreLocal(this_slot), line);
 }
 
+/// Callable expression treated as `Field(...)` for descriptor extraction (parse/import lowering).
+fn field_descriptor_call_args(expr: &Expr) -> Option<&Vec<Arg>> {
+    match expr {
+        Expr::Call { name, args, .. } if name == "Field" => Some(args),
+        Expr::CallValue { callee, args, .. } => match callee.as_ref() {
+            Expr::Variable { name, .. } if name == "Field" => Some(args),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Identifier used as `default_factory=...` (class name / callable reference).
+fn default_factory_factory_name_from_expr(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Variable { name, .. } => Some(name.clone()),
+        Expr::Property { name, .. } => Some(name.clone()),
+        _ => None,
+    }
+}
+
 /// Extract default_factory identifier from a field's default_value if it is Field(default_factory=Name).
 fn extract_default_factory_name(default_value: &Option<Expr>) -> Option<String> {
     let expr = default_value.as_ref()?;
-    let args = match expr {
-        Expr::Call { name, args, .. } if name == "Field" => args,
-        _ => return None,
-    };
+    let args = field_descriptor_call_args(expr)?;
     for arg in args {
         if let Arg::Named { name: n, value } = arg {
             if n == "default_factory" {
-                if let Expr::Variable { name, .. } = value {
-                    return Some(name.clone());
-                }
-                return None;
+                return default_factory_factory_name_from_expr(value);
             }
         }
     }
@@ -256,10 +264,7 @@ fn extract_default_factory_name(default_value: &Option<Expr>) -> Option<String> 
 /// Extract constant default from Field(default=<literal>) for instance field initialization.
 fn extract_field_default_value(default_value: &Option<Expr>) -> Option<Value> {
     let expr = default_value.as_ref()?;
-    let args = match expr {
-        Expr::Call { name, args, .. } if name == "Field" => args,
-        _ => return None,
-    };
+    let args = field_descriptor_call_args(expr)?;
     for arg in args {
         if let Arg::Named { name: n, value } = arg {
             if n == "default" {
@@ -289,10 +294,13 @@ fn extract_field_default_value(default_value: &Option<Expr>) -> Option<Value> {
 fn field_required_for_env(field: &ClassField) -> bool {
     match &field.default_value {
         None => true,
-        Some(Expr::Call { name, args, .. }) if name == "Field" && args.len() == 1 => {
-            matches!(&args[0], Arg::Positional(Expr::Ellipsis { .. }))
+        Some(expr) => {
+            if let Some(args) = field_descriptor_call_args(expr) {
+                args.len() == 1 && matches!(&args[0], Arg::Positional(Expr::Ellipsis { .. }))
+            } else {
+                false
+            }
         }
-        _ => false,
     }
 }
 
@@ -402,7 +410,7 @@ fn emit_instance_private_methods_metadata(
         .iter()
         .map(|(k, v)| (k.clone(), Value::String(v.clone())))
         .collect();
-    let defining_class_value = Value::Object(Rc::new(RefCell::new(defining_class_map)));
+    let defining_class_value = Value::legacy_object(defining_class_map);
     let defining_class_const = ctx.chunk.add_constant(defining_class_value);
     ctx.chunk
         .write_with_line(OpCode::Constant(defining_class_const), line);
@@ -692,10 +700,10 @@ pub fn compile_class(
                             .collect();
                         obj.insert(
                             "private_field_defining_class".to_string(),
-                            Value::Object(Rc::new(RefCell::new(defining))),
+                            Value::legacy_object(defining),
                         );
                     }
-                    Some(Value::Object(Rc::new(RefCell::new(obj))))
+                    Some(Value::legacy_object(obj))
                 })
                 .collect();
             let val = Value::Array(Rc::new(RefCell::new(nested_specs_for_class)));
@@ -862,6 +870,8 @@ pub fn compile_class(
 
                 let saved_chunk =
                     std::mem::replace(&mut *ctx.chunk, constructor_function.chunk.clone());
+                let label_ckpt_extends_table = nested_chunk::checkpoint_labels(&ctx.labels);
+                nested_chunk::enter_nested_label_scope(&mut ctx.labels);
                 ctx.chunk.set_source_name(ctx.source_name);
                 ctx.chunk.set_source_name(ctx.source_name);
                 let saved_function = ctx.current_function;
@@ -955,6 +965,13 @@ pub fn compile_class(
                 ctx.chunk
                     .write_with_line(OpCode::LoadLocal(this_slot), *line);
                 ctx.chunk.write_with_line(OpCode::Return, *line);
+
+                nested_chunk::finalize_nested_chunk(
+                    &mut ctx.labels,
+                    label_ckpt_extends_table,
+                    ctx.chunk,
+                    *line,
+                )?;
 
                 ctx.functions[function_index].chunk =
                     std::mem::replace(&mut *ctx.chunk, saved_chunk);
@@ -1076,6 +1093,8 @@ pub fn compile_class(
                         .insert(global_index, constructor_name.clone());
                     let saved_chunk =
                         std::mem::replace(&mut *ctx.chunk, constructor_function.chunk.clone());
+                    let label_ckpt_settings_ctor = nested_chunk::checkpoint_labels(&ctx.labels);
+                    nested_chunk::enter_nested_label_scope(&mut ctx.labels);
                     ctx.chunk.set_source_name(ctx.source_name);
                     let saved_function = ctx.current_function;
                     let saved_local_count = ctx.scope.local_count;
@@ -1094,56 +1113,9 @@ pub fn compile_class(
                     ctx.chunk
                         .global_names
                         .insert(supercall_global_index, super_callable_name.clone());
-                    // Build nested_specs for load_env 4th arg (field, env_prefix, class_name) so nested Settings get proper env key grouping.
-                    // Store in context so subclasses (e.g. DevSettings) can pass parent's nested_specs when calling super.
-                    let nested_specs_const_index = if is_settings_chain {
-                        let nested_specs: Vec<Value> = all_fields_iter()
-                            .filter_map(|f| {
-                                let factory_name = extract_default_factory_name(&f.default_value)?;
-                                let env_prefix = ctx
-                                    .class_settings_env_prefix
-                                    .get(&factory_name)
-                                    .cloned()
-                                    .unwrap_or_default();
-                                let mut obj = std::collections::HashMap::new();
-                                obj.insert("field".to_string(), Value::String(f.name.clone()));
-                                obj.insert("env_prefix".to_string(), Value::String(env_prefix));
-                                obj.insert(
-                                    "class_name".to_string(),
-                                    Value::String(factory_name.clone()),
-                                );
-                                if let Some(private_names) =
-                                    ctx.class_private_fields.get(&factory_name)
-                                {
-                                    obj.insert(
-                                        "private_fields".to_string(),
-                                        Value::Array(Rc::new(RefCell::new(
-                                            private_names
-                                                .iter()
-                                                .map(|s| Value::String(s.clone()))
-                                                .collect(),
-                                        ))),
-                                    );
-                                    let defining: HashMap<String, Value> = private_names
-                                        .iter()
-                                        .map(|s| (s.clone(), Value::String(factory_name.clone())))
-                                        .collect();
-                                    obj.insert(
-                                        "private_field_defining_class".to_string(),
-                                        Value::Object(Rc::new(RefCell::new(defining))),
-                                    );
-                                }
-                                Some(Value::Object(Rc::new(RefCell::new(obj))))
-                            })
-                            .collect();
-                        let nested_specs_value = Value::Array(Rc::new(RefCell::new(nested_specs)));
-                        ctx.class_nested_specs_value
-                            .insert(name.clone(), nested_specs_value.clone());
-                        Some(ctx.chunk.add_constant(nested_specs_value))
-                    } else {
-                        None
-                    };
-                    // When superclass is Settings: pass (path, required_keys, model_config, nested_specs). If model_config (arg 2) is Null, load from __constructing_class__ (e.g. when called from default_factory).
+                    // Nested specs for load_env are read at runtime from this class object's "__nested_specs"
+                    // (populated during class init) so bytecode always matches the live class metadata.
+                    // When superclass is Settings: super call is always load_env(path, required_keys, model_config, nested_specs, parent_field_name). If model_config (arg 2) is Null, load from __constructing_class__ (e.g. default_factory).
                     if superclass_name == "Settings" {
                         ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
                         ctx.chunk.write_with_line(OpCode::LoadLocal(1), *line);
@@ -1175,24 +1147,31 @@ pub fn compile_class(
                         ctx.labels.mark_label(use_arg_label, ctx.chunk.code.len());
                         ctx.chunk.write_with_line(OpCode::LoadLocal(2), *line);
                         ctx.labels.mark_label(after_label, ctx.chunk.code.len());
-                        if let Some(idx) = nested_specs_const_index {
-                            ctx.chunk.write_with_line(OpCode::Constant(idx), *line);
-                        }
+                        // Settings.__call__/load_env: (path, rk, mc, nested_specs, parent_field_name).
+                        let nested_specs_key_const = ctx
+                            .chunk
+                            .add_constant(Value::String("__nested_specs".to_string()));
+                        ctx.chunk
+                            .write_with_line(OpCode::LoadGlobal(class_global_index), *line);
+                        ctx.chunk
+                            .write_with_line(OpCode::Constant(nested_specs_key_const), *line);
+                        ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
                         ctx.chunk.write_with_line(OpCode::LoadLocal(3), *line);
                         ctx.chunk
                             .write_with_line(OpCode::LoadGlobal(supercall_global_index), *line);
-                        ctx.chunk.write_with_line(
-                            OpCode::Call(if nested_specs_const_index.is_some() {
-                                5
-                            } else {
-                                4
-                            }),
-                            *line,
-                        );
+                        ctx.chunk.write_with_line(OpCode::Call(5), *line);
                     } else if is_settings_chain {
                         // Same third-arg logic as super(Settings): use LoadLocal(2) when non-Null, else __constructing_class__["model_config"] (so module call-site expansion and single-file default_factory both work).
                         ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
-                        ctx.chunk.write_with_line(OpCode::LoadLocal(1), *line);
+                        // Parent ctor validates env against the *superclass's* required keys (not the subclass's).
+                        let parent_required_keys_val = ctx
+                            .class_required_keys_value
+                            .get(superclass_name)
+                            .cloned()
+                            .unwrap_or_else(|| Value::Array(Rc::new(RefCell::new(Vec::new()))));
+                        let parent_rk_const = ctx.chunk.add_constant(parent_required_keys_val);
+                        ctx.chunk
+                            .write_with_line(OpCode::Constant(parent_rk_const), *line);
                         ctx.chunk.write_with_line(OpCode::LoadLocal(2), *line);
                         let null_const_sc = ctx.chunk.add_constant(Value::Null);
                         ctx.chunk
@@ -1222,20 +1201,10 @@ pub fn compile_class(
                             .mark_label(use_arg_label_sc, ctx.chunk.code.len());
                         ctx.chunk.write_with_line(OpCode::LoadLocal(2), *line);
                         ctx.labels.mark_label(after_label_sc, ctx.chunk.code.len());
-                        let has_nested_specs =
-                            superclass_name == "Settings" && nested_specs_const_index.is_some();
-                        if has_nested_specs {
-                            if let Some(idx) = nested_specs_const_index {
-                                ctx.chunk.write_with_line(OpCode::Constant(idx), *line);
-                            }
-                        }
                         ctx.chunk.write_with_line(OpCode::LoadLocal(3), *line);
                         ctx.chunk
                             .write_with_line(OpCode::LoadGlobal(supercall_global_index), *line);
-                        ctx.chunk.write_with_line(
-                            OpCode::Call(if has_nested_specs { 5 } else { 4 }),
-                            *line,
-                        );
+                        ctx.chunk.write_with_line(OpCode::Call(4), *line);
                     } else {
                         // VM Call pops callee first (top), then args: stack must be [arg, callee]
                         ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
@@ -1291,8 +1260,13 @@ pub fn compile_class(
                     }
                     emit_instance_class_reference(ctx, *line, this_slot, class_global_index);
                     // For Settings subclasses: fill missing fields that have default_factory (e.g. db: DatabaseConfig = Field(default_factory=DatabaseConfig))
+                    // Must match nested_specs/all_fields_iter: fields without `public:` live in private_fields; they still need default_factory emission.
                     if is_settings_chain {
-                        for f in public_fields.iter() {
+                        for f in private_fields
+                            .iter()
+                            .chain(protected_fields.iter())
+                            .chain(public_fields.iter())
+                        {
                             if let Some(factory_name) =
                                 extract_default_factory_name(&f.default_value)
                             {
@@ -1313,40 +1287,56 @@ pub fn compile_class(
                                 ctx.chunk
                                     .write_with_line(OpCode::Constant(field_name_const), *line);
                                 ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
-                                ctx.chunk.write_with_line(OpCode::Clone, *line);
                                 let null_const = ctx.chunk.add_constant(Value::Null);
                                 ctx.chunk
                                     .write_with_line(OpCode::Constant(null_const), *line);
                                 ctx.chunk.write_with_line(OpCode::Equal, *line);
                                 ctx.labels.emit_jump(ctx.chunk, *line, true, skip_label)?;
-                                ctx.chunk.write_with_line(OpCode::Pop, *line);
                                 ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
-                                // Nested Settings subclass: pass (path, required_keys, Null); constructor uses __constructing_class__ when model_config is Null.
+                                // Nested Settings ctor: pass nested class model_config from its class object so load_env uses the correct env_prefix (e.g. DB__), not outer __constructing_class__ (APP__).
                                 let factory_required_keys =
                                     ctx.class_required_keys_value.get(&factory_name).cloned();
                                 let factory_ctor_name = format!("{}::new_1", factory_name);
                                 let factory_ctor_global =
                                     ctx.scope.globals.get(&factory_ctor_name).copied();
-                                if let (Some(required_keys_value), Some(_ctor_global_index)) =
+                                if let (Some(required_keys_value), Some(_real_ctor_global)) =
                                     (factory_required_keys, factory_ctor_global)
                                 {
-                                    // Always use a dedicated slot for the nested constructor so set_functions can patch LoadGlobal by name. The scope index can collide with the current class's constructor (same index) and the later insert(class_global_index, name) would overwrite the factory ctor name in chunk.global_names, causing LoadGlobal to load the wrong constructor.
-                                    let ctor_slot = {
-                                        let fresh = ctx.scope.globals.len();
-                                        ctx.scope.globals.insert(factory_ctor_name.clone(), fresh);
-                                        fresh
-                                    };
-                                    let req_const = ctx.chunk.add_constant(required_keys_value);
-                                    ctx.chunk
-                                        .write_with_line(OpCode::Constant(req_const), *line);
-                                    let null_const = ctx.chunk.add_constant(Value::Null);
-                                    ctx.chunk
-                                        .write_with_line(OpCode::Constant(null_const), *line);
-                                    ctx.chunk
-                                        .write_with_line(OpCode::Constant(field_name_const), *line);
+                                    // Dedicated slot for this LoadGlobal so chunk.global_names does not collide
+                                    // with the enclosing class constructor's index. Do not re-key
+                                    // `factory_ctor_name` in scope.globals — that orphaned the real ctor slot.
+                                    let ctor_slot = ctx
+                                        .scope
+                                        .globals
+                                        .values()
+                                        .copied()
+                                        .max()
+                                        .unwrap_or(0)
+                                        .saturating_add(1);
+                                    ctx.scope.globals.insert(
+                                        format!(
+                                            "__settings_default_factory__{}__{}",
+                                            factory_ctor_name.replace("::", "_"),
+                                            ctor_slot
+                                        ),
+                                        ctor_slot,
+                                    );
                                     ctx.chunk
                                         .global_names
                                         .insert(ctor_slot, factory_ctor_name.clone());
+                                    let req_const = ctx.chunk.add_constant(required_keys_value);
+                                    ctx.chunk
+                                        .write_with_line(OpCode::Constant(req_const), *line);
+                                    let mc_key_const = ctx
+                                        .chunk
+                                        .add_constant(Value::String("model_config".to_string()));
+                                    ctx.chunk
+                                        .write_with_line(OpCode::LoadGlobal(factory_global_index), *line);
+                                    ctx.chunk
+                                        .write_with_line(OpCode::Constant(mc_key_const), *line);
+                                    ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
+                                    ctx.chunk
+                                        .write_with_line(OpCode::Constant(field_name_const), *line);
                                     ctx.chunk
                                         .write_with_line(OpCode::LoadGlobal(ctor_slot), *line);
                                     ctx.chunk.write_with_line(OpCode::Call(4), *line);
@@ -1362,6 +1352,10 @@ pub fn compile_class(
                                 ctx.chunk
                                     .write_with_line(OpCode::LoadLocal(this_slot), *line);
                                 ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
+                                // SetArrayElement leaves the container on the stack; StoreLocal matches
+                                // Field(default=...) init below so nested default_factory loops cannot corrupt stack depth.
+                                ctx.chunk
+                                    .write_with_line(OpCode::StoreLocal(this_slot), *line);
                                 ctx.labels.mark_label(skip_label, ctx.chunk.code.len());
                             }
                         }
@@ -1435,9 +1429,12 @@ pub fn compile_class(
                     ctx.chunk
                         .write_with_line(OpCode::LoadLocal(this_slot), *line);
                     ctx.chunk.write_with_line(OpCode::Return, *line);
-                    if !ctx.labels.pending_jumps.is_empty() {
-                        ctx.labels.finalize_jumps_from(ctx.chunk, 0, *line)?;
-                    }
+                    nested_chunk::finalize_nested_chunk(
+                        &mut ctx.labels,
+                        label_ckpt_settings_ctor,
+                        ctx.chunk,
+                        *line,
+                    )?;
                     // Final guarantee: class name in chunk.global_names so update_chunk_indices_from_names patches LoadGlobal(class_global_index) correctly.
                     ctx.chunk
                         .global_names
@@ -1474,6 +1471,8 @@ pub fn compile_class(
                     ctx.function_names.push(constructor_name_0.clone());
                     let saved_chunk_0 =
                         std::mem::replace(&mut *ctx.chunk, constructor_function_0.chunk.clone());
+                    let label_ckpt_new_0_implicit = nested_chunk::checkpoint_labels(&ctx.labels);
+                    nested_chunk::enter_nested_label_scope(&mut ctx.labels);
                     ctx.chunk.set_source_name(ctx.source_name);
                     let saved_function_0 = ctx.current_function;
                     ctx.current_function = Some(function_index_0);
@@ -1579,6 +1578,12 @@ pub fn compile_class(
                     ctx.chunk
                         .write_with_line(OpCode::LoadLocal(this_slot_0), *line);
                     ctx.chunk.write_with_line(OpCode::Return, *line);
+                    nested_chunk::finalize_nested_chunk(
+                        &mut ctx.labels,
+                        label_ckpt_new_0_implicit,
+                        ctx.chunk,
+                        *line,
+                    )?;
                     ctx.functions[function_index_0].chunk =
                         std::mem::replace(&mut *ctx.chunk, saved_chunk_0);
                     ctx.scope.end_scope();
@@ -1617,6 +1622,8 @@ pub fn compile_class(
 
             let saved_chunk =
                 std::mem::replace(&mut *ctx.chunk, constructor_function.chunk.clone());
+            let label_ckpt_implicit_new_0 = nested_chunk::checkpoint_labels(&ctx.labels);
+            nested_chunk::enter_nested_label_scope(&mut ctx.labels);
             ctx.chunk.set_source_name(ctx.source_name);
             let saved_function = ctx.current_function;
             let saved_local_count = ctx.scope.local_count;
@@ -1698,6 +1705,13 @@ pub fn compile_class(
                 .write_with_line(OpCode::LoadLocal(this_slot), *line);
             ctx.chunk.write_with_line(OpCode::Return, *line);
 
+            nested_chunk::finalize_nested_chunk(
+                &mut ctx.labels,
+                label_ckpt_implicit_new_0,
+                ctx.chunk,
+                *line,
+            )?;
+
             ctx.functions[function_index].chunk = std::mem::replace(&mut *ctx.chunk, saved_chunk);
             ctx.scope.end_scope();
             ctx.current_function = saved_function;
@@ -1754,6 +1768,8 @@ pub fn compile_class(
             // Компилируем тело конструктора
             let saved_chunk =
                 std::mem::replace(&mut *ctx.chunk, constructor_function.chunk.clone());
+            let label_ckpt_explicit_ctor = nested_chunk::checkpoint_labels(&ctx.labels);
+            nested_chunk::enter_nested_label_scope(&mut ctx.labels);
             ctx.chunk.set_source_name(ctx.source_name);
             let saved_function = ctx.current_function;
             let saved_local_count = ctx.scope.local_count;
@@ -2322,6 +2338,13 @@ pub fn compile_class(
                 .write_with_line(OpCode::LoadLocal(this_slot), *line);
             ctx.chunk.write_with_line(OpCode::Return, *line);
 
+            nested_chunk::finalize_nested_chunk(
+                &mut ctx.labels,
+                label_ckpt_explicit_ctor,
+                ctx.chunk,
+                *line,
+            )?;
+
             // Логируем сгенерированный байткод конструктора
             let compiled_chunk = &ctx.chunk;
             debug_println!("[DEBUG compile_class] Сгенерированный байткод для конструктора '{}' ({} инструкций):", constructor_name, compiled_chunk.code.len());
@@ -2397,12 +2420,17 @@ pub fn compile_class(
 
             // Компилируем тело метода в chunk этой функции (уже объявленной)
             let saved_chunk = std::mem::replace(&mut *ctx.chunk, method_function.chunk.clone());
+            let label_ckpt_method = nested_chunk::checkpoint_labels(&ctx.labels);
+            nested_chunk::enter_nested_label_scope(&mut ctx.labels);
             let saved_function = ctx.current_function;
             let saved_local_count = ctx.scope.local_count;
 
             ctx.current_function = Some(function_index);
             ctx.scope.local_count = 0;
             ctx.scope.begin_scope();
+
+            // Method bodies belong to separate functions; ctor-only state must never leak here.
+            ctx.constructor_this_slot = None;
 
             // First parameter - this; second - @class if method has it (injected by VM at call time)
             ctx.scope.declare_local("this");
@@ -2425,6 +2453,13 @@ pub fn compile_class(
 
             // Если нет return, добавляем return null
             ctx.chunk.write_with_line(OpCode::Return, *line);
+
+            nested_chunk::finalize_nested_chunk(
+                &mut ctx.labels,
+                label_ckpt_method,
+                ctx.chunk,
+                *line,
+            )?;
 
             // Обновляем функцию с скомпилированным телом
             ctx.functions[function_index].chunk = std::mem::replace(&mut *ctx.chunk, saved_chunk);
@@ -2456,7 +2491,7 @@ pub fn compile_class(
         }
 
         // Сохраняем класс-объект в глобальной области видимости (слот зарезервирован в начале как class_global_index)
-        let class_value = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(class_metadata)));
+        let class_value = Value::legacy_object(class_metadata);
         let class_index = ctx.chunk.add_constant(class_value);
         ctx.chunk
             .write_with_line(OpCode::Constant(class_index), *line);

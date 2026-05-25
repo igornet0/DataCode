@@ -63,11 +63,23 @@ impl Chunk {
 
     pub fn add_constant(&mut self, value: Value) -> usize {
         // Оптимизация: проверяем, есть ли уже такая константа.
-        // Object: only dedupe by Rc identity — deep `==` can recurse on cyclic graphs (e.g. SQLEnum class ↔ members).
+        // Object / Array: only dedupe by Rc identity — deep `==` can recurse on cyclic graphs (e.g. SQLEnum class ↔ members),
+        // and separate Array Rc`s must not merge just because contents compare equal (mutable RefCell<Vec> is shared across opcode refs).
         match &value {
             Value::Object(rc) => {
                 if let Some(index) = self.constants.iter().position(|v| {
                     if let Value::Object(or) = v {
+                        std::rc::Rc::ptr_eq(or, rc)
+                    } else {
+                        false
+                    }
+                }) {
+                    return index;
+                }
+            }
+            Value::Array(rc) => {
+                if let Some(index) = self.constants.iter().position(|v| {
+                    if let Value::Array(or) = v {
                         std::rc::Rc::ptr_eq(or, rc)
                     } else {
                         false
@@ -329,6 +341,14 @@ impl Chunk {
                 output.push_str("MAKE_OBJECT_DYNAMIC\n");
                 offset + 1
             }
+            OpCode::MakeSet(count) => {
+                output.push_str(&format!("MAKE_SET {}\n", count));
+                offset + 1
+            }
+            OpCode::MakeSetDynamic => {
+                output.push_str("MAKE_SET_DYNAMIC\n");
+                offset + 1
+            }
             OpCode::MakeArray(count) => {
                 output.push_str(&format!("MAKE_ARRAY {}\n", count));
                 offset + 1
@@ -434,6 +454,44 @@ impl Chunk {
             }
             OpCode::RegAdd(rd, r1, r2) => {
                 output.push_str(&format!("REG_ADD {} {} {}\n", rd, r1, r2));
+                offset + 1
+            }
+            OpCode::HeappopUnpack2(f_slot, n_slot) => {
+                output.push_str(&format!(
+                    "HEAPPOP_UNPACK2 f={} node={}\n",
+                    f_slot, n_slot
+                ));
+                offset + 1
+            }
+            OpCode::HeappushFlat => {
+                output.push_str("HEAPPUSH_FLAT\n");
+                offset + 1
+            }
+            OpCode::DivmodUnpack2(q_slot, r_slot) => {
+                output.push_str(&format!(
+                    "DIVMOD_UNPACK2 q={} r={}\n",
+                    q_slot, r_slot
+                ));
+                offset + 1
+            }
+            OpCode::ObjectGetIntegral => {
+                output.push_str("OBJECT_GET_INTEGRAL\n");
+                offset + 1
+            }
+            OpCode::HeappopFlat => {
+                output.push_str("HEAPPOP_FLAT\n");
+                offset + 1
+            }
+            OpCode::SetDiscardIntegral => {
+                output.push_str("SET_DISCARD_INTEGRAL\n");
+                offset + 1
+            }
+            OpCode::SetAddIntegral => {
+                output.push_str("SET_ADD_INTEGRAL\n");
+                offset + 1
+            }
+            OpCode::ObjectIndexIntegral => {
+                output.push_str("OBJECT_INDEX_INTEGRAL\n");
                 offset + 1
             }
         }

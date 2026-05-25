@@ -21,8 +21,10 @@ mod tests {
     #[test]
     fn test_interpolation_variable() {
         assert_string_result(
-            r#"let name = "Igor"
-"Hello ${name}""#,
+            r#"
+name = "Igor"
+"Hello ${name}"
+"#,
             "Hello Igor",
         );
     }
@@ -30,9 +32,11 @@ mod tests {
     #[test]
     fn test_interpolation_expression() {
         assert_string_result(
-            r#"let a = 2
-let b = 3
-"result: ${a + b}""#,
+            r#"
+a = 2
+b = 3
+"result: ${a + b}"
+"#,
             "result: 5",
         );
     }
@@ -40,9 +44,11 @@ let b = 3
     #[test]
     fn test_interpolation_multiple() {
         assert_string_result(
-            r#"let name = "Igor"
-let age = 22
-"Hello ${name}, you are ${age} years old""#,
+            r#"
+name = "Igor"
+age = 22
+"Hello ${name}, you are ${age} years old"
+"#,
             "Hello Igor, you are 22 years old",
         );
     }
@@ -68,8 +74,10 @@ let age = 22
     fn test_interpolation_nested_braces() {
         // Expression with braces: obj.method() or similar
         assert_string_result(
-            r#"let x = "ok"
-"result: ${x}""#,
+            r#"
+x = "ok"
+"result: ${x}"
+"#,
             "result: ok",
         );
     }
@@ -77,8 +85,10 @@ let age = 22
     #[test]
     fn test_interpolation_property_access() {
         assert_string_result(
-            r#"let obj = { "name": "DataCode" }
-"Hello ${obj.name}""#,
+            r#"
+obj = { "name": "DataCode" }
+"Hello ${obj.name}"
+"#,
             "Hello DataCode",
         );
     }
@@ -86,9 +96,11 @@ let age = 22
     #[test]
     fn test_interpolation_number_and_bool() {
         assert_string_result(
-            r#"let n = 42
-let b = true
-"n=${n} b=${b}""#,
+            r#"
+n = 42
+b = true
+"n=${n} b=${b}"
+"#,
             "n=42 b=true",
         );
     }
@@ -96,9 +108,11 @@ let b = true
     #[test]
     fn test_interpolation_number_and_bool_reverse() {
         assert_string_result(
-            r#"let n = 42
-let b = true
-"b=${b} n=${n}""#,
+            r#"
+n = 42
+b = true
+"b=${b} n=${n}"
+"#,
             "b=true n=42",
         );
     }
@@ -106,9 +120,11 @@ let b = true
     #[test]
     fn test_interpolation_number() {
         assert_string_result(
-            r#"let n = 42
-let b = true
-"${b=} ${n=}""#,
+            r#"
+n = 42
+b = true
+"${b=} ${n=}"
+"#,
             "b=true n=42",
         );
     }
@@ -116,8 +132,10 @@ let b = true
     #[test]
     fn test_round_number() {
         assert_string_result(
-            r#"let n = 42.23425
-"${n:.2f}""#,
+            r#"
+n = 42.23425
+"${n:.2f}"
+"#,
             "42.23",
         );
     }
@@ -125,8 +143,10 @@ let b = true
     #[test]
     fn test_round_number_reverse() {
         assert_string_result(
-            r#"let n = 42.23425
-"${n=:.0f}""#,
+            r#"
+n = 42.23425
+"${n=:.0f}"
+"#,
             "n=42",
         );
     }
@@ -140,5 +160,27 @@ let b = true
     fn test_string_with_dollar_no_brace() {
         // "$" without "{" is not interpolation
         assert_string_result(r#""price: $99""#, "price: $99");
+    }
+
+    #[test]
+    fn test_interpolation_slice_subscript() {
+        assert_string_result(
+            r#"
+path = [1, 2, 3, 4, 5, 6, 7]
+"first=${path[:3]} last=${path[-2:]}"
+"#,
+            "first=[1, 2, 3] last=[6, 7]",
+        );
+    }
+
+    #[test]
+    fn test_interpolation_slice_with_format() {
+        assert_string_result(
+            r#"
+n = 3.14159
+"${n:.2f} ${[n][0]:.1f}"
+"#,
+            "3.14 3.1",
+        );
     }
 }

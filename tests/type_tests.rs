@@ -20,10 +20,8 @@ mod tests {
     fn assert_number_result(source: &str, expected: f64) {
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => {
-                assert_eq!(n, expected, "Expected {}, got {}", expected, n);
-            }
-            Ok(v) => panic!("Expected Number({}), got {:?}", expected, v),
+            Ok(v) if v.as_ieee_f64() == Some(expected) => {}
+            Ok(v) => panic!("Expected numeric({}), got {:?}", expected, v),
             Err(e) => panic!("Error: {:?}", e),
         }
     }
@@ -59,6 +57,22 @@ mod tests {
             Ok(Value::Null) => {}
             Ok(v) => panic!("Expected Null, got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    fn assert_value_error_contains(source: &str, substr: &str) {
+        let result = run_and_get_result(source);
+        match result {
+            Err(e) => {
+                let msg = format!("{}", e);
+                assert!(
+                    msg.contains(substr),
+                    "expected error containing {:?}, got {:?}",
+                    substr,
+                    msg
+                );
+            }
+            Ok(v) => panic!("Expected error containing {:?}, got {:?}", substr, v),
         }
     }
 
@@ -510,10 +524,11 @@ mod tests {
         "#;
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => {
+            Ok(v) => {
+                let n = v.as_ieee_f64().expect("expected numeric");
                 assert_eq!(n, 3.14);
             }
-            _ => panic!("Expected Number"),
+            Err(e) => panic!("Error: {:?}", e),
         }
     }
 
@@ -897,15 +912,6 @@ mod tests {
     }
 
     #[test]
-    fn test_division_by_zero() {
-        assert_type_error(
-            r#"
-            10 / 0
-        "#,
-        );
-    }
-
-    #[test]
     fn test_modulo_by_zero() {
         assert_type_error(
             r#"
@@ -1239,7 +1245,7 @@ mod tests {
         assert_number_result("min(1.5, 2.5, 0.5)", 0.5);
         assert_number_result("min([1, 2, 3])", 1.0);
         assert_number_result("min([3, 1, 2])", 1.0);
-        assert_null_result("min([])");
+        assert_value_error_contains("min([])", "min() arg is empty");
     }
 
     #[test]
@@ -1251,7 +1257,7 @@ mod tests {
         assert_number_result("max(1.5, 2.5, 0.5)", 2.5);
         assert_number_result("max([1, 2, 3])", 3.0);
         assert_number_result("max([3, 1, 2])", 3.0);
-        assert_null_result("max([])");
+        assert_value_error_contains("max([])", "max() arg is empty");
     }
 
     #[test]

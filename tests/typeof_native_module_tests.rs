@@ -1,6 +1,6 @@
 //! typeof() for objects with __plugin_namespace (native module root / ml.layer).
 
-use data_code::common::value::Value;
+use data_code::common::value::{ObjectKind, Value};
 use data_code::common::value_store::ValueStore;
 use data_code::extract_globals_from_vm;
 use data_code::vm::file_import;
@@ -22,7 +22,7 @@ fn typeof_native_module_after_store_roundtrip() {
         Value::String("module".to_string()),
     );
     hm.insert("x".to_string(), Value::Number(1.0));
-    let v = Value::Object(Rc::new(RefCell::new(hm)));
+    let v = Value::Object(Rc::new(RefCell::new(ObjectKind::Legacy(hm))));
     let mut vs = ValueStore::new();
     let mut hs = HeavyStore::new();
     let id = store_value(v, &mut vs, &mut hs);
@@ -49,7 +49,7 @@ fn try_load_ml_hashmap_roundtrip_typeof_is_module() {
         .expect("try_load ml");
     let mut vs = ValueStore::new();
     let mut hs = HeavyStore::new();
-    let id = store_value(Value::Object(Rc::new(RefCell::new(m))), &mut vs, &mut hs);
+    let id = store_value(Value::Object(Rc::new(RefCell::new(ObjectKind::Legacy(m)))), &mut vs, &mut hs);
     let v = load_value(id, &vs, &hs);
     let out = native_typeof(&[v]);
     assert_eq!(out, Value::String("module".to_string()));
@@ -73,9 +73,13 @@ fn import_ml_via_vm_keeps_plugin_namespace_on_global() {
         panic!("ml should be Object, got {:?}", ml);
     };
     assert!(
-        rc.borrow().get("__plugin_namespace").is_some(),
+        rc.borrow().str_key_get("__plugin_namespace").is_some(),
         "ml global keys: {:?}",
-        rc.borrow().keys().collect::<Vec<_>>()
+        rc.borrow()
+            .str_key_pairs()
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect::<Vec<_>>()
     );
 }
 

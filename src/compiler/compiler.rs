@@ -15,7 +15,7 @@ use crate::compiler::stmt;
 use crate::compiler::unpack;
 use crate::debug_println;
 use crate::lexer::TokenKind;
-use crate::parser::ast::{Arg, Expr, ImportItem, ImportStmt, Stmt, UnpackPattern};
+use crate::parser::ast::{Arg, Expr, ImportItem, ImportStmt, Stmt, TypePart, UnpackPattern};
 use std::sync::Arc;
 
 pub struct Compiler {
@@ -256,9 +256,17 @@ impl Compiler {
                         } else if let Some(param_type) = main_function.param_types.get(i) {
                             // Используем значение по умолчанию в зависимости от типа
                             if let Some(type_parts) = param_type {
-                                let has_num = type_parts.iter().any(|t| matches!(t, crate::parser::ast::TypePart::TypeName(s) if s == "int" || s == "float" || s == "num" || s == "number"));
-                                let has_str = type_parts.iter().any(|t| matches!(t, crate::parser::ast::TypePart::TypeName(s) if s == "str" || s == "string"));
-                                let has_bool = type_parts.iter().any(|t| matches!(t, crate::parser::ast::TypePart::TypeName(s) if s == "bool" || s == "boolean"));
+                                let has_num = TypePart::slice_walk_type_names(type_parts, &mut |s| {
+                                    s == "int" || s == "float" || s == "num" || s == "number"
+                                });
+                                let has_str =
+                                    TypePart::slice_walk_type_names(type_parts, &mut |s| {
+                                        s == "str" || s == "string"
+                                    });
+                                let has_bool =
+                                    TypePart::slice_walk_type_names(type_parts, &mut |s| {
+                                        s == "bool" || s == "boolean"
+                                    });
                                 if has_num {
                                     Value::Number(0.0)
                                 } else if has_str {
@@ -290,7 +298,9 @@ impl Compiler {
                         // (для значения по умолчанию это обычно не нужно, но для argv[i] нужно)
                         if let Some(param_type) = main_function.param_types.get(i) {
                             if let Some(type_parts) = param_type {
-                                let has_num = type_parts.iter().any(|t| matches!(t, crate::parser::ast::TypePart::TypeName(s) if s == "int" || s == "float" || s == "num" || s == "number"));
+                                let has_num = TypePart::slice_walk_type_names(type_parts, &mut |s| {
+                                    s == "int" || s == "float" || s == "num" || s == "number"
+                                });
                                 if has_num {
                                     if let Some(&int_global_index) = self.scope.globals.get("int") {
                                         self.chunk.write_with_line(
@@ -1135,6 +1145,7 @@ impl Compiler {
                 let saved_exception_handlers = self.exception_handlers.clone();
                 let saved_error_type_table = self.error_type_table.clone();
                 let saved_function = self.current_function;
+                let enclosing_function_index = saved_function.unwrap_or(usize::MAX);
                 let saved_local_count = self.scope.local_count;
                 self.current_function = Some(function_index);
                 self.scope.local_count = 0;
@@ -1204,6 +1215,7 @@ impl Compiler {
                         parent_slot_index: parent_slot,
                         local_slot_index,
                         ancestor_depth,
+                        parent_function_index: enclosing_function_index,
                     });
                 }
 
@@ -1989,19 +2001,37 @@ impl Compiler {
                 self.chunk.write_with_line(OpCode::MakeTuple(arity), *line);
             }
             Expr::ObjectLiteral { pairs, line } => {
-                use crate::parser::ast::ObjectPair;
+                use crate::parser::ast::{ObjectLiteralKey, ObjectPair};
                 let has_spread = pairs.iter().any(|p| matches!(p, ObjectPair::Spread(_)));
                 if !has_spread {
+                    let n_pairs = pairs
+                        .iter()
+                        .filter(|p| {
+                            matches!(
+                                p,
+                                ObjectPair::KeyValue(_, _) | ObjectPair::KeyValueExpr(_, _)
+                            )
+                        })
+                        .count();
                     for p in pairs.iter().rev() {
                         if let ObjectPair::KeyValue(key, value) = p {
-                            let key_index = self.chunk.add_constant(Value::String(key.clone()));
+                            let key_val = match key {
+                                ObjectLiteralKey::Ident(s) | ObjectLiteralKey::String(s) => {
+                                    Value::String(s.clone())
+                                }
+                                ObjectLiteralKey::Number(n) => Value::Number(*n),
+                            };
+                            let key_index = self.chunk.add_constant(key_val);
                             self.chunk
                                 .write_with_line(OpCode::Constant(key_index), *line);
+                            self.compile_expr(value)?;
+                        } else if let ObjectPair::KeyValueExpr(key, value) = p {
+                            self.compile_expr(key)?;
                             self.compile_expr(value)?;
                         }
                     }
                     self.chunk
-                        .write_with_line(OpCode::MakeObject(pairs.len()), *line);
+                        .write_with_line(OpCode::MakeObject(n_pairs), *line);
                 } else {
                     let count_slot = self.declare_local("__object_pair_count");
                     let zero_index = self.chunk.add_constant(Value::Number(0.0));
@@ -2012,9 +2042,27 @@ impl Compiler {
                     for p in pairs {
                         match p {
                             ObjectPair::KeyValue(key, value) => {
-                                let key_index = self.chunk.add_constant(Value::String(key.clone()));
+                                let key_val = match &key {
+                                    ObjectLiteralKey::Ident(s) | ObjectLiteralKey::String(s) => {
+                                        Value::String(s.clone())
+                                    }
+                                    ObjectLiteralKey::Number(n) => Value::Number(*n),
+                                };
+                                let key_index = self.chunk.add_constant(key_val);
                                 self.chunk
                                     .write_with_line(OpCode::Constant(key_index), *line);
+                                self.compile_expr(value)?;
+                                self.chunk
+                                    .write_with_line(OpCode::LoadLocal(count_slot), *line);
+                                let one_index = self.chunk.add_constant(Value::Number(1.0));
+                                self.chunk
+                                    .write_with_line(OpCode::Constant(one_index), *line);
+                                self.chunk.write_with_line(OpCode::Add, *line);
+                                self.chunk
+                                    .write_with_line(OpCode::StoreLocal(count_slot), *line);
+                            }
+                            ObjectPair::KeyValueExpr(key, value) => {
+                                self.compile_expr(key)?;
                                 self.compile_expr(value)?;
                                 self.chunk
                                     .write_with_line(OpCode::LoadLocal(count_slot), *line);
@@ -2036,6 +2084,14 @@ impl Compiler {
                         .write_with_line(OpCode::LoadLocal(count_slot), *line);
                     self.chunk.write_with_line(OpCode::MakeObjectDynamic, *line);
                 }
+            }
+            Expr::DictComprehension { .. } => {
+                let mut ctx = self.create_context();
+                expr::compile_expr(&mut ctx, expr)?;
+            }
+            Expr::ListComprehension { .. } => {
+                let mut ctx = self.create_context();
+                expr::compile_expr(&mut ctx, expr)?;
             }
             Expr::ArrayIndex { .. } => {
                 let mut ctx = self.create_context();
@@ -2404,7 +2460,8 @@ impl Compiler {
             Expr::Lambda { .. }
             | Expr::CallValue { .. }
             | Expr::ExprReturn { .. }
-            | Expr::Ireturn { .. } => {
+            | Expr::Ireturn { .. }
+            | Expr::If { .. } => {
                 let mut ctx = self.create_context();
                 expr::compile_expr(&mut ctx, expr)?;
             }

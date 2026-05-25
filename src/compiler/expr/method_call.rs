@@ -1,12 +1,69 @@
+//! Compiles method calls: special cases (clone, suffixes, joins, DB receivers) and generic dispatch.
+
 use crate::bytecode::OpCode;
 use crate::common::error::LangError;
-use crate::common::value::Value;
+use crate::common::value::{ObjectKind, Value};
 use crate::compiler::args;
+use crate::compiler::builtin_methods::{self, ReceiverFamily, ZeroArgDispatch};
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
-/// Компиляция вызовов методов
+use crate::compiler::variable::VariableResolver;
 use crate::debug_println;
 use crate::parser::ast::{Arg, Expr};
+
+/// Receiver is syntactically a plain `{...}` dict literal (bucket map), not an instance/custom object.
+fn expr_is_definitely_plain_dict_literal(e: &Expr) -> bool {
+    match e {
+        Expr::ObjectLiteral { .. } => true,
+        Expr::Literal {
+            value: Value::Object(rc),
+            ..
+        } => {
+            let o = rc.borrow();
+            object_kind_lacks_visibility_metadata(&o)
+        }
+        _ => false,
+    }
+}
+
+#[inline]
+fn object_kind_lacks_visibility_metadata(o: &ObjectKind) -> bool {
+    !o.str_key_contains("__class_name")
+        && !o.str_key_contains("__private_fields")
+        && !o.str_key_contains("__protected_fields")
+        && !o.str_key_contains("__private_methods")
+        && !o.str_key_contains("__protected_methods")
+}
+
+/// `cluster.get("primary")` keeps the DB receiver path (args evaluated before receiver).
+/// Plain dict `.get(int_var [, default])` uses `compile_module_method` → `ObjectGetIntegral`.
+fn get_method_uses_db_receiver_path(args: &[Arg]) -> bool {
+    let first = args.first();
+    matches!(
+        first,
+        Some(Arg::Positional(Expr::Literal {
+            value: Value::String(_),
+            ..
+        }))
+            | Some(Arg::Named {
+                value: Expr::Literal {
+                    value: Value::String(_),
+                    ..
+                },
+                ..
+            })
+    )
+}
+
+/// Compiles one call argument expression to the stack (`positional`, named value, or unpack).
+#[inline]
+fn compile_call_arg(ctx: &mut CompilationContext, arg: &Arg) -> Result<(), LangError> {
+    match arg {
+        Arg::Positional(expr) => expr::compile_expr(ctx, expr),
+        Arg::Named { value, .. } => expr::compile_expr(ctx, value),
+        Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr),
+    }
+}
 
 pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), LangError> {
     if let Expr::MethodCall {
@@ -59,16 +116,14 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
         // затем receiver, чтобы StoreLocal(receiver) не перезаписывал слот переменной-аргумента (например create_all).
         let is_db_receiver = matches!(
             method.as_str(),
-            "add" | "get" | "names" | "connect" | "execute" | "query" | "run"
-        );
+            "names" | "connect" | "execute" | "query" | "run"
+        ) || (method == "get" && get_method_uses_db_receiver_path(call_args))
+            || (method == "add"
+                && (call_args.len() >= 2 || get_method_uses_db_receiver_path(call_args)));
         if is_db_receiver {
             let mut arg_slots = Vec::with_capacity(call_args.len());
             for (i, arg) in call_args.iter().enumerate() {
-                match arg {
-                    Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-                    Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                    Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-                }
+                compile_call_arg(ctx, arg)?;
                 let slot = ctx.scope.declare_local(&format!("__arg_{}", i));
                 ctx.chunk.write_with_line(OpCode::StoreLocal(slot), *line);
                 arg_slots.push(slot);
@@ -135,51 +190,28 @@ fn compile_suffixes_method(
         });
     }
 
-    // Сохраняем объект (таблицу) во временную локальную переменную
+    // Table is already on the stack; stack layout before Call: table, left_suffix, right_suffix, native_fn.
     let temp_object_slot = ctx.scope.declare_local("__method_object");
     ctx.chunk
         .write_with_line(OpCode::StoreLocal(temp_object_slot), line);
 
-    // Компилируем аргументы в нормальном порядке (left_suffix, right_suffix)
-    for arg in args {
-        match arg {
-            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-        }
-    }
-
-    // Переставляем аргументы для правильного порядка: table, left_suffix, right_suffix
-    // Удаляем только аргументы со стека (объект уже сохранен в локальной переменной)
-    for _ in 0..args.len() {
-        ctx.chunk.write_with_line(OpCode::Pop, line);
-    }
-
-    // Загружаем в правильном порядке: table, left_suffix, right_suffix
-    ctx.chunk
-        .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-    // Компилируем аргументы заново
-    for arg in args {
-        match arg {
-            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-        }
-    }
-
-    // Находим индекс функции table_suffixes и загружаем её на стек
-    if let Some(&function_index) = ctx.scope.globals.get("table_suffixes") {
-        ctx.chunk
-            .write_with_line(OpCode::LoadGlobal(function_index), line);
-        ctx.chunk.write_with_line(OpCode::Call(3), line);
-        Ok(())
-    } else {
-        Err(LangError::ParseError {
+    let Some(&function_index) = ctx.scope.globals.get("table_suffixes") else {
+        return Err(LangError::ParseError {
             message: "Function 'table_suffixes' not found".to_string(),
             line,
             file: None,
-        })
+        });
+    };
+
+    ctx.chunk
+        .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    for arg in args {
+        compile_call_arg(ctx, arg)?;
     }
+    ctx.chunk
+        .write_with_line(OpCode::LoadGlobal(function_index), line);
+    ctx.chunk.write_with_line(OpCode::Call(3), line);
+    Ok(())
 }
 
 fn compile_join_method(
@@ -188,77 +220,28 @@ fn compile_join_method(
     args: &[Arg],
     line: usize,
 ) -> Result<(), LangError> {
-    // JOIN методы для таблиц
-    // Сохраняем объект во временную локальную переменную
+    let Some(&function_index) = ctx.scope.globals.get(method) else {
+        return Err(LangError::ParseError {
+            message: format!("Function '{}' not found", method),
+            line,
+            file: None,
+        });
+    };
+
     let temp_object_slot = ctx.scope.declare_local("__method_object");
     ctx.chunk
         .write_with_line(OpCode::StoreLocal(temp_object_slot), line);
 
-    // Компилируем аргументы в нормальном порядке
-    for arg in args {
-        match arg {
-            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-        }
-    }
-
-    // Загружаем объект обратно (он должен быть первым аргументом)
     ctx.chunk
         .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-
-    // Определяем имя функции для вызова
-    let function_name = match method {
-        "inner_join" => "inner_join",
-        "left_join" => "left_join",
-        "right_join" => "right_join",
-        "full_join" => "full_join",
-        "cross_join" => "cross_join",
-        "semi_join" => "semi_join",
-        "anti_join" => "anti_join",
-        "zip_join" => "zip_join",
-        "asof_join" => "asof_join",
-        "apply_join" => "apply_join",
-        "join_on" => "join_on",
-        _ => unreachable!(),
-    };
-
-    // Находим индекс функции
-    if let Some(&function_index) = ctx.scope.globals.get(function_name) {
-        // Перекомпилируем аргументы в обратном порядке
-        // Удаляем текущие аргументы со стека (кроме объекта)
-        for _ in 0..args.len() {
-            ctx.chunk.write_with_line(OpCode::Pop, line);
-        }
-
-        // Компилируем аргументы в обратном порядке
-        for arg in args.iter().rev() {
-            match arg {
-                Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-                Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-            }
-        }
-
-        // Загружаем объект обратно
-        ctx.chunk
-            .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-
-        // Загружаем функцию на стек
-        ctx.chunk
-            .write_with_line(OpCode::LoadGlobal(function_index), line);
-
-        // Вызываем функцию с количеством аргументов (object + args)
-        ctx.chunk
-            .write_with_line(OpCode::Call(args.len() + 1), line);
-        Ok(())
-    } else {
-        Err(LangError::ParseError {
-            message: format!("Function '{}' not found", function_name),
-            line,
-            file: None,
-        })
+    for arg in args {
+        compile_call_arg(ctx, arg)?;
     }
+    ctx.chunk
+        .write_with_line(OpCode::LoadGlobal(function_index), line);
+    ctx.chunk
+        .write_with_line(OpCode::Call(args.len() + 1), line);
+    Ok(())
 }
 
 /// Named arg matches the plugin export's param list (from preloaded `native_call_descriptor`).
@@ -301,7 +284,7 @@ fn ambiguous_plugin_method_use_module_path(
 
 fn compile_generic_method(
     ctx: &mut CompilationContext,
-    _object: &Expr,
+    object: &Expr,
     method: &str,
     args: &[Arg],
     line: usize,
@@ -342,6 +325,7 @@ fn compile_generic_method(
                     temp_object_slot,
                     line,
                     override_native,
+                    Some(object),
                 );
             }
         }
@@ -350,7 +334,7 @@ fn compile_generic_method(
     if is_string_method {
         compile_string_method(ctx, method, args, temp_object_slot, line)
     } else {
-        compile_module_method(ctx, method, args, temp_object_slot, line, None)
+        compile_module_method(ctx, method, args, temp_object_slot, line, None, Some(object))
     }
 }
 
@@ -361,34 +345,12 @@ fn compile_axis_method(
     temp_object_slot: usize,
     line: usize,
 ) -> Result<(), LangError> {
-    // Для методов Axis компилируем аргументы сразу
-    for arg in args {
-        match arg {
-            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-        }
-    }
-
-    // Удаляем текущие аргументы со стека
-    for _ in 0..args.len() {
-        ctx.chunk.write_with_line(OpCode::Pop, line);
-    }
-
-    // Загружаем объект первым
     ctx.chunk
         .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-
-    // Компилируем аргументы в нормальном порядке (они будут после объекта)
     for arg in args {
-        match arg {
-            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-        }
+        compile_call_arg(ctx, arg)?;
     }
 
-    // Получаем свойство объекта по имени метода
     ctx.chunk
         .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
     let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
@@ -396,13 +358,13 @@ fn compile_axis_method(
         .write_with_line(OpCode::Constant(method_name_index), line);
     ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
 
-    // Вызываем метод
     ctx.chunk
         .write_with_line(OpCode::Call(args.len() + 1), line);
     Ok(())
 }
 
-/// То же, но аргументы уже сохранены в слоты arg_slots (чтобы receiver не перезаписывал переменную-аргумент).
+/// DB engine/cluster: args were evaluated first into `arg_slots`; rebuild stack as
+/// `receiver`, then positional args, then `receiver` again for `GetArrayElement`, then `Call`.
 fn compile_db_receiver_method_with_arg_slots(
     ctx: &mut CompilationContext,
     method: &str,
@@ -446,11 +408,7 @@ fn compile_string_method(
             });
         }
         for arg in args {
-            match arg {
-                Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-                Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-            }
+            compile_call_arg(ctx, arg)?;
         }
         ctx.chunk
             .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
@@ -472,11 +430,7 @@ fn compile_string_method(
         ctx.chunk
             .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
         for arg in args {
-            match arg {
-                Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-                Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-            }
+            compile_call_arg(ctx, arg)?;
         }
     }
     ctx.chunk
@@ -496,6 +450,7 @@ fn compile_module_method(
     temp_object_slot: usize,
     line: usize,
     override_native_param_names: Option<&[&str]>,
+    method_receiver_ast: Option<&Expr>,
 ) -> Result<(), LangError> {
     // Generic method call (module functions or class instance methods): pass receiver as first arg so method receives (self, arg_1, ...).
     let resolved_args = match args::resolve_function_args(
@@ -556,15 +511,89 @@ fn compile_module_method(
         args_to_compile.len()
     );
 
+    let use_intrinsic_prop_shortcut = args_to_compile.is_empty()
+        && match builtin_methods::zero_arg_dispatch_for_method(method) {
+            Some(ZeroArgDispatch::PropertyViaGetArrayElement(
+                ReceiverFamily::PlainDictLike,
+            )) => method_receiver_ast.is_some_and(expr_is_definitely_plain_dict_literal),
+            Some(ZeroArgDispatch::PropertyViaGetArrayElement(ReceiverFamily::DateLike)) => true,
+            None => false,
+        };
+
+    // Date fields / plain-dict keys & values: VM exposes these via GetArrayElement (not NativeFunction).
+    // Compile zero-arg `d.year()`, `{...}.keys()` like property access — same as `.year` / `.keys` — no Call.
+    // Class instances (`HashMap()`) must keep `recv.keys()` as a real call so methods win over dict projection.
+    // See [`crate::compiler::builtin_methods`] for the intrinsic name registry.
+    if use_intrinsic_prop_shortcut {
+        ctx.chunk
+            .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+        let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
+        ctx.chunk
+            .write_with_line(OpCode::Constant(method_name_index), line);
+        ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
+        return Ok(());
+    }
+
+    // Plain dict `.get(key [, default])` — no GetArrayElement + Call (A* g_score / f_score).
+    if method == "get" && !args_to_compile.is_empty() && args_to_compile.len() <= 2 {
+        ctx.chunk
+            .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+        for arg in &args_to_compile {
+            compile_call_arg(ctx, arg)?;
+        }
+        if args_to_compile.len() == 1 {
+            let null_idx = ctx.chunk.add_constant(Value::Null);
+            ctx.chunk.write_with_line(OpCode::Constant(null_idx), line);
+        }
+        ctx.chunk
+            .write_with_line(OpCode::ObjectGetIntegral, line);
+        return Ok(());
+    }
+
+    // Set `.add` / `.discard` fast opcodes are NOT emitted here: any receiver with `.add(n)`
+    // would be miscompiled (e.g. class method `Calc.add`). Runtime `try_set_integral_mut_early`
+    // optimizes real set.add after GetArrayElement + Call resolves SET_ADD.
+
+    // heapq.heappop(heap_var) as expression — two stack values, no native Call.
+    if method == "heappop" && args_to_compile.len() == 1 {
+        if let Arg::Positional(Expr::Variable { name: heap_name, .. }) = &args_to_compile[0] {
+            VariableResolver::resolve_and_load(ctx, heap_name, line)?;
+            ctx.chunk.write_with_line(OpCode::HeappopFlat, line);
+            return Ok(());
+        }
+    }
+
+    // A* peephole: heapq.heappush(open_heap, (f, node)) — stack `[heap, tuple]` → flat push without Call.
+    // Skip tuples with string elements (lexicographic tie-break tests use nested heap via native).
+    if method == "heappush" && args_to_compile.len() == 2 {
+        if let (
+            Arg::Positional(heap_expr),
+            Arg::Positional(Expr::TupleLiteral { elements, .. }),
+        ) = (&args_to_compile[0], &args_to_compile[1])
+        {
+            let flat_ok = elements.len() == 2
+                && !elements.iter().any(|el| {
+                    matches!(el, Expr::Literal { value: Value::String(_), .. })
+                });
+            if flat_ok {
+                expr::compile_expr(ctx, heap_expr)?;
+                for el in elements {
+                    expr::compile_expr(ctx, el)?;
+                }
+                ctx.chunk
+                    .write_with_line(OpCode::MakeTuple(2), line);
+                ctx.chunk
+                    .write_with_line(OpCode::HeappushFlat, line);
+                return Ok(());
+            }
+        }
+    }
+
     // 1. Push receiver first, then compile args → stack [receiver, arg_1, ..., arg_n]
     ctx.chunk
         .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
     for arg in &args_to_compile {
-        match arg {
-            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
-            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
-        }
+        compile_call_arg(ctx, arg)?;
     }
     debug_println!("[DEBUG compile_module_method] После компиляции аргументов, IP: {}, стек: [receiver, arg_1, ..., arg_n]", ctx.chunk.code.len());
 

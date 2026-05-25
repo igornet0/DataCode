@@ -9,16 +9,12 @@ pub fn compile_this(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         *ctx.current_line = *line;
 
         // this может быть:
-        // 1. В конструкторе: слот constructor_this_slot (arity), если задан
-        // 2. Локальной переменной (конструктор, fallback)
-        // 3. Первым параметром метода (слот 0)
-        if let Some(slot) = ctx.constructor_this_slot {
-            ctx.chunk.write_with_line(OpCode::LoadLocal(slot), *line);
-        } else if let Some(local_index) = ctx.scope.resolve_local("this") {
-            ctx.chunk
-                .write_with_line(OpCode::LoadLocal(local_index), *line);
-        } else {
-            ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line);
+        // 1. В конструкторе: слот constructor_this_slot (arity), только пока компилируем тело ctor
+        // 2. Локальной переменной метода или fallback в ctor без слота (resolve_local("this"))
+        // 3. Первым параметром метода (обычно слот 0)
+        match ctx.this_local_slot_for_member_access() {
+            Some(slot) => ctx.chunk.write_with_line(OpCode::LoadLocal(slot), *line),
+            None => ctx.chunk.write_with_line(OpCode::LoadLocal(0), *line),
         }
 
         Ok(())

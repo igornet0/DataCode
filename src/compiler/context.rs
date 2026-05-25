@@ -78,6 +78,31 @@ pub struct CompilationContext<'a> {
 }
 
 impl<'a> CompilationContext<'a> {
+    /// Local slot for `this` when emitting member access (`this.field`, `'this'` expr).
+    /// In constructors, parameters occupy `0 .. params.len()-1` and `this` is at
+    /// [`Self::constructor_this_slot`] (= `params.len()`). In methods, `this` is the first declared
+    /// local (usually slot `0`).
+    ///
+    /// [`Self::constructor_this_slot`] must only apply while [`Self::in_constructor`] is true:
+    /// it can otherwise leak into later method compilations for the same class and wrongly resolve
+    /// `this` to the constructor's arity slot inside method bodies (e.g. `this.field` reads the last
+    /// constructor parameter instead of the receiver).
+    #[inline]
+    pub fn this_local_slot_with_fallback_for_member_access(&self) -> usize {
+        self.this_local_slot_for_member_access().unwrap_or(0)
+    }
+
+    #[inline]
+    pub fn this_local_slot_for_member_access(&self) -> Option<usize> {
+        if self.in_constructor {
+            if let Some(s) = self.constructor_this_slot {
+                return Some(s);
+            }
+            return self.scope.resolve_local("this");
+        }
+        self.scope.resolve_local("this")
+    }
+
     pub fn get_error_type_index(&mut self, error_type_name: &str) -> usize {
         // Ищем в существующей таблице
         if let Some(index) = self

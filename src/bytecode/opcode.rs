@@ -104,6 +104,11 @@ pub enum OpCode {
     /// Создать объект: со стека снять count, затем 2*count значений (value, key на пару), собрать объект.
     MakeObjectDynamic,
 
+    // Множества
+    MakeSet(usize), // Создать set из N элементов со стека
+    /// Создать set: со стека снять count, затем count элементов.
+    MakeSetDynamic,
+
     // Обработка исключений
     BeginTry(usize), // Начало try блока, аргумент - индекс обработчика в таблице обработчиков
     EndTry,          // Конец try блока
@@ -125,6 +130,23 @@ pub enum OpCode {
     // Register VM (этап 1): опкоды с регистрами; компилятор пока не эмитирует.
     /// Add reg[rd] = reg[r1] + reg[r2] (number+number); иначе fallback на store. Регистры — индексы в frame.regs.
     RegAdd(u8, u8, u8),
+
+    /// A* peephole: stack `[heap]` → `f_slot`, `node_slot` without tuple temp (heap popped from stack).
+    HeappopUnpack2(usize, usize),
+    /// A* peephole: stack `[heap, item]` → flat `heappush` without native call.
+    HeappushFlat,
+    /// A* peephole: stack `[a, b]` → `divmod` into two locals without tuple alloc.
+    DivmodUnpack2(usize, usize),
+    /// Plain dict `.get(key [, default])` — stack `[obj, key, default]` → value (no GetArrayElement + Call).
+    ObjectGetIntegral,
+    /// `heapq.heappop(heap)` — pop flat pair onto stack as two values (heap popped from stack).
+    HeappopFlat,
+    /// Plain set `.discard(int_key)` — stack `[set, key]` → set (no GetArrayElement + Call).
+    SetDiscardIntegral,
+    /// Plain set `.add(int_key)` — stack `[set, key]` → set (no GetArrayElement + Call).
+    SetAddIntegral,
+    /// Plain dict/array `obj[int_key]` — stack `[obj, key]` → value (no GetArrayElement dispatch overhead).
+    ObjectIndexIntegral,
 }
 
 impl OpCode {
@@ -189,6 +211,8 @@ impl OpCode {
             OpCode::MakeObject(_) => "MakeObject",
             OpCode::UnpackObject(_) => "UnpackObject",
             OpCode::MakeObjectDynamic => "MakeObjectDynamic",
+            OpCode::MakeSet(_) => "MakeSet",
+            OpCode::MakeSetDynamic => "MakeSetDynamic",
             OpCode::BeginTry(_) => "BeginTry",
             OpCode::EndTry => "EndTry",
             OpCode::Catch(_) => "Catch",
@@ -201,6 +225,14 @@ impl OpCode {
             OpCode::Import(_) => "Import",
             OpCode::ImportFrom(_, _) => "ImportFrom",
             OpCode::RegAdd(_, _, _) => "RegAdd",
+            OpCode::HeappopUnpack2(_, _) => "HeappopUnpack2",
+            OpCode::HeappushFlat => "HeappushFlat",
+            OpCode::DivmodUnpack2(_, _) => "DivmodUnpack2",
+            OpCode::ObjectGetIntegral => "ObjectGetIntegral",
+            OpCode::HeappopFlat => "HeappopFlat",
+            OpCode::SetDiscardIntegral => "SetDiscardIntegral",
+            OpCode::SetAddIntegral => "SetAddIntegral",
+            OpCode::ObjectIndexIntegral => "ObjectIndexIntegral",
         }
     }
 }

@@ -7,7 +7,7 @@ use crate::compiler::expr::array::emit_slice_bound;
 use crate::compiler::variable::VariableResolver;
 use crate::lexer::TokenKind;
 /// Компиляция присваиваний (Assign, AssignOp, UnpackAssign)
-use crate::parser::ast::{Expr, IndexExpr};
+use crate::parser::ast::{Arg, Expr, IndexExpr};
 
 pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), LangError> {
     match expr {
@@ -38,11 +38,7 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
 
                     // Загружаем объект
                     if object_name == "this" {
-                        let slot = if let Some(s) = ctx.constructor_this_slot {
-                            s
-                        } else {
-                            ctx.scope.resolve_local("this").unwrap_or_default()
-                        };
+                        let slot = ctx.this_local_slot_with_fallback_for_member_access();
                         ctx.chunk.write_with_line(OpCode::LoadLocal(slot), *line);
                     } else {
                         // Загружаем переменную-объект
@@ -69,11 +65,7 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                     // SetArrayElement возвращает обновленный объект
                     // Сохраняем его обратно в переменную
                     if object_name == "this" {
-                        let slot = if let Some(s) = ctx.constructor_this_slot {
-                            s
-                        } else {
-                            ctx.scope.resolve_local("this").unwrap_or_default()
-                        };
+                        let slot = ctx.this_local_slot_with_fallback_for_member_access();
                         ctx.chunk.write_with_line(OpCode::StoreLocal(slot), *line);
                         ctx.chunk.write_with_line(OpCode::LoadLocal(slot), *line);
                     } else {
@@ -218,8 +210,8 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                     });
                 }
             }
-            expr::compile_expr(ctx, array)?;
             expr::compile_expr(ctx, ie)?;
+            expr::compile_expr(ctx, array)?;
             ctx.chunk.write_with_line(OpCode::SetArrayElement, *line);
             Ok(())
         }
@@ -252,14 +244,8 @@ fn compile_assign_op(
 
             // Загружаем текущее значение свойства
             if object_name == "this" {
-                if let Some(slot) = ctx.constructor_this_slot {
-                    ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
-                } else if let Some(local_index) = ctx.scope.resolve_local("this") {
-                    ctx.chunk
-                        .write_with_line(OpCode::LoadLocal(local_index), line);
-                } else {
-                    ctx.chunk.write_with_line(OpCode::LoadLocal(0), line);
-                }
+                let slot = ctx.this_local_slot_with_fallback_for_member_access();
+                ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
             } else {
                 if let Some(local_index) = ctx.scope.resolve_local(object_name) {
                     ctx.chunk
@@ -318,14 +304,8 @@ fn compile_assign_op(
 
             // Загружаем объект
             if object_name == "this" {
-                if let Some(slot) = ctx.constructor_this_slot {
-                    ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
-                } else if let Some(local_index) = ctx.scope.resolve_local("this") {
-                    ctx.chunk
-                        .write_with_line(OpCode::LoadLocal(local_index), line);
-                } else {
-                    ctx.chunk.write_with_line(OpCode::LoadLocal(0), line);
-                }
+                let slot = ctx.this_local_slot_with_fallback_for_member_access();
+                ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
             } else {
                 if let Some(local_index) = ctx.scope.resolve_local(object_name) {
                     ctx.chunk
@@ -341,18 +321,9 @@ fn compile_assign_op(
 
             // Сохраняем обновленный объект обратно
             if object_name == "this" {
-                if let Some(slot) = ctx.constructor_this_slot {
-                    ctx.chunk.write_with_line(OpCode::StoreLocal(slot), line);
-                    ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
-                } else if let Some(local_index) = ctx.scope.resolve_local("this") {
-                    ctx.chunk
-                        .write_with_line(OpCode::StoreLocal(local_index), line);
-                    ctx.chunk
-                        .write_with_line(OpCode::LoadLocal(local_index), line);
-                } else {
-                    ctx.chunk.write_with_line(OpCode::StoreLocal(0), line);
-                    ctx.chunk.write_with_line(OpCode::LoadLocal(0), line);
-                }
+                let slot = ctx.this_local_slot_with_fallback_for_member_access();
+                ctx.chunk.write_with_line(OpCode::StoreLocal(slot), line);
+                ctx.chunk.write_with_line(OpCode::LoadLocal(slot), line);
             } else {
                 if let Some(local_index) = ctx.scope.resolve_local(object_name) {
                     ctx.chunk
@@ -411,12 +382,105 @@ fn compile_assign_op(
     Ok(())
 }
 
+/// `a, b = heapq.heappop(heap_var)` — unpack without tuple temp / GetArrayElement.
+fn try_compile_heapq_heappop_unpack2(
+    ctx: &mut CompilationContext,
+    names: &[String],
+    heap_name: &str,
+    line: usize,
+) -> Result<bool, LangError> {
+    let f_slot = ctx
+        .scope
+        .resolve_local(&names[0])
+        .unwrap_or_else(|| ctx.scope.declare_local(&names[0]));
+    let n_slot = ctx
+        .scope
+        .resolve_local(&names[1])
+        .unwrap_or_else(|| ctx.scope.declare_local(&names[1]));
+    VariableResolver::resolve_and_load(ctx, heap_name, line)?;
+    ctx.chunk
+        .write_with_line(OpCode::HeappopUnpack2(f_slot, n_slot), line);
+    if let Some(last_name) = names.last() {
+        VariableResolver::resolve_and_load(ctx, last_name, line)?;
+    }
+    Ok(true)
+}
+
 fn compile_unpack_assign(
     ctx: &mut CompilationContext,
     names: &[String],
     value: &Expr,
     line: usize,
 ) -> Result<(), LangError> {
+    if names.len() == 2 {
+        if let Expr::Call { name, args, .. } = value {
+            if name == "divmod" && args.len() == 2 {
+                if let (Arg::Positional(a_expr), Arg::Positional(b_expr)) = (&args[0], &args[1]) {
+                    expr::compile_expr(ctx, a_expr)?;
+                    expr::compile_expr(ctx, b_expr)?;
+                    let q_slot = ctx
+                        .scope
+                        .resolve_local(&names[0])
+                        .unwrap_or_else(|| ctx.scope.declare_local(&names[0]));
+                    let r_slot = ctx
+                        .scope
+                        .resolve_local(&names[1])
+                        .unwrap_or_else(|| ctx.scope.declare_local(&names[1]));
+                    ctx.chunk.write_with_line(
+                        OpCode::DivmodUnpack2(q_slot, r_slot),
+                        line,
+                    );
+                    if let Some(last_name) = names.last() {
+                        VariableResolver::resolve_and_load(ctx, last_name, line)?;
+                    }
+                    return Ok(());
+                }
+            }
+        }
+        if let Expr::CallValue { callee, args, .. } = value {
+            if args.len() == 1 {
+                if let Arg::Positional(Expr::Variable { name: heap_name, .. }) = &args[0] {
+                    if let Expr::Property {
+                        object,
+                        name: method,
+                        ..
+                    } = callee.as_ref()
+                    {
+                        if let Expr::Variable { name: mod_name, .. } = object.as_ref() {
+                            if mod_name == "heapq"
+                                && method == "heappop"
+                                && try_compile_heapq_heappop_unpack2(ctx, names, heap_name, line)?
+                            {
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Expr::MethodCall {
+            object,
+            method,
+            args,
+            ..
+        } = value
+        {
+            if method == "heappop" && args.len() == 1 {
+                if let (
+                    Expr::Variable { name: mod_name, .. },
+                    Arg::Positional(Expr::Variable { name: heap_name, .. }),
+                ) = (object.as_ref(), &args[0])
+                {
+                    if mod_name == "heapq"
+                        && try_compile_heapq_heappop_unpack2(ctx, names, heap_name, line)?
+                    {
+                        return Ok(());
+                    }
+                }
+            }
+        }
+    }
+
     // Распаковка кортежа: a, b, c = tuple_expr
     // Компилируем правую часть (должна вернуть кортеж)
     expr::compile_expr(ctx, value)?;

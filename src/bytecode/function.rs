@@ -14,6 +14,10 @@ pub struct CapturedVar {
     pub parent_slot_index: usize, // Slot index in ancestor function's frame
     pub local_slot_index: usize,  // Slot index in this function's frame
     pub ancestor_depth: usize,    // Depth of ancestor (0 = immediate parent, 1 = grandparent, etc.)
+    /// Index in VM `functions` for the frame where `parent_slot_index` is valid (the enclosing
+    /// function at **definition** time). `usize::MAX` = legacy: use `ancestor_depth` from the call stack
+    /// (breaks recursive closures); kept for old `.dcb` and edge cases without an enclosing function.
+    pub parent_function_index: usize,
 }
 
 /// Ключ для кэша функции - оптимизирован для разных случаев
@@ -37,12 +41,10 @@ impl CacheKey {
 
         // Оптимизация для двух чисел (частый случай для Ackermann)
         if args.len() == 2 {
-            if let (Value::Number(m), Value::Number(n)) = (&args[0], &args[1]) {
-                // Преобразуем f64 в i64, если возможно (для целых чисел)
-                let m_int = *m as i64;
-                let n_int = *n as i64;
-                // Проверяем, что преобразование было точным (целые числа)
-                if (m_int as f64) == *m && (n_int as f64) == *n {
+            if let (Some(m), Some(n)) = (args[0].as_finite_f64(), args[1].as_finite_f64()) {
+                let m_int = m as i64;
+                let n_int = n as i64;
+                if (m_int as f64) == m && (n_int as f64) == n {
                     return Some(CacheKey::TwoNumbers(m_int, n_int));
                 }
             }

@@ -1,193 +1,42 @@
-# 📚 Документация DataCode
+# DataCode Documentation
 
-Добро пожаловать в документацию языка программирования **DataCode** (ДатаКод)!
+**Russian production layout:** [STRUCTURE.md](./ru/STRUCTURE.md)  
+**English production layout:** [STRUCTURE.md](./en/STRUCTURE.md)
 
-## 🌍 Выбор языка документации
+## Languages
 
-- **[🇷🇺 Русский (Russian)](./ru/)** - Полная документация на русском языке
-- **[🇬🇧 English](./en/)** - Complete English documentation
+| Language | User docs | Developer docs |
+|----------|-----------|----------------|
+| **English** | [docs/en/](./en/README.md) — sections **0 · 1 · 2 · 200** | [en/200-developers/](./en/200-developers/README.md) |
+| **Русский** | [docs/ru/](./ru/README.md) — sections **0 · 1 · 2 · 200** | [ru/200-разработчикам/](./ru/200-разработчикам/README.md) |
 
----
+## Quick start
 
-## 📖 Русская документация
+**English:**
+1. [Lesson 01 — Basics](./en/0-syntax/01-basics.md)
+2. Run [`examples/en/01-basics/hello.dc`](../examples/en/01-basics/hello.dc)
+3. Follow [1 — Examples guide](./en/1-examples/README.md)
 
-Полная документация на русском языке находится в папке [`ru/`](./ru/).
+**Russian:**
+1. [Урок 01 — Основы](./ru/0-синтаксис/01-основы.md)
+2. Run [`examples/ru/01-основы/привет.dc`](../examples/ru/01-основы/привет.dc)
+3. Follow [1 — Примеры](./ru/1-примеры/README.md)
 
-### 🚀 Быстрый старт
+## Developer docs (ABI / native modules)
 
-Если вы только начинаете изучать DataCode:
+| Topic | 🇬🇧 English | 🇷🇺 Russian |
+|-------|---------|---------|
+| `.dcmodule` format | [dcmodule_artifact.md](./en/200-developers/dcmodule_artifact.md) | [dcmodule-artifact.md](./ru/200-разработчикам/dcmodule-artifact.md) |
+| Native call path | [native_call_lifecycle.md](./en/200-developers/native_call_lifecycle.md) | [native-call-lifecycle.md](./ru/200-разработчикам/native-call-lifecycle.md) |
+| Custom operators | [operator_descriptor.md](./en/200-developers/operator_descriptor.md) | [operator-descriptor.md](./ru/200-разработчикам/operator-descriptor.md) |
+| Mutating natives | [vm_mutating_natives_audit.md](./en/200-developers/vm_mutating_natives_audit.md) | [vm-mutating-natives-audit.md](./ru/200-разработчикам/vm-mutating-natives-audit.md) |
 
-1. **Начните с примеров** → [`examples/ru/`](../../examples/ru/)
-2. **Изучите документацию** → [`docs/ru/`](./ru/)
+## Examples
 
-### 📚 Основные разделы документации
+- [examples/en/](../examples/en/README.md) — numbered course (matches `docs/en/1-examples/`)
+- [examples/ru/](../examples/ru/README.md) — numbered course (matches `docs/ru/1-примеры/`)
 
-#### [Встроенные функции](./ru/builtin_functions.md)
-Полное описание всех встроенных функций DataCode, организованных по категориям:
-- Утилиты, преобразование типов, работа с типами
-- Работа с путями, математические функции
-- Строковые функции, функции массивов
-- Функции работы с таблицами
+## Project
 
-**Примеры:** [`examples/ru/01-основы/`](../../examples/ru/01-основы/), [`examples/ru/05-функции/`](../../examples/ru/05-функции/)
-
-#### [Типы данных](./ru/data_types.md)
-Подробное описание всех типов данных, поддерживаемых языком:
-- Базовые типы (Integer, Float, String, Bool, Null)
-- Составные типы (Array, Object)
-- Специальные типы для таблиц (Table, TableColumn, TableIndexer)
-- Типы для работы с файлами (Path, PathPattern)
-
-**Примеры:** [`examples/ru/03-типы данных/`](../../examples/ru/03-типы%20данных/)
-
-#### [Пользовательские функции с аннотациями типов](./ru/user_functions.md)
-Полное руководство по созданию функций с аннотациями типов:
-- Аннотации типов параметров и возвращаемых значений
-- Union типы (`str | int`, `null | str | int`)
-- Проверка типов во время выполнения
-- Частичная типизация и значения по умолчанию
-
-**Примеры:** [`examples/ru/05-функции/типизированные_функции.dc`](../../examples/ru/05-функции/типизированные_функции.dc)
-
-#### [Потоковые функции (генераторы)](./ru/stream_functions.md) · [English](./en/stream_functions.md)
-`stream fn`, yield через `return` / `ireturn`, завершение через `ereturn`, API `.next()`, `.send()`, `.final()`, `.live`.
-
-**Примеры:** [`examples/ru/05-функции/потоковые_функции.dc`](../../examples/ru/05-функции/потоковые_функции.dc), [`examples/en/05-functions/stream_functions.dc`](../../examples/en/05-functions/stream_functions.dc)
-
-#### [Работа с таблицами](./ru/table_create_function.md)
-Создание и работа с таблицами в DataCode:
-- Функции `table()` и `table_create()`
-- Операции с таблицами (фильтрация, сортировка, выборка)
-- Интеграция с файловой системой (CSV, XLSX)
-
-**Примеры:** [`examples/ru/09-создание модели данных/`](../../examples/ru/09-создание%20модели%20данных/)
-
-#### [WebSocket сервер](./ru/websocket_server.md)
-Удаленное выполнение кода DataCode через WebSocket:
-- Запуск сервера
-- Протокол обмена сообщениями
-- Подключение к SMB шаре
-- Примеры использования (JavaScript, Python)
-
-**Примеры:** [`examples/ru/08-websocket/`](../../examples/ru/08-websocket/)
-
-#### [Спецификация JOIN](./ru/join_specification.md)
-Операции объединения таблиц:
-- Типы JOIN (inner, left, right, full, cross, semi, anti)
-- JOIN по произвольным условиям
-- Временной JOIN (ASOF)
-- Индексный JOIN
-
-#### [Модуль plot - Графики и визуализация](./ru/plot/README.md)
-Полное описание модуля `plot` для работы с изображениями и построения графиков:
-- Работа с изображениями, построение графиков
-- Subplots, настройка осей
-- Типы данных (Image, Window, Figure, Axis)
-
-**Примеры:** [`examples/ru/10-графики/`](../../examples/ru/10-графики/), [`examples/en/10-plot/`](../../examples/en/10-plot/)
-
-#### [Модуль settings_env](./ru/settings_env/README.md)
-Загрузка переменных окружения из .env, приведение типов, префиксы, конфигурация, классы-наследники Settings и дескрипторы Field.
-
-**Примеры:** [`examples/ru/12-settings_env/`](../../examples/ru/12-settings_env/), [`examples/en/12-settings-env/`](../../examples/en/12-settings-env/)
-
-#### [Модуль uuid](./ru/uuid/README.md)
-Генерация уникальных идентификаторов (UUID): v4, v7, детерминированные v3/v5, разбор строк, работа с байтами, метаданные.
-
-**Примеры:** [`examples/ru/13-uuid/`](../../examples/ru/13-uuid/), [`examples/en/13-uuid/`](../../examples/en/13-uuid/)
-
-#### [Модуль system](./ru/system-lib/README.md)
-Встроенный модуль `system`: ОС, рантайм, пути, железо, сеть, процессы, ФС, логирование, политика прав. [English](./en/system-lib/README.md).
-
-#### [Модули и импорты](./ru/modules_and_imports.md)
-Импорт и использование модулей: синтаксис `import` / `from`, модуль-файл и пакет (`__lib__.dc`), составные имена (`core.config`), базовый путь, встроенные модули.
-
-**Примеры:** [`examples/ru/15-модули/`](../../examples/ru/15-модули/), [`examples/en/15-modules/`](../../examples/en/15-modules/)
-
----
-
-## 🎯 Примеры кода
-
-Практические примеры организованы по разделам от простого к сложному:
-
-### 📁 Структура примеров
-
-- **[01-основы](../../examples/ru/01-основы/)** - Базовые концепции языка
-- **[02-синтаксис](../../examples/ru/02-синтаксис/)** - Синтаксические конструкции
-- **[03-типы данных](../../examples/ru/03-типы%20данных/)** - Работа с типами данных
-- **[04-продвинутые](../../examples/ru/04-продвинутые/)** - Продвинутые возможности
-- **[05-функции](../../examples/ru/05-функции/)** - Пользовательские функции
-- **[06-демонстрации](../../examples/ru/06-демонстрации/)** - Комплексные примеры
-- **[07-циклы](../../examples/ru/07-циклы/)** - Циклы и итерации
-- **[08-websocket](../../examples/ru/08-websocket/)** - Работа с WebSocket
-- **[09-создание модели данных](../../examples/ru/09-создание%20модели%20данных/)** - Создание моделей данных
-- **[10-графики](../../examples/ru/10-графики/)** - Графики и визуализация
-- **[12-settings_env](../../examples/ru/12-settings_env/)** - Модуль settings_env
-- **[13-uuid](../../examples/ru/13-uuid/)** - Модуль uuid
-- **[15-модули](../../examples/ru/15-модули/)** - Модули и пакеты
-
-**Полная документация по примерам:** [`examples/ru/README.md`](../../examples/ru/README.md)
-
----
-
-## 🔗 Полезные ссылки
-
-- **[Основной README проекта](../../README.md)** - Общая информация о DataCode
-- **[Установка](../../INSTALL.md)** - Инструкции по установке
-- **[Лицензия](../../LICENSE)** - Лицензия проекта
-
----
-
-## 📝 Структура документации
-
-```
-docs/
-├── README.md                    # Этот файл (навигация)
-├── ru/                          # Русская документация
-    │   ├── README.md                # Навигация по русской документации
-    │   ├── builtin_functions.md     # Встроенные функции
-    │   ├── data_types.md            # Типы данных
-    │   ├── user_functions.md        # Пользовательские функции с аннотациями типов
-    │   ├── stream_functions.md      # Потоковые функции (генераторы)
-    │   ├── table_create_function.md # Работа с таблицами
-│   ├── websocket_server.md      # WebSocket сервер
-│   ├── join_specification.md    # Спецификация JOIN
-│   ├── ml_module.md             # ML модуль (машинное обучение)
-│   ├── plot/                    # Документация модуля plot
-│   │   └── README.md            # Модуль plot - графики и визуализация
-│   ├── settings_env/            # Документация модуля settings_env
-│   │   └── README.md            # Модуль settings_env - переменные окружения
-│   ├── uuid/                    # Документация модуля uuid
-│   │   └── README.md            # Модуль uuid - генерация UUID
-│   ├── system-lib/              # Встроенный модуль system
-│   │   └── README.md            # ОС, рантайм, sandbox
-│   └── ml/                      # Документация ML модуля
-│       ├── training_flow.md     # Схема обучения нейронной сети
-│       └── model_save_format.md  # Формат сохранения моделей
-└── en/                          # Английская документация
-    ├── README.md                # Навигация по английской документации
-    ├── builtin_functions.md     # Built-in functions
-    ├── data_types.md            # Data types
-    ├── user_functions.md        # User-defined functions with type annotations
-    ├── stream_functions.md      # Stream functions (generators)
-    ├── table_create_function.md # Working with tables
-    ├── websocket_server.md      # WebSocket server
-    ├── join_specification.md    # JOIN specification
-    ├── ml_module.md             # ML module (machine learning)
-    ├── plot/                    # Plot module documentation
-    │   └── README.md            # Plot module - charts and visualization
-    ├── settings_env/            # settings_env module documentation
-    │   └── README.md            # settings_env module - environment variables
-    ├── uuid/                    # uuid module documentation
-    │   └── README.md            # uuid module - UUID generation
-    ├── system-lib/              # Built-in system module
-    │   └── README.md            # OS, runtime, sandbox
-    └── ml/                      # ML module documentation
-        ├── training_flow.md     # Neural network training flow
-        └── model_save_format.md  # Model save format
-```
-
----
-
-**Примечание:** Документация постоянно обновляется. Если вы нашли ошибку или хотите предложить улучшение, пожалуйста, создайте issue в репозитории проекта.
-
+- [Main README](../README.md)
+- [INSTALL](../INSTALL.md)

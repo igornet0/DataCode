@@ -523,11 +523,11 @@ const functionsData = {
             example: "global files = list_files(path('.'))\nglobal csv_files = list_files(path('*.csv'))"
         },
         {
-            name: 'read_file(file_path)',
+            name: 'read(file_path)',
             category: 'file',
-            description: 'Читает файл и возвращает содержимое или создает таблицу для CSV/Excel. Поддерживает опциональные параметры: read_file(path, sheet_name), read_file(path, header_row), read_file(path, header_row, sheet_name).',
-            signature: 'read_file(path, [header_row], [sheet_name])',
-            example: "global data = read_file(path('data.csv'))\nglobal text = read_file(path('readme.txt'))\nglobal excel = read_file(path('report.xlsx'), 'Sales')"
+            description: 'Читает файл и возвращает содержимое или создает таблицу для CSV/Excel. Поддерживает опциональные параметры: read(path, sheet_name), read(path, header_row), read(path, header_row, sheet_name).',
+            signature: 'read(path, [header_row], [sheet_name])',
+            example: "global data = read(path('data.csv'))\nglobal text = read(path('readme.txt'))\nglobal excel = read(path('report.xlsx'), 'Sales')"
         },
         {
             name: 'analyze_csv(file_path)',

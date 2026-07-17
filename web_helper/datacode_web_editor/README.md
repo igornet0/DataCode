@@ -121,7 +121,7 @@ let obj = {
 - `int()`, `float()`, `bool()`, `str()`, `date()`, `money()`, `typeof()`, `array()`
 
 **Файловые операции:**
-- `read_file()`, `write_file()`, `list_files()`, `path()`
+- `read()`, `save()`, `list_files()`, `path()`
 
 **Математические:**
 - `abs()`, `sqrt()`, `pow()`, `min()`, `max()`, `round()`, `div()`, `sum()`, `avg()`

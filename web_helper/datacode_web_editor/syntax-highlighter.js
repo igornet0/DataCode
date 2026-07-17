@@ -23,7 +23,7 @@ class DataCodeSyntaxHighlighter {
             // Type conversion
             'int', 'float', 'bool', 'str', 'date', 'money', 'typeof', 'array',
             // File operations
-            'read_file', 'write_file', 'list_files', 'path',
+            'read', 'save', 'list_files', 'path',
             // Math
             'abs', 'sqrt', 'pow', 'min', 'max', 'round', 'div',
             'sum', 'avg',
@@ -122,15 +122,26 @@ class DataCodeSyntaxHighlighter {
                 returnType: 'array',
                 category: 'file'
             },
-            'read_file': {
-                signature: 'read_file(file_path, header_row?, sheet_name?)',
-                description: 'Читает файл (.csv, .xlsx) и возвращает его содержимое или создает таблицу. Для XLSX можно указать имя листа. Для CSV/XLSX можно указать номер строки заголовка (начиная с 0)',
+            'read': {
+                signature: 'read(path, header_row?, sheet_name?, header?)',
+                description: 'Читает файл: CSV/XLSX → table, JSON/TOML/YAML/XML → object, TXT/MD → string, BIN → bytes',
                 parameters: [
-                    { name: 'file_path', type: 'path', description: 'Путь к файлу для чтения' },
-                    { name: 'header_row', type: 'number', description: 'Номер строки заголовка, начиная с 0 (по умолчанию: 0)', optional: true },
-                    { name: 'sheet_name', type: 'string', description: 'Имя листа для XLSX файлов (по умолчанию: первый лист)', optional: true }
+                    { name: 'path', type: 'path | string', description: 'Путь к файлу' },
+                    { name: 'header_row', type: 'number', description: 'Строка заголовка CSV/XLSX (0-based)', optional: true },
+                    { name: 'sheet_name', type: 'string', description: 'Имя листа XLSX', optional: true },
+                    { name: 'header', type: 'array | object', description: 'Фильтр/переименование колонок CSV/XLSX', optional: true }
                 ],
-                returnType: 'string | table',
+                returnType: 'table | object | string | bytes',
+                category: 'file'
+            },
+            'save': {
+                signature: 'save(data, path)',
+                description: 'Сохраняет данные в файл по расширению (table→csv/json/sqlite, object→json/toml/yaml/xml, string→txt, bytes→bin)',
+                parameters: [
+                    { name: 'data', type: 'any', description: 'Данные для записи' },
+                    { name: 'path', type: 'path | string', description: 'Путь к выходному файлу (aliases: filename, namefile)' }
+                ],
+                returnType: 'string',
                 category: 'file'
             },
             // Math functions

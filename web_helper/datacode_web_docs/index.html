@@ -426,7 +426,7 @@ print(greeting_msg)</code></pre>
                     </div>
                     <pre><code># Загрузка данных из CSV файла
 global data_path = getcwd() / "examples" / "04-data-processing" / "sample_data.csv"
-global employees = read_file(data_path)
+global employees = read(data_path)
 
 # Показать информацию о таблице
 table_info(employees)
@@ -543,7 +543,7 @@ if x > 0 {
                     <pre><code># Цикл по массиву переменной
 for file in files {
     let path = basePath / "data" / file
-    let text = read_file(path)
+    let text = read(path)
     print(">>", file, "length:", text)
 }
 
@@ -678,7 +678,7 @@ print(greet("DataCode"))</code></pre>
                         <pre><code># Загрузка данных из CSV файла
 print("Loading data from CSV file...")
 global data_path = getcwd() / "examples" / "04-data-processing" / "sample_data.csv"
-global employees = read_file(data_path)
+global employees = read(data_path)
 
 print("Data loaded successfully!")
 
@@ -849,9 +849,9 @@ print("sum_to_n(10) =", sum_to_n(10))</code></pre>
                             <button class="copy-btn" onclick="copyCode(this)">📋 Копировать</button>
                         </div>
                         <pre><code># Загрузка данных из CSV файлов
-global sales = read_file("sales.csv")
-global products = read_file("products.csv")
-global customers = read_file("customers.csv")
+global sales = read("sales.csv")
+global products = read("products.csv")
+global customers = read("customers.csv")
 
 # Создание таблиц
 global sales_table = table(sales)
@@ -1215,7 +1215,7 @@ global trades = table([['2024-01-02', 'buy'], ['2024-01-06', 'sell']], ['date', 
 global result = asof_join(trades, prices, 'date', 'date', 'backward')</code></pre>
                     </div>
 
-                    <p><strong>📚 Полная документация:</strong> См. <code>docs/ru/join_specification.md</code> для подробного описания всех типов JOIN операций.</p>
+                    <p><strong>📚 Полная документация:</strong> См. <code>docs/ru/2-язык/таблицы/join.md</code> для подробного описания всех типов JOIN операций.</p>
                 </div>
             </section>
 
@@ -1350,7 +1350,7 @@ ws.on_open = lambda ws: ws.send(json.dumps({
 ws.run_forever()</code></pre>
                     </div>
 
-                    <p><strong>📚 Полная документация:</strong> См. <code>docs/ru/websocket_server.md</code> для подробного описания протокола и примеров.</p>
+                    <p><strong>📚 Полная документация:</strong> См. <code>docs/ru/2-язык/сервисы/websocket-сервер.md</code> для подробного описания протокола и примеров.</p>
                 </div>
             </section>
 
@@ -1466,9 +1466,9 @@ ws.run_forever()</code></pre>
                         <button class="copy-btn" onclick="copyCode(this)">📋 Копировать</button>
                     </div>
                     <pre><code># Загрузка данных
-global sales = read_file("sales.csv")
-global products = read_file("products.csv")
-global customers = read_file("customers.csv")
+global sales = read("sales.csv")
+global products = read("products.csv")
+global customers = read("customers.csv")
 
 # Обработка данных
 global sales_table = table(sales)

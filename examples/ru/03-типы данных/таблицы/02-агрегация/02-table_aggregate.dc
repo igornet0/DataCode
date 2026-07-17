@@ -1,0 +1,24 @@
+# Глобальные функции table_aggregate и table_aggregate_group
+# (методы .aggregate / .aggregate_group — в 01-агрегации.dc)
+# CSV: data/employees.csv
+
+employees = read(path("data/employees.csv"))
+
+summary = table_aggregate(employees, {
+  rows: "count",
+  total_amount: { op: "sum", column: "Amount" },
+  avg_amount: { op: "avg", column: "Amount" },
+  p90_amount: { op: "percentile", column: "Amount", p: 0.90 },
+  has_large: { op: "any", column: "Amount", where: fn(x) => x > 6000 },
+})
+print("table_aggregate rows:", len(summary))
+print("rows:", summary["rows"][0], "| total:", summary["total_amount"][0], "| p90:", summary["p90_amount"][0])
+
+by_dept = table_aggregate_group(employees, {
+  group: "Department",
+  count: "count",
+  sum_amount: { op: "sum", column: "Amount" },
+  avg_amount: { op: "avg", column: "Amount" },
+})
+print("table_aggregate_group rows:", len(by_dept))
+show_table(table_head(by_dept, 10))

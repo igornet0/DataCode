@@ -1,0 +1,102 @@
+# Example 2: Merging tables
+# Demonstrates how to merge multiple tables into one using merge_tables()
+
+print("============================================================")
+print("Example 2: Merging tables")
+print("============================================================")
+print()
+
+# Example 2.1: Basic table merging
+print("🔍 Example 2.1: Basic table merging...")
+
+# Create example tables with same structure
+let table1 = table([
+    [1, "Alice", 25],
+    [2, "Bob", 30]
+], ["id", "name", "age"])
+
+let table2 = table([
+    [3, "Charlie", 35],
+    [4, "David", 28]
+], ["id", "name", "age"])
+
+let table3 = table([
+    [5, "Eve", 32]
+], ["id", "name", "age"])
+
+print("  Table 1: ", len(table1), " rows")
+print("  Table 2: ", len(table2), " rows")
+print("  Table 3: ", len(table3), " rows")
+print()
+
+# Merge tables
+let merged = merge_tables(tables=[table1, table2, table3], mode="outer")
+
+if merged != null {
+    print("  ✓ Merged table created: ", len(merged), " rows")
+    print("  ✓ Headers: ", merged.columns)
+} else {
+    print("  ✗ Error: merged table is null")
+}
+print()
+
+# Example 2.2: Merging tables from files
+print("🔍 Example 2.2: Merging tables loaded from files...")
+try {
+    let base_path = getcwd() / "model_data"
+    
+    # Load several monthly sales files
+    let sales_tables = []
+    
+    # Load first quarter of 2023
+    for month in ["01", "02", "03"] {
+        let file_path = base_path / "2023" / month / ("sales_2023_" + month + ".csv")
+        try {
+            let data = read(file_path)
+            sales_tables = push(sales_tables, data)
+            print("  ✓ Loaded sales_2023_", month, ".csv: ", len(data), " rows")
+        } catch e {
+            print("  ⚠️  Failed to load sales_2023_", month, ".csv: ", e)
+        }
+    }
+    
+    print()
+    
+    # Merge all sales tables
+    if len(sales_tables) > 0 {
+        let all_sales = merge_tables(sales_tables)
+        if all_sales != null {
+            print("  ✓ Merged sales data: ", len(all_sales), " total rows")
+            print("  ✓ Headers: ", all_sales.columns)
+        }
+    }
+    print()
+} catch e {
+    print("  ✗ Error: ", e)
+    print()
+}
+
+# Example 2.3: Edge cases
+print("🔍 Example 2.3: Edge cases...")
+
+# Empty array
+let empty_merged = merge_tables([])
+if empty_merged == null {
+    print("  ✓ merge_tables([]) returns null (expected)")
+} else {
+    print("  ✗ Error: merge_tables([]) should return null")
+}
+
+# Single table
+let single_merged = merge_tables([table1])
+if single_merged != null and len(single_merged) == len(table1) {
+    print("  ✓ merge_tables([single_table]) works correctly: ", len(single_merged), " rows")
+} else {
+    print("  ✗ Error: merge_tables([single_table]) failed")
+}
+print()
+
+print("============================================================")
+print("✅ Example 2 completed")
+print("============================================================")
+

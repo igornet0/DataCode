@@ -1,0 +1,17 @@
+# List comprehension — [выражение for … in …]
+
+print("=== List comprehension ===")
+
+squares = [x * x for x in [1, 2, 3, 4, 5]]
+print("квадраты:", squares)
+
+evens = [x for x in range(10) if x % 2 == 0]
+print("чётные 0..9:", evens)
+
+pairs = [10 * x + y for x in [1, 2] for y in [1, 2]]
+print("декартово произведение:", pairs)
+
+# Переменная цикла не «утекает» наружу
+outer = 99
+a = [x for x in [1, 2, 3]]
+print("outer не изменился:", outer, "| a:", a)

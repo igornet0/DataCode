@@ -1,0 +1,33 @@
+
+for file in list_files("./folder/") {
+    
+    if file.extension in ["jpg", "png", "img"] {
+        continue
+    }
+
+    print(file)
+
+    data = read(file)
+    print(typeof(data))
+    print(data)
+    #print(typeof(file))
+    print("-"*20)
+
+    if isinstance(data, table) {
+        data.push(
+            item={product_id: "PROD_003",
+            region: "REG_10",
+            warehouse_id: "WH_003",
+            start_stock: 82,
+            end_stock: 102,
+            stock_losses: 3,
+            stock_replenished: 34}, ignore=true)
+        data.save_csv(filename="./folder-out/output")
+    } else {
+        save(data=data, filename="./folder-out/" + file.name)
+    }
+}
+# .env files are not visible to list_files
+
+data = read("./folder/.env")
+print(".env: ", data)

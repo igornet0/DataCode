@@ -1,0 +1,24 @@
+# table.save_csv() / table.save_sqlite() — export table to file
+
+print("=== 1. CSV: filename without extension ===")
+users = table([[1, "Alex"], [2, "Kate"]], ["id", "name"])
+csv_path = users.save_csv("output_users")
+print("saved:", csv_path)
+
+print("\n=== 2. SQLite: table name = variable name ===")
+db_path = users.save_sqlite("users_db")
+print("sqlite:", db_path)
+
+print("\n=== 3. path() as argument ===")
+alt_path = users.save_csv(path("alt_out"))
+print("alt:", alt_path)
+
+print("\n=== 4. Empty table with headers ===")
+schema = table([], ["id", "name", "email"])
+schema.save_csv("empty_schema")
+
+print("\n=== 5. Path with directory (directory must exist) ===")
+# Create export_data folder first, then:
+# users.save_csv("./export_data/report")
+
+print("\nDone.")

@@ -46,6 +46,14 @@ datacode examples/en/02-syntax/expressions.dc
 datacode examples/en/02-syntax/booleans.dc
 ```
 
+### 4. `special-methods.dc` - Class special methods
+**Description**: `@add`, `@string`, `@len` on a custom `Vector` type.
+
+**Run**:
+```bash
+datacode examples/en/02-syntax/special-methods.dc
+```
+
 ## 🎯 Concepts Covered
 
 ### Conditional Constructs

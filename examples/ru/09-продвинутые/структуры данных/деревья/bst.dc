@@ -1,0 +1,138 @@
+# Бинарное дерево поиска (BST) — insert/search за O(h), inorder даёт сортировку
+
+cls TreeNode {
+    public:
+        value: int
+        left: Optional[TreeNode]
+        right: Optional[TreeNode]
+
+    new TreeNode(value: int) {
+        this.value = value
+        this.left = null
+        this.right = null
+    }
+}
+
+cls BST {
+    private:
+        root: Optional[TreeNode]
+
+    new BST() {
+        this.root = null
+    }
+
+    public:
+    fn insert(value: int) {
+        this.root = this._insert(this.root, value)
+    }
+
+    fn contains(value: int) -> bool {
+        return this._search(this.root, value) != null
+    }
+
+    fn min_value() -> Optional[int] {
+        node = this._min_node(this.root)
+        if node == null: return null
+        return node.value
+    }
+
+    fn max_value() -> Optional[int] {
+        node = this._max_node(this.root)
+        if node == null: return null
+        return node.value
+    }
+
+    fn inorder() -> list[int] {
+        result = []
+        this._inorder(this.root, result)
+        return result
+    }
+
+    fn remove(value: int) -> bool {
+        if !this.contains(value): return false
+        this.root = this._remove(this.root, value)
+        return true
+    }
+
+    fn is_valid() -> bool {
+        return validate_bst(this.root, -1000000, 1000000)
+    }
+
+    private:
+    fn _insert(node: Optional[TreeNode], value: int) -> TreeNode {
+        if node == null: return TreeNode(value)
+        if value < node.value {
+            node.left = this._insert(node.left, value)
+        } else if value > node.value {
+            node.right = this._insert(node.right, value)
+        }
+        return node
+    }
+
+    fn _search(node: Optional[TreeNode], value: int) -> Optional[TreeNode] {
+        if node == null or node.value == value: return node
+        if value < node.value: return this._search(node.left, value)
+        return this._search(node.right, value)
+    }
+
+    fn _min_node(node: Optional[TreeNode]) -> Optional[TreeNode] {
+        if node == null: return null
+        while node.left != null { node = node.left }
+        return node
+    }
+
+    fn _max_node(node: Optional[TreeNode]) -> Optional[TreeNode] {
+        if node == null: return null
+        while node.right != null { node = node.right }
+        return node
+    }
+
+    fn _inorder(node: Optional[TreeNode], acc: list[int]) {
+        if node == null: return
+        this._inorder(node.left, acc)
+        acc.push(node.value)
+        this._inorder(node.right, acc)
+    }
+
+    fn _remove(node: Optional[TreeNode], value: int) -> Optional[TreeNode] {
+        if node == null: return null
+        if value < node.value {
+            node.left = this._remove(node.left, value)
+        } else if value > node.value {
+            node.right = this._remove(node.right, value)
+        } else {
+            if node.left == null: return node.right
+            if node.right == null: return node.left
+            successor = this._min_node(node.right)
+            node.value = successor.value
+            node.right = this._remove(node.right, successor.value)
+        }
+        return node
+    }
+}
+
+fn validate_bst(node: Optional[TreeNode], low: int, high: int) -> bool {
+    """Проверка свойства BST: left < node < right."""
+    if node == null: return true
+    if node.value <= low or node.value >= high: return false
+    return validate_bst(node.left, low, node.value)
+        and validate_bst(node.right, node.value, high)
+}
+
+fn __main__() {
+    print("=== BST (Binary Search Tree) ===")
+
+    tree = BST()
+    for x in [8, 3, 10, 1, 6, 14, 4, 7, 13] { tree.insert(x) }
+
+    print("inorder (отсортировано): ${tree.inorder()}")
+    print("min=${tree.min_value()}, max=${tree.max_value()}")
+    print("contains(6)=${tree.contains(6)}, contains(99)=${tree.contains(99)}")
+
+    tree.remove(3)
+    print("После remove(3): ${tree.inorder()}")
+
+    expected = [1, 4, 6, 7, 8, 10, 13, 14]
+    status = if tree.inorder() == expected and tree.is_valid() and !tree.contains(3) { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

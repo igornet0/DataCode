@@ -1,0 +1,24 @@
+from system import process
+import pathfind
+
+print("=== process device ===")
+print("has_metal:", process.has_metal())
+print("has_gpu:", process.has_gpu())
+process.set_device(process.auto)
+process.set_gpu_min_size(1000)
+info = process.info()
+print("backend:", info["backend"])
+print("cores:", info["cores"])
+
+print("\n=== CPU vector add ===")
+process.set_device(process.cpu)
+a = [1.0, 2.0, 3.0]
+b = [4.0, 5.0, 6.0]
+print(process.vector_add(a, b))
+
+print("\n=== native pathfind 100x100 ===")
+path = pathfind.astar_grid(100, 100, (0, 0), (50, 50), set())
+print("path length:", len(path))
+
+print("\n=== DC vs native note ===")
+print("For 1000x5000 grid use pathfind.astar_grid — low RAM native A*")

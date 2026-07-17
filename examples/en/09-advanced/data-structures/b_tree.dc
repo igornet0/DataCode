@@ -1,0 +1,127 @@
+# B-tree of order t - simplified tutorial implementation (t=2, minimal B-tree)
+
+cls BTreeNode {
+    public:
+        keys: list[int]
+        children: list[Optional[BTreeNode]]
+        leaf: bool
+
+    new BTreeNode(leaf: bool) {
+        this.keys = []
+        this.children = []
+        this.leaf = leaf
+    }
+}
+
+cls BTree {
+    private:
+        root: BTreeNode
+        t: int
+
+    new BTree(t: int = 2) {
+        """t is the minimum degree: the node contains from t-1 to 2t-1 keys."""
+        this.t = t
+        this.root = BTreeNode(true)
+    }
+
+    private:
+    fn _split_child(parent: BTreeNode, i: int) {
+        full = parent.children[i]
+        mid = this.t - 1
+        mid_key = full.keys[mid]
+        new_node = BTreeNode(full.leaf)
+
+        new_node.keys = full.keys[mid + 1:]
+        full.keys = full.keys[:mid]
+
+        if !full.leaf {
+            new_node.children = full.children[mid + 1:]
+            full.children = full.children[:mid + 1]
+        }
+
+        parent_keys = []
+        for j in range(i) { parent_keys.push(parent.keys[j]) }
+        parent_keys.push(mid_key)
+        for j in range(i, len(parent.keys)) { parent_keys.push(parent.keys[j]) }
+        parent.keys = parent_keys
+
+        parent_children = []
+        for j in range(i + 1) { parent_children.push(parent.children[j]) }
+        parent_children.push(new_node)
+        for j in range(i + 1, len(parent.children)) { parent_children.push(parent.children[j]) }
+        parent.children = parent_children
+    }
+
+    fn _insert_non_full(node: BTreeNode, key: int) {
+        i = len(node.keys) - 1
+
+        if node.leaf {
+            node.keys.push(key)
+            node.keys = sort(node.keys)
+        } else {
+            while i >= 0 and key < node.keys[i] { i -= 1 }
+            i += 1
+            if len(node.children[i].keys) == 2 * this.t - 1 {
+                this._split_child(node, i)
+                if key > node.keys[i] { i += 1 }
+            }
+            this._insert_non_full(node.children[i], key)
+        }
+    }
+
+    public:
+    fn insert(key: int) {
+        root = this.root
+        if len(root.keys) == 2 * this.t - 1 {
+            new_root = BTreeNode(false)
+            new_root.children.push(root)
+            this.root = new_root
+            this._split_child(new_root, 0)
+            this._insert_non_full(new_root, key)
+        } else {
+            this._insert_non_full(root, key)
+        }
+    }
+
+    fn search(key: int) -> bool {
+        return this._search(this.root, key)
+    }
+
+    fn _search(node: BTreeNode, key: int) -> bool {
+        i = 0
+        while i < len(node.keys) and key > node.keys[i] { i += 1 }
+        if i < len(node.keys) and key == node.keys[i]: return true
+        if node.leaf: return false
+        return this._search(node.children[i], key)
+    }
+
+    fn inorder() -> list[int] {
+        result = []
+        this._collect(this.root, result)
+        return result
+    }
+
+    fn _collect(node: BTreeNode, result: list[int]) {
+        for i in range(len(node.keys)) {
+            if !node.leaf { this._collect(node.children[i], result) }
+            result.push(node.keys[i])
+        }
+        if !node.leaf and len(node.children) > 0 {
+            this._collect(node.children[len(node.children) - 1], result)
+        }
+    }
+}
+
+fn __main__() {
+    print("=== B-Tree ===")
+
+    tree = BTree(2)
+    for x in [10, 20, 5, 6, 12, 30, 7, 17] { tree.insert(x) }
+
+    vals = tree.inorder()
+    print("inorder: ${vals}")
+    print("search 6: ${tree.search(6)}, search 99: ${tree.search(99)}")
+
+    status = if vals == sort([10, 20, 5, 6, 12, 30, 7, 17]) and tree.search(6) { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

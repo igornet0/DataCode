@@ -1,0 +1,8 @@
+# read_file_bin — read raw bytes from a file
+
+png = path("folder/favicon.png")
+raw = read_file_bin(png)
+
+print("typeof:", typeof(raw))
+print("len(bytes):", len(raw))
+print("first 4 bytes (PNG signature):", raw[0], raw[1], raw[2], raw[3])

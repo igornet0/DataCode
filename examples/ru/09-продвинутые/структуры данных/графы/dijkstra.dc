@@ -1,0 +1,82 @@
+# Алгоритм Дейкстры — кратчайшие пути во взвешенном графе (неотрицательные веса)
+# graph[u] = [(v, weight), ...]
+
+import heapq
+
+INF = float(inf)
+
+fn dijkstra(graph: dict[int, list[tuple[int, float]]], n: int, source: int) -> tuple[dict[int, float], dict[int, int]] {
+    """
+    Возвращает (dist, parent): расстояния и предки для восстановления путей.
+    Недостижимые вершины имеют dist = inf.
+    """
+    dist = {}
+    parent = {}
+    for i in range(n) {
+        dist[i] = INF
+        parent[i] = null
+    }
+    dist[source] = 0.0
+    heap = [(0.0, source)]
+
+    while len(heap) > 0 {
+        d, u = heapq.heappop(heap)
+        if d > dist[u]: continue
+
+        for edge in graph.get(u, []) {
+            v, w = edge[0], edge[1]
+            nd = d + w
+            if nd < dist[v] {
+                dist[v] = nd
+                parent[v] = u
+                heapq.heappush(heap, (nd, v))
+            }
+        }
+    }
+    return (dist, parent)
+}
+
+fn reconstruct_path(parent: dict[int, int], source: int, target: int) -> Optional[list[int]] {
+    if parent[target] == null and target != source: return null
+    path = []
+    cur = target
+    while cur != null {
+        path.push(cur)
+        if cur == source: break
+        cur = parent[cur]
+    }
+    if len(path) == 0 or path[-1] != source: return null
+    return reverse(path)
+}
+
+fn build_weighted_graph() -> tuple[int, dict[int, list[tuple[int, float]]]] {
+    n = 5
+    edges = [
+        (0, 1, 4.0), (0, 2, 1.0),
+        (1, 3, 1.0), (2, 1, 2.0), (2, 3, 5.0),
+        (3, 4, 3.0),
+    ]
+    graph = {}
+    for i in range(n) { graph[i] = [] }
+    for e in edges {
+        graph[e[0]].push((e[1], e[2]))
+    }
+    return (n, graph)
+}
+
+fn __main__() {
+    print("=== Dijkstra ===")
+
+    n, graph = build_weighted_graph()
+    dist, parent = dijkstra(graph, n, 0)
+    path = reconstruct_path(parent, 0, 4)
+
+    print("dist от 0: ${dist}")
+    print("Путь 0 → 4: ${path}")
+
+    expected_dist = 7.0
+    expected_path = [0, 2, 1, 3, 4]
+    status_d = if dist[4] == expected_dist { "OK" } else { "FAIL" }
+    status_p = if path == expected_path { "OK" } else { "FAIL" }
+    print("Тест dist[4]=7: ${status_d}, путь: ${status_p}")
+}

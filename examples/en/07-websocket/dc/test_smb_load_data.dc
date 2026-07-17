@@ -1,0 +1,14 @@
+let path = path("lib://Stream/my_dir")
+
+for path_dir in list_files(path) {
+    for file in list_files(path / path_dir) {
+        if contains(file, 'data') {
+            print(file)
+            global data = read(path / path_dir / file, 11, ' data')
+            # table_head(data)
+            print(len(data))
+            table_info(data)
+        }
+    }
+}
+

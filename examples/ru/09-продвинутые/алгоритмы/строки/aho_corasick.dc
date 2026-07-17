@@ -1,0 +1,97 @@
+# Ахо-Корасик — поиск множества образцов за O(n + m + z)
+
+cls AhoNode {
+    public:
+        children: dict[str, AhoNode]
+        fail: Optional[AhoNode]
+        output: list[str]
+
+    new AhoNode() {
+        this.children = {}
+        this.fail = null
+        this.output = []
+    }
+}
+
+cls AhoCorasick {
+    private:
+        root: AhoNode
+
+    new AhoCorasick() {
+        this.root = AhoNode()
+    }
+
+    public:
+    fn add_pattern(pattern: str) {
+        node = this.root
+        for ch in pattern {
+            if ch not in node.children { node.children[ch] = AhoNode() }
+            node = node.children[ch]
+        }
+        node.output.push(pattern)
+    }
+
+    fn build() {
+        """Построить failure links (BFS)."""
+        queue = []
+        for ch in this.root.children.keys {
+            child = this.root.children[ch]
+            child.fail = this.root
+            queue.push(child)
+        }
+
+        while len(queue) > 0 {
+            current = queue.pop(0)
+            for ch in current.children.keys {
+                child = current.children[ch]
+                queue.push(child)
+
+                fail = current.fail
+                while fail != null and ch not in fail.children {
+                    fail = fail.fail
+                }
+                if fail == null {
+                    child.fail = this.root
+                } else {
+                    child.fail = fail.children[ch]
+                }
+                for p in child.fail.output { child.output.push(p) }
+            }
+        }
+    }
+
+    fn search(text: str) -> list[tuple[int, str]] {
+        """Все вхождения: (позиция конца, образец)."""
+        result = []
+        node = this.root
+
+        for i in range(len(text)) {
+            ch = text[i]
+            while node != this.root and ch not in node.children {
+                node = node.fail
+            }
+            if ch in node.children {
+                node = node.children[ch]
+            }
+            for p in node.output {
+                result.push((i, p))
+            }
+        }
+        return result
+    }
+}
+
+fn __main__() {
+    print("=== Aho-Corasick ===")
+
+    ac = AhoCorasick()
+    for p in ["he", "she", "his", "hers"] { ac.add_pattern(p) }
+    ac.build()
+
+    text = "ushers"
+    matches = ac.search(text)
+    print("text='${text}', совпадения: ${matches}")
+
+    status = if len(matches) >= 2 { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

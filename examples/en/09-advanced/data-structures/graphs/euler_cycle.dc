@@ -1,0 +1,84 @@
+# Euler cycle - all powers are even and the graph is edge-connected
+
+fn build_undirected_adj(n: int, edges: array[tuple[int, int]]) -> dict[int, array[int]] {
+    adj = {}
+    for i in range(n) { adj[i] = [] }
+    for e in edges {
+        adj[e[0]].push(e[1])
+        adj[e[1]].push(e[0])
+    }
+    return adj
+}
+
+fn has_euler_cycle(adj: dict[int, array[int]], n: int) -> bool {
+    for i in range(n) {
+        if len(adj[i]) % 2 == 1: return false
+    }
+
+    start = -1
+    for i in range(n) {
+        if len(adj[i]) > 0 { start = i; break }
+    }
+    if start < 0: return true
+
+    visited = set()
+    stack = [start]
+    visited.add(start)
+    count = 1
+
+    while len(stack) > 0 {
+        v = stack.pop()
+        for u in adj[v] {
+            if u not in visited {
+                visited.add(u)
+                count += 1
+                stack.push(u)
+            }
+        }
+    }
+
+    nonzero = 0
+    for i in range(n) { if len(adj[i]) > 0 { nonzero += 1 } }
+    return count == nonzero
+}
+
+fn hierholzer_cycle(adj: dict[int, array[int]], start: int) -> array[int] {
+    local_adj = {}
+    for v in adj.keys {
+        local_adj[v] = []
+        for u in adj[v] { local_adj[v].push(u) }
+    }
+
+    stack = [start]
+    circuit = []
+
+    while len(stack) > 0 {
+        v = stack[-1]
+        if len(local_adj[v]) == 0 {
+            circuit.push(v)
+            stack.pop()
+        } else {
+            u = local_adj[v].pop()
+            local_adj[u].pop()
+            stack.push(u)
+        }
+    }
+    return reverse(circuit)
+}
+
+fn __main__() {
+    print("=== Euler Cycle ===")
+
+    edges = [(0, 1), (1, 2), (2, 0), (1, 3), (3, 1)]
+    n = 4
+    adj = build_undirected_adj(n, edges)
+
+    ok = has_euler_cycle(adj, n)
+    cycle = hierholzer_cycle(adj, 0)
+
+    print("Eulerian cycle: ${ok}")
+    print("loop: ${cycle}")
+
+    status = if ok { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

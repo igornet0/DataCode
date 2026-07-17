@@ -1,0 +1,13 @@
+# HTTP DataSource (требуется сеть)
+
+api = datasource({ type: "http", url: "https://httpbin.org", timeout: 30 })
+
+resp = api.request({
+    method: "GET",
+    path: "/get",
+    query: { foo: "bar" }
+})
+
+print("status:", resp.status)
+data = resp.json()
+print(typeof(data))

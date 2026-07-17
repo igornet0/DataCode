@@ -1,0 +1,97 @@
+# Union-Find (Disjoint Set Union) — path compression + union by rank
+
+cls UnionFind {
+    private:
+        parent: dict[int, int]
+        rank: dict[int, int]
+        components: int
+
+    new UnionFind(n: int) {
+        """
+        Components at vertices 0..n-1.
+        """
+        this.parent = {}
+        this.rank = {}
+        for i in range(n) {
+            this.parent[i] = i
+            this.rank[i] = 0
+        }
+        this.components = n
+    }
+
+    public:
+    fn find(x: int) -> int {
+        """Root of a set with path compression."""
+        root = this.parent[x]
+        if root != x {
+            this.parent[x] = this.find(root)
+        }
+        return this.parent[x]
+    }
+
+    fn union(a: int, b: int) -> bool {
+        """
+        Combine sets a and b.
+        Returns true if the union occurred (there were different components).
+        """
+        ra = this.find(a)
+        rb = this.find(b)
+        if ra == rb: return false
+
+        if this.rank[ra] < this.rank[rb] {
+            ra, rb = rb, ra
+        }
+        this.parent[rb] = ra
+        if this.rank[ra] == this.rank[rb] {
+            this.rank[ra] = this.rank[ra] + 1
+        }
+        this.components = this.components - 1
+        return true
+    }
+
+    fn connected(a: int, b: int) -> bool {
+        return this.find(a) == this.find(b)
+    }
+
+    fn count_components() -> int {
+        return this.components
+    }
+}
+
+fn build_undirected_adj(n: int, edges: list[tuple[int, int]]) -> dict[int, list[int]] {
+    """Build an adjacency list of an undirected graph."""
+    adj = {}
+    for i in range(n) { adj[i] = [] }
+    for e in edges {
+        u, v = e[0], e[1]
+        adj[u].push(v)
+        adj[v].push(u)
+    }
+    return adj
+}
+
+fn __main__() {
+    print("=== Union-Find (DSU) ===")
+
+    uf = UnionFind(6)
+    pairs = [(0, 1), (1, 2), (3, 4), (0, 2), (5, 5)]
+
+    for p in pairs {
+        u, v = p[0], p[1]
+        merged = uf.union(u, v)
+        print("union(${u}, ${v}) -> merged=${merged}, components=${uf.count_components()}")
+    }
+
+    queries = [(0, 3), (0, 2), (3, 4), (4, 5)]
+    print("\n--- Connectivity check ---")
+    for q in queries {
+        u, v = q[0], q[1]
+        print("  connected(${u}, ${v}) = ${uf.connected(u, v)}")
+    }
+
+    # Application: counting connected components along edges
+    edges = [(0, 1), (2, 3), (4, 5)]
+    uf2 = UnionFind(6)
+    for e in edges { uf2.union(e[0], e[1]) }
+    print("\nConnected component on 6 vertices and edges ${edges}: ${uf2.count_components()}")
+}

@@ -1,0 +1,33 @@
+# Сортировка выбором — O(n²), нестабильная
+
+fn array_copy(arr: list) -> list {
+    copy = []
+    for x in arr { copy.push(x) }
+    return copy
+}
+
+fn selection_sort(arr: list[int]) -> list[int] {
+    a = array_copy(arr)
+    n = len(a)
+
+    for i in range(n) {
+        min_idx = i
+        for j in range(i + 1, n) {
+            if a[j] < a[min_idx]: min_idx = j
+        }
+        if min_idx != i {
+            a[i], a[min_idx] = a[min_idx], a[i]
+        }
+    }
+    return a
+}
+
+fn __main__() {
+    print("=== Selection Sort ===")
+
+    data = [64, 25, 12, 22, 11]
+    result = selection_sort(data)
+    print("Исходный:  ${data}")
+    print("Результат: ${result}")
+    print("Тест: ${result == [11, 12, 22, 25, 64]} (ожид. true)")
+}

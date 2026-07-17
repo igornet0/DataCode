@@ -1,0 +1,28 @@
+# Скрипт приложения WebSocket: политика execute и пользовательские маршруты.
+# Запуск:
+#   datacode dc/ws_app.dc --websocket --host 0.0.0.0 --port 8899 --use-ve
+
+from websocket import configure, disable_builtin
+
+# restricted — запрет опасных операций в execute (рекомендуется для продакшена)
+configure({"execute_policy": "restricted"})
+
+# Раскомментируйте, чтобы отключить встроенную загрузку файлов:
+# disable_builtin("upload_file")
+
+@ws_route("ping")
+fn ping(req) {
+    return {"success": true, "message": "pong"}
+}
+
+@ws_route("version")
+fn version(req) {
+    return {"success": true, "version": "1.0", "app": "ws_app.dc"}
+}
+
+@ws_route("health")
+fn health(req) {
+    return {"success": true, "status": "ok"}
+}
+
+print("WebSocket-приложение настроено: маршруты ping, version, health")

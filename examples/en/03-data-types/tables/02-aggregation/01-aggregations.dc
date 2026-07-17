@@ -1,0 +1,55 @@
+# Aggregations over table columns
+# CSV: data/employees.csv, data/orders.csv, data/duplicates.csv
+#
+# Covers:
+# count, count_distinct, sum, avg, min, max, first, last,
+# median, mode, stddev, variance, percentile, list, any
+
+employees = read(path("data/employees.csv"))
+orders = read(path("data/orders.csv"))
+dup = read(path("data/duplicates.csv"))
+
+# aggregate — function/method to aggregate data by table columns:
+# - takes a table and a dict where key is result column name and value is either
+#   an aggregation type string (e.g. "count") or an object with op and parameters:
+#     - op: operation name (e.g. "sum", "avg", "min", "max", "first", "last", "median", "mode", "stddev", "variance", "percentile", "list", "any", etc.)
+#     - column: source column name (e.g. "Amount")
+#     - where: (optional) filter function (e.g. fn(x) => x > 6000)
+#     - p: (for percentiles) percentile value — e.g. 0.90 for p90
+# - result is a new table (usually one row) with aggregate results per key
+# - allows multiple aggregations on same or different columns at once
+# Example below aggregates metrics on "Amount" from employees:
+
+summary = employees.aggregate({
+  count: "count",
+  count_distinct_amount: { op: "count_distinct", column: "Amount" },
+  sum_amount: { op: "sum", column: "Amount" },
+  avg_amount: { op: "avg", column: "Amount" },
+  min_amount: { op: "min", column: "Amount" },
+  max_amount: { op: "max", column: "Amount" },
+  first_amount: { op: "first", column: "Amount" },
+  last_amount: { op: "last", column: "Amount" },
+  median_amount: { op: "median", column: "Amount" },
+  mode_amount: { op: "mode", column: "Amount" },
+  stddev_amount: { op: "stddev", column: "Amount" },
+  variance_amount: { op: "variance", column: "Amount" },
+  p90_amount: { op: "percentile", column: "Amount", p: 0.90 },
+  list_amount: { op: "list", column: "Amount" },
+  any_amount_gt_6000: { op: "any", column: "Amount", where: fn(x) => x > 6000 },
+})
+print("summary rows:", len(summary))
+print("summary count:", summary["count"][0], "| p90_amount:", summary["p90_amount"][0])
+#show_table(table_head(summary, 10))
+print(table_info(summary))
+
+summary2 = employees.aggregate_group({
+  group: "Department",
+  count: "count",
+  sum_amount: { op: "sum", column: "Amount" },
+  avg_amount: { op: "avg", column: "Amount" },
+})
+print("summary2 rows:", len(summary2))
+print("summary2 count (Sales):", summary2["count"][0], "| sum_amount:", summary2["sum_amount"][0])
+
+show_table(table_head(summary2, 10))
+print(table_info(summary2))

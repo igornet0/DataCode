@@ -1,0 +1,54 @@
+# Скользящий полиномиальный хеш строки — O(1) хеш подстроки после O(n) предобработки
+
+fn build_prefix_hash(s: str, base: int, mod: int) -> tuple[list[int], list[int]] {
+    """
+    prefix[i] = hash(s[0..i-1]), pow[i] = base^i mod mod.
+    """
+    n = len(s)
+    prefix = [0 for _ in range(n + 1)]
+    pow_b = [1 for _ in range(n + 1)]
+
+    for i in range(n) {
+        prefix[i + 1] = (prefix[i] * base + ord(s[i])) % mod
+        pow_b[i + 1] = (pow_b[i] * base) % mod
+    }
+    return (prefix, pow_b)
+}
+
+fn substring_hash(prefix: list[int], pow_b: list[int], left: int, right: int, mod: int) -> int {
+    """Хеш s[left..right] включительно."""
+    length = right - left + 1
+    h = (prefix[right + 1] - prefix[left] * pow_b[length]) % mod
+    return (h + mod) % mod
+}
+
+fn compare_substrings(s: str, a: int, b: int, c: int, d: int) -> bool {
+    """Сравнить подстроки s[a..b] и s[c..d] за O(1) с высокой вероятностью."""
+    base = 911382323
+    mod = 1000000007
+    pref, pw = build_prefix_hash(s, base, mod)
+    len1 = b - a + 1
+    len2 = d - c + 1
+    if len1 != len2: return false
+    return substring_hash(pref, pw, a, b, mod) == substring_hash(pref, pw, c, d, mod)
+}
+
+fn __main__() {
+    print("=== Rolling Hash ===")
+
+    s = "abracadabra"
+    pref, pw = build_prefix_hash(s, 911382323, 1000000007)
+
+    h1 = substring_hash(pref, pw, 0, 3, 1000000007)
+    h2 = substring_hash(pref, pw, 7, 10, 1000000007)
+
+    print("s='${s}'")
+    print("hash 'abra' [0..3]: ${h1}")
+    print("hash 'abra' [7..10]: ${h2}")
+    print("равны: ${h1 == h2}")
+
+    eq = compare_substrings(s, 0, 3, 7, 10)
+    neq = compare_substrings(s, 0, 3, 2, 5)
+    status = if eq and !neq { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

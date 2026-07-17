@@ -1,0 +1,57 @@
+# SPFA — кратчайшие пути (улучшенный Беллман-Форд для разреженных графов)
+
+INF = float(inf)
+
+fn spfa(n: int, edges: list[tuple[int, int, float]], source: int) -> tuple[dict[int, float], bool] {
+    """
+    edges: (u, v, weight). Возвращает (dist, has_negative_cycle).
+    """
+    adj = {}
+    for i in range(n) { adj[i] = [] }
+    for e in edges { adj[e[0]].push((e[1], e[2])) }
+
+    dist = {}
+    in_queue = {}
+    count = {}
+    for i in range(n) {
+        dist[i] = INF
+        in_queue[i] = false
+        count[i] = 0
+    }
+    dist[source] = 0.0
+    queue = [source]
+    in_queue[source] = true
+
+    while len(queue) > 0 {
+        u = queue.pop(0)
+        in_queue[u] = false
+
+        for edge in adj[u] {
+            v, w = edge[0], edge[1]
+            if dist[u] + w < dist[v] {
+                dist[v] = dist[u] + w
+                if !in_queue[v] {
+                    queue.push(v)
+                    in_queue[v] = true
+                    count[v] += 1
+                    if count[v] >= n: return (dist, true)
+                }
+            }
+        }
+    }
+    return (dist, false)
+}
+
+fn __main__() {
+    print("=== SPFA ===")
+
+    n = 4
+    edges = [(0, 1, 5.0), (1, 2, -3.0), (2, 3, 1.0), (0, 3, 10.0)]
+    dist, neg = spfa(n, edges, 0)
+
+    print("dist от 0: ${dist}")
+    print("отриц. цикл: ${neg} (ожид. false)")
+
+    status = if !neg and dist[3] <= 3.0 { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

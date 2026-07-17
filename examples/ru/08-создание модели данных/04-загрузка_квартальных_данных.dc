@@ -1,0 +1,136 @@
+# Пример 4: Загрузка квартальных агрегированных данных
+# Демонстрирует, как загружать и обрабатывать квартальные сводные данные из вложенных директорий
+
+print("============================================================")
+print("Пример 4: Загрузка квартальных агрегированных данных")
+print("============================================================")
+print()
+
+let base_path = getcwd() / "model_data"
+
+print("📂 Загрузка квартальных данных из вложенной структуры директорий")
+print("  Базовый путь: ", base_path)
+print()
+
+# Собрать квартальные сводные таблицы
+let all_financial_summary = []
+let all_regional_summary = []
+let all_product_summary = []
+let all_employee_performance = []
+
+# Получить список директорий по годам
+let year_dirs = list_files(base_path)
+print("  Найдено ", len(year_dirs), " элементов в базовой директории")
+print()
+
+# Обработать каждый год
+for year_dir in year_dirs {
+    # Пропустить элементы, не являющиеся директориями
+    if year_dir.name != "docs" and !contains(year_dir.name, ".") {        
+        # Получить список директорий по месяцам
+        let month_dirs = list_files(year_dir)
+        
+        # Обработать каждый месяц
+        for month_dir in month_dirs {
+            if !contains(month_dir.name, ".") {
+                
+                # Получить элементы в директории месяца
+                let month_items = list_files(month_dir)
+                
+                # Искать квартальные директории (quarter_YYYY_QN)
+                for item in month_items {
+                    if contains(item.name, "quarter_") {
+                        
+                        print("  📁 Найдена квартальная директория: ", item)
+                        
+                        # Получить файлы в квартальной директории
+                        try {
+                            let quarter_files = list_files(item)
+                            
+                            # Обработать каждый файл
+                            for quarter_file in quarter_files {
+                                try {
+                                    let data = read(quarter_file)
+                                    
+                                    # Категоризировать файлы по шаблону имени
+                                    if contains(quarter_file.name, "financial_summary_") {
+                                        all_financial_summary = push(all_financial_summary, data)
+                                        print("    ✓ Загружено financial_summary: ", quarter_file.name)
+                                    }
+                                    
+                                    if contains(quarter_file.name, "regional_summary_") {
+                                        all_regional_summary = push(all_regional_summary, data)
+                                        print("    ✓ Загружено regional_summary: ", quarter_file.name)
+                                    }
+                                    
+                                    if contains(quarter_file.name, "product_summary_") {
+                                        all_product_summary = push(all_product_summary, data)
+                                        print("    ✓ Загружено product_summary: ", quarter_file.name)
+                                    }
+                                    
+                                    if contains(quarter_file.name, "employee_performance_") {
+                                        all_employee_performance = push(all_employee_performance, data)
+                                        print("    ✓ Загружено employee_performance: ", quarter_file.name)
+                                    }
+                                } catch e {
+                                    print("    ⚠️  Ошибка загрузки ", quarter_file.name, ": ", e)
+                                }
+                            }
+                        } catch e {
+                            print("    ⚠️  Ошибка чтения квартальной директории: ", e)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+print()
+print("📊 Сводка загруженных квартальных данных:")
+print("  Файлов финансовых сводок: ", len(all_financial_summary))
+print("  Файлов региональных сводок: ", len(all_regional_summary))
+print("  Файлов продуктовых сводок: ", len(all_product_summary))
+print("  Файлов отчётов по сотрудникам: ", len(all_employee_performance))
+print()
+
+# Объединить квартальные таблицы
+print("🔗 Объединение квартальных таблиц...")
+
+let financial_summary_all = null
+let regional_summary_all = null
+let product_summary_all = null
+let employee_performance_all = null
+
+if len(all_financial_summary) > 0 {
+    financial_summary_all = merge_tables(all_financial_summary)
+    if financial_summary_all != null {
+        print("  ✓ Объединены финансовые сводки: ", len(financial_summary_all), " строк")
+    }
+}
+
+if len(all_regional_summary) > 0 {
+    regional_summary_all = merge_tables(all_regional_summary)
+    if regional_summary_all != null {
+        print("  ✓ Объединены региональные сводки: ", len(regional_summary_all), " строк")
+    }
+}
+
+if len(all_product_summary) > 0 {
+    product_summary_all = merge_tables(all_product_summary)
+    if product_summary_all != null {
+        print("  ✓ Объединены продуктовые сводки: ", len(product_summary_all), " строк")
+    }
+}
+
+if len(all_employee_performance) > 0 {
+    employee_performance_all = merge_tables(all_employee_performance)
+    if employee_performance_all != null {
+        print("  ✓ Объединены отчёты по сотрудникам: ", len(employee_performance_all), " строк")
+    }
+}
+print()
+
+print("============================================================")
+print("✅ Пример 4 завершён")
+print("============================================================")

@@ -1,0 +1,421 @@
+# Script to load all data from model_data and create SQLite database
+# Usage: datacode load_model_data.dc --build_model
+
+print("============================================================")
+print("Loading data from model_data")
+print("============================================================")
+print()
+
+# Base path to data
+let base_path = getcwd() / "model_data"
+let docs_path = base_path / "docs"
+
+print("📂 Loading reference data...")
+# Initialize variables as null in case of loading errors
+global product_catalog = null
+global regions = null
+global employees = null
+
+# Load reference data
+try {
+    product_catalog = read(docs_path / "product_catalog.csv")
+    print("  ✓ Loaded products: ", len(product_catalog))
+} catch e {
+    print("  ⚠️  Error loading product_catalog.csv: ", e)
+}
+
+try {
+    regions = read(docs_path / "regions.csv")
+    print("  ✓ Loaded regions: ", len(regions))
+} catch e {
+    print("  ⚠️  Error loading regions.csv: ", e)
+}
+
+try {
+    employees = read(docs_path / "employees.csv")
+    print("  ✓ Loaded employees: ", len(employees))
+} catch e {
+    print("  ⚠️  Error loading employees.csv: ", e)
+}
+print()
+
+# Use built-in merge_tables function from DataCode
+
+print("📊 Loading monthly data...")
+
+# Collect all monthly data
+let all_sales_tables = []
+let all_inventory_tables = []
+let all_refunds_tables = []
+let all_marketing_tables = []
+
+# Process each year directory
+for year_dir in list_files(base_path) {
+    # Skip files and service directories
+    if year_dir.name != "docs" and !contains(year_dir.name, ".") {
+        # Get list of months in year        
+        print("  🔍 Year ", year_dir.name)
+        # Process each month directory
+        for month_dir in sort(list_files(year_dir)) {
+            if !month_dir.is_dir {
+                continue
+            }
+            # Skip quarterly directories and files
+            print("     🔍 Month ", month_dir.name)
+            if !contains(month_dir.name, "quarter_") {
+                # month_dir should be "01", "02", ..., "12"
+                for file in list_files(month_dir) {
+                    # Skip quarterly directories and files with extensions (except CSV)
+                    if contains(file.name, "quarter_") or (contains(file.name, ".") and !contains(file.name, ".csv")) {
+                        print("         ⚠️  Skipped (quarterly directory or non-CSV file): ", file.name)
+                    } else {
+                        print("         🔍 file ", file.name)
+                        try {
+                            let data = read(file)
+                            if contains(file.name, "sales") {
+                                try {
+                                    all_sales_tables = push(all_sales_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Error loading ", file, ": ", e)
+                                }
+                            } else if contains(file.name, "inventory") {
+                                try {
+                                    all_inventory_tables = push(all_inventory_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Error loading ", file, ": ", e)
+                                }
+                            } else if contains(file.name, "marketing_spend") {
+                                try {
+                                    all_marketing_tables = push(all_marketing_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Error loading ", file, ": ", e)
+                                }
+                            } else if contains(file.name, "refunds") {
+                                try {
+                                    all_refunds_tables = push(all_refunds_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Error loading ", file, ": ", e)
+                                }
+                            }
+                        } catch e {
+                            print("  ⚠️  Error file ", file, ": ", e)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+print("  ✓ Loaded sales files: ", len(all_sales_tables))
+print("  ✓ Loaded inventory files: ", len(all_inventory_tables))
+print("  ✓ Loaded refunds files: ", len(all_refunds_tables))
+print("  ✓ Loaded marketing files: ", len(all_marketing_tables))
+print()
+
+# Merge all monthly tables
+print("🔗 Merging monthly data...")
+print("  Merging sales (", len(all_sales_tables), " tables)...")
+global sales_all = merge_tables(all_sales_tables)
+print("  Merging inventory (", len(all_inventory_tables), " tables)...")
+global inventory_all = merge_tables(all_inventory_tables)
+print("  Merging refunds (", len(all_refunds_tables), " tables)...")
+global refunds_all = merge_tables(all_refunds_tables)
+print("  Merging marketing (", len(all_marketing_tables), " tables)...")
+global marketing_spend_all = merge_tables(all_marketing_tables)
+
+if sales_all != null {
+    print("  ✓ Merged sales: ", len(sales_all))
+}
+if inventory_all != null {
+    print("  ✓ Merged inventory: ", len(inventory_all))
+}
+if refunds_all != null {
+    print("  ✓ Merged refunds: ", len(refunds_all))
+}
+if marketing_spend_all != null {
+    print("  ✓ Merged marketing: ", len(marketing_spend_all))
+}
+print()
+
+# Load quarterly data
+print("📈 Loading quarterly aggregates...")
+let all_financial_summary_tables = []
+let all_regional_summary_tables = []
+let all_product_summary_tables = []
+let all_employee_performance_tables = []
+
+# Process each year directory for quarterly data
+for year_dir in list_files(base_path) {
+    # Skip files and service directories
+    if year_dir.name != "docs" and year_dir.is_dir {
+
+        print("  🔍 Year ", year_dir.name)
+        
+        # Look for quarterly directories inside month directories
+        for month_dir in sort(list_files(year_dir)) {
+            if !month_dir.is_dir {
+                continue
+            }
+
+            # Look for quarterly directories inside month directory
+            for item in list_files(month_dir) {
+                if contains(item.name, "quarter_") {
+                    print("     🔍 Month ", month_dir.name)
+                    # Get list of files in quarterly directory
+                    let quarter_files = null
+                    try {
+                        quarter_files = list_files(item)
+                    } catch e {
+                        # Error getting list of files in quarterly directory
+                        print("  ⚠️  Error accessing quarterly directory ", item, ": ", e)
+                        quarter_files = null
+                    }
+                    
+                    if quarter_files != null {
+                        # Process each file in quarterly directory
+                        for quarter_file in quarter_files {
+                            print("         🔍 file ", quarter_file.name)
+                            let data = read(quarter_file)
+
+                            # Determine file type by name and load
+                            if contains(quarter_file.name, "financial_summary_") {
+                                try {
+                                    all_financial_summary_tables = push(all_financial_summary_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Error loading ", quarter_file, ": ", e)
+                                }
+                            }
+                            
+                            if contains(quarter_file.name, "regional_summary_") {
+                                try {
+                                    all_regional_summary_tables = push(all_regional_summary_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Error loading ", quarter_file, ": ", e)
+                                }
+                            }
+                            
+                            if contains(quarter_file.name, "product_summary_") {
+                                try {
+                                    all_product_summary_tables = push(all_product_summary_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Error loading ", quarter_file, ": ", e)
+                                }
+                            }
+                            
+                            if contains(quarter_file.name, "employee_performance_") {
+                                try {
+                                    all_employee_performance_tables = push(all_employee_performance_tables, data)
+                                } catch e {
+                                    print("  ⚠️  Error loading ", quarter_file, ": ", e)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+print("  ✓ Loaded financial_summary files: ", len(all_financial_summary_tables))
+print("  ✓ Loaded regional_summary files: ", len(all_regional_summary_tables))
+print("  ✓ Loaded product_summary files: ", len(all_product_summary_tables))
+print("  ✓ Loaded employee_performance files: ", len(all_employee_performance_tables))
+print()
+
+# Merge quarterly tables
+print("🔗 Merging quarterly data...")
+global financial_summary_all = merge_tables(all_financial_summary_tables)
+global regional_summary_all = merge_tables(all_regional_summary_tables)
+global product_summary_all = merge_tables(all_product_summary_tables)
+global employee_performance_all = merge_tables(all_employee_performance_tables)
+
+if financial_summary_all != null {
+    print("  ✓ Merged financial summaries: ", len(financial_summary_all))
+}
+if regional_summary_all != null {
+    print("  ✓ Merged regional summaries: ", len(regional_summary_all))
+}
+if product_summary_all != null {
+    print("  ✓ Merged product summaries: ", len(product_summary_all))
+}
+if employee_performance_all != null {
+    print("  ✓ Merged employee performance reports: ", len(employee_performance_all))
+}
+print()
+
+# Creating relations between tables
+print("🔗 Creating relations between tables...")
+let relations_created = 0
+
+# Function for safe relation creation
+fn create_relation(table1, col1, table2, col2, relation_name) {
+    try {
+        let headers1 = table1.columns
+        let headers2 = table2.columns
+
+        if col1 in headers1 and col2 in headers2 {
+            relate(table1[col1], table2[col2])
+            print("  ✓ ", relation_name)
+            return true
+        } else {
+            print("  ⚠️  ", relation_name, " - columns not found")
+            return false
+        }
+    } catch e {
+        print("  ✗ ", relation_name, " - error: ", e)
+        return false
+    }
+}
+
+# Relations between reference data and monthly data
+if sales_all != null {
+    if product_catalog != null {
+        if create_relation(product_catalog, "product_id", sales_all, "product_id", "product_catalog.product_id ↔ sales_all.product_id") {
+            relations_created = relations_created + 1
+        }
+    }
+    
+    if regions != null {
+        if create_relation(regions, "region_code", sales_all, "region", "regions.region_code ↔ sales_all.region") {
+            relations_created = relations_created + 1
+        }
+    }
+    
+    if employees != null {
+        if create_relation(employees, "employee_id", sales_all, "employee_id", "employees.employee_id ↔ sales_all.employee_id") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+if inventory_all != null {
+    if product_catalog != null {
+        if create_relation(product_catalog, "product_id", inventory_all, "product_id", "product_catalog.product_id ↔ inventory_all.product_id") {
+            relations_created = relations_created + 1
+        }
+    }
+    
+    if regions != null {
+        if create_relation(regions, "region_code", inventory_all, "region", "regions.region_code ↔ inventory_all.region") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+if refunds_all != null {
+    if sales_all != null {
+        if create_relation(sales_all, "transaction_id", refunds_all, "transaction_id", "sales_all.transaction_id ↔ refunds_all.transaction_id") {
+            relations_created = relations_created + 1
+        }
+    }
+    
+    if product_catalog != null {
+        if create_relation(product_catalog, "product_id", refunds_all, "product_id", "product_catalog.product_id ↔ refunds_all.product_id") {
+            relations_created = relations_created + 1
+        }
+    }
+    
+    if regions != null {
+        if create_relation(regions, "region_code", refunds_all, "region", "regions.region_code ↔ refunds_all.region") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+if marketing_spend_all != null {
+    if regions != null {
+        if create_relation(regions, "region_code", marketing_spend_all, "region", "regions.region_code ↔ marketing_spend_all.region") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+# Relations with quarterly aggregates
+if product_summary_all != null {
+    if product_catalog != null {
+        if create_relation(product_catalog, "product_id", product_summary_all, "product_id", "product_catalog.product_id ↔ product_summary_all.product_id") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+if regional_summary_all != null {
+    if regions != null {
+        if create_relation(regions, "region_code", regional_summary_all, "region", "regions.region_code ↔ regional_summary_all.region") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+if employee_performance_all != null {
+    if employees != null {
+        if create_relation(employees, "employee_id", employee_performance_all, "employee_id", "employees.employee_id ↔ employee_performance_all.employee_id") {
+            relations_created = relations_created + 1
+        }
+    }
+}
+
+print("  ✓ Relations created: ", relations_created)
+print()
+
+# Check: direct call to relate() for diagnostics
+if product_catalog != null and sales_all != null {
+    print("🔍 Diagnostics: Direct call to relate()...")
+    try {
+        relate(product_catalog["product_id"], sales_all["product_id"])
+        print("  ✓ relate() called successfully")
+    } catch e {
+        print("  ✗ Error calling relate(): ", e)
+    }
+}
+print()
+
+print("============================================================")
+print("✅ Data loading completed!")
+print("============================================================")
+print()
+print("📊 Final statistics:")
+print("  • Reference data:")
+if product_catalog != null {
+    print("    - product_catalog: ", len(product_catalog), " rows")
+}
+if regions != null {
+    print("    - regions: ", len(regions), " rows")
+}
+if employees != null {
+    print("    - employees: ", len(employees), " rows")
+}
+print("  • Monthly data:")
+if sales_all != null {
+    print("    - sales_all: ", len(sales_all), " rows")
+}
+if inventory_all != null {
+    print("    - inventory_all: ", len(inventory_all), " rows")
+}
+if refunds_all != null {
+    print("    - refunds_all: ", len(refunds_all), " rows")
+}
+if marketing_spend_all != null {
+    print("    - marketing_spend_all: ", len(marketing_spend_all), " rows")
+}
+print("  • Quarterly aggregates:")
+if financial_summary_all != null {
+    print("    - financial_summary_all: ", len(financial_summary_all), " rows")
+}
+if regional_summary_all != null {
+    print("    - regional_summary_all: ", len(regional_summary_all), " rows")
+}
+if product_summary_all != null {
+    print("    - product_summary_all: ", len(product_summary_all), " rows")
+}
+if employee_performance_all != null {
+    print("    - employee_performance_all: ", len(employee_performance_all), " rows")
+}
+print("  • Relations between tables:")
+print("    - Relations created: ", relations_created)
+print()
+print("💡 To export to SQLite use: datacode load_model_data.dc --build_model")
+print()
+

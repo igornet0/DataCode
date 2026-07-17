@@ -1,0 +1,67 @@
+# Трансформация: группа «Колонки»
+# CSV: data/employees.csv
+#
+# Операции UI: renameColumn, selectColumns, dropColumn, reorderColumns, addColumn
+
+print("=== 1. renameColumn — переименовать колонку ===")
+data = read(path("./data/employees.csv"))
+
+# При чтении CSV — через header={...} (null = оставить имя)
+renamed_read = read(path("./data/employees.csv"), header={
+    "Name": "EmployeeName",
+    "Age": null,
+    "City": null,
+    "Salary": null,
+    "Notes": null,
+    "Amount": null,
+    "SignedUp": null,
+    "Active": null,
+    "Department": null,
+})
+print("read+header:", renamed_read.columns[0])
+
+# Для уже загруженной таблицы — table_rename / data.rename
+renamed = table_rename(data, {"Name": "EmployeeName", "Age": null})
+print("table_rename dict:", renamed.columns[0])
+
+renamed2 = data.rename("Department", "Dept")
+print("rename pair:", renamed2.columns[len(renamed2.columns) - 1])
+
+print("\n=== 2. selectColumns — оставить только выбранные ===")
+selected = table_select(data, ["Name", "Age", "City"])
+print("table_select:", selected.columns)
+
+selected2 = data.select(["Name", "Age"])
+print("data.select:", selected2.columns)
+
+print("\n=== 3. dropColumn — удалить колонку ===")
+without_notes = table_drop_column(data, "Notes")
+print("table_drop_column:", without_notes.columns)
+
+without_notes2 = data.drop_column("Notes")
+print("drop_column method, cols:", len(without_notes2.columns))
+
+print("\n=== 4. reorderColumns — изменить порядок ===")
+reordered = table_select(data, ["Department", "Name", "Salary", "Age"])
+print("порядок:", reordered.columns)
+
+print("\n=== 5. addColumn — добавить колонку ===")
+with_region = table_add_column(data, "Region", "EMEA")
+print("table_add_column:", with_region.columns[len(with_region.columns) - 1])
+
+with_region2 = data.add_column("Region", "EMEA")
+print("add_column method cols:", len(with_region2.columns))
+show_table(table_head(with_region2, 10))
+
+# Массив значений — по одному на строку
+nums = [1, 2, 3, 4, 5, 6]
+with_num = table_add_column(data, "RowNum", nums)
+print("RowNum[0]:", with_num["RowNum"][0])
+
+# Без значения — null во всех строках
+with_null = data.add_column("Extra")
+print("Extra default null:", with_null["Extra"][0])
+
+# fn(row) => ... — пока не реализовано (future API)
+
+print("\nDone.")

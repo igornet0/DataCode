@@ -1,0 +1,75 @@
+# Возведение квадратной матрицы в степень — O(k³ log exp)
+
+fn mat_mul_n(A: list[list[int]], B: list[list[int]], mod: int) -> list[list[int]] {
+    n = len(A)
+    C = [[0 for _ in range(n)] for _ in range(n)]
+    for i in range(n) {
+        for j in range(n) {
+            s = 0
+            for k in range(n) {
+                s = (s + A[i][k] * B[k][j]) % mod
+            }
+            C[i][j] = s
+        }
+    }
+    return C
+}
+
+fn identity(n: int) -> list[list[int]] {
+    I = [[0 for _ in range(n)] for _ in range(n)]
+    for i in range(n) { I[i][i] = 1 }
+    return I
+}
+
+fn matrix_pow(M: list[list[int]], exp: int, mod: int) -> list[list[int]] {
+    """M^exp mod mod для квадратной матрицы M."""
+    n = len(M)
+    result = identity(n)
+    base = M
+    e = exp
+
+    while e > 0 {
+        if e % 2 == 1 { result = mat_mul_n(result, base, mod) }
+        base = mat_mul_n(base, base, mod)
+        e = e // 2
+    }
+    return result
+}
+
+fn linear_recurrence(coeffs: list[int], n: int, init: list[int]) -> int {
+    """
+    Линейная рекуррентность порядка k:
+    a[i] = c[0]*a[i-1] + ... + c[k-1]*a[i-k].
+    init — начальные k значений (от старых к новым).
+    """
+    k = len(coeffs)
+    if len(init) != k: throw "init должен иметь длину k"
+
+    if n < k: return init[n]
+
+    # Матрица перехода k×k (стандартная форма компаньона)
+    F = [[0 for _ in range(k)] for _ in range(k)]
+    for j in range(k) { F[0][j] = coeffs[j] % (10**18) }
+    for i in range(1, k) { F[i][i - 1] = 1 }
+
+    P = matrix_pow(F, n - k + 1, 10**18)
+    vec = reverse(init)
+    result = 0
+    for j in range(k) {
+        result = (result + P[0][j] * vec[j]) % (10**18)
+    }
+    return result
+}
+
+fn __main__() {
+    print("=== Matrix Exponentiation ===")
+
+    M = [[1, 1], [1, 0]]
+    P5 = matrix_pow(M, 5, 10**9)
+    print("[[1,1],[1,0]]^5 = ${P5}")
+    print("F(6) через матрицу = ${P5[0][0]} (ожид. 8)")
+
+    # a[n] = a[n-1] + 2*a[n-2], a[0]=1, a[1]=1
+    got = linear_recurrence([1, 2], 6, [1, 1])
+    print("recurrence n=6: ${got} (ожид. 43)")
+}

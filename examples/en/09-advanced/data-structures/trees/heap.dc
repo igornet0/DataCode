@@ -1,0 +1,118 @@
+# Binary min-heap on an array - push/pop in O(log n), peek in O(1)
+
+cls MinHeap {
+    private:
+        data: array[int]
+
+    new MinHeap(items: array[int]) {
+        this.data = []
+        for x in items { this.push(x) }
+    }
+
+    private:
+    fn _parent(i: int) -> int { return (i - 1) // 2 }
+    fn _left(i: int) -> int { return 2 * i + 1 }
+    fn _right(i: int) -> int { return 2 * i + 2 }
+
+    fn _sift_up(i: int) {
+        while i > 0 {
+            p = this._parent(i)
+            if this.data[i] >= this.data[p]: break
+            this.data[i], this.data[p] = this.data[p], this.data[i]
+            i = p
+        }
+    }
+
+    fn _sift_down(i: int) {
+        n = len(this.data)
+        while true {
+            smallest = i
+            l = this._left(i)
+            r = this._right(i)
+            if l < n and this.data[l] < this.data[smallest]: smallest = l
+            if r < n and this.data[r] < this.data[smallest]: smallest = r
+            if smallest == i: break
+            this.data[i], this.data[smallest] = this.data[smallest], this.data[i]
+            i = smallest
+        }
+    }
+
+    public:
+    fn push(value: int) {
+        this.data.push(value)
+        this._sift_up(len(this.data) - 1)
+    }
+
+    fn pop() -> Optional[int] {
+        if this.is_empty(): return null
+        top = this.data[0]
+        last = pop(this.data)
+        if !this.is_empty() {
+            this.data[0] = last
+            this._sift_down(0)
+        }
+        return top
+    }
+
+    fn peek() -> Optional[int] {
+        if this.is_empty(): return null
+        return this.data[0]
+    }
+
+    fn is_empty() -> bool {
+        return len(this.data) == 0
+    }
+
+    fn size() -> int {
+        return len(this.data)
+    }
+
+    fn to_list() -> array[int] {
+        return this.data
+    }
+}
+
+fn heap_sort(arr: array[int]) -> array[int] {
+    """Sorting using min-heap: extract elements in ascending order."""
+    h = MinHeap([])
+    for x in arr { h.push(x) }
+    result = []
+    while !h.is_empty() {
+        result.push(h.pop())
+    }
+    return result
+}
+
+fn k_smallest(arr: array[int], k: int) -> array[int] {
+    """k smallest elements (k <= len(arr))."""
+    h = MinHeap([])
+    for x in arr { h.push(x) }
+    result = []
+    for _ in range(k) {
+        result.push(h.pop())
+    }
+    return result
+}
+
+fn __main__() {
+    print("=== Min Heap (array-based) ===")
+
+    heap = MinHeap([15, 10, 20, 8, 21, 5])
+    print("heapify from [15,10,20,8,21,5]: min=${heap.peek()}, size=${heap.size()}")
+
+    extracted = []
+    while !heap.is_empty() {
+        extracted.push(heap.pop())
+    }
+    print("pop in order: ${extracted}")
+
+    data = [5, 1, 4, 2, 8, 0, 9]
+    sorted_data = heap_sort(data)
+    top3 = k_smallest(data, 3)
+    print("heap_sort(${data}): ${sorted_data}")
+    print("3 smallest: ${top3}")
+
+    expected = [0, 1, 2, 4, 5, 8, 9]
+    status = if sorted_data == expected and top3 == [0, 1, 2] { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

@@ -1,0 +1,45 @@
+# Point inside a polygon - ray casting
+
+fn point_in_polygon(point: tuple[float, float], polygon: list[tuple[float, float]]) -> bool {
+    """
+    True if the point is strictly inside or on the border of a simple polygon.
+    """
+    n = len(polygon)
+    if n < 3: return false
+
+    x, y = point[0], point[1]
+    inside = false
+    j = n - 1
+
+    for i in range(n) {
+        xi, yi = polygon[i][0], polygon[i][1]
+        xj, yj = polygon[j][0], polygon[j][1]
+
+        intersect = ((yi > y) != (yj > y)) and
+            (x < (xj - xi) * (y - yi) / (yj - yi + 1e-12) + xi)
+
+        if intersect: inside = !inside
+        j = i
+    }
+    return inside
+}
+
+fn __main__() {
+    print("=== Point in Polygon ===")
+
+    square = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]
+
+    tests = [
+        ((2.0, 2.0), true),
+        ((0.0, 0.0), true),
+        ((5.0, 2.0), false),
+        ((4.0, 4.0), true),
+    ]
+
+    for t in tests {
+        pt, expected = t[0], t[1]
+        got = point_in_polygon(pt, square)
+        status = if got == expected { "OK" } else { "FAIL" }
+        print("  ${status}: ${pt} → ${got}, expected ${expected}")
+    }
+}

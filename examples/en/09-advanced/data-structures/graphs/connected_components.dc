@@ -1,0 +1,64 @@
+# Connected components of an undirected graph (DFS / Union-Find)
+
+from advanced.union_find import UnionFind
+
+fn dfs_component(graph: dict[int, array[int]], start: int, visited: set[int]) -> array[int] {
+    stack = [start]
+    component = []
+    while len(stack) > 0 {
+        v = stack.pop()
+        if v in visited: continue
+        visited.add(v)
+        component.push(v)
+        for u in graph.get(v, []) {
+            if !(u in visited) { stack.push(u) }
+        }
+    }
+    return sort(component)
+}
+
+fn connected_components_dfs(graph: dict[int, array[int]], n: int) -> array[array[int]] {
+    visited = set()
+    components = []
+    for i in range(n) {
+        if !(i in visited) {
+            comp = dfs_component(graph, i, visited)
+            components.push(comp)
+        }
+    }
+    return sort(components)
+}
+
+fn connected_components_uf(n: int, edges: array[tuple[int, int]]) -> int {
+    uf = UnionFind(n)
+    for e in edges { uf.union(e[0], e[1]) }
+    return uf.count_components()
+}
+
+fn build_undirected(n: int, edges: array[tuple[int, int]]) -> dict[int, array[int]] {
+    graph = {}
+    for i in range(n) { graph[i] = [] }
+    for e in edges {
+        graph[e[0]].push(e[1])
+        graph[e[1]].push(e[0])
+    }
+    return graph
+}
+
+fn __main__() {
+    print("=== Connected Components ===")
+
+    n = 9
+    edges = [(0, 1), (1, 2), (2, 0), (3, 4), (5, 6), (7, 8)]
+    graph = build_undirected(n, edges)
+
+    comps = connected_components_dfs(graph, n)
+    uf_count = connected_components_uf(n, edges)
+
+    print("Components (DFS): ${comps}")
+    print("Number of components (UF): ${uf_count}")
+
+    expected = 4
+    status = if len(comps) == expected and uf_count == expected { "OK" } else { "FAIL" }
+    print("Test: ${status} (expected 4 components)")
+}

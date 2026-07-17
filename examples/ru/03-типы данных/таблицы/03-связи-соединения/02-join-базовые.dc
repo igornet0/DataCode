@@ -1,0 +1,93 @@
+# Базовые JOIN: inner, left, right, full, cross, semi, anti
+# Каждый блок завершается проверкой ожидаемого числа строк
+
+print("=== Подготовка таблиц users / orders ===")
+users = table([
+  [1, "Alice", "Dev"],
+  [2, "Bob", "Marketing"],
+  [3, "Charlie", "Dev"],
+  [4, "Diana", "Sales"],
+], ["id", "name", "department"])
+
+orders = table([
+  [101, 1, 150.0],
+  [102, 1, 200.5],
+  [103, 3, 75.25],
+  [104, 5, 300.0],
+], ["order_id", "user_id", "amount"])
+
+print("users:", len(users), "rows | orders:", len(orders), "rows")
+
+# INNER JOIN — только совпадения (Alice×2, Charlie×1)
+print("\n--- inner_join ---")
+inner_result = inner_join(users, orders, "id", "user_id")
+inner_expected = 3
+inner_status = if len(inner_result) == inner_expected { "OK" } else { "FAIL" }
+print("rows:", len(inner_result), "ожидали", inner_expected, inner_status)
+print("columns:", inner_result.columns)
+
+# LEFT JOIN — все users; при нескольких заказах у одного user строки умножаются
+# Alice×2 + Bob×1 + Charlie×1 + Diana×1 = 5
+print("\n--- left_join ---")
+left_result = left_join(users, orders, "id", "user_id")
+left_expected = 5
+left_status = if len(left_result) == left_expected { "OK" } else { "FAIL" }
+print("rows:", len(left_result), "ожидали", left_expected, left_status)
+
+# RIGHT JOIN — все orders (order 104 с user_id=5 без пользователя)
+print("\n--- right_join ---")
+right_result = right_join(users, orders, "id", "user_id")
+right_expected = 4
+right_status = if len(right_result) == right_expected { "OK" } else { "FAIL" }
+print("rows:", len(right_result), "ожидали", right_expected, right_status)
+
+# FULL JOIN — все users + orphan order
+print("\n--- full_join ---")
+full_result = full_join(users, orders, "id", "user_id")
+full_expected = 6
+full_status = if len(full_result) == full_expected { "OK" } else { "FAIL" }
+print("rows:", len(full_result), "ожидали", full_expected, full_status)
+
+# CROSS JOIN — декартово произведение 2×2 = 4
+print("\n--- cross_join ---")
+small_users = table([[1, "A"], [2, "B"]], ["id", "name"])
+small_items = table([["x"], ["y"]], ["tag"])
+cross_result = cross_join(small_users, small_items)
+cross_expected = 4
+cross_status = if len(cross_result) == cross_expected { "OK" } else { "FAIL" }
+print("rows:", len(cross_result), "ожидали", cross_expected, cross_status)
+
+# SEMI JOIN — users с заказами, без колонок orders (Alice, Charlie)
+print("\n--- semi_join ---")
+semi_result = semi_join(users, orders, "id", "user_id")
+semi_expected = 2
+semi_status = if len(semi_result) == semi_expected { "OK" } else { "FAIL" }
+print("rows:", len(semi_result), "ожидали", semi_expected, semi_status)
+print("columns (только left):", semi_result.columns)
+
+# ANTI JOIN — users без заказов (Bob, Diana)
+print("\n--- anti_join ---")
+anti_result = anti_join(users, orders, "id", "user_id")
+anti_expected = 2
+anti_status = if len(anti_result) == anti_expected { "OK" } else { "FAIL" }
+print("rows:", len(anti_result), "ожидали", anti_expected, anti_status)
+if len(anti_result) > 0 {
+  print("names без заказов:", anti_result["name"])
+}
+
+# JOIN на реальных CSV: employees + synthetic order lines by department
+print("\n=== JOIN с CSV: employees + order_lines ===")
+employees = read(path("data/employees.csv"))
+order_lines = table([
+  ["Sales", 1000.0],
+  ["Marketing", 500.0],
+  ["HR", 300.0],
+  ["IT", 100.0],
+], ["Department", "budget"])
+
+dept_budget = left_join(employees, order_lines, "Department", "Department")
+print("left_join employees×budget rows:", len(dept_budget), "(ожидаем", len(employees), ")")
+dept_status = if len(dept_budget) == len(employees) { "OK" } else { "FAIL" }
+print("проверка:", dept_status)
+
+print("\nDone.")

@@ -1,0 +1,71 @@
+# Поиск в глубину (DFS) — обход, путь, компоненты
+# Состояние передаётся явно (см. docs/ru/2-язык/области-видимости-и-замыкания.md)
+
+fn dfs_visit(graph: dict[int, list[int]], node: int, visited: list[int], order: list[int]) -> tuple[list[int], list[int]] {
+    visited = push(visited, node)
+    for nxt in graph.get(node, []) {
+        if !nxt in visited {
+            res = dfs_visit(graph, nxt, visited, order)
+            visited = res[0]
+            order = res[1]
+        }
+    }
+    order = push(order, node)
+    return [visited, order]
+}
+
+fn dfs_path(graph: dict[int, list[int]], start: int, goal: int, visited: list[int], path: list[int]) -> Optional[list[int]] {
+    visited = push(visited, start)
+    path = push(path, start)
+    if start == goal: return path
+
+    for nxt in graph.get(start, []) {
+        if !nxt in visited {
+            found = dfs_path(graph, nxt, goal, visited, path)
+            if found != null: return found
+        }
+    }
+    return null
+}
+
+fn dfs_order(graph: dict[int, list[int]], n: int) -> list[int] {
+    """Порядок завершения DFS (для ориентированных графов)."""
+    visited = []
+    order = []
+    for i in range(n) {
+        if !i in visited {
+            res = dfs_visit(graph, i, visited, order)
+            visited = res[0]
+            order = res[1]
+        }
+    }
+    return order
+}
+
+fn build_directed_graph() -> tuple[int, dict[int, list[int]]] {
+    n = 6
+    graph = {
+        0: [1, 2],
+        1: [3],
+        2: [3],
+        3: [4],
+        4: [5],
+        5: [],
+    }
+    return (n, graph)
+}
+
+fn __main__() {
+    print("=== DFS ===")
+
+    n, graph = build_directed_graph()
+    finish_order = dfs_order(graph, n)
+    path = dfs_path(graph, 0, 5, [], [])
+
+    print("Порядок завершения: ${finish_order}")
+    print("Путь 0 → 5:         ${path}")
+
+    expected = [0, 1, 3, 4, 5]
+    status = if path == expected { "OK" } else { "FAIL" }
+    print("Тест пути: ${status} (ожид. ${expected})")
+}

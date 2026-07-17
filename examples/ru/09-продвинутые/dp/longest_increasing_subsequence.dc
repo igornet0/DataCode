@@ -1,0 +1,106 @@
+# Наибольшая возрастающая подпоследовательность (LIS)
+
+fn lis_length_quadratic(nums: list[int]) -> int {
+    """
+    Классическая DP-таблица: dp[i] — длина LIS, заканчивающейся в nums[i].
+    O(n²) — наглядно для обучения.
+    """
+    n = len(nums)
+    if n == 0: return 0
+
+    dp = [1 for _ in range(n)]
+    best = 1
+
+    for i in range(1, n) {
+        for j in range(i) {
+            if nums[j] < nums[i] and dp[j] + 1 > dp[i] {
+                dp[i] = dp[j] + 1
+            }
+        }
+        if dp[i] > best: best = dp[i]
+    }
+    return best
+}
+
+fn lower_bound(arr: list[int], target: int) -> int {
+    """Первый индекс, где arr[i] >= target (бинарный поиск)."""
+    lo, hi = 0, len(arr)
+    while lo < hi {
+        mid = (lo + hi) // 2
+        if arr[mid] < target {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    return lo
+}
+
+fn lis_length_nlogn(nums: list[int]) -> int {
+    """
+    Алгоритm «patience sorting»: tails[k] — минимальный хвост LIS длины k+1.
+    O(n log n).
+    """
+    tails = []
+    for x in nums {
+        pos = lower_bound(tails, x)
+        if pos == len(tails) {
+            tails.push(x)
+        } else {
+            tails[pos] = x
+        }
+    }
+    return len(tails)
+}
+
+fn lis_sequence(nums: list[int]) -> list[int] {
+    """Восстановление одной LIS (не обязательно единственной)."""
+    n = len(nums)
+    if n == 0: return []
+
+    dp = [1 for _ in range(n)]
+    parent = [-1 for _ in range(n)]
+
+    best_idx = 0
+    for i in range(1, n) {
+        for j in range(i) {
+            if nums[j] < nums[i] and dp[j] + 1 > dp[i] {
+                dp[i] = dp[j] + 1
+                parent[i] = j
+            }
+        }
+        if dp[i] > dp[best_idx]: best_idx = i
+    }
+
+    seq = []
+    idx = best_idx
+    while idx >= 0 {
+        seq.push(nums[idx])
+        idx = parent[idx]
+    }
+    return reverse(seq)
+}
+
+fn __main__() {
+    print("=== Longest Increasing Subsequence ===")
+
+    cases = [
+        [10, 9, 2, 5, 3, 7, 101, 18],
+        [0, 1, 0, 3, 2, 3],
+        [7, 7, 7, 7],
+        [1],
+        [],
+        [4, 10, 4, 3, 8, 9],
+    ]
+
+    for nums in cases {
+        q = lis_length_quadratic(nums)
+        fast = lis_length_nlogn(nums)
+        seq = lis_sequence(nums)
+        print("nums=${nums}")
+        print("  длина: O(n²)=${q}, O(n log n)=${fast}, seq=${seq}")
+        if q != fast or q != len(seq) {
+            print("  ОШИБКА: несогласованные результаты")
+        }
+    }
+}

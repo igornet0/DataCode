@@ -1,0 +1,18 @@
+# now, date_to_unix, duration
+
+print("=== now ===")
+t = now()
+print("now:", t)
+print("typeof:", typeof(t))
+
+print("\n=== date_to_unix ===")
+u1 = date_to_unix(t)
+u2 = date_to_unix("2024-01-15T10:30:00Z")
+print("unix(now):", u1)
+print("unix(ISO):", u2)
+
+print("\n=== duration ===")
+d1 = duration(seconds=30)
+d2 = duration(hours=1, minutes=15)
+print("30s:", d1, "| typeof:", typeof(d1))
+print("1h15m:", d2)

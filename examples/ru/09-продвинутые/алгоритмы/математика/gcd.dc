@@ -1,0 +1,43 @@
+# Наибольший общий делитель (НОД) — алгоритм Евклида
+
+fn gcd(a: int, b: int) -> int {
+    """Итеративный Евклид: O(log min(a,b))."""
+    a = abs(a)
+    b = abs(b)
+    while b != 0 {
+        a, b = b, a % b
+    }
+    return a
+}
+
+fn gcd_recursive(a: int, b: int) -> int {
+    a = abs(a)
+    b = abs(b)
+    if b == 0: return a
+    return gcd_recursive(b, a % b)
+}
+
+fn gcd_list(nums: list[int]) -> int {
+    """НОД всего списка."""
+    if len(nums) == 0: return 0
+    result = abs(nums[0])
+    for i in range(1, len(nums)) {
+        result = gcd(result, nums[i])
+    }
+    return result
+}
+
+fn __main__() {
+    print("=== GCD (Euclidean) ===")
+
+    tests = [(48, 18, 6), (101, 10, 1), (0, 7, 7), (-12, 8, 4)]
+    for t in tests {
+        a, b, expected = t[0], t[1], t[2]
+        g = gcd(a, b)
+        gr = gcd_recursive(a, b)
+        status = if g == expected and gr == expected { "OK" } else { "FAIL" }
+        print("  ${status}: gcd(${a}, ${b}) = ${g}, rec = ${gr}, ожид. ${expected}")
+    }
+
+    print("gcd([12, 18, 24]) = ${gcd_list([12, 18, 24])} (ожид. 6)")
+}

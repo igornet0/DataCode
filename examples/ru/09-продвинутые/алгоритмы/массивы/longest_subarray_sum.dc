@@ -1,0 +1,68 @@
+# Наибольший подмассив с суммой ≤ K (два указателя + префиксные суммы)
+
+fn build_prefix(arr: list[int]) -> list[int] {
+    pref = [0]
+    for x in arr { pref.push(pref[-1] + x) }
+    return pref
+}
+
+fn longest_subarray_sum_at_most_k(arr: list[int], k: int) -> int {
+    """
+    Максимальная длина подмассива с суммой <= k (неотрицательные элементы).
+    Скользящее окно: O(n).
+    """
+    left = 0
+    current = 0
+    best = 0
+
+    for right in range(len(arr)) {
+        current += arr[right]
+        while current > k and left <= right {
+            current -= arr[left]
+            left += 1
+        }
+        best = max(best, right - left + 1)
+    }
+    return best
+}
+
+fn longest_subarray_exact_sum(arr: list[int], target: int) -> int {
+    """
+    Максимальная длина подмассива с точной суммой target (для целых, любые знаки).
+    Через хеш префиксных сумм: O(n).
+    """
+    from hash_map import HashMap
+
+    pref_map = HashMap()
+    pref_map.put(0, -1)
+    prefix = 0
+    best = 0
+
+    for i in range(len(arr)) {
+        prefix += arr[i]
+        need = prefix - target
+        if pref_map.contains(need) {
+            prev_idx = pref_map.get(need)
+            best = max(best, i - prev_idx)
+        }
+        pref_map.put(prefix, i)
+    }
+    return best
+}
+
+fn __main__() {
+    print("=== Longest Subarray Sum ===")
+
+    arr = [1, 2, 1, 1, 1, 3, 2, 1]
+    k = 4
+    len_k = longest_subarray_sum_at_most_k(arr, k)
+    print("arr=${arr}, k=${k} → max len (sum≤k): ${len_k} (ожид. 3)")
+
+    arr2 = [10, 5, 2, 7, 1, -10]
+    target = 15
+    len_exact = longest_subarray_exact_sum(arr2, target)
+    print("exact sum ${target}: len=${len_exact}")
+
+    status = if len_k == 3 { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

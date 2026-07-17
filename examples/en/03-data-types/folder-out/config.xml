@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<config>
+  <name>Configuration example</name>
+  <version>1</version>
+  <debug>true</debug>
+  <database>
+    <password>secret</password>
+    <port>5432</port>
+    <user>admin</user>
+    <host>localhost</host>
+  </database>
+  <paths>
+    <path>input/</path>
+    <path>output/</path>
+  </paths>
+</config>

@@ -1,0 +1,88 @@
+# Set on hash table - unique elements in O(1) on average
+from hash_map import HashMap
+
+cls HashSet {
+    private:
+        map: HashMap
+
+    public:
+
+    new HashSet(initial_capacity: int = 8) {
+        this.map = HashMap(initial_capacity)
+    }
+
+    fn add(item) -> bool {
+        """Add an element. Returns true if the element is new."""
+        if this.map.contains(item): return false
+        this.map.put(item, true)
+        return true
+    }
+
+    fn contains(item) -> bool {
+        return this.map.contains(item)
+    }
+
+    fn remove(item) -> bool {
+        return this.map.remove(item)
+    }
+
+    fn size() -> int {
+        return this.map.size()
+    }
+
+    fn to_list() -> list {
+        entries = this.map.entries()
+        result = []
+        for e in entries { result.push(e[0]) }
+        return result
+    }
+}
+
+fn intersection(a: HashSet, b: HashSet) -> HashSet {
+    result = HashSet()
+    for x in a.to_list() {
+        if b.contains(x) { result.add(x) }
+    }
+    return result
+}
+
+fn union(a: HashSet, b: HashSet) -> HashSet {
+    result = HashSet()
+    for x in a.to_list() { result.add(x) }
+    for x in b.to_list() { result.add(x) }
+    return result
+}
+
+fn unique_preserve_order(items: list) -> list {
+    seen = HashSet()
+    result = []
+    for x in items {
+        if seen.add(x) { result.push(x) }
+    }
+    return result
+}
+
+fn __main__() {
+    print("=== HashSet ===")
+
+    a = HashSet()
+    for x in [1, 2, 3, 2, 1] {
+        added = a.add(x)
+        print("add(${x}) -> new=${added}")
+    }
+    print("size=${a.size()}, content=${a.to_list()}")
+
+    b = HashSet()
+    for x in [3, 4, 5, 3] { b.add(x) }
+
+    inter = intersection(a, b)
+    uni = union(a, b)
+    print("A ∩ B = ${inter.to_list()}")
+    print("A ∪ B = ${uni.to_list()}")
+
+    ordered = unique_preserve_order(["x", "y", "x", "z", "y", "w"])
+    print("unique with order: ${ordered}")
+
+    status = if a.size() == 3 and inter.to_list() == [3] and ordered == ["x", "y", "z", "w"] { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

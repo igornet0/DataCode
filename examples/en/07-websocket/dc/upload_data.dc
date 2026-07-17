@@ -1,0 +1,16 @@
+# Example: working with files uploaded by the client into the session (--use-ve)
+# First upload files with an upload_file request (see python/test_file_upload.py)
+
+let data_dir = path("data_dir")
+
+for file_path in list_files(path=data_dir, regex="*.csv|*.xlsx|*.txt") {
+    print("---", file_path, "---")
+
+    if ends_with(str(file_path), ".txt") {
+        print(read(file_path))
+    } else {
+        global table = read(file_path, 0)
+        print("Rows:", len(table))
+        table_head(table, 5)
+    }
+}

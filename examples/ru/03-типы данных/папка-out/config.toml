@@ -1,0 +1,13 @@
+debug = true
+name = "Пример конфигурации"
+version = 1
+
+[database]
+host = "localhost"
+password = "secret"
+port = 5432
+user = "admin"
+
+[paths]
+input = "input/"
+output = "output/"

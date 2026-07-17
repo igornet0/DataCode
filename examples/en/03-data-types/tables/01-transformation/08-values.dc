@@ -1,0 +1,29 @@
+# Transformation: Values group
+# CSV: data/employees.csv, data/text_products.csv
+#
+# UI operation: valueMap(column, mappings)
+
+employees = read(path("data/employees.csv"))
+products = read(path("data/text_products.csv"))
+
+print("=== valueMap — remap cell values ===")
+# Mapping dict old → new, applied to each cell in the column.
+
+# Active: yes → active, no → inactive
+mappings = [
+    {"old": "yes", "new": "active"},
+    {"old": "no", "new": "inactive"},
+]
+remapped = table_value_map(employees, "Active", mappings)
+print("Active:", employees["Active"][0], "→", remapped["Active"][0])
+
+# Tag: sale → promo, new → fresh
+tag_maps = [
+    {"old": "sale", "new": "promo"},
+    {"old": "new", "new": "fresh"},
+    {"old": "old", "new": "archive"},
+]
+products_mapped = products.value_map("Tag", tag_maps)
+print("Tag:", products["Tag"][0], "→", products_mapped["Tag"][0])
+
+print("\nDone.")

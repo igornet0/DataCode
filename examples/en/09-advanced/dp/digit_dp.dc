@@ -1,0 +1,88 @@
+# Digital DP - numbers from 1 to N with a limit on digits
+
+fn count_numbers_without_consecutive_ones(n: int) -> int {
+    """
+    How many integers x are there in [1, n] that do not have two consecutive ones in binary notation.
+    Classic digit DP by bit.
+    """
+    if n <= 0: return 0
+
+    bits = []
+    x = n
+    while x > 0 {
+        bits.push(x % 2)
+        x = x // 2
+    }
+    reverse(bits)
+    m = len(bits)
+
+    # memo[pos][prev_one][tight] — number of ways
+    memo = {}
+
+    fn dp(pos: int, prev_one: int, tight: int) -> int {
+        if pos == m: return 1
+
+        key = str(pos) + "," + str(prev_one) + "," + str(tight)
+        if key in memo: return memo[key]
+
+        limit = bits[pos] if tight == 1 else 1
+        total = 0
+
+        for digit in range(limit + 1) {
+            if prev_one == 1 and digit == 1: continue
+            new_tight = 1 if tight == 1 and digit == bits[pos] else 0
+            total += dp(pos + 1, digit, new_tight)
+        }
+
+        memo[key] = total
+        return total
+    }
+
+    # Subtract 0 (empty number in recursion)
+    return dp(0, 0, 1) - 1
+}
+
+fn count_numbers_digit_sum_at_most(n: int, max_sum: int) -> int {
+    """Numbers in [0, n] with sum of digits <= max_sum."""
+    s = str(n)
+    m = len(s)
+    memo = {}
+
+    fn rec(pos: int, sum_so_far: int, tight: int, started: int) -> int {
+        if pos == m: return 1
+        key = str(pos) + "," + str(sum_so_far) + "," + str(tight) + "," + str(started)
+        if key in memo: return memo[key]
+
+        limit = int(s[pos]) if tight == 1 else 9
+        total = 0
+
+        for d in range(limit + 1) {
+            if started == 0 and d == 0 {
+                total += rec(pos + 1, 0, 0 if tight == 1 and d == int(s[pos]) else 0, 0)
+                continue
+            }
+            new_sum = sum_so_far + d
+            if new_sum > max_sum: continue
+            new_tight = 1 if tight == 1 and d == int(s[pos]) else 0
+            total += rec(pos + 1, new_sum, new_tight, 1)
+        }
+        memo[key] = total
+        return total
+    }
+
+    return rec(0, 0, 1, 0)
+}
+
+fn __main__() {
+    print("=== Digit DP ===")
+
+    n = 13
+    cnt = count_numbers_without_consecutive_ones(n)
+    print("numbers 1..${n} without a row of '11' in binary: ${cnt}")
+
+    cnt2 = count_numbers_digit_sum_at_most(100, 10)
+    print("numbers 0..100 with sum of digits ≤ 10: ${cnt2}")
+
+    status = if cnt >= 1 and cnt2 > 0 { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

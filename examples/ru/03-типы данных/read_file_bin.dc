@@ -1,0 +1,8 @@
+# read_file_bin — чтение сырых байтов из файла
+
+png = path("папка/favicon.png")
+raw = read_file_bin(png)
+
+print("typeof:", typeof(raw))
+print("len(bytes):", len(raw))
+print("первые 4 байта (PNG signature):", raw[0], raw[1], raw[2], raw[3])

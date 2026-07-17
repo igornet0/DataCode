@@ -1,0 +1,97 @@
+# Union-Find (Disjoint Set Union) — path compression + union by rank
+
+cls UnionFind {
+    private:
+        parent: dict[int, int]
+        rank: dict[int, int]
+        components: int
+
+    new UnionFind(n: int) {
+        """
+        Компоненты на вершинах 0..n-1.
+        """
+        this.parent = {}
+        this.rank = {}
+        for i in range(n) {
+            this.parent[i] = i
+            this.rank[i] = 0
+        }
+        this.components = n
+    }
+
+    public:
+    fn find(x: int) -> int {
+        """Корень множества с path compression."""
+        root = this.parent[x]
+        if root != x {
+            this.parent[x] = this.find(root)
+        }
+        return this.parent[x]
+    }
+
+    fn union(a: int, b: int) -> bool {
+        """
+        Объединить множества a и b.
+        Возвращает true, если объединение произошло (были разные компоненты).
+        """
+        ra = this.find(a)
+        rb = this.find(b)
+        if ra == rb: return false
+
+        if this.rank[ra] < this.rank[rb] {
+            ra, rb = rb, ra
+        }
+        this.parent[rb] = ra
+        if this.rank[ra] == this.rank[rb] {
+            this.rank[ra] = this.rank[ra] + 1
+        }
+        this.components = this.components - 1
+        return true
+    }
+
+    fn connected(a: int, b: int) -> bool {
+        return this.find(a) == this.find(b)
+    }
+
+    fn count_components() -> int {
+        return this.components
+    }
+}
+
+fn build_undirected_adj(n: int, edges: list[tuple[int, int]]) -> dict[int, list[int]] {
+    """Построить список смежности неориентированного графа."""
+    adj = {}
+    for i in range(n) { adj[i] = [] }
+    for e in edges {
+        u, v = e[0], e[1]
+        adj[u].push(v)
+        adj[v].push(u)
+    }
+    return adj
+}
+
+fn __main__() {
+    print("=== Union-Find (DSU) ===")
+
+    uf = UnionFind(6)
+    pairs = [(0, 1), (1, 2), (3, 4), (0, 2), (5, 5)]
+
+    for p in pairs {
+        u, v = p[0], p[1]
+        merged = uf.union(u, v)
+        print("union(${u}, ${v}) -> merged=${merged}, components=${uf.count_components()}")
+    }
+
+    queries = [(0, 3), (0, 2), (3, 4), (4, 5)]
+    print("\n--- Проверка связности ---")
+    for q in queries {
+        u, v = q[0], q[1]
+        print("  connected(${u}, ${v}) = ${uf.connected(u, v)}")
+    }
+
+    # Применение: подсчёт компонент связности по рёбрам
+    edges = [(0, 1), (2, 3), (4, 5)]
+    uf2 = UnionFind(6)
+    for e in edges { uf2.union(e[0], e[1]) }
+    print("\nКомпонент связности на 6 вершинах и рёбрах ${edges}: ${uf2.count_components()}")
+}

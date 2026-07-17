@@ -1,0 +1,98 @@
+# Алгоритм Tarjan — поиск сильно связных компонент (SCC)
+# Ориентированный граф: graph[u] = [v1, v2, ...]
+
+cls TarjanSCC {
+    private:
+        index: int
+        indices: dict[int, int]
+        lowlink: dict[int, int]
+        stack: list[int]
+        on_stack: set[int]
+        sccs: list[list[int]]
+
+    new TarjanSCC() {
+        this.index = 0
+        this.indices = {}
+        this.lowlink = {}
+        this.stack = []
+        this.on_stack = set()
+        this.sccs = []
+    }
+
+    public:
+    fn strongconnect(graph: dict[int, list[int]], v: int) {
+        this.indices[v] = this.index
+        this.lowlink[v] = this.index
+        this.index = this.index + 1
+        this.stack.push(v)
+        this.on_stack.add(v)
+
+        for w in graph.get(v, []) {
+            if !(w in this.indices) {
+                this.strongconnect(graph, w)
+                this.lowlink[v] = min(this.lowlink[v], this.lowlink[w])
+            } else if w in this.on_stack {
+                this.lowlink[v] = min(this.lowlink[v], this.indices[w])
+            }
+        }
+
+        if this.lowlink[v] == this.indices[v] {
+            component = []
+            while true {
+                w = this.stack.pop()
+                this.on_stack.discard(w)
+                component.push(w)
+                if w == v: break
+            }
+            this.sccs.push(component)
+        }
+    }
+
+    fn find_scc(graph: dict[int, list[int]]) -> list[list[int]] {
+        for v in graph.keys {
+            if !(v in this.indices) {
+                this.strongconnect(graph, v)
+            }
+        }
+        return this.sccs
+    }
+}
+
+fn normalize_sccs(sccs: list[list[int]]) -> list[list[int]] {
+    """Сортировка вершин внутри компонент и компонент для сравнения."""
+    result = []
+    for comp in sccs {
+        result.push(sort(comp))
+    }
+    return sort(result)
+}
+
+fn __main__() {
+    print("=== Tarjan SCC ===")
+
+    # Классический пример: два SCC {0,1,2} и {3,4,5}
+    graph = {
+        0: [1],
+        1: [2],
+        2: [0, 3],
+        3: [4],
+        4: [5],
+        5: [3],
+    }
+
+    solver = TarjanSCC()
+    sccs = solver.find_scc(graph)
+    print("Граф: ${graph}")
+    print("SCC (сырой порядок): ${sccs}")
+
+    normalized = normalize_sccs(sccs)
+    expected = [[0, 1, 2], [3, 4, 5]]
+    status = if normalized == expected { "OK" } else { "FAIL" }
+    print("Нормализованные SCC: ${normalized}")
+    print("Тест: ${status}")
+
+    # Одиночные вершины
+    dag = {0: [1], 1: [2], 2: []}
+    sccs2 = TarjanSCC().find_scc(dag)
+    print("\nDAG 0→1→2: ${normalize_sccs(sccs2)} (ожид. [[0], [1], [2]])")
+}

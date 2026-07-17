@@ -1,0 +1,116 @@
+# Дек (двусторонняя очередь) — кольцевой буфер, O(1) операции на концах
+
+cls Deque {
+
+    new Deque(capacity: int = 16) {
+        this.buf = array_with_capacity(capacity)
+        for _ in range(capacity) { this.buf.push(null) }
+        this.head = 0
+        this.tail = 0
+        this.count = 0
+    }
+
+    private:
+        buf: list
+        head: int
+        tail: int
+        count: int
+
+    fn _capacity() -> int {
+        return len(this.buf)
+    }
+
+    fn _grow() {
+        old_cap = this._capacity()
+        new_cap = old_cap * 2
+        new_buf = array_with_capacity(new_cap)
+        for _ in range(new_cap) { new_buf.push(null) }
+
+        for i in range(this.count) {
+            new_buf[i] = this.buf[(this.head + i) % old_cap]
+        }
+        this.buf = new_buf
+        this.head = 0
+        this.tail = this.count
+    }
+
+    public:
+    fn push_back(item) {
+        if this.count == this._capacity() { this._grow() }
+        this.buf[this.tail] = item
+        this.tail = (this.tail + 1) % this._capacity()
+        this.count = this.count + 1
+    }
+
+    fn push_front(item) {
+        if this.count == this._capacity() { this._grow() }
+        this.head = (this.head - 1 + this._capacity()) % this._capacity()
+        this.buf[this.head] = item
+        this.count = this.count + 1
+    }
+
+    fn pop_back() {
+        if this.is_empty(): return null
+        this.tail = (this.tail - 1 + this._capacity()) % this._capacity()
+        this.count = this.count - 1
+        return this.buf[this.tail]
+    }
+
+    fn pop_front() {
+        if this.is_empty(): return null
+        item = this.buf[this.head]
+        this.head = (this.head + 1) % this._capacity()
+        this.count = this.count - 1
+        return item
+    }
+
+    fn is_empty() -> bool {
+        return this.count == 0
+    }
+
+    fn size() -> int {
+        return this.count
+    }
+
+    fn to_list() -> list {
+        result = []
+        for i in range(this.count) {
+            result.push(this.buf[(this.head + i) % this._capacity()])
+        }
+        return result
+    }
+}
+
+fn palindrome_check(s: str) -> bool {
+    """Сравнение символов с двух концов через дек."""
+    dq = Deque(len(s) + 4)
+    for ch in s { dq.push_back(ch) }
+
+    while dq.size() > 1 {
+        if dq.pop_front() != dq.pop_back(): return false
+    }
+    return true
+}
+
+fn __main__() {
+    print("=== Deque (кольцевой буфер) ===")
+
+    dq = Deque(4)
+    dq.push_back(1)
+    dq.push_front(0)
+    dq.push_back(2)
+    dq.push_front(-1)
+    print("Содержимое: ${dq.to_list()}")
+
+    back = dq.pop_back()
+    front = dq.pop_front()
+    print("pop_back=${back}, pop_front=${front}, остаток=${dq.to_list()}")
+
+    pal_ok = palindrome_check("racecar")
+    pal_no = palindrome_check("hello")
+    print("Палиндром 'racecar': ${pal_ok} (ожид. true)")
+    print("Палиндром 'hello': ${pal_no} (ожид. false)")
+
+    status = if dq.to_list() == [0, 1] and pal_ok and !pal_no { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

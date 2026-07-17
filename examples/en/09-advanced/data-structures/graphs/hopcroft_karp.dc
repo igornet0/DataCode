@@ -1,0 +1,91 @@
+# Maximum matching in a bipartite graph - Hopcroft-Karp
+
+cls HopcroftKarp {
+    private:
+        n_left: int
+        n_right: int
+        adj: dict[int, array[int]]
+        pair_u: array[int]
+        pair_v: array[int]
+        dist: array[int]
+
+    new HopcroftKarp(n_left: int, n_right: int, edges: array[tuple[int, int]]) {
+        this.n_left = n_left
+        this.n_right = n_right
+        this.adj = {}
+        for i in range(n_left) { this.adj[i] = [] }
+        for e in edges { this.adj[e[0]].push(e[1]) }
+        this.pair_u = [-1 for _ in range(n_left)]
+        this.pair_v = [-1 for _ in range(n_right)]
+        this.dist = [0 for _ in range(n_left)]
+    }
+
+    private:
+    fn bfs() -> bool {
+        queue = []
+        for u in range(this.n_left) {
+            if this.pair_u[u] < 0 {
+                this.dist[u] = 0
+                queue.push(u)
+            } else {
+                this.dist[u] = -1
+            }
+        }
+        found = false
+        while len(queue) > 0 {
+            u = queue.pop(0)
+            for v in this.adj[u] {
+                pu = this.pair_v[v]
+                if pu < 0 {
+                    found = true
+                } else if this.dist[pu] < 0 {
+                    this.dist[pu] = this.dist[u] + 1
+                    queue.push(pu)
+                }
+            }
+        }
+        return found
+    }
+
+    fn dfs(u: int) -> bool {
+        for v in this.adj[u] {
+            pu = this.pair_v[v]
+            if pu < 0 or (this.dist[pu] == this.dist[u] + 1 and this.dfs(pu)) {
+                this.pair_u[u] = v
+                this.pair_v[v] = u
+                return true
+            }
+        }
+        this.dist[u] = -1
+        return false
+    }
+
+    public:
+    fn max_matching() -> int {
+        matching = 0
+        while this.bfs() {
+            for u in range(this.n_left) {
+                if this.pair_u[u] < 0 and this.dfs(u) { matching += 1 }
+            }
+        }
+        return matching
+    }
+}
+
+fn hopcroft_karp(n_left: int, n_right: int, edges: array[tuple[int, int]]) -> int {
+    solver = HopcroftKarp(n_left, n_right, edges)
+    return solver.max_matching()
+}
+
+fn __main__() {
+    print("=== Hopcroft-Karp (Bipartite Matching) ===")
+
+    edges = [(0, 0), (0, 1), (1, 1), (1, 2), (2, 2), (3, 0)]
+    matching = hopcroft_karp(4, 3, edges)
+
+    print("edges: ${edges}")
+    print("matching size: ${matching} (expected 3)")
+
+    status = if matching == 3 { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

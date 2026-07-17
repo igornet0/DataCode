@@ -1,0 +1,55 @@
+# Решето Эратосфена — все простые числа до n за O(n log log n)
+
+fn sieve(n: int) -> list[int] {
+    """
+    Возвращает отсортированный список простых p, где 2 <= p <= n.
+    n < 2 → пустой список.
+    """
+    if n < 2: return []
+
+    is_prime = [true for _ in range(n + 1)]
+    is_prime[0] = false
+    is_prime[1] = false
+
+    p = 2
+    while p * p <= n {
+        if is_prime[p] {
+            for multiple in range(p * p, n + 1, p) {
+                is_prime[multiple] = false
+            }
+        }
+        p += 1
+    }
+
+    primes = []
+    for i in range(2, n + 1) {
+        if is_prime[i]: primes.push(i)
+    }
+    return primes
+}
+
+fn is_prime(n: int) -> bool {
+    if n < 2: return false
+    if n == 2: return true
+    if n % 2 == 0: return false
+    i = 3
+    while i * i <= n {
+        if n % i == 0: return false
+        i += 2
+    }
+    return true
+}
+
+fn __main__() {
+    print("=== Sieve of Eratosthenes ===")
+
+    for limit in [10, 30, 100] {
+        primes = sieve(limit)
+        print("  простые до ${limit}: ${primes}")
+    }
+
+    expected_30 = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29]
+    status = if sieve(30) == expected_30 { "OK" } else { "FAIL" }
+    print("Тест до 30: ${status}")
+    print("is_prime(97)=${is_prime(97)}, is_prime(100)=${is_prime(100)}")
+}

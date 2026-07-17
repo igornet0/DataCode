@@ -1,0 +1,61 @@
+{
+  "test_requests": [
+    {
+      "name": "Simple output",
+      "request": {
+        "code": "print('Hello, World!')"
+      },
+      "expected_output": "Hello, World!\n"
+    },
+    {
+      "name": "Variables and Arithmetic",
+      "request": {
+        "code": "global x = 10\nglobal y = 20\nprint('Sum:', x + y)"
+      },
+      "expected_output": "Sum: 30\n"
+    },
+    {
+      "name": "For Loop",
+      "request": {
+        "code": "for i in [1, 2, 3] {\n    print('Number:', i)\n }"
+      },
+      "expected_output": "Number: 1\nNumber: 2\nNumber: 3\n"
+    },
+    {
+      "name": "Custom Function",
+      "request": {
+        "code": "fn greet(name) {\n    return 'Hello, ' + name + '!'\n}\nprint(greet('DataCode'))"
+      },
+      "expected_output": "Hello, DataCode!\n"
+    },
+    {
+      "name": "Conditional operator",
+      "request": {
+        "code": "global x = 15\nif x > 10 then\n    print('x is greater than 10')\nendif"
+      },
+      "expected_output": "x is greater than 10\n"
+    },
+    {
+      "name": "Working with arrays",
+      "request": {
+        "code": "global arr = [1, 2, 3, 4, 5]\nprint('Array:', arr)"
+      },
+      "expected_output": "Array: [1, 2, 3, 4, 5]\n"
+    },
+    {
+      "name": "Error (to test error handling)",
+      "request": {
+        "code": "print(undefined_variable)"
+      },
+      "expected_success": false,
+      "expected_error": "variable"
+    }
+  ],
+  "quick_copy": {
+    "simple": "{\"code\": \"print('Hello, World!')\"}",
+    "variables": "{\"code\": \"global x = 10\\nglobal y = 20\\nprint('Sum:', x + y)\"}",
+    "loop": "{\"code\": \"for i in [1, 2, 3] {\\n    print('Number:', i)\\n }\"}",
+    "function": "{\"code\": \"fn greet(name) {\\n    return 'Hello, ' + name + '!'\\n}\\nprint(greet('DataCode'))\"}"
+  }
+}
+

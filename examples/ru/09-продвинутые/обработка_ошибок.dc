@@ -1,0 +1,203 @@
+# Обработка ошибок в DataCode
+# Демонстрирует блоки try/catch/throw/finally
+
+print("============================================================")
+print("Примеры обработки ошибок")
+print("============================================================")
+print()
+
+# Пример 1: Базовый try/catch
+print("🔍 Пример 1: Базовый try/catch...")
+try {
+    global result = 10 / 0
+    print("  Это не будет выведено")
+} catch e {
+    print("  ✓ Ошибка перехвачена:", e)
+    global error_handled = true
+}
+print()
+
+# Пример 2: try/catch без переменной ошибки
+print("🔍 Пример 2: try/catch без переменной ошибки...")
+try {
+    global x = 42
+    print("  ✓ Код выполнен успешно: x =", x)
+} catch {
+    print("  Это не будет выведено (нет ошибки)")
+}
+print()
+
+# Пример 3: try/finally
+print("🔍 Пример 3: try/finally...")
+global cleanup_done = false
+try {
+    global value = 100
+    print("  ✓ Значение установлено:", value)
+} finally {
+    global cleanup_done = true
+    print("  ✓ Блок finally выполнен (cleanup done =", cleanup_done, ")")
+}
+print()
+
+# Пример 4: try/catch/finally
+print("🔍 Пример 4: try/catch/finally...")
+global error_caught = false
+global cleanup_completed = false
+try {
+    throw "Тестовое исключение"
+    print("  Это не будет выведено")
+} catch e {
+    global error_caught = true
+    print("  ✓ Исключение перехвачено:", e)
+} finally {
+    global cleanup_completed = true
+    print("  ✓ Блок finally всегда выполняется (cleanup =", cleanup_completed, ")")
+}
+print()
+
+# Пример 5: Использование throw для создания исключений
+print("🔍 Пример 5: Использование throw для создания исключений...")
+fn validate_age(age) {
+    if age < 0 {
+        throw "Возраст не может быть отрицательным"
+    }
+    if age > 150 {
+        throw "Возраст кажется нереалистичным"
+    }
+    return true
+}
+
+try {
+    validate_age(-5)
+} catch e {
+    print("  ✓ Ошибка валидации перехвачена:", e)
+}
+
+try {
+    validate_age(200)
+} catch e {
+    print("  ✓ Ошибка валидации перехвачена:", e)
+}
+
+try {
+    validate_age(25)
+    print("  ✓ Валидация возраста прошла для 25")
+} catch e {
+    print("  Это не будет выведено")
+}
+print()
+
+# Пример 6: Вложенные блоки try/catch
+print("🔍 Пример 6: Вложенные блоки try/catch...")
+try {
+    global outer_step = "step1"
+    print("  ✓ Внешний try: step1")
+    
+    try {
+        global inner_step = "step2"
+        print("  ✓ Внутренний try: step2")
+        throw "Внутреннее исключение"
+    } catch e {
+        print("  ✓ Внутренний catch: обработано", e)
+        global inner_handled = true
+    }
+    
+    global outer_step = "step3"
+    print("  ✓ Внешний try: step3")
+} catch e {
+    print("  ✓ Внешний catch: обработано", e)
+}
+print()
+
+# Пример 7: Обработка ошибок в функциях
+print("🔍 Пример 7: Обработка ошибок в функциях...")
+fn safe_divide(a, b) {
+    if b == 0 {
+        throw "Деление на ноль не допускается"
+    }
+    return a / b
+}
+
+fn calculate_with_error_handling(a, b) {
+    try {
+        let result = safe_divide(a, b)
+        return result
+    } catch e {
+        print("  ⚠️  Ошибка в вычислении:", e)
+        return null
+    }
+}
+
+global result1 = calculate_with_error_handling(10, 2)
+print("  ✓ 10 / 2 =", result1)
+
+global result2 = calculate_with_error_handling(10, 0)
+print("  ✓ 10 / 0 обработано безопасно, результат =", result2)
+print()
+
+# Пример 8: Операции с файлами с обработкой ошибок
+print("🔍 Пример 8: Операции с файлами с обработкой ошибок...")
+fn safe_read(file_path) {
+    try {
+        let data = read(file_path)
+        return data
+    } catch e {
+        print("  ⚠️  Не удалось прочитать файл:", file_path, "-", e)
+        return null
+    }
+}
+
+global test_file = path("nonexistent_file.txt")
+global file_data = safe_read(test_file)
+if file_data == null {
+    print("  ✓ Ошибка чтения файла обработана корректно")
+}
+print()
+
+# Пример 9: Множественные операции с обработкой ошибок
+print("🔍 Пример 9: Множественные операции с обработкой ошибок...")
+fn process_data(data) {
+    try {
+        if data == null {
+            throw "Данные равны null"
+        }
+        if len(data) == 0 {
+            throw "Данные пусты"
+        }
+        return "Обработка успешна"
+    } catch e {
+        return "Ошибка: " + e
+    }
+}
+
+global result3 = process_data([1, 2, 3])
+print("  ✓", result3)
+
+global result4 = process_data(null)
+print("  ✓", result4)
+
+global result5 = process_data([])
+print("  ✓", result5)
+print()
+
+# Пример 10: Распространение ошибок
+print("🔍 Пример 10: Распространение ошибок...")
+fn level1() {
+    throw "Ошибка из level 1"
+}
+
+fn level2() {
+    level1()
+}
+
+try {
+    level2()
+} catch e {
+    print("  ✓ Ошибка распространена и перехвачена:", e)
+}
+print()
+
+print("============================================================")
+print("✅ Примеры обработки ошибок завершены")
+print("============================================================")
+

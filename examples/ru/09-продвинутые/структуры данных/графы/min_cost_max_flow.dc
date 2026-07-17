@@ -1,0 +1,89 @@
+# Минимальная стоимость максимального потока — Successive Shortest Path
+
+import heapq
+
+INF = float(inf)
+
+fn min_cost_max_flow(
+    n: int,
+    edges: list[tuple[int, int, int, int]],
+    source: int,
+    sink: int,
+    max_flow_limit: int) -> tuple[int, int] {
+
+    """
+    edges: (u, v, capacity, cost).
+    Возвращает (flow, total_cost).
+    """
+    cap = [[0 for _ in range(n)] for _ in range(n)]
+    cost = [[0 for _ in range(n)] for _ in range(n)]
+
+    for e in edges {
+        cap[e[0]][e[1]] += e[2]
+        cost[e[0]][e[1]] = e[3]
+        cost[e[1]][e[0]] = -e[3]
+    }
+
+    flow = 0
+    total_cost = 0
+
+    while flow < max_flow_limit {
+        dist = [INF for _ in range(n)]
+        parent = [-1 for _ in range(n)]
+        dist[source] = 0
+        heap = [(0, source)]
+
+        while len(heap) > 0 {
+            d, u = heapq.heappop(heap)
+            if d > dist[u]: continue
+            for v in range(n) {
+                if cap[u][v] > 0 and dist[u] + cost[u][v] < dist[v] {
+                    dist[v] = dist[u] + cost[u][v]
+                    parent[v] = u
+                    heapq.heappush(heap, (dist[v], v))
+                }
+            }
+        }
+
+        if dist[sink] == INF: break
+
+        push = max_flow_limit - flow
+        v = sink
+        while v != source {
+            u = parent[v]
+            push = min(push, cap[u][v])
+            v = u
+        }
+
+        v = sink
+        while v != source {
+            u = parent[v]
+            cap[u][v] -= push
+            cap[v][u] += push
+            v = u
+        }
+
+        flow += push
+        total_cost += push * dist[sink]
+    }
+    return (flow, total_cost)
+}
+
+fn __main__() {
+    print("=== Min-Cost Max-Flow ===")
+
+    n = 4
+    edges = [
+        (0, 1, 3, 1),
+        (0, 2, 2, 4),
+        (1, 2, 1, 1),
+        (1, 3, 2, 5),
+        (2, 3, 3, 2),
+    ]
+
+    flow, cost = min_cost_max_flow(n, edges, 0, 3, 5)
+    print("поток=${flow}, стоимость=${cost}")
+
+    status = if flow == 5 { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

@@ -1,0 +1,26 @@
+# Bitwise operators (&, |, ^, ~, <<, >>) — int operands only
+
+print("=== Bitwise operators ===")
+print("5 & 3 =", 5 & 3)
+print("5 | 3 =", 5 | 3)
+print("5 ^ 3 =", 5 ^ 3)
+print("~5 =", ~5)
+print("1 << 5 =", 1 << 5)
+print("32 >> 2 =", 32 >> 2)
+print("1 << 2 + 1 =", 1 << 2 + 1)
+
+# Bit mask helpers
+mask = 0
+i = 3
+mask = mask | (1 << i)
+print("mask after set bit ${i}:", mask)
+
+if mask & (1 << i) {
+    print("bit ${i} is set")
+}
+
+mask = mask & ~(1 << i)
+print("mask after clear bit ${i}:", mask)
+
+mask = mask ^ (1 << i)
+print("mask after toggle bit ${i}:", mask)

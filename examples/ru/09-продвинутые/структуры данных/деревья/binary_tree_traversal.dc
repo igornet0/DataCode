@@ -1,0 +1,99 @@
+# Обходы бинарного дерева: preorder, inorder, postorder, level-order (BFS)
+
+cls TreeNode {
+    public:
+        value: int
+        left: Optional[TreeNode]
+        right: Optional[TreeNode]
+
+    new TreeNode(value: int, left: Optional[TreeNode] = null, right: Optional[TreeNode] = null) {
+        this.value = value
+        this.left = left
+        this.right = right
+    }
+}
+
+fn build_sample_tree() -> TreeNode {
+    """
+         1
+        / \\
+       2   3
+      / \\   \\
+     4   5   6
+    """
+    n4 = TreeNode(4)
+    n5 = TreeNode(5)
+    n2 = TreeNode(2, n4, n5)
+    n6 = TreeNode(6)
+    n3 = TreeNode(3, null, n6)
+    return TreeNode(1, n2, n3)
+}
+
+fn preorder(node: Optional[TreeNode], acc: list[int]) {
+    if node == null: return
+    acc.push(node.value)
+    preorder(node.left, acc)
+    preorder(node.right, acc)
+}
+
+fn inorder(node: Optional[TreeNode], acc: list[int]) {
+    if node == null: return
+    inorder(node.left, acc)
+    acc.push(node.value)
+    inorder(node.right, acc)
+}
+
+fn postorder(node: Optional[TreeNode], acc: list[int]) {
+    if node == null: return
+    postorder(node.left, acc)
+    postorder(node.right, acc)
+    acc.push(node.value)
+}
+
+fn level_order(root: Optional[TreeNode]) -> list[int] {
+    """Обход по уровням (BFS)."""
+    if root == null: return []
+    result = []
+    queue = [root]
+
+    while len(queue) > 0 {
+        node = queue.pop(0)
+        result.push(node.value)
+        if node.left != null: queue.push(node.left)
+        if node.right != null: queue.push(node.right)
+    }
+    return result
+}
+
+fn tree_height(node: Optional[TreeNode]) -> int {
+    if node == null: return 0
+    left_h = tree_height(node.left)
+    right_h = tree_height(node.right)
+    return 1 + max(left_h, right_h)
+}
+
+fn __main__() {
+    print("=== Binary Tree Traversals ===")
+
+    root = build_sample_tree()
+
+    pre = []
+    ino = []
+    post = []
+    preorder(root, pre)
+    inorder(root, ino)
+    postorder(root, post)
+    level = level_order(root)
+
+    print("preorder:    ${pre}")
+    print("inorder:     ${ino}")
+    print("postorder:   ${post}")
+    print("level-order: ${level}")
+    print("height:      ${tree_height(root)}")
+
+    status = if pre == [1, 2, 4, 5, 3, 6]
+        and ino == [4, 2, 5, 1, 3, 6]
+        and post == [4, 5, 2, 6, 3, 1]
+        and level == [1, 2, 3, 4, 5, 6] { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

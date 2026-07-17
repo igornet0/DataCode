@@ -1,0 +1,40 @@
+# Modular Inverse - Extended Euclidean Algorithm
+
+fn extended_gcd(a: int, b: int) -> tuple[int, int, int] {
+    """
+    Returns (g, x, y), where g = gcd(a,b) and a*x + b*y = g.
+    """
+    if b == 0: return (abs(a), 1 if a >= 0 else -1, 0)
+    g, x1, y1 = extended_gcd(b, a % b)
+    x = y1
+    y = x1 - (a // b) * y1
+    return (g, x, y)
+}
+
+fn mod_inverse(a: int, mod: int) -> Optional[int] {
+    """
+    Finds x: (a * x) % mod == 1 if gcd(a, mod) == 1.
+    Otherwise null.
+    """
+    if mod <= 0: throw "mod must be positive"
+    g, x, _ = extended_gcd(a % mod, mod)
+    if g != 1: return null
+    return (x % mod + mod) % mod
+}
+
+fn __main__() {
+    print("=== Modular Inverse ===")
+
+    tests = [(3, 11, 4), (10, 17, 12), (4, 8, null)]
+    for t in tests {
+        a, m, expected = t[0], t[1], t[2]
+        got = mod_inverse(a, m)
+        if expected == null {
+            status = if got == null { "OK" } else { "FAIL" }
+        } else {
+            check = (a * got) % m == 1
+            status = if got == expected and check { "OK" } else { "FAIL" }
+        }
+        print("  ${status}: inv(${a}) mod ${m} = ${got}, expected ${expected}")
+    }
+}

@@ -1,0 +1,68 @@
+# Transformation: Null values group
+# CSV: data/employees.csv (empty cells → null)
+# Also: table with explicit null via table()
+#
+# UI operations: fillEmpty, dropEmptyRows
+
+employees = read(path("data/employees.csv"))
+
+print("=== fillEmpty — replace empty values ===")
+# Empty CSV cell and null in table() count as null.
+print("City[5] (empty):", employees["City"][5])
+
+fn fill_empty(v, default) {
+    if v == null {
+        return default
+    }
+    if v == "" {
+        return default
+    }
+    return v
+}
+
+# Built-in table_map applies function to each cell in the given column.
+filled = table_map(employees, "City", fn(x) => fill_empty(x, "Unknown"))
+print("after fill:", filled["City"][5])
+
+print("\n=== replaceNulls — replace null values ===")
+replaced_city = table_replace_nulls(employees, "City", "Unknown")
+print("replace City:", replaced_city["City"][5])
+
+# Without column — replace null in all columns
+replaced_any = employees.replace_nulls("Unknown")
+print("replace any null (string):", len(replaced_any))
+
+# Callback receives row object
+replaced_by_fn = table_replace_nulls(
+    employees,
+    ["City", "Notes"],
+    fn(row) => if row["Amount"] < 1000 { null } else { "Unknown" }
+)
+print("callback replace City[5]:", replaced_by_fn["City"][5])
+
+print("\n=== dropEmptyRows — drop rows with empty values ===")
+# table_drop_nulls(table [, column])
+# Without column — drop row if null in any column.
+# With column — if null in given column (or any in list).
+
+print("rows before:", len(employees))
+no_null_notes = table_drop_nulls(employees, "Notes")
+print("without null in Notes:", len(no_null_notes))
+
+no_null_city = table_drop_nulls(employees, "City")
+print("without null in City:", len(no_null_city))
+
+# Method on table object:
+no_null_any = employees.drop_nulls()
+print("without null in any column:", len(no_null_any))
+
+# Explicit null in table() literal:
+raw = table([
+    [1, "Alice", 28],
+    [2, null, 35],
+    [3, "Charlie", null],
+], ["id", "name", "age"])
+clean = table_drop_nulls(raw, ["name", "age"])
+print("table() + drop_nulls on [name, age]:", len(clean), "rows")
+
+print("\nDone.")

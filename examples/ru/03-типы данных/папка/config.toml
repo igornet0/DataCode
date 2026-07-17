@@ -1,0 +1,15 @@
+# Пример тестового config.toml
+
+name = "Пример конфигурации"
+version = 1
+debug = true
+
+[paths]
+input = "input/"
+output = "output/"
+
+[database]
+host = "localhost"
+port = 5432
+user = "admin"
+password = "secret"

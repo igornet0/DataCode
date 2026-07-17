@@ -1,0 +1,66 @@
+# Максимальный поток — Форд-Фалкерсон (DFS по остаточной сети)
+
+fn build_residual(n: int, edges: list[tuple[int, int, int]]) -> list[list[int]] {
+    """Остаточная ёмкость cap[u][v]."""
+    cap = [[0 for _ in range(n)] for _ in range(n)]
+    for e in edges {
+        cap[e[0]][e[1]] += e[2]
+    }
+    return cap
+}
+
+fn dfs_path(cap: list[list[int]], s: int, t: int, visited: list[bool], path: list[int]) -> bool {
+    if s == t: return true
+    visited[s] = true
+    for v in range(len(cap)) {
+        if !visited[v] and cap[s][v] > 0 {
+            path.push(v)
+            if dfs_path(cap, v, t, visited, path): return true
+            path.pop()
+        }
+    }
+    return false
+}
+
+fn ford_fulkerson(n: int, edges: list[tuple[int, int, int]], source: int, sink: int) -> int {
+    cap = build_residual(n, edges)
+    max_flow = 0
+
+    while true {
+        visited = [false for _ in range(n)]
+        path = [source]
+        if !dfs_path(cap, source, sink, visited, path): break
+
+        flow = cap[path[0]][path[1]]
+        for i in range(1, len(path)) {
+            flow = min(flow, cap[path[i - 1]][path[i]])
+        }
+
+        for i in range(1, len(path)) {
+            u, v = path[i - 1], path[i]
+            cap[u][v] -= flow
+            cap[v][u] += flow
+        }
+        max_flow += flow
+    }
+    return max_flow
+}
+
+fn __main__() {
+    print("=== Ford-Fulkerson Max Flow ===")
+
+    n = 6
+    edges = [
+        (0, 1, 16), (0, 2, 13),
+        (1, 2, 10), (1, 3, 12),
+        (2, 1, 4), (2, 4, 14),
+        (3, 2, 9), (3, 5, 20),
+        (4, 3, 7), (4, 5, 4),
+    ]
+
+    flow = ford_fulkerson(n, edges, 0, 5)
+    print("макс. поток 0→5: ${flow} (ожид. 23)")
+
+    status = if flow == 23 { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

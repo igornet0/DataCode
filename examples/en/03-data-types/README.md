@@ -84,6 +84,50 @@ datacode examples/en/03-data-types/objects.dc
 datacode examples/en/03-data-types/arrays.dc
 ```
 
+### 6. `table_push.dc` - `table.push()` method
+**Description**: Append rows from an object, array of objects, value array, or another table.
+
+**What you'll learn**:
+- `table.push({...})` — single row from object
+- `table.push([{...}, {...}])` — batch insert
+- `table.push([v1, v2, ...])` — row by column order
+- `table.push(other_table)` and `table.push(other, ignore=true)` — schema extension
+- Return value — number of inserted rows
+
+**Run**:
+```bash
+datacode examples/en/03-data-types/table_push.dc
+```
+
+### 7. `tables/` — table transformations (Transformation widget)
+**Description**: Examples of all column and row transformation operations with CSV data.
+
+**What you'll learn**: `table_select`, `table_sort`, `table_drop_nulls`, text/numeric column functions, workarounds for not-yet-implemented `table_*` operations.
+
+**Run**:
+```bash
+datacode "examples/en/03-data-types/tables/01-transformation/01-columns.dc"
+```
+
+See [`tables/01-transformation/README.md`](tables/01-transformation/README.md).
+
+### Additional examples
+- `enum-and-table.dc` — `enum()` and `Table(path)`
+- `read_file_bin.dc` — raw file bytes
+- `date-time.dc` — `now`, `date_to_unix`, `duration`
+- `arrays-comprehension.dc` — list comprehensions
+- `math.dc` — `sqrt`, `isinf`
+- `paths.dc` — `path_*` functions
+- `files.dc` — `list_files`, `read`, `save`
+
+### 8. `table_save.dc` — table export
+**Description**: `table.save_csv()` and `table.save_sqlite()`.
+
+**Run**:
+```bash
+datacode examples/en/03-data-types/table_save.dc
+```
+
 ## 🎯 Concepts Covered
 
 ### Type Conversion
@@ -118,7 +162,7 @@ datacode examples/en/03-data-types/arrays.dc
 - **[02-syntax](../02-syntax/)** - Language syntax constructs
 
 ### Next Steps
-- **[04-advanced](../04-advanced/)** - Advanced features including error handling
+- **[09-advanced](../09-advanced/)** - Advanced features including error handling
 - **[05-functions](../05-functions/)** - Creating and using functions
 
 ---

@@ -1,0 +1,72 @@
+# Fibonacci numbers - comparison of naive recursion and dynamic programming
+
+fn fib_naive(n: int) -> int {
+    """Recursion without memoization: O(2^n) - only for small n."""
+    if n <= 1: return n
+    return fib_naive(n - 1) + fib_naive(n - 2)
+}
+
+fn fib_dp_table(n: int) -> int {
+    """
+    Bottom-up table filling: O(n) in time and memory.
+    dp[i] — i-th Fibonacci number (F(0)=0, F(1)=1).
+    """
+    if n <= 1: return n
+
+    dp = [0, 1]
+    for i in range(2, n + 1) {
+        dp.push(dp[i - 1] + dp[i - 2])
+    }
+    return dp[n]
+}
+
+fn fib_dp_optimized(n: int) -> int {
+    """Last two values instead of an array: O(n) time, O(1) memory."""
+    if n <= 1: return n
+
+    prev, curr = 0, 1
+    for _ in range(2, n + 1) {
+        prev, curr = curr, prev + curr
+    }
+    return curr
+}
+
+fn fib_memo(n: int, cache: dict[int, int] = {}) -> int {
+    """Recursion with memoization: O(n) - a clear top-down option."""
+    if n in cache: return cache[n]
+    if n <= 1: return n
+    cache[n] = fib_memo(n - 1, cache) + fib_memo(n - 2, cache)
+    return cache[n]
+}
+
+fn __main__() {
+    print("=== Fibonacci DP ===")
+
+    for n in [0, 1, 5, 10, 20] {
+        table = fib_dp_table(n)
+        opt = fib_dp_optimized(n)
+        memo = fib_memo(n)
+        print("F(${n}) = ${table}  (table=${table}, opt=${opt}, memo=${memo})")
+        if table != opt or table != memo {
+            print("  ERROR: results do not match!")
+        }
+    }
+
+    print("\nTime comparison (n=30):")
+    from system import time
+
+    t0 = time.perf_counter()
+    v_table = fib_dp_table(30)
+    t1 = time.perf_counter()
+    v_opt = fib_dp_optimized(30)
+    t2 = time.perf_counter()
+    v_memo = fib_memo(30)
+    t3 = time.perf_counter()
+
+    print("  table: F(30)=${v_table}, ${(t1 - t0) * 1000:.3f} ms")
+    print("  O(1): F(30)=${v_opt}, ${(t2 - t1) * 1000:.3f} ms")
+    print("  memo: F(30)=${v_memo}, ${(t3 - t2) * 1000:.3f} ms")
+
+    # Naive recursion just for demonstration on small n
+    print("\nNaive recursion (n=20): F(20)=${fib_naive(20)}")
+}

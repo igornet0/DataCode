@@ -1,0 +1,57 @@
+# Bellman-Ford algorithm - shortest paths, negative weights, cycle detection
+# edges: [(u, v, weight), ...]
+
+INF = float(inf)
+
+fn bellman_ford(n: int, edges: list[tuple[int, int, float]], source: int) -> tuple[Optional[dict[int, float]], bool] {
+    """
+    Returns (dist, has_negative_cycle).
+    dist = null if there is a negative weight cycle reachable from source.
+    """
+    dist = {}
+    for i in range(n) { dist[i] = INF }
+    dist[source] = 0.0
+
+    for _ in range(n - 1) {
+        updated = false
+        for e in edges {
+            u, v, w = e[0], e[1], e[2]
+            if dist[u] != INF and dist[u] + w < dist[v] {
+                dist[v] = dist[u] + w
+                updated = true
+            }
+        }
+        if !updated: break
+    }
+
+    for e in edges {
+        u, v, w = e[0], e[1], e[2]
+        if dist[u] != INF and dist[u] + w < dist[v] {
+            return (null, true)
+        }
+    }
+    return (dist, false)
+}
+
+fn __main__() {
+    print("=== Bellman-Ford ===")
+
+    n = 5
+    edges = [
+        (0, 1, 6.0), (0, 2, 7.0),
+        (1, 2, 8.0), (1, 3, 5.0), (1, 4, -4.0),
+        (2, 3, -3.0), (2, 4, 9.0),
+        (3, 1, -2.0),
+        (4, 0, 2.0), (4, 3, 7.0),
+    ]
+
+    dist, neg = bellman_ford(n, edges, 0)
+    print("dist from 0: ${dist}")
+    print("Negative loop: ${neg} (expected false)")
+
+    # Graph with negative cycle 0→1→2→0
+    n2 = 3
+    bad_edges = [(0, 1, 1.0), (1, 2, -2.0), (2, 0, 0.0)]
+    dist2, neg2 = bellman_ford(n2, bad_edges, 0)
+    print("\nCycle 0→1→2→0: dist=${dist2}, neg=${neg2} (expected neg=true)")
+}

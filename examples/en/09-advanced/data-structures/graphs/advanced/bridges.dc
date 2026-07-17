@@ -1,0 +1,92 @@
+# Search for bridges (Tarjan DFS, tin/low)
+# Undirected graph: graph[u] = [v, ...]
+
+cls BridgeFinder {
+    private:
+        timer: int
+        tin: dict[int, int]
+        low: dict[int, int]
+        visited: set[int]
+        bridges: list[tuple[int, int]]
+
+    new BridgeFinder() {
+        this.timer = 0
+        this.tin = {}
+        this.low = {}
+        this.visited = set()
+        this.bridges = []
+    }
+
+    public:
+    fn dfs(graph: dict[int, list[int]], v: int, parent: int) {
+        this.visited.add(v)
+        this.timer = this.timer + 1
+        this.tin[v] = this.timer
+        this.low[v] = this.timer
+
+        for to in graph.get(v, []) {
+            if to == parent: continue
+
+            if to in this.visited {
+                this.low[v] = min(this.low[v], this.tin[to])
+            } else {
+                this.dfs(graph, to, v)
+                this.low[v] = min(this.low[v], this.low[to])
+                if this.low[to] > this.tin[v] {
+                    this.bridges.push((min(v, to), max(v, to)))
+                }
+            }
+        }
+    }
+
+    fn find_bridges(graph: dict[int, list[int]], n: int) -> list[tuple[int, int]] {
+        for i in range(n) {
+            if !(i in this.visited) {
+                this.dfs(graph, i, -1)
+            }
+        }
+        return sort(this.bridges)
+    }
+}
+
+fn build_sample_graph() -> tuple[int, dict[int, list[int]]] {
+    """
+    0—1—2 cycle + bridge 1—3 + cycle 3—4—5 + bridge 3—6
+    Bridges: (1.3) and (3.6)
+    """
+    n = 7
+    edges = [(0, 1), (1, 2), (2, 0), (1, 3), (3, 4), (4, 5), (5, 3), (3, 6)]
+    graph = {}
+    for i in range(n) { graph[i] = [] }
+    for e in edges {
+        u, v = e[0], e[1]
+        graph[u].push(v)
+        graph[v].push(u)
+    }
+    return (n, graph)
+}
+
+fn __main__() {
+    print("=== Bridges (Tarjan DFS) ===")
+
+    n, graph = build_sample_graph()
+    finder = BridgeFinder()
+    bridges = finder.find_bridges(graph, n)
+
+    print("Vertexes: ${n}")
+    print("Bridges: ${bridges}")
+
+    expected = [(1, 3), (3, 6)]
+    status = if bridges == expected { "OK" } else { "FAIL" }
+    print("Test: ${status} (expected ${expected})")
+
+    # Chain - all edges are bridges
+    chain = {}
+    for i in range(4) { chain[i] = [] }
+    for i in range(3) {
+        chain[i].push(i + 1)
+        chain[i + 1].push(i)
+    }
+    chain_bridges = BridgeFinder().find_bridges(chain, 4)
+    print("\nChain 0-1-2-3: bridges=${chain_bridges} (expected 3 bridges)")
+}

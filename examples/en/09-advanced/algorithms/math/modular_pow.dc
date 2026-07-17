@@ -1,0 +1,39 @@
+# Fast exponentiation modulo - O(log exp)
+
+fn mod_pow(base: int, exp: int, mod: int) -> int {
+    """
+    (base^exp) % mod. Works for non-negative exp.
+    mod must be > 0.
+    """
+    if mod <= 0: throw "mod must be positive"
+    base = base % mod
+    result = 1
+    e = exp
+
+    while e > 0 {
+        if e % 2 == 1 {
+            result = (result * base) % mod
+        }
+        base = (base * base) % mod
+        e = e // 2
+    }
+    return result
+}
+
+fn __main__() {
+    print("=== Modular Exponentiation ===")
+
+    tests = [
+        (2, 10, 1000, 24),
+        (3, 5, 13, 9),
+        (5, 0, 7, 1),
+        (7, 1000000000, 1000000007, mod_pow(7, 1000000000, 1000000007)),
+    ]
+
+    for t in tests {
+        b, e, m, expected = t[0], t[1], t[2], t[3]
+        got = mod_pow(b, e, m)
+        status = if got == expected { "OK" } else { "FAIL" }
+        print("  ${status}: ${b}^${e} mod ${m} = ${got}, expected ${expected}")
+    }
+}

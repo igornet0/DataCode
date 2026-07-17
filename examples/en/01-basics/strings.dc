@@ -24,3 +24,9 @@ let num = 42
 let num_str = "Number: " + "42"
 print(num_str)
 
+# String slices s[start:stop:step] (Unicode character indices)
+let s = "Hello, World!"
+print("s[1:4] = " + s[1:4])
+print("s[-3:] = " + s[-3:])
+print("s[::2] = " + s[::2])
+

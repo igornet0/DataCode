@@ -1,0 +1,70 @@
+# Bipartite check graph (BFS coloring in 2 colors)
+# Undirected graph: graph[u] = [v, ...]
+
+NO_COLOR = -1
+
+fn is_bipartite(graph: dict[int, list[int]], n: int) -> bool {
+    """
+    BFS: neighbors must be the opposite color (0/1).
+    """
+    color = {}
+    for i in range(n) { color[i] = NO_COLOR }
+
+    fn bfs(start: int) -> bool {
+        queue = [start]
+        color[start] = 0
+
+        while len(queue) > 0 {
+            v = queue.pop(0)
+            for u in graph.get(v, []) {
+                if color[u] == NO_COLOR {
+                    color[u] = 1 - color[v]
+                    queue.push(u)
+                } else if color[u] == color[v] {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    for i in range(n) {
+        if color[i] == NO_COLOR and !bfs(i): return false
+    }
+    return true
+}
+
+fn build_undirected(n: int, edges: list[tuple[int, int]]) -> dict[int, list[int]] {
+    graph = {}
+    for i in range(n) { graph[i] = [] }
+    for e in edges {
+        u, v = e[0], e[1]
+        graph[u].push(v)
+        graph[v].push(u)
+    }
+    return graph
+}
+
+fn __main__() {
+    print("=== Bipartite Check ===")
+
+    # Square 0-1-3-2-0 - dicotyledonous
+    square = build_undirected(4, [(0, 1), (1, 3), (3, 2), (2, 0)])
+    print("Square: ${is_bipartite(square, 4)} (expected true)")
+
+    # Triangle is not bipartite
+    triangle = build_undirected(3, [(0, 1), (1, 2), (2, 0)])
+    print("Triangle: ${is_bipartite(triangle, 3)} (expected false)")
+
+    # Two components: tree + odd loop
+    mixed = build_undirected(6, [(0, 1), (1, 2), (3, 4), (4, 5), (5, 3)])
+    print("Mixed: ${is_bipartite(mixed, 6)} (expected false)")
+
+    # Full bipartite K_{2,3}
+    k23 = build_undirected(5, [(0, 2), (0, 3), (0, 4), (1, 2), (1, 3), (1, 4)])
+    print("K(2,3): ${is_bipartite(k23, 5)} (expected true)")
+
+    # Single top
+    single = build_undirected(1, [])
+    print("1 vertex: ${is_bipartite(single, 1)} (expected true)")
+}

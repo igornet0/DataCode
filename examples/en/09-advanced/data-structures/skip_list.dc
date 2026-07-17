@@ -1,0 +1,97 @@
+# Skip List - probabilistic structure with O(log n) search on average
+
+MAX_LEVEL = 16
+P = 0.5
+
+cls SkipNode {
+    public:
+        value: int
+        forward: list[Optional[SkipNode]]
+
+    new SkipNode(value: int, level: int) {
+        this.value = value
+        this.forward = [null for _ in range(level + 1)]
+    }
+}
+
+cls SkipList {
+    private:
+        head: SkipNode
+        level: int
+
+    new SkipList() {
+        this.head = SkipNode(-1000000000, MAX_LEVEL)
+        this.level = 0
+    }
+
+    private:
+    fn _random_level() -> int {
+        lvl = 0
+        while random() < P and lvl < MAX_LEVEL {
+            lvl += 1
+        }
+        return lvl
+    }
+
+    public:
+    fn insert(value: int) {
+        update = [null for _ in range(MAX_LEVEL + 1)]
+        current = this.head
+
+        for i in range(this.level, -1, -1) {
+            while current.forward[i] != null and current.forward[i].value < value {
+                current = current.forward[i]
+            }
+            update[i] = current
+        }
+
+        current = current.forward[0]
+        if current == null or current.value != value {
+            lvl = this._random_level()
+            if lvl > this.level {
+                for i in range(this.level + 1, lvl + 1) { update[i] = this.head }
+                this.level = lvl
+            }
+            node = SkipNode(value, lvl)
+            for i in range(lvl + 1) {
+                node.forward[i] = update[i].forward[i]
+                update[i].forward[i] = node
+            }
+        }
+    }
+
+    fn search(value: int) -> bool {
+        current = this.head
+        for i in range(this.level, -1, -1) {
+            while current.forward[i] != null and current.forward[i].value < value {
+                current = current.forward[i]
+            }
+        }
+        current = current.forward[0]
+        return current != null and current.value == value
+    }
+
+    fn to_list() -> list[int] {
+        result = []
+        current = this.head.forward[0]
+        while current != null {
+            result.push(current.value)
+            current = current.forward[0]
+        }
+        return result
+    }
+}
+
+fn __main__() {
+    print("=== Skip List ===")
+
+    sl = SkipList()
+    for x in [3, 6, 7, 9, 12, 19, 21, 25] { sl.insert(x) }
+
+    print("list: ${sl.to_list()}")
+    print("search 19: ${sl.search(19)}")
+    print("search 20: ${sl.search(20)}")
+
+    status = if sl.to_list() == sort([3, 6, 7, 9, 12, 19, 21, 25]) and sl.search(19) { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

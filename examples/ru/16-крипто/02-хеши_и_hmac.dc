@@ -1,0 +1,17 @@
+# sha512, hmac_sha256, hmac_sha512
+
+from crypto import secure_compare
+
+d512 = sha512("hello")
+print("sha512 len:", len(d512))
+print("sha512 hex:", str(d512))
+
+key = random_bytes(16)
+msg = random_bytes(32)
+tag256 = hmac_sha256(key, msg)
+tag512 = hmac_sha512(key, msg)
+
+print("hmac_sha256 len:", len(tag256))
+print("hmac_sha512 len:", len(tag512))
+print("secure_compare(tag256, tag256):", secure_compare(tag256, tag256))
+print("secure_compare(tag256, tag512):", secure_compare(tag256, tag512))

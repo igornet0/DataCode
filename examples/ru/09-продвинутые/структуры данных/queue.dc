@@ -1,0 +1,71 @@
+# Очередь (FIFO) — O(1) enqueue, O(n) dequeue через сдвиг (учебная реализация)
+
+cls Queue {
+    private:
+        data: list[int]
+
+    new Queue() {
+        this.data = []
+    }
+
+    public:
+    fn enqueue(item) {
+        this.data.push(item)
+    }
+
+    fn dequeue() {
+        """Извлечь первый элемент; пустая очередь → null."""
+        if this.is_empty(): return null
+        return this.data.pop(0)
+    }
+
+    fn front() {
+        if this.is_empty(): return null
+        return this.data[0]
+    }
+
+    fn is_empty() -> bool {
+        return len(this.data) == 0
+    }
+
+    fn size() -> int {
+        return len(this.data)
+    }
+
+    fn to_list() -> list[int] {
+        return this.data
+    }
+}
+
+fn simulate_task_scheduler(tasks: list[str]) -> list[str] {
+    """Обработка задач в порядке поступления."""
+    q = Queue()
+    for t in tasks { q.enqueue(t) }
+
+    done = []
+    while !q.is_empty() {
+        done.push(q.dequeue())
+    }
+    return done
+}
+
+fn __main__() {
+    print("=== Queue (FIFO) ===")
+
+    q = Queue()
+    for x in [1, 2, 3, 4] { q.enqueue(x) }
+    print("front=${q.front()}, size=${q.size()}")
+
+    order = []
+    while !q.is_empty() {
+        order.push(q.dequeue())
+    }
+    print("Порядок dequeue (FIFO): ${order}")
+
+    tasks = ["parse", "validate", "save"]
+    processed = simulate_task_scheduler(tasks)
+    print("Планировщик: ${processed}")
+
+    status = if order == [1, 2, 3, 4] and processed == tasks { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

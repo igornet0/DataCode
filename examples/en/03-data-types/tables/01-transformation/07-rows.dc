@@ -1,0 +1,45 @@
+# Transformation: Rows group
+# CSV: data/duplicates.csv, data/employees.csv
+#
+# UI operations: distinct, sort, rowNumber
+
+dup = read(path("data/duplicates.csv"))
+employees = read(path("data/employees.csv"))
+
+print("=== sort — sorting ===")
+# table_sort(table, column, ascending?)
+# table.sort(column, ascending?)
+by_id = table_sort(dup, "ID", true)
+print("sort ID asc:", by_id["ID"])
+
+by_age_desc = table_sort(employees, "Age", false)
+print("sort Age desc, first:", by_age_desc["Name"][0], by_age_desc["Age"][0])
+
+# Multi-level sort (sorts: [{column, ascending}, ...]) — no dedicated function yet.
+# Planned syntax:
+#   sorted = table_sort_multi(employees, [{column: "Department", ascending: true}, {column: "Age", ascending: false}])
+
+print("\n=== rowNumber — row numbering ===")
+numbered = table_row_number(employees, "RowNumber", 1)
+print("RowNumber[0]:", numbered["RowNumber"][0])
+print("RowNumber[2]:", numbered["RowNumber"][2])
+
+# Method form:
+numbered2 = employees.row_number("Num", 100)
+print("Num[0]:", numbered2["Num"][0])
+
+print("\n=== distinct — remove duplicate rows ===")
+print("duplicates (originally):", len(dup), "rows")
+
+ids = dup["ID"]
+unique_ids = unique(ids)
+print("unique(ID) as array:", unique_ids)
+
+distinct_rows = table_distinct(dup, ["ID", "Category"])
+print("distinct by ID+Category:", len(distinct_rows), "rows")
+
+# Method form and whole-row mode (no columns):
+distinct_all = dup.distinct()
+print("distinct on whole row:", len(distinct_all), "rows")
+
+print("\nDone.")

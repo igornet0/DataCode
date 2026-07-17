@@ -1,0 +1,14 @@
+# Global table_split_column and table_join_columns
+# (methods .split_column / .join_columns — in 03-text.dc)
+# CSV: data/text_products.csv, data/employees.csv
+
+products = read(path("data/text_products.csv"))
+employees = read(path("data/employees.csv"))
+
+print("=== table_split_column ===")
+split_tbl = table_split_column(products, "FullName", " ", ["First", "Last"])
+print("First[0]:", split_tbl["First"][0], "| Last[0]:", split_tbl["Last"][0])
+
+print("\n=== table_join_columns ===")
+joined_tbl = table_join_columns(employees, ["Name", "Department"], "NameDept", " — ")
+print("NameDept[0]:", joined_tbl["NameDept"][0])

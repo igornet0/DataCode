@@ -1,0 +1,7 @@
+Name,Age,City,Salary,Notes,Amount,SignedUp,Active,Department
+John Doe,30,New York,50000,,5123.456,2024-03-15,yes,Sales
+Jane Smith,25, los angeles ,45000,ok,3890.1,2024-07-01,no,Marketing
+Bob Johnson,35,Chicago,55000,,6012.789,2023-11-20,yes,Sales
+Alice Brown,28,Houston,48000,vip,4200.0,2024-01-05,yes,HR
+Charlie Wilson,32,Phoenix,52000,,5100.5,2024-06-18,no,Sales
+Diana Lee,29,,47000,new,3988.44,2024-02-28,yes,Marketing

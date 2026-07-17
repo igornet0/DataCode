@@ -1,0 +1,11 @@
+# Файловый DataSource
+
+files = datasource({ type: "file", path: "./tests/test_data/datasource" })
+
+print("тип:", files.type)
+t = files.get_table({ path: "sample.csv" })
+print("строк:", len(t))
+
+resp = files.request({ path: "sample.json" })
+obj = resp.json()
+print("элементов:", len(obj))

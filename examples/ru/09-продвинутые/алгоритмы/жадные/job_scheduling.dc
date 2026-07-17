@@ -1,0 +1,58 @@
+# Планирование задач с дедлайнами и штрафами — жадный + max-heap
+
+import heapq
+
+fn min_lateness_schedule(durations: list[int], deadlines: list[int]) -> tuple[int, list[int]] {
+    """
+    Минимизировать максимальное опоздание (lateness = finish - deadline).
+    Возвращает (max_lateness, порядок индексов задач).
+    """
+    n = len(durations)
+    if n != len(deadlines): throw "durations и deadlines должны совпадать"
+
+    jobs = []
+    for i in range(n) { jobs.push((deadlines[i], durations[i], i)) }
+    jobs = sort(jobs)
+
+    heap = []
+    time = 0
+    order = []
+
+    for job in jobs {
+        deadline, dur, idx = job[0], job[1], job[2]
+        heapq.heappush(heap, (-dur, idx))
+        time += dur
+
+        if time > deadline {
+            removed = heapq.heappop(heap)
+            time += removed[0]
+        }
+    }
+
+    while len(heap) > 0 {
+        entry = heapq.heappop(heap)
+        order.push(entry[1])
+    }
+
+    time = 0
+    max_late = 0
+    for idx in order {
+        time += durations[idx]
+        max_late = max(max_late, time - deadlines[idx])
+    }
+    return (max_late, order)
+}
+
+fn __main__() {
+    print("=== Job Scheduling (min lateness) ===")
+
+    durations = [3, 2, 2, 1]
+    deadlines = [4, 4, 6, 6]
+    late, order = min_lateness_schedule(durations, deadlines)
+
+    print("durations: ${durations}, deadlines: ${deadlines}")
+    print("порядок: ${order}, max lateness: ${late}")
+
+    status = if late <= 1 { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

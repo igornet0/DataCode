@@ -1,0 +1,61 @@
+# Числа Фибоначчи за O(log n) — возведение матрицы 2×2 в степень
+
+fn mat_mul(A: list[list[int]], B: list[list[int]], mod: int) -> list[list[int]] {
+    return [
+        [
+            (A[0][0] * B[0][0] + A[0][1] * B[1][0]) % mod,
+            (A[0][0] * B[0][1] + A[0][1] * B[1][1]) % mod,
+        ],
+        [
+            (A[1][0] * B[0][0] + A[1][1] * B[1][0]) % mod,
+            (A[1][0] * B[0][1] + A[1][1] * B[1][1]) % mod,
+        ],
+    ]
+}
+
+fn mat_pow(M: list[list[int]], exp: int, mod: int) -> list[list[int]] {
+    """Возведение 2×2 матрицы в степень."""
+    result = [[1, 0], [0, 1]]
+    base = M
+    e = exp
+    while e > 0 {
+        if e % 2 == 1 { result = mat_mul(result, base, mod) }
+        base = mat_mul(base, base, mod)
+        e = e // 2
+    }
+    return result
+}
+
+fn fibonacci(n: int) -> int {
+    """F(n) для n >= 0; F(0)=0, F(1)=1."""
+    if n < 0: throw "n должно быть неотрицательным"
+    if n == 0: return 0
+    if n == 1: return 1
+    M = [[1, 1], [1, 0]]
+    P = mat_pow(M, n - 1, 10**18)
+    return P[0][0]
+}
+
+fn fibonacci_mod(n: int, mod: int) -> int {
+    """F(n) mod mod."""
+    if n < 0: throw "n должно быть неотрицательным"
+    if n == 0: return 0
+    if n == 1: return 1
+    M = [[1, 1], [1, 0]]
+    P = mat_pow(M, n - 1, mod)
+    return P[0][0]
+}
+
+fn __main__() {
+    print("=== Fast Fibonacci (matrix exponentiation) ===")
+
+    expected = [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55]
+    for i in range(len(expected)) {
+        got = fibonacci(i)
+        status = if got == expected[i] { "OK" } else { "FAIL" }
+        print("  ${status}: F(${i}) = ${got}, ожид. ${expected[i]}")
+    }
+
+    print("F(50) = ${fibonacci(50)} (ожид. 12586269025)")
+    print("F(100) mod 1e9+7 = ${fibonacci_mod(100, 1000000007)}")
+}

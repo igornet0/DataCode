@@ -1,0 +1,24 @@
+# table.save_csv() / table.save_sqlite() — экспорт таблицы в файл
+
+print("=== 1. CSV: имя без расширения ===")
+users = table([[1, "Alex"], [2, "Kate"]], ["id", "name"])
+csv_path = users.save_csv("output_users")
+print("saved:", csv_path)
+
+print("\n=== 2. SQLite: имя таблицы = имя переменной ===")
+db_path = users.save_sqlite("users_db")
+print("sqlite:", db_path)
+
+print("\n=== 3. path() как аргумент ===")
+alt_path = users.save_csv(path("alt_out"))
+print("alt:", alt_path)
+
+print("\n=== 4. Пустая таблица с заголовками ===")
+schema = table([], ["id", "name", "email"])
+schema.save_csv("empty_schema")
+
+print("\n=== 5. Путь с папкой (папка должна существовать) ===")
+# Создайте папку export_data вручную или через system.fs, затем:
+# users.save_csv("./export_data/report")
+
+print("\nDone.")

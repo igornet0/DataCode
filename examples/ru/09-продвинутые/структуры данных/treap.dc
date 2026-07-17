@@ -1,0 +1,73 @@
+# Treap (дерево + куча) — insert/search O(log n) в среднем
+
+cls TreapNode {
+    public:
+        value: int
+        priority: int
+        left: Optional[TreapNode]
+        right: Optional[TreapNode]
+
+    new TreapNode(value: int) {
+        this.value = value
+        this.priority = random_int(1, 1000000)
+        this.left = null
+        this.right = null
+    }
+}
+
+fn treap_split(root: Optional[TreapNode], key: int) -> tuple[Optional[TreapNode], Optional[TreapNode]] {
+    if root == null: return (null, null)
+    if key < root.value {
+        left, right = treap_split(root.left, key)
+        root.left = right
+        return (left, root)
+    }
+    left, right = treap_split(root.right, key)
+    root.right = left
+    return (root, right)
+}
+
+fn treap_merge(left: Optional[TreapNode], right: Optional[TreapNode]) -> Optional[TreapNode] {
+    if left == null: return right
+    if right == null: return left
+    if left.priority > right.priority {
+        left.right = treap_merge(left.right, right)
+        return left
+    }
+    right.left = treap_merge(left, right.left)
+    return right
+}
+
+fn treap_insert(root: Optional[TreapNode], value: int) -> TreapNode {
+    left, right = treap_split(root, value)
+    return treap_merge(treap_merge(left, TreapNode(value)), right)
+}
+
+fn treap_search(root: Optional[TreapNode], value: int) -> bool {
+    if root == null: return false
+    if value == root.value: return true
+    if value < root.value: return treap_search(root.left, value)
+    return treap_search(root.right, value)
+}
+
+fn treap_inorder(root: Optional[TreapNode], result: list[int]) {
+    if root == null: return
+    treap_inorder(root.left, result)
+    result.push(root.value)
+    treap_inorder(root.right, result)
+}
+
+fn __main__() {
+    print("=== Treap ===")
+
+    root = null
+    for x in [5, 2, 8, 1, 9, 3, 7] { root = treap_insert(root, x) }
+
+    vals = []
+    treap_inorder(root, vals)
+    print("inorder: ${vals}")
+    print("search 7: ${treap_search(root, 7)}")
+
+    status = if vals == sort([5, 2, 8, 1, 9, 3, 7]) and treap_search(root, 7) { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

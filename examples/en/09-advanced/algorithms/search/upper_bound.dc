@@ -1,0 +1,54 @@
+# upper_bound is the first index of i, where arr[i] > target (like std::upper_bound)
+
+fn lower_bound(arr: list[int], target: int) -> int {
+    lo = 0
+    hi = len(arr)
+    while lo < hi {
+        mid = lo + (hi - lo) // 2
+        if arr[mid] < target { lo = mid + 1 } else { hi = mid }
+    }
+    return lo
+}
+
+fn upper_bound(arr: list[int], target: int) -> int {
+    lo = 0
+    hi = len(arr)
+
+    while lo < hi {
+        mid = lo + (hi - lo) // 2
+        if arr[mid] <= target {
+            lo = mid + 1
+        } else {
+            hi = mid
+        }
+    }
+    return lo
+}
+
+fn __main__() {
+    print("=== Upper Bound ===")
+
+    data = [1, 2, 2, 2, 3, 4, 5]
+    tests = [
+        (0, 0),
+        (1, 1),
+        (2, 4),
+        (3, 5),
+        (5, 7),
+        (6, 7),
+    ]
+
+    print("Array: ${data}")
+    for t in tests {
+        target, expected = t[0], t[1]
+        got = upper_bound(data, target)
+        status = if got == expected { "OK" } else { "FAIL" }
+        print("  ${status}: upper_bound(${target}) = ${got}, expected ${expected}")
+    }
+
+    # Number of elements equal to target: upper - lower
+    target = 2
+    lo = lower_bound(data, target)
+    hi = upper_bound(data, target)
+    print("\nNumber of twos: ${hi - lo} (expected 3)")
+}

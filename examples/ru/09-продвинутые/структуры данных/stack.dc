@@ -1,0 +1,75 @@
+# Стек (LIFO) на динамическом массиве — O(1) amortized push/pop
+
+cls Stack {
+    private:
+        data: list
+
+    new Stack() {
+        this.data = []
+    }
+
+    public:
+    fn push(item) {
+        this.data.push(item)
+    }
+
+    fn pop() {
+        """Удалить и вернуть верхний элемент; пустой стек → null."""
+        if this.is_empty(): return null
+        return pop(this.data)
+    }
+
+    fn peek() {
+        if this.is_empty(): return null
+        return this.data[-1]
+    }
+
+    fn is_empty() -> bool {
+        return len(this.data) == 0
+    }
+
+    fn size() -> int {
+        return len(this.data)
+    }
+
+    fn to_list() -> list {
+        return this.data
+    }
+}
+
+fn is_balanced_parentheses(s: str) -> bool {
+    """Классическое применение стека: проверка скобок."""
+    stack = Stack()
+    pairs = {")": "(", "]": "[", "}": "{"}
+
+    for ch in s {
+        if ch == "(" or ch == "[" or ch == "{" {
+            stack.push(ch)
+        } else if ch in pairs {
+            if stack.pop() != pairs[ch]: return false
+        }
+    }
+    return stack.is_empty()
+}
+
+fn __main__() {
+    print("=== Stack (LIFO) ===")
+
+    st = Stack()
+    for x in [10, 20, 30] { st.push(x) }
+    print("После push 10,20,30: peek=${st.peek()}, size=${st.size()}")
+
+    popped = []
+    while !st.is_empty() {
+        popped.push(st.pop())
+    }
+    print("Порядок pop (LIFO): ${popped}")
+
+    expr_ok = is_balanced_parentheses("({[]})")
+    expr_bad = is_balanced_parentheses("([)]")
+    print("Сбалансировано '({[]})': ${expr_ok} (ожид. true)")
+    print("Сбалансировано '([)]': ${expr_bad} (ожид. false)")
+
+    status = if popped == [30, 20, 10] and expr_ok and !expr_bad { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

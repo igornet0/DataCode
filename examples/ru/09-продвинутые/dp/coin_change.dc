@@ -1,0 +1,103 @@
+# Задача о размене монет — минимальное число монет и число способов
+
+INF = float(inf)
+
+fn coin_change_min(coins: list[int], amount: int) -> int {
+    """
+    Минимальное количество монет для суммы `amount`.
+    Неограниченный набор каждого номинала. Возвращает -1, если сумму собрать нельзя.
+    """
+    if amount < 0: return -1
+    if amount == 0: return 0
+
+    dp = [INF for _ in range(amount + 1)]
+    dp[0] = 0
+
+    for a in range(1, amount + 1) {
+        for coin in coins {
+            if coin <= a and dp[a - coin] + 1 < dp[a] {
+                dp[a] = dp[a - coin] + 1
+            }
+        }
+    }
+
+    return dp[amount] if dp[amount] != INF else -1
+}
+
+fn coin_change_ways(coins: list[int], amount: int) -> int {
+    """Число способов набрать сумму (порядок монет не важен)."""
+    if amount < 0: return 0
+
+    dp = [0 for _ in range(amount + 1)]
+    dp[0] = 1
+
+    # Внешний цикл по монетам — каждая комбинация считается один раз
+    for coin in coins {
+        for a in range(coin, amount + 1) {
+            dp[a] += dp[a - coin]
+        }
+    }
+    return dp[amount]
+}
+
+fn coin_change_reconstruct(coins: list[int], amount: int) -> Optional[list[int]] {
+    """Восстановление одного оптимального набора монет."""
+    if amount <= 0: return [] if amount == 0 else null
+
+    dp = [INF for _ in range(amount + 1)]
+    parent = [null for _ in range(amount + 1)]
+    dp[0] = 0
+
+    for a in range(1, amount + 1) {
+        for coin in coins {
+            if coin <= a and dp[a - coin] + 1 < dp[a] {
+                dp[a] = dp[a - coin] + 1
+                parent[a] = coin
+            }
+        }
+    }
+
+    if dp[amount] == INF: return null
+
+    result = []
+    rem = amount
+    while rem > 0 {
+        coin = parent[rem]
+        result.push(coin)
+        rem -= coin
+    }
+    return sort(result)
+}
+
+fn __main__() {
+    print("=== Coin Change ===")
+
+    coins = [1, 2, 5, 10, 25]
+    amount = 63
+
+    min_coins = coin_change_min(coins, amount)
+    ways = coin_change_ways(coins, amount)
+    picked = coin_change_reconstruct(coins, amount)
+
+    print("Монеты: ${coins}")
+    print("Сумма:  ${amount}")
+    print("Минимум монет:     ${min_coins}")
+    print("Число способов:    ${ways}")
+    print("Один оптимальный:  ${picked}")
+
+    # Классические тесты
+    tests = [
+        ([1, 3, 4], 6, 2),
+        ([2], 3, -1),
+        ([1, 2, 5], 11, 3),
+        ([], 5, -1),
+    ]
+
+    print("\n--- Тесты минимума ---")
+    for t in tests {
+        c, a, expected = t[0], t[1], t[2]
+        got = coin_change_min(c, a)
+        status = "OK" if got == expected else "FAIL"
+        print("  ${status}: min(${c}, ${a}) = ${got}, ожидалось ${expected}")
+    }
+}

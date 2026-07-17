@@ -1,0 +1,63 @@
+# Merge sort — O(n log n), stable
+
+fn array_copy(arr: list) -> list {
+    copy = []
+    for x in arr { copy.push(x) }
+    return copy
+}
+
+fn merge(left: list[int], right: list[int]) -> list[int] {
+    result = []
+    i = 0
+    j = 0
+
+    while i < len(left) and j < len(right) {
+        if left[i] <= right[j] {
+            result.push(left[i])
+            i = i + 1
+        } else {
+            result.push(right[j])
+            j = j + 1
+        }
+    }
+    while i < len(left) {
+        result.push(left[i])
+        i = i + 1
+    }
+    while j < len(right) {
+        result.push(right[j])
+        j = j + 1
+    }
+    return result
+}
+
+fn merge_sort(arr: list[int]) -> list[int] {
+    n = len(arr)
+    if n <= 1: return arr
+
+    mid = n // 2
+    left = merge_sort(arr[:mid])
+    right = merge_sort(arr[mid:])
+    return merge(left, right)
+}
+
+fn __main__() {
+    print("=== Merge Sort ===")
+
+    tests = [
+        [38, 27, 43, 3, 9, 82, 10],
+        [1],
+        [],
+        [5, 5, 5, 1],
+    ]
+
+    for data in tests {
+        result = merge_sort(data)
+        print("  ${data} → ${result}")
+    }
+
+    large = [5, 1, 4, 2, 8, 0, 2, 9, 3, 7, 6]
+    expected = sort(array_copy(large))
+    got = merge_sort(large)
+    print("\nComparison with sort(): ${got == expected}")
+}

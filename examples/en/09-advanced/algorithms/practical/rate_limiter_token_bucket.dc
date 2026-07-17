@@ -1,0 +1,61 @@
+# Token Bucket - request rate limiting
+
+cls TokenBucket {
+    private:
+        capacity: float
+        tokens: float
+        refill_rate: float
+        last_refill_ms: float
+
+    new TokenBucket(capacity: float, refill_rate: float) {
+        """
+        capacity — maximum tokens; refill_rate — tokens per second.
+        """
+        this.capacity = capacity
+        this.tokens = capacity
+        this.refill_rate = refill_rate
+        this.last_refill_ms = 0.0
+    }
+
+    private:
+    fn _refill(now_ms: float) {
+        if this.last_refill_ms == 0.0 {
+            this.last_refill_ms = now_ms
+            return
+        }
+        elapsed_sec = (now_ms - this.last_refill_ms) / 1000.0
+        this.tokens = min(this.capacity, this.tokens + elapsed_sec * this.refill_rate)
+        this.last_refill_ms = now_ms
+    }
+
+    public:
+    fn allow(now_ms: float, cost: float = 1.0) -> bool {
+        """Attempting to spend cost tokens."""
+        this._refill(now_ms)
+        if this.tokens >= cost {
+            this.tokens -= cost
+            return true
+        }
+        return false
+    }
+
+    fn available() -> float { return this.tokens }
+}
+
+fn __main__() {
+    print("=== Token Bucket Rate Limiter ===")
+
+    bucket = TokenBucket(5.0, 2.0)
+    allowed = 0
+    denied = 0
+
+    for t in range(0, 1000, 100) {
+        if bucket.allow(float(t), 1.0) { allowed += 1 } else { denied += 1 }
+    }
+
+    print("allowed: ${allowed}, rejected: ${denied}")
+    print("token balance: ${bucket.available()}")
+
+    status = if allowed >= 5 { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

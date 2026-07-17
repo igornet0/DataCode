@@ -1,0 +1,102 @@
+# Euler path - exists if there are exactly 0 or 2 vertices of odd degree
+
+fn build_undirected_adj(n: int, edges: array[tuple[int, int]]) -> dict[int, array[int]] {
+    adj = {}
+    for i in range(n) { adj[i] = [] }
+    for e in edges {
+        adj[e[0]].push(e[1])
+        adj[e[1]].push(e[0])
+    }
+    return adj
+}
+
+fn degree_list(adj: dict[int, array[int]], n: int) -> array[int] {
+    deg = []
+    for i in range(n) { deg.push(len(adj[i])) }
+    return deg
+}
+
+fn has_euler_path(adj: dict[int, array[int]], n: int) -> bool {
+    """Condition check + edge connectivity for non-zero vertices."""
+    deg = degree_list(adj, n)
+    odd = 0
+    for d in deg { if d % 2 == 1 { odd += 1 } }
+    if odd != 0 and odd != 2: return false
+
+    start = 0
+    for i in range(n) {
+        if len(adj[i]) > 0 { start = i; break }
+    }
+
+    visited = set()
+    stack = [start]
+    visited.add(start)
+    count = 1
+
+    while len(stack) > 0 {
+        v = stack.pop()
+        for u in adj[v] {
+            if u not in visited {
+                visited.add(u)
+                count += 1
+                stack.push(u)
+            }
+        }
+    }
+
+    nonzero = 0
+    for i in range(n) { if len(adj[i]) > 0 { nonzero += 1 } }
+    return count == nonzero
+}
+
+fn remove_edge(adj: dict[int, array[int]], u: int, v: int) {
+    """Remove one edge u-v from the adjacency list u."""
+    for i in range(len(adj[u])) {
+        if adj[u][i] == v {
+            adj[u].pop(i)
+            return
+        }
+    }
+}
+
+fn hierholzer_path(adj: dict[int, array[int]], start: int) -> array[int] {
+    """Construction of an Euler path using the Hierogolf method."""
+    local_adj = {}
+    for v in adj.keys {
+        local_adj[v] = []
+        for u in adj[v] { local_adj[v].push(u) }
+    }
+
+    stack = [start]
+    path = []
+
+    while len(stack) > 0 {
+        v = stack[-1]
+        if len(local_adj[v]) == 0 {
+            path.push(v)
+            stack.pop()
+        } else {
+            u = local_adj[v].pop()
+            remove_edge(local_adj, u, v)
+            stack.push(u)
+        }
+    }
+    return reverse(path)
+}
+
+fn __main__() {
+    print("=== Euler Path ===")
+
+    edges = [(0, 1), (1, 2), (2, 3), (3, 0), (1, 3)]
+    n = 4
+    adj = build_undirected_adj(n, edges)
+
+    ok = has_euler_path(adj, n)
+    path = hierholzer_path(adj, 0)
+
+    print("Eulerian path exists: ${ok}")
+    print("route: ${path}")
+
+    status = if ok and len(path) == len(edges) + 1 { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

@@ -1,0 +1,37 @@
+# Least common multiple (LCD) via GCD
+
+fn gcd(a: int, b: int) -> int {
+    a = abs(a)
+    b = abs(b)
+    while b != 0 { a, b = b, a % b }
+    return a
+}
+
+fn lcm(a: int, b: int) -> int {
+    """lcm(a,b) = |a*b| / gcd(a,b). For a=0 or b=0 returns 0."""
+    if a == 0 or b == 0: return 0
+    return abs(a // gcd(a, b) * b)
+}
+
+fn lcm_list(nums: list[int]) -> int {
+    if len(nums) == 0: return 0
+    result = abs(nums[0])
+    for i in range(1, len(nums)) {
+        result = lcm(result, nums[i])
+    }
+    return result
+}
+
+fn __main__() {
+    print("=== LCM ===")
+
+    tests = [(4, 6, 12), (5, 7, 35), (0, 5, 0)]
+    for t in tests {
+        a, b, expected = t[0], t[1], t[2]
+        got = lcm(a, b)
+        status = if got == expected { "OK" } else { "FAIL" }
+        print("  ${status}: lcm(${a}, ${b}) = ${got}, expected ${expected}")
+    }
+
+    print("lcm([2, 3, 4, 5]) = ${lcm_list([2, 3, 4, 5])} (expected 60)")
+}

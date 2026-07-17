@@ -1,0 +1,42 @@
+# Transformation: Numbers group
+# CSV: data/orders.csv, data/employees.csv
+#
+# UI operations: round, ceil, floor, abs
+#
+# data.map("Column", fn) — new table with transformed column (others unchanged).
+# Reliable with natives: round, abs, int, …
+# Wrapper fn calling round(x, n) inside map — not reliable yet; see comments below.
+
+orders = read(path("data/orders.csv"))
+employees = read(path("data/employees.csv"))
+
+print("=== round — rounding ===")
+rounded_tbl = orders.map("Amount", round)
+print("original:", orders["Amount"][0], "| round():", rounded_tbl["Amount"][0])
+# round(x, decimals) on column — when map+user-fn stabilizes:
+#   fn round1(x) { return round(x, 1) }
+#   rounded1_tbl = orders.map("Amount", round1)
+print("| round(1) per cell:", round(orders["Amount"][0], 1))
+
+print("\n=== abs — absolute value ===")
+abs_tbl = orders.map("Amount", abs)
+print("Amount[2]:", orders["Amount"][2], "→ abs:", abs_tbl["Amount"][2])
+
+print("\n=== ceil / floor — ceiling / floor ===")
+
+floor_tbl = orders.map("Amount", floor)
+ceil_tbl = orders.map("Amount", ceil)
+print("floor Amount[0]:", floor_tbl["Amount"][0])
+print("ceil Amount[0]:", ceil_tbl["Amount"][0])
+print("floor(123.456):", pseudo_floor(123.456))
+print("ceil(89.991):", pseudo_ceil(89.991))
+
+print("\n=== apply to Salary column ===")
+# Equivalent to round(x / 1000, 1) without calling round inside callback:
+fn salary_thousands(x) {
+    return int(x / 100) / 10
+}
+salary_tbl = employees.map("Salary", salary_thousands)
+print("Salary in thousands:", salary_tbl["Salary"][0])
+
+print("\nDone.")

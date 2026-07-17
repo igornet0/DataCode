@@ -1,0 +1,110 @@
+# Fenwick Tree (Binary Indexed Tree) — prefix sum и point update за O(log n)
+
+cls FenwickTree {
+    private:
+        n: int
+        bit: array[int]
+
+    new FenwickTree(n: int) {
+        this.n = n
+        this.bit = []
+        for _ in range(n + 1) { this.bit.push(0) }
+    }
+
+    new FenwickTree(arr: array[int]) : this(len(arr)) {
+        for i in range(len(arr)) {
+            this.add(i, arr[i])
+        }
+    }
+
+    private:
+    fn _lowbit(i: int) -> int {
+        return i & (-i)
+    }
+
+    public:
+    fn add(index: int, delta: int) {
+        """Прибавить delta к arr[index] (0-based)."""
+        i = index + 1
+        while i <= this.n {
+            this.bit[i] = this.bit[i] + delta
+            i = i + this._lowbit(i)
+        }
+    }
+
+    fn prefix_sum(index: int) -> int {
+        """Сумма arr[0..index] включительно."""
+        i = index + 1
+        total = 0
+        while i > 0 {
+            total = total + this.bit[i]
+            i = i - this._lowbit(i)
+        }
+        return total
+    }
+
+    fn range_sum(left: int, right: int) -> int {
+        """Сумма arr[left..right] включительно."""
+        if left == 0: return this.prefix_sum(right)
+        return this.prefix_sum(right) - this.prefix_sum(left - 1)
+    }
+
+    fn set(index: int, value: int) {
+        """Установить arr[index] = value."""
+        current = this.range_sum(index, index)
+        this.add(index, value - current)
+    }
+}
+
+fn inversion_count(arr: array[int]) -> int {
+    """
+    Число инверсий через Fenwick Tree и сжатие координат.
+    inversion: i < j и arr[i] > arr[j]
+    """
+    if len(arr) <= 1: return 0
+
+    sorted_vals = sort(array_copy(arr))
+    rank = {}
+    r = 1
+    for v in sorted_vals {
+        if v not in rank {
+            rank[v] = r
+            r = r + 1
+        }
+    }
+
+    ft = FenwickTree(r)
+    inv = 0
+    for i in range(len(arr) - 1, -1, -1) {
+        idx = rank[arr[i]]
+        inv = inv + ft.prefix_sum(idx - 1)
+        ft.add(idx - 1, 1)
+    }
+    return inv
+}
+
+fn array_copy(arr: array) -> array {
+    copy = []
+    for x in arr { copy.push(x) }
+    return copy
+}
+
+fn __main__() {
+    print("=== Fenwick Tree (BIT) ===")
+
+    data = [3, 1, 4, 1, 5, 9, 2, 6]
+    ft = FenwickTree(data)
+
+    print("prefix_sum(4) = ${ft.prefix_sum(4)} (ожид. 14 = 3+1+4+1+5)")
+    print("range_sum(2, 5) = ${ft.range_sum(2, 5)} (ожид. 19 = 4+1+5+9)")
+
+    ft.add(3, 10)
+    print("После add(3, +10): range_sum(2,5) = ${ft.range_sum(2, 5)}")
+
+    inv = inversion_count([2, 4, 1, 3, 5])
+    print("inversion_count([2,4,1,3,5]) = ${inv} (ожид. 3)")
+
+    # после add(3, +10) prefix_sum(4) = 14 + 10 = 24
+    status = if ft.prefix_sum(4) == 24 and inv == 3 { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

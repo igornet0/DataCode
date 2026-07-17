@@ -1,9 +1,0 @@
-
-path_data = path("data")
-
-for file in list_files(path=path_data, regex='*.csv|*.xlsx') {
-    # global table = read_file(file)
-    print(file)
-}
-
-# local database = read_database()

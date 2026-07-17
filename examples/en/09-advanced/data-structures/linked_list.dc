@@ -1,0 +1,158 @@
+# Singly linked list - O(1) insertion at the beginning, O(n) search
+
+cls ListNode {
+    public:
+        value: int
+        next: Optional[ListNode]
+
+    new ListNode(value: int, next: Optional[ListNode] = null) {
+        this.value = value
+        this.next = next
+    }
+}
+
+cls LinkedList {
+    private:
+        head: Optional[ListNode]
+        length: int
+
+    new LinkedList() {
+        this.head = null
+        this.length = 0
+    }
+
+    public:
+    fn prepend(value: int) {
+        this.head = ListNode(value, this.head)
+        this.length = this.length + 1
+    }
+
+    fn append(value: int) {
+        node = ListNode(value)
+        if this.head == null {
+            this.head = node
+        } else {
+            cur = this.head
+            while cur.next != null { cur = cur.next }
+            cur.next = node
+        }
+        this.length = this.length + 1
+    }
+
+    fn find(value: int) -> bool {
+        cur = this.head
+        while cur != null {
+            if cur.value == value: return true
+            cur = cur.next
+        }
+        return false
+    }
+
+    fn remove(value: int) -> bool {
+        if this.head == null: return false
+        if this.head.value == value {
+            this.head = this.head.next
+            this.length = this.length - 1
+            return true
+        }
+        prev = this.head
+        cur = this.head.next
+        while cur != null {
+            if cur.value == value {
+                prev.next = cur.next
+                this.length = this.length - 1
+                return true
+            }
+            prev = cur
+            cur = cur.next
+        }
+        return false
+    }
+
+    fn reverse() {
+        prev = null
+        cur = this.head
+        while cur != null {
+            nxt = cur.next
+            cur.next = prev
+            prev = cur
+            cur = nxt
+        }
+        this.head = prev
+    }
+
+    fn to_list() -> list[int] {
+        result = []
+        cur = this.head
+        while cur != null {
+            result.push(cur.value)
+            cur = cur.next
+        }
+        return result
+    }
+
+    fn @len() -> int { return this.length }
+
+    fn get_head() -> Optional[ListNode] {
+        return this.head
+    }
+
+    fn set_head(new_head: ListNode) {
+        this.head = new_head
+
+    }
+
+    fn set_length(new_length) {
+        this.length = new_length
+    }
+}
+
+fn merge_sorted_lists(a: LinkedList, b: LinkedList) -> LinkedList {
+    """Merge two sorted lists (returns a new list)."""
+    dummy = ListNode(0)
+    tail = dummy
+    pa, pb = a.get_head(), b.get_head()
+
+    while pa != null and pb != null {
+        if pa.value <= pb.value {
+            tail.next = ListNode(pa.value)
+            pa = pa.next
+        } else {
+            tail.next = ListNode(pb.value)
+            pb = pb.next
+        }
+        tail = tail.next
+    }
+    tail.next = pa if pa != null else pb
+
+    result = LinkedList()
+    result.set_head(dummy.next)
+    result.set_length(len(a) + len(b))
+    return result
+}
+
+fn __main__() {
+    print("=== LinkedList (simply linked) ===")
+
+    lst = LinkedList()
+    for x in [3, 1, 4, 1, 5] { lst.append(x) }
+    print("Original: ${lst.to_list()}")
+
+    lst.remove(4)
+    lst.prepend(0)
+    print("prepend(0), remove(4): ${lst.to_list()}")
+
+    lst.reverse()
+    print("reverse: ${lst.to_list()}")
+
+    a = LinkedList()
+    b = LinkedList()
+    for x in [1, 3, 5] { a.append(x) }
+    for x in [2, 4, 6] { b.append(x) }
+    merged = merge_sorted_lists(a, b)
+    print("merge [1,3,5]+[2,4,6]: ${merged.to_list()}")
+
+    expected = [1, 2, 3, 4, 5, 6]
+    status = if merged.to_list() == expected and lst.find(1) { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

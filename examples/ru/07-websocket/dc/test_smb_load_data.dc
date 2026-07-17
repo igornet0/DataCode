@@ -1,0 +1,15 @@
+# Пример: чтение файлов с SMB-шары через протокол lib://
+# Перед запуском подключите шару запросом smb_connect (см. python/test_smb_connection.py)
+
+let base = path("lib://SHARE_NAME/my_dir")
+
+for dir_name in list_files(base) {
+    for file_name in list_files(base / dir_name) {
+        if contains(file_name, "data") {
+            print("Файл:", file_name)
+            global data = read(base / dir_name / file_name, 0)
+            print("Строк:", len(data))
+            table_info(data)
+        }
+    }
+}

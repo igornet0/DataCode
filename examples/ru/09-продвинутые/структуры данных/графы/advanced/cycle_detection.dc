@@ -1,0 +1,77 @@
+# Обнаружение циклов в ориентированном и неориентированном графе
+
+fn has_cycle_directed(graph: dict[int, array[int]]) -> bool {
+    """
+    DFS с тремя состояниями: 0 — не посещена, 1 — в стеке рекурсии, 2 — обработана.
+    """
+    state = {}
+    for v in graph.keys { state[v] = 0 }
+
+    fn dfs(node: int) -> bool {
+        state[node] = 1
+        for nxt in graph.get(node, []) {
+            if state.get(nxt, 0) == 1: return true
+            if state.get(nxt, 0) == 0 and dfs(nxt): return true
+        }
+        state[node] = 2
+        return false
+    }
+
+    for v in graph.keys {
+        if state[v] == 0 and dfs(v): return true
+    }
+    return false
+}
+
+fn has_cycle_undirected(graph: dict[int, array[int]], n: int) -> bool {
+    """DFS: обратное ребро к предку (не parent) означает цикл."""
+    visited = set()
+
+    fn dfs(node: int, parent: int) -> bool {
+        visited.add(node)
+        for nxt in graph.get(node, []) {
+            if nxt == parent: continue
+            if nxt in visited: return true
+            if dfs(nxt, node): return true
+        }
+        return false
+    }
+
+    for i in range(n) {
+        if !(i in visited) and dfs(i, -1): return true
+    }
+    return false
+}
+
+fn build_undirected(n: int, edges: array[tuple[int, int]]) -> dict[int, array[int]] {
+    graph = {}
+    for i in range(n) { graph[i] = [] }
+    for e in edges {
+        u, v = e[0], e[1]
+        graph[u].push(v)
+        graph[v].push(u)
+    }
+    return graph
+}
+
+fn __main__() {
+    print("=== Cycle Detection ===")
+
+    # Ориентированный цикл 0→1→2→0
+    cyclic_d = {0: [1], 1: [2], 2: [0]}
+    acyclic_d = {0: [1], 1: [2], 2: []}
+
+    print("Ориентированный с циклом:    ${has_cycle_directed(cyclic_d)} (ожид. true)")
+    print("Ориентированный без цикла:   ${has_cycle_directed(acyclic_d)} (ожид. false)")
+
+    # Неориентированный треугольник vs дерево
+    triangle = build_undirected(3, [(0, 1), (1, 2), (2, 0)])
+    tree = build_undirected(4, [(0, 1), (1, 2), (2, 3)])
+
+    print("Неориент. треугольник:      ${has_cycle_undirected(triangle, 3)} (ожид. true)")
+    print("Неориент. дерево:          ${has_cycle_undirected(tree, 4)} (ожид. false)")
+
+    # Самопетля в ориентированном графе
+    self_loop = {0: [0]}
+    print("Самопетля:                 ${has_cycle_directed(self_loop)} (ожид. true)")
+}

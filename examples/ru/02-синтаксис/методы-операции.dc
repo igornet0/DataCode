@@ -1,0 +1,171 @@
+# Специальные методы класса (@-methods)
+#
+# Методы fn @name(...) вызываются только VM — не напрямую (obj.@string() запрещён).
+#
+# | Метод     | Когда срабатывает                    |
+# |-----------|--------------------------------------|
+# | @string   | str(x), print(x)                     |
+# | @len      | len(x)                               |
+# | @add      | x + y                                |
+# | @sub      | x - y                                |
+# | @mul      | x * y                                |
+# | @div      | x / y                                |
+# | @mod      | x % y                                |
+# | @pow      | x ** y (степень, не ^)               |
+# | @eq       | x == y                               |
+# | @neq      | x != y                               |
+# | @lt       | x < y                                |
+# | @lte      | x <= y                               |
+# | @gt       | x > y                                |
+# | @gte      | x >= y                               |
+# | @get      | x[key]                               |
+# | @set      | x[key] = v                           |
+# | @contains | value in x                           |
+# | @call     | x(...)                               |
+# | @iter     | for … in x (начало итерации)         |
+# | @next     | for … in x (следующий элемент)       |
+# | @clone    | x.clone()                            |
+# | @hash     | ключ в set (обычно вместе с @eq)     |
+# | @init     | автоматически после конструктора     |
+# | @drop     | зарезервирован, не реализован        |
+
+# --- объявления классов (все @-методы) ---
+
+cls Scalar {
+    v: float
+    new Scalar(v: float) { this.v = v }
+    fn @string() -> str { return "Scalar(" + str(this.v) + ")" }
+    fn @len() -> int { return 1 }
+    fn @add(o: Scalar) -> Scalar { return Scalar(this.v + o.v) }
+    fn @sub(o: Scalar) -> Scalar { return Scalar(this.v - o.v) }
+    fn @mul(o: Scalar) -> Scalar { return Scalar(this.v * o.v) }
+    fn @div(o: Scalar) -> Scalar { return Scalar(this.v / o.v) }
+    fn @mod(o: Scalar) -> Scalar { return Scalar(this.v % o.v) }
+    fn @pow(o: Scalar) -> Scalar { return Scalar(this.v ** o.v) }
+    fn @eq(o: Scalar) -> bool { return this.v == o.v }
+    fn @neq(o: Scalar) -> bool { return this.v != o.v }
+    fn @lt(o: Scalar) -> bool { return this.v < o.v }
+    fn @lte(o: Scalar) -> bool { return this.v <= o.v }
+    fn @gt(o: Scalar) -> bool { return this.v > o.v }
+    fn @gte(o: Scalar) -> bool { return this.v >= o.v }
+}
+
+cls CellMap {
+    a: int
+    b: int
+    new CellMap(a: int, b: int) { this.a = a; this.b = b }
+    fn @get(k: str) -> int {
+        if k == "a" { return this.a } else { return this.b }
+    }
+    fn @set(k: str, v: int) {
+        if k == "a" { this.a = v } else { this.b = v }
+    }
+}
+
+cls Bag {
+    data: array
+    new Bag() { this.data = [10, 20, 30] }
+    fn @contains(x) -> bool {
+        for v in this.data { if v == x { return true } }
+        return false
+    }
+}
+
+cls Adder {
+    offset: int
+    new Adder(offset: int) { this.offset = offset }
+    fn @call(x: int) -> int { return this.offset + x }
+}
+
+cls Counter {
+    n: int
+    new Counter(n: int) { this.n = n }
+    fn @iter() -> Counter { return this }
+    fn @next() -> int {
+        if this.n <= 0 { return null }
+        this.n = this.n - 1
+        return this.n + 1
+    }
+}
+
+cls Box {
+    v: int
+    new Box(v: int) { this.v = v }
+    fn @clone() -> Box { return Box(this.v) }
+}
+
+cls Key {
+    k: int
+    new Key(k: int) { this.k = k }
+    fn @hash() -> int { return this.k }
+    fn @eq(other: Key) -> bool { return this.k == other.k }
+}
+
+cls Widget {
+    ready: bool
+    new Widget() { this.ready = false }
+    fn @init() { this.ready = true }
+}
+
+# --- демонстрации ---
+
+print("=== @string, @len ===")
+a = Scalar(10)
+b = Scalar(3)
+print("str(a) через print:", a)
+print("len(a) =", len(a))
+
+print("=== @add, @sub, @mul, @div, @mod, @pow ===")
+print("a + b =", a + b)
+print("a - b =", a - b)
+print("a * b =", a * b)
+print("a / b =", a / b)
+print("a % b =", a % b)
+print("a ** b =", a ** b)
+
+print("=== @eq, @neq, @lt, @lte, @gt, @gte ===")
+print("a == b:", a == b)
+print("a != b:", a != b)
+print("a <  b:", a < b)
+print("a <= b:", a <= b)
+print("a >  b:", a > b)
+print("a >= b:", a >= b)
+
+print("=== @get, @set ===")
+m = CellMap(1, 2)
+m["b"] = 9
+print('m["a"] =', m["a"], ', m["b"] =', m["b"])
+
+print("=== @contains (in) ===")
+bag = Bag()
+print("20 in bag:", 20 in bag)
+print("99 in bag:", 99 in bag)
+
+print("=== @call ===")
+adder = Adder(100)
+call_result = adder(7)
+print("adder(7) =", call_result)
+
+print("=== @iter, @next (for-in) ===")
+total = 0
+for x in Counter(3) { total = total + x }
+print("sum Counter(3) =", total)
+
+print("=== @clone ===")
+box1 = Box(5)
+box2 = box1.clone()
+box2.v = 99
+print("box1.v после clone:", box1.v)
+
+print("=== @hash, @eq ===")
+keys = set()
+keys.add(Key(1))
+keys.add(Key(1))
+print("len(set с Key(1) дважды) =", len(keys))
+
+print("=== @init ===")
+w = Widget()
+print("w.ready =", w.ready)
+
+print("=== @drop ===")
+print("@drop зарезервирован; fn @drop() в классе сейчас не компилируется.")

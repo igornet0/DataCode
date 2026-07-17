@@ -1,0 +1,8 @@
+fn __main__() {
+    head = {"next": null}
+    tail = {"prev": null}
+    head.next = tail
+    print("a")
+    tail.prev = head
+    print("ok")
+}

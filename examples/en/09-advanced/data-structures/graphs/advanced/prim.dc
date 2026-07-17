@@ -1,0 +1,91 @@
+# Prim's algorithm — minimum spanning tree (MST)
+# Adjacency list: graph[u] = [(v, weight), ...]
+
+import heapq
+
+INF = float(inf)
+
+fn prim_mst(n: int, graph: dict[int, list[tuple[int, float]]]) -> tuple[float, list[tuple[int, int, float]]] {
+    """
+    Returns (total MST weight, list of MST edges as (u, v, weight)).
+    """
+    in_mst = set()
+    key = {}
+    parent = {}
+    for i in range(n) {
+        key[i] = INF
+        parent[i] = null
+    }
+
+    key[0] = 0.0
+    heap = [(0.0, 0)]
+    total = 0.0
+    mst = []
+
+    while len(heap) > 0 {
+        w, u = heapq.heappop(heap)
+        if u in in_mst: continue
+        in_mst.add(u)
+        total += w
+
+        if parent[u] != null {
+            mst.push((parent[u], u, w))
+        }
+
+        for edge in graph.get(u, []) {
+            v, weight = edge[0], edge[1]
+            if !(v in in_mst) and weight < key.get(v, INF) {
+                key[v] = weight
+                parent[v] = u
+                heapq.heappush(heap, (weight, v))
+            }
+        }
+    }
+
+    if len(in_mst) != n {
+        return (-1.0, [])
+    }
+    return (total, mst)
+}
+
+fn build_adj_from_edges(n: int, edges: list[tuple[float, int, int]]) -> dict[int, list[tuple[int, float]]] {
+    graph = {}
+    for i in range(n) { graph[i] = [] }
+    for e in edges {
+        w, u, v = e[0], e[1], e[2]
+        graph[u].push((v, w))
+        graph[v].push((u, w))
+    }
+    return graph
+}
+
+fn __main__() {
+    print("=== Prim MST ===")
+
+    n = 6
+    edges = [
+        (4.0, 0, 1),
+        (8.0, 0, 2),
+        (7.0, 1, 2),
+        (9.0, 1, 3),
+        (10.0, 2, 3),
+        (2.0, 2, 4),
+        (1.0, 3, 4),
+        (6.0, 3, 5),
+        (5.0, 4, 5),
+    ]
+    graph = build_adj_from_edges(n, edges)
+    weight, mst = prim_mst(n, graph)
+
+    print("Vertexes: ${n}, Edges: ${len(edges)}")
+    print("MST weight: ${weight}")
+    print("MST ribs:")
+    for e in mst {
+        print("  ${e[0]} — ${e[1]}  (w=${e[2]})")
+    }
+
+    # Comparison with Kruskal's expected weight
+    expected = 16.0
+    status = if weight == expected { "OK" } else { "FAIL" }
+    print("\nComparison with Kruskal reference (16): ${status}")
+}

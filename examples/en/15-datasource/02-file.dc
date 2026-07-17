@@ -1,0 +1,15 @@
+# File DataSource example
+
+files = datasource({ type: "file", path: "./tests/test_data/datasource" })
+
+print("type:", files.type)
+print("ping:", files.ping())
+
+t = files.get_table({ path: "sample.csv" })
+print("rows:", len(t))
+print("columns:", t.columns)
+
+resp = files.request({ path: "sample.json" })
+print("status:", resp.status)
+obj = resp.json()
+print("json items:", len(obj))

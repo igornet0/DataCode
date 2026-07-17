@@ -1,0 +1,69 @@
+# Complex example
+# Demonstrates combining various language features
+
+# Function to compute average value
+fn average(a, b, c) {
+    return (a + b + c) / 3
+}
+
+# Function to determine maximum value
+fn max(a, b) {
+    if a > b {
+        return a
+    } else {
+        return b
+    }
+}
+
+# Function to check evenness
+fn is_even(n) {
+    if n % 2 == 0 {
+        return true
+    } else {
+        return false
+    }
+}
+
+# Using functions
+let num1 = 10
+let num2 = 20
+let num3 = 30
+
+print("Numbers:", num1, num2, num3)
+print("Average =", average(num1, num2, num3))
+print("Max of", num1, "and", num2, "=", max(num1, num2))
+
+# Loop with conditions
+print("Even numbers from 1 to 10:")
+for i in range(1, 11) {
+    if is_even(i) {
+        print(i, "- even")
+    }
+}
+
+# Recursive function for digit sum
+fn sum_digits(n) {
+    if n < 10 {
+        return n
+    }
+    let last_digit = n % 10
+    let remaining = (n - last_digit) / 10
+    return last_digit + sum_digits(remaining)
+}
+
+print("Sum of digits of 12345 =", sum_digits(12345))
+
+# Complex computation using all features
+fn calculate_complex(x, y) {
+    let result = 0
+    for i in range(1, x+1) {
+        if is_even(i) {
+            result = result + i * y
+        } else {
+            result = result + i
+        }
+    }
+    return result
+}
+
+print("calculate_complex(5, 2) =", calculate_complex(5, 2))

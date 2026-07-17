@@ -1,0 +1,48 @@
+# Throttle — не чаще одного вызова за интервал
+
+cls Throttler {
+    private:
+        interval_ms: int
+        last_fired_ms: float
+        call_count: int
+
+    new Throttler(interval_ms: int) {
+        this.interval_ms = interval_ms
+        this.last_fired_ms = -1000000.0
+        this.call_count = 0
+    }
+
+    public:
+    fn invoke(now_ms: float, value: str) -> Optional[str] {
+        """
+        Выполнить колбэк, только если прошло >= interval_ms с прошлого вызова.
+        Иначе вернуть null.
+        """
+        if now_ms - this.last_fired_ms >= this.interval_ms {
+            this.last_fired_ms = now_ms
+            this.call_count += 1
+            return value
+        }
+        return null
+    }
+
+    fn count() -> int { return this.call_count }
+}
+
+fn __main__() {
+    print("=== Throttle ===")
+
+    th = Throttler(100)
+    fired = []
+
+    for t in [0.0, 30.0, 60.0, 150.0, 200.0, 250.0] {
+        val = th.invoke(t, "tick@${t}")
+        if val != null { fired.push(val) }
+    }
+
+    print("вызовы: ${fired}")
+    print("число срабатываний: ${th.count()} (ожид. 3)")
+
+    status = if th.count() == 3 { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

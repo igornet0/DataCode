@@ -1,0 +1,20 @@
+# Функции path_* — разбор и проверка путей
+# Запуск из этой папки: datacode пути.dc
+
+p_file = path("папка/data.csv")
+p_dir = path("папка")
+
+print("=== path_name / path_parent ===")
+print("name:", path_name(p_file))
+print("parent:", path_parent(p_file))
+
+print("\n=== path_exists / path_is_file / path_is_dir ===")
+print("data.csv exists:", path_exists(p_file))
+print("data.csv is_file:", path_is_file(p_file))
+print("папка is_dir:", path_is_dir(p_dir))
+print("missing is_file:", path_is_file(path("папка/нет_такого.txt")))
+
+print("\n=== path_extension / path_stem ===")
+print("extension:", path_extension(p_file))
+print("stem:", path_stem(p_file))
+print("png stem:", path_stem(path("папка/favicon.png")))

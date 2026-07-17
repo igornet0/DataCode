@@ -1,0 +1,54 @@
+# Heap sort (Heap Sort) — O(n log n), in-place
+
+fn array_copy(arr: list) -> list {
+    copy = []
+    for x in arr { copy.push(x) }
+    return copy
+}
+
+fn heapify(arr: list[int], n: int, i: int) {
+    largest = i
+    left = 2 * i + 1
+    right = 2 * i + 2
+
+    if left < n and arr[left] > arr[largest]: largest = left
+    if right < n and arr[right] > arr[largest]: largest = right
+
+    if largest != i {
+        arr[i], arr[largest] = arr[largest], arr[i]
+        heapify(arr, n, largest)
+    }
+}
+
+fn heap_sort(arr: list[int]) -> list[int] {
+    a = array_copy(arr)
+    n = len(a)
+    if n <= 1: return a
+
+    for i in range(n // 2 - 1, -1, -1) {
+        heapify(a, n, i)
+    }
+
+    for i in range(n - 1, 0, -1) {
+        a[0], a[i] = a[i], a[0]
+        heapify(a, i, 0)
+    }
+    return a
+}
+
+fn __main__() {
+    print("=== Heap Sort ===")
+
+    data = [12, 11, 13, 5, 6, 7]
+    result = heap_sort(data)
+    print("Original: ${data}")
+    print("Result: ${result}")
+
+    expected = [5, 6, 7, 11, 12, 13]
+    print("Test: ${result == expected} (expected true)")
+
+    random_data = [5, 1, 4, 2, 8, 0, 2, 9, 3, 7, 6]
+    got = heap_sort(random_data)
+    exp = sort(array_copy(random_data))
+    print("Compare with sort(): ${got == exp}")
+}

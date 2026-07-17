@@ -1,0 +1,58 @@
+# Leaky Bucket - smoothing out traffic surges
+
+cls LeakyBucket {
+    private:
+        capacity: float
+        water: float
+        leak_rate: float
+        last_leak_ms: float
+
+    new LeakyBucket(capacity: float, leak_rate: float) {
+        """
+        capacity — bucket size; leak_rate — units per second of “leakage”.
+        """
+        this.capacity = capacity
+        this.water = 0.0
+        this.leak_rate = leak_rate
+        this.last_leak_ms = 0.0
+    }
+
+    private:
+    fn _leak(now_ms: float) {
+        if this.last_leak_ms == 0.0 {
+            this.last_leak_ms = now_ms
+            return
+        }
+        elapsed = (now_ms - this.last_leak_ms) / 1000.0
+        this.water = max(0.0, this.water - elapsed * this.leak_rate)
+        this.last_leak_ms = now_ms
+    }
+
+    public:
+    fn allow(now_ms: float, amount: float = 1.0) -> bool {
+        this._leak(now_ms)
+        if this.water + amount <= this.capacity {
+            this.water += amount
+            return true
+        }
+        return false
+    }
+
+    fn level() -> float { return this.water }
+}
+
+fn __main__() {
+    print("=== Leaky Bucket Rate Limiter ===")
+
+    bucket = LeakyBucket(10.0, 5.0)
+    burst = 0
+    for i in range(15) {
+        if bucket.allow(float(i * 50), 2.0) { burst += 1 }
+    }
+
+    print("packets received in burst: ${burst}")
+    print("water level: ${bucket.level()}")
+
+    status = if burst >= 5 { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

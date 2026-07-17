@@ -1,0 +1,75 @@
+# Максимальный поток — Dinic (BFS уровни + DFS блокирующий поток)
+
+fn dinic_bfs(level: list[int], cap: list[list[int]], source: int, sink: int) -> bool {
+    n = len(cap)
+    for i in range(n) { level[i] = -1 }
+    level[source] = 0
+    queue = [source]
+
+    while len(queue) > 0 {
+        u = queue.pop(0)
+        for v in range(n) {
+            if level[v] < 0 and cap[u][v] > 0 {
+                level[v] = level[u] + 1
+                queue.push(v)
+            }
+        }
+    }
+    return level[sink] >= 0
+}
+
+fn dinic_dfs(u: int, flow: int, level: list[int], cap: list[list[int]], sink: int, ptr: list[int]) -> int {
+    if u == sink: return flow
+    n = len(cap)
+
+    while ptr[u] < n {
+        v = ptr[u]
+        if level[v] == level[u] + 1 and cap[u][v] > 0 {
+            pushed = dinic_dfs(v, min(flow, cap[u][v]), level, cap, sink, ptr)
+            if pushed > 0 {
+                cap[u][v] -= pushed
+                cap[v][u] += pushed
+                return pushed
+            }
+        }
+        ptr[u] += 1
+    }
+    return 0
+}
+
+fn dinic_max_flow(n: int, edges: list[tuple[int, int, int]], source: int, sink: int) -> int {
+    cap = [[0 for _ in range(n)] for _ in range(n)]
+    for e in edges { cap[e[0]][e[1]] += e[2] }
+
+    max_flow = 0
+    level = [-1 for _ in range(n)]
+
+    while dinic_bfs(level, cap, source, sink) {
+        ptr = [0 for _ in range(n)]
+        while true {
+            pushed = dinic_dfs(source, 1000000000, level, cap, sink, ptr)
+            if pushed == 0: break
+            max_flow += pushed
+        }
+    }
+    return max_flow
+}
+
+fn __main__() {
+    print("=== Dinic Max Flow ===")
+
+    n = 6
+    edges = [
+        (0, 1, 16), (0, 2, 13),
+        (1, 2, 10), (1, 3, 12),
+        (2, 1, 4), (2, 4, 14),
+        (3, 2, 9), (3, 5, 20),
+        (4, 3, 7), (4, 5, 4),
+    ]
+
+    flow = dinic_max_flow(n, edges, 0, 5)
+    print("макс. поток: ${flow} (ожид. 23)")
+
+    status = if flow == 23 { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

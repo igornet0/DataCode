@@ -1,0 +1,130 @@
+# Продвинутые JOIN: multi-key, join(), join_on, zip, asof, apply, suffixes
+
+print("=== multi-key inner_join ===")
+employees = table([
+  [1, "Dev", "RU"],
+  [2, "Marketing", "RU"],
+  [3, "Dev", "US"],
+  [4, "Sales", "RU"],
+], ["emp_id", "department", "country"])
+
+locations = table([
+  ["Dev", "RU", "Moscow"],
+  ["Marketing", "RU", "SPB"],
+  ["Dev", "US", "NYC"],
+  ["HR", "RU", "SPB"],
+], ["department", "country", "office"])
+
+multi = inner_join(
+  employees,
+  locations,
+  [["department", "department"], ["country", "country"]]
+)
+multi_expected = 3
+multi_status = if len(multi) == multi_expected { "OK" } else { "FAIL" }
+print("rows:", len(multi), "ожидали", multi_expected, multi_status)
+show_table(table_head(multi, 10))
+
+print("\n=== join() — универсальная функция ===")
+users = table([[1, "Alice"], [2, "Bob"], [3, "Charlie"]], ["id", "name"])
+orders = table([[1, 100], [3, 300], [5, 500]], ["user_id", "amount"])
+
+j_inner = join(users, orders, ["id", "user_id"], "inner")
+j_left = join(users, orders, ["id", "user_id"], "left")
+j_right = join(users, orders, ["id", "user_id"], "right")
+j_full = join(users, orders, ["id", "user_id"], "full")
+
+print("join inner rows:", len(j_inner), if len(j_inner) == 2 { "OK" } else { "FAIL" })
+print("join left rows:", len(j_left), if len(j_left) == 3 { "OK" } else { "FAIL" })
+print("join right rows:", len(j_right), if len(j_right) == 3 { "OK" } else { "FAIL" })
+print("join full rows:", len(j_full), if len(j_full) == 4 { "OK" } else { "FAIL" })
+
+print("\n=== join_on — non-equi (amount >= min_amount) ===")
+amounts = table([
+  [1, 100],
+  [2, 250],
+  [3, 400],
+], ["order_id", "amount"])
+
+tiers = table([
+  [0, "low"],
+  [200, "mid"],
+  [350, "high"],
+], ["min_amount", "tier"])
+
+non_equi = join_on(amounts, tiers, ["amount", ">=", "min_amount"])
+print("join_on rows:", len(non_equi))
+show_table(table_head(non_equi, 10))
+
+# Строковая форма условия
+non_equi2 = join_on(amounts, tiers, "amount >= min_amount")
+neq_status = if len(non_equi2) == len(non_equi) { "OK" } else { "FAIL" }
+print("join_on string form:", len(non_equi2), "совпадает с array:", neq_status)
+
+print("\n=== zip_join — по индексу строк ===")
+left = table([[1], [2], [3]], ["a"])
+right = table([["x"], ["y"], ["z"]], ["b"])
+zipped = zip_join(left, right)
+zip_expected = 3
+zip_status = if len(zipped) == zip_expected { "OK" } else { "FAIL" }
+print("rows:", len(zipped), "ожидали", zip_expected, zip_status)
+print("first row:", zipped["a"][0], zipped["b"][0])
+
+print("\n=== asof_join — ближайшее время в группе ===")
+trades = table([
+  [1, 10.0, "A"],
+  [1, 20.0, "A"],
+  [2, 15.0, "B"],
+], ["group", "time", "val"])
+
+quotes = table([
+  [1, 12.0, "X"],
+  [1, 18.0, "Y"],
+  [2, 14.0, "Z"],
+], ["group", "time", "data"])
+
+asof = asof_join(trades, quotes, "time", "group")
+asof_expected = 3
+asof_status = if len(asof) == asof_expected { "OK" } else { "FAIL" }
+print("rows:", len(asof), "ожидали", asof_expected, asof_status)
+
+print("\n=== apply_join — lateral join ===")
+# row в apply_join — массив значений строки (по порядку колонок)
+fn expand_row(row) {
+  id = row[0]
+  name = row[1]
+  return table([
+    [id * 10, name + "_a"],
+    [id * 20, name + "_b"],
+  ], ["mult_id", "mult_name"])
+}
+
+source = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+applied = apply_join(source, expand_row)
+apply_expected = 4
+apply_status = if len(applied) == apply_expected { "OK" } else { "FAIL" }
+print("apply_join rows:", len(applied), "ожидали", apply_expected, apply_status)
+
+print("\n=== suffixes — разрешение конфликта имён колонок ===")
+u = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+o = table([[1, 100], [2, 200]], ["id", "amount"])
+joined = left_join(o, u, "id", "id")
+renamed = joined.suffixes("_order", "_user")
+renamed2 = table_suffixes(joined, "_order", "_user")
+print("columns after suffixes:", renamed.columns)
+print("table_suffixes == method:", renamed2.columns == renamed.columns)
+suffix_status = if len(renamed.columns) >= 3 { "OK" } else { "FAIL" }
+print("проверка:", suffix_status)
+
+# duplicates.csv — составной ключ
+print("\n=== duplicates.csv: inner по ID + Category ===")
+dup = read(path("data/duplicates.csv"))
+dup_right = dup.aggregate_group({
+  group: ["ID", "Category"],
+  cnt: "count",
+})
+dup_join = inner_join(dup, dup_right, [["ID", "ID"], ["Category", "Category"]])
+dup_status = if len(dup_join) == len(dup) { "OK" } else { "FAIL" }
+print("rows:", len(dup_join), "ожидали", len(dup), dup_status)
+
+print("\nDone.")

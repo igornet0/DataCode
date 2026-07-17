@@ -1,0 +1,103 @@
+# Задача о рюкзаке 0/1 — максимальная ценность и восстановление набора предметов
+
+fn knapsack_01(weights: list[int], values: list[int], capacity: int) -> int {
+    """
+    Классический 0/1 рюкзак: каждый предмет берём не более одного раза.
+    dp[w] — максимальная ценность при ёмкости w.
+    """
+    n = len(weights)
+    if n != len(values): throw "weights и values должны быть одинаковой длины"
+
+    dp = [0 for _ in range(capacity + 1)]
+
+    for i in range(n) {
+        w_i = weights[i]
+        v_i = values[i]
+        # Обратный проход — гарантирует «0/1», а не «неограниченный» рюкзак
+        for w in range(capacity, w_i - 1, -1) {
+            candidate = dp[w - w_i] + v_i
+            if candidate > dp[w]: dp[w] = candidate
+        }
+    }
+    return dp[capacity]
+}
+
+fn knapsack_01_items(weights: list[int], values: list[int], capacity: int) -> list[int] {
+    """Возвращает индексы выбранных предметов (0-based), максимизирующих ценность."""
+    n = len(weights)
+    if n != len(values): throw "weights и values должны быть одинаковой длины"
+
+    # dp[w] — (max_value, last_item_index or -1, prev_capacity)
+    dp = [[0, -1, 0] for _ in range(capacity + 1)]
+
+    for i in range(n) {
+        w_i = weights[i]
+        v_i = values[i]
+        for w in range(capacity, w_i - 1, -1) {
+            candidate = dp[w - w_i][0] + v_i
+            if candidate > dp[w][0] {
+                dp[w] = [candidate, i, w - w_i]
+            }
+        }
+    }
+
+    chosen = []
+    w = capacity
+    while dp[w][1] >= 0 {
+        item = dp[w][1]
+        chosen.push(item)
+        w = dp[w][2]
+    }
+    return sort(chosen)
+}
+
+fn knapsack_01_table(weights: list[int], values: list[int], capacity: int) -> list[list[int]] {
+    """
+    Полная 2D-таблица dp[i][w] — лучшая ценность из первых i предметов при ёмкости w.
+    Удобно для обучения; для больших входов используйте одномерную версию выше.
+    """
+    n = len(weights)
+    dp = [[0 for _ in range(capacity + 1)] for _ in range(n + 1)]
+
+    for i in range(1, n + 1) {
+        w_i = weights[i - 1]
+        v_i = values[i - 1]
+        for w in range(capacity + 1) {
+            dp[i][w] = dp[i - 1][w]
+            if w >= w_i {
+                take = dp[i - 1][w - w_i] + v_i
+                if take > dp[i][w]: dp[i][w] = take
+            }
+        }
+    }
+    return dp
+}
+
+fn __main__() {
+    print("=== 0/1 Knapsack ===")
+
+    weights = [2, 3, 4, 5]
+    values = [3, 4, 5, 6]
+    capacity = 8
+
+    best = knapsack_01(weights, values, capacity)
+    items = knapsack_01_items(weights, values, capacity)
+    table = knapsack_01_table(weights, values, capacity)
+
+    print("Веса:    ${weights}")
+    print("Ценности:${values}")
+    print("Ёмкость: ${capacity}")
+    print("Макс. ценность: ${best}")
+    print("Предметы:       ${items}")
+
+    picked_weight = sum([weights[i] for i in items])
+    picked_value = sum([values[i] for i in items])
+    print("Проверка: вес=${picked_weight}, ценность=${picked_value}")
+    print("Угол таблицы dp[n][capacity]: ${table[len(weights)][capacity]}")
+
+    # Дополнительный тест
+    w2 = [10, 20, 30]
+    v2 = [60, 100, 120]
+    cap2 = 50
+    print("\nКлассический пример: max=${knapsack_01(w2, v2, cap2)}, items=${knapsack_01_items(w2, v2, cap2)}")
+}

@@ -1,0 +1,17 @@
+# table_tail, table_where — tail and row filtering
+# CSV: data/employees.csv
+
+employees = read(path("data/employees.csv"))
+
+print("=== table_tail ===")
+tail3 = table_tail(employees, 3)
+print("table_tail(..., 3) rows:", len(tail3))
+show_table(tail3)
+
+print("\n=== table_where ===")
+rich = table_where(employees, "Amount", ">", 5000)
+print("Amount > 5000, rows:", len(rich))
+show_table(table_head(rich, 5))
+
+dept_sales = table_where(employees, "Department", "==", "Sales")
+print("\nDepartment == Sales, rows:", len(dept_sales))

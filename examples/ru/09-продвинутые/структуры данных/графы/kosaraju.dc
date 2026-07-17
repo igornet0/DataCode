@@ -1,0 +1,76 @@
+# Алгоритм Кosaraju — сильно связные компоненты (SCC)
+# graph[u] = [v, ...] — список смежности ориентированного графа
+
+fn dfs_order(graph: dict[int, list[int]], v: int, visited: list[int], order: list[int]) -> tuple[list[int], list[int]] {
+    visited = push(visited, v)
+    for u in graph.get(v, []) {
+        if !u in visited {
+            res = dfs_order(graph, u, visited, order)
+            visited = res[0]
+            order = res[1]
+        }
+    }
+    order = push(order, v)
+    return [visited, order]
+}
+
+fn dfs_component(rev: dict[int, list[int]], v: int, visited: list[int], comp: list[int]) -> tuple[list[int], list[int]] {
+    visited = push(visited, v)
+    comp = push(comp, v)
+    for u in rev.get(v, []) {
+        if !u in visited {
+            res = dfs_component(rev, u, visited, comp)
+            visited = res[0]
+            comp = res[1]
+        }
+    }
+    return [visited, comp]
+}
+
+fn reverse_graph(graph: dict[int, list[int]]) -> dict[int, list[int]] {
+    rev = {}
+    for v in graph.keys { rev[v] = [] }
+    for u in graph.keys {
+        for v in graph[u] { rev[v].push(u) }
+    }
+    return rev
+}
+
+fn kosaraju(graph: dict[int, list[int]]) -> list[list[int]] {
+    visited = []
+    order = []
+    for v in graph.keys {
+        if !v in visited {
+            res = dfs_order(graph, v, visited, order)
+            visited = res[0]
+            order = res[1]
+        }
+    }
+
+    rev = reverse_graph(graph)
+    visited = []
+    sccs = []
+
+    for v in reverse(order) {
+        if !v in visited {
+            comp = []
+            res = dfs_component(rev, v, visited, comp)
+            visited = res[0]
+            comp = res[1]
+            sccs.push(sort(comp))
+        }
+    }
+    return sort(sccs)
+}
+
+fn __main__() {
+    print("=== Kosaraju SCC ===")
+
+    graph = {0: [1], 1: [2], 2: [0, 3], 3: [4], 4: [5], 5: [3]}
+    sccs = kosaraju(graph)
+    expected = [[0, 1, 2], [3, 4, 5]]
+
+    print("SCC: ${sccs}")
+    status = if sccs == expected { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

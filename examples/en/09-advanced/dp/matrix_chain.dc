@@ -1,0 +1,96 @@
+# Optimal Matrix Chain Multiplication
+
+INF = float(inf)
+
+fn matrix_chain_order(dims: list[int]) -> int {
+    """
+    dims[i-1] × dims[i] — size of the i-th matrix (1-based).
+    dims has length n+1 for n matrices.
+    Returns the minimum number of scalar multiplications.
+    """
+    n = len(dims) - 1
+    if n <= 0: return 0
+    if n == 1: return dims[0] * dims[1]
+
+    dp = [[0 for _ in range(n)] for _ in range(n)]
+
+    # len — subchain length (2..n)
+    for chain_len in range(2, n + 1) {
+        for i in range(n - chain_len + 1) {
+            j = i + chain_len - 1
+            dp[i][j] = INF
+            for k in range(i, j) {
+                cost = dp[i][k] + dp[k + 1][j] + dims[i] * dims[k + 1] * dims[j + 1]
+                if cost < dp[i][j]: dp[i][j] = cost
+            }
+        }
+    }
+    return dp[0][n - 1]
+}
+
+fn matrix_chain_split(dims: list[int]) -> tuple[int, list[list[int]]] {
+    """
+    Minimum cost and table split[i][j] -
+    index k of the last “bracket” in the optimal partition A_i..A_j.
+    """
+    n = len(dims) - 1
+    if n <= 0: return [0, []]
+
+    dp = [[0 for _ in range(n)] for _ in range(n)]
+    split = [[0 for _ in range(n)] for _ in range(n)]
+
+    for chain_len in range(2, n + 1) {
+        for i in range(n - chain_len + 1) {
+            j = i + chain_len - 1
+            dp[i][j] = INF
+            for k in range(i, j) {
+                cost = dp[i][k] + dp[k + 1][j] + dims[i] * dims[k + 1] * dims[j + 1]
+                if cost < dp[i][j] {
+                    dp[i][j] = cost
+                    split[i][j] = k
+                }
+            }
+        }
+    }
+    return [dp[0][n - 1], split]
+}
+
+fn print_parenthesis(i: int, j: int, split: list[list[int]]) -> str {
+    """Recursive printing of optimal parentheses."""
+    if i == j: return "A${i + 1}"
+    k = split[i][j]
+    left = print_parenthesis(i, k, split)
+    right = print_parenthesis(k + 1, j, split)
+    return "(${left} × ${right})"
+}
+
+fn __main__() {
+    print("=== Matrix Chain Multiplication ===")
+
+    # dims = [p0, p1, ..., pn]; matrix Ai has size p_{i-1} × p_i
+    cases = [
+        [30, 35, 15, 5, 10, 20, 25], # classic example CLRS
+        [10, 20, 30, 40, 30],          # A1:10×20, A2:20×30, A3:30×40, A4:40×30
+        [5, 10, 3, 12, 5, 50, 6], # another training set
+        [2, 3], # one matrix
+    ]
+
+    for dims in cases {
+        n = len(dims) - 1
+        cost = matrix_chain_order(dims)
+        res = matrix_chain_split(dims)
+        split = res[1]
+        parens = if n > 0 { print_parenthesis(0, n - 1, split) } else { "(empty)" }
+
+        print("dims=${dims} (matrices: ${n})")
+        print("  min. multiplications: ${cost}")
+        print("  brackets: ${parens}")
+    }
+
+    # Check against known CLRS response: 15125
+    clrs = [30, 35, 15, 5, 10, 20, 25]
+    expected = 15125
+    got = matrix_chain_order(clrs)
+    status = if got == expected { "OK" } else { "FAIL" }
+    print("\nCLRS check: ${status} (received ${got}, expected ${expected})")
+}

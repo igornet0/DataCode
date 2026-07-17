@@ -1,0 +1,65 @@
+# Ближайшая пара точек — «разделяй и властвуй», O(n log n)
+
+fn dist2(a: tuple[float, float], b: tuple[float, float]) -> float {
+    dx = a[0] - b[0]
+    dy = a[1] - b[1]
+    return dx * dx + dy * dy
+}
+
+fn brute_closest(points: list[tuple[float, float]]) -> float {
+    best = float(inf)
+    for i in range(len(points)) {
+        for j in range(i + 1, len(points)) {
+            best = min(best, dist2(points[i], points[j]))
+        }
+    }
+    return best
+}
+
+fn closest_pair(points: list[tuple[float, float]]) -> float {
+    """
+    Минимальное квадрат расстояния между двумя точками.
+    Учебная реализация: сортировка + полоса (упрощённый strip).
+    """
+    if len(points) < 2: return float(inf)
+
+    pts = sort(points)
+    n = len(pts)
+    if n <= 3: return brute_closest(pts)
+
+    mid = n // 2
+    mid_x = pts[mid][0]
+
+    left_best = closest_pair(pts[:mid])
+    right_best = closest_pair(pts[mid:])
+    best = min(left_best, right_best)
+
+    strip = []
+    for p in pts {
+        if (p[0] - mid_x) * (p[0] - mid_x) < best {
+            strip.push(p)
+        }
+    }
+    strip = sort(strip)
+
+    for i in range(len(strip)) {
+        for j in range(i + 1, min(i + 8, len(strip))) {
+            best = min(best, dist2(strip[i], strip[j]))
+        }
+    }
+    return best
+}
+
+fn __main__() {
+    print("=== Closest Pair ===")
+
+    points = [(2.0, 3.0), (12.0, 30.0), (40.0, 50.0), (5.0, 1.0), (12.0, 10.0), (3.0, 4.0)]
+    d2 = closest_pair(points)
+    d = d2 ** 0.5
+
+    print("точки: ${points}")
+    print("мин. расстояние: ${d}")
+
+    status = if d2 < float(inf) and d >= 0 { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

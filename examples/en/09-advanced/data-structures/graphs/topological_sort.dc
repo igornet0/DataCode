@@ -1,0 +1,53 @@
+# Topological sort (DFS, DAG only)
+# graph[u] = [v, ...]; the state is transmitted explicitly
+
+fn dfs_topo(graph: dict[int, list[int]], node: int, visited: list[int], stack: list[int]) -> tuple[list[int], list[int]] {
+    visited = push(visited, node)
+    for nxt in graph.get(node, []) {
+        if !nxt in visited {
+            res = dfs_topo(graph, nxt, visited, stack)
+            visited = res[0]
+            stack = res[1]
+        }
+    }
+    stack = push(stack, node)
+    return [visited, stack]
+}
+
+fn topo_sort(graph: dict[int, list[int]]) -> list[int] {
+    visited = []
+    stack = []
+    for node in graph.keys {
+        if !node in visited {
+            res = dfs_topo(graph, node, visited, stack)
+            visited = res[0]
+            stack = res[1]
+        }
+    }
+    return reverse(stack)
+}
+
+fn __main__() {
+    print("=== Topological Sort ===")
+
+    graph = {
+        1: [2, 3],
+        2: [4],
+        3: [4],
+        4: [],
+    }
+
+    order = topo_sort(graph)
+    print("Order: ${order}")
+
+    # Check: for each edge u→v index u < index v
+    valid = true
+    pos = {}
+    for i in range(len(order)) { pos[order[i]] = i }
+    for u in graph.keys {
+        for v in graph[u] {
+            if pos[u] >= pos[v] { valid = false }
+        }
+    }
+    print("Correct order: ${valid} (expected true)")
+}

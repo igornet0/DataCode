@@ -1,0 +1,11 @@
+# debug module — table of registered operators
+
+import debug
+
+text = debug.operators()
+print("debug.operators() (first 500 characters):")
+if len(text) > 500 {
+    print(str(text)[0:500] + "...")
+} else {
+    print(text)
+}

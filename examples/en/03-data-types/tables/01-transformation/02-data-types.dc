@@ -1,0 +1,48 @@
+# Transformation: Data types group
+# CSV: data/employees.csv, data/orders.csv
+#
+# UI operation: changeType(column, targetType, dateFormat, decimalSeparator)
+
+print("=== changeType — change column type ===")
+employees = read(path("data/employees.csv"))
+orders = read(path("data/orders.csv"))
+
+# int — table.map(column, int)
+ages_int_table = employees.map("Age", int)
+print("Age → int:", ages_int_table["Age"][0], "| typeof:", typeof(ages_int_table["Age"][0]))
+
+# float — float() or round() for Amount
+amounts_float_table = orders.map("Amount", float)
+amounts_round_table = orders.map("Amount", round)
+print("Amount → float:", amounts_float_table["Amount"][0])
+print("Amount → round:", amounts_round_table["Amount"][0])
+
+# bool — bool() on Active string (yes/no)
+to_bool_flag = fn(s) => s == "yes" ? true : s == "no" ? false : bool(s)
+# alternative: true if s == "yes" else false if s == "no" else bool(s)
+# or block fn with if/return (see git history)
+active_table = employees.map("Active", to_bool_flag)
+print("Active → bool:", active_table["Active"][0])
+
+# datetime — date() on ISO / calendar date string
+dates_table = orders.map("OrderDate", date)
+print("OrderDate → date:", typeof(dates_table["OrderDate"][0]), dates_table["OrderDate"][0].year, dates_table["OrderDate"][0].month)
+
+# string — str() (if you need to explicitly cast number to string)
+salary_table = employees.map("Salary", str)
+print("Salary → str:", salary_table["Salary"][0], "| typeof:", typeof(salary_table["Salary"][0]))
+
+# Source table is unchanged; result is a new table with transformed column
+typed = employees.map("Age", int)
+print("table after int Age:", typed["Age"][0], typeof(typed["Age"][0]))
+
+# dateFormat — for non-standard strings use parse_date / format_date:
+#   eu = parse_date("15.03.2024", "%d.%m.%Y")
+#   format_date(eu, "%Y-%m-%d")
+#   signed = parse_date(employees["SignedUp"][0], "%Y-%m-%d")   # ISO from CSV
+#
+# Planned table_change_type syntax (wrapper over .map):
+#   typed = table_change_type(data, "SignedUp", "datetime", dateFormat="%d.%m.%Y")
+#   typed = table_change_type(data, "Amount", "float", decimalSeparator=",")
+
+print("\nDone.")

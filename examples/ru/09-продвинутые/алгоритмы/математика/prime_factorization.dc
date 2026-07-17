@@ -1,0 +1,57 @@
+# Разложение на простые множители — O(√n)
+
+fn prime_factors(n: int) -> list[tuple[int, int]] {
+    """
+    Возвращает список пар (простое, степень) в возрастающем порядке простых.
+    n <= 1 → пустой список.
+    """
+    if n <= 1: return []
+
+    result = []
+    x = n
+    d = 2
+
+    while d * d <= x {
+        if x % d == 0 {
+            count = 0
+            while x % d == 0 {
+                x = x // d
+                count += 1
+            }
+            result.push((d, count))
+        }
+        d = d + 1 if d == 2 else d + 2
+    }
+    if x > 1: result.push((x, 1))
+    return result
+}
+
+fn divisors_count(n: int) -> int {
+    """Число делителей n по каноническому разложению."""
+    factors = prime_factors(n)
+    total = 1
+    for f in factors {
+        total *= f[1] + 1
+    }
+    return total
+}
+
+fn __main__() {
+    print("=== Prime Factorization ===")
+
+    tests = [
+        (12, [(2, 2), (3, 1)]),
+        (97, [(97, 1)]),
+        (360, [(2, 3), (3, 2), (5, 1)]),
+        (1, []),
+    ]
+
+    for t in tests {
+        n, expected = t[0], t[1]
+        got = prime_factors(n)
+        status = if got == expected { "OK" } else { "FAIL" }
+        print("  ${status}: factors(${n}) = ${got}, ожид. ${expected}")
+    }
+
+    print("divisors(360) = ${divisors_count(360)} (ожид. 24)")
+}

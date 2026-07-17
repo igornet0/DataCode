@@ -1,0 +1,122 @@
+# Example 1: File operations
+# Demonstrates working with files and directories in DataCode
+
+print("============================================================")
+print("Example 1: File operations")
+print("============================================================")
+print()
+
+# Base path to data directory
+let base_path = getcwd() / "model_data"
+let docs_path = base_path / "docs"
+
+print("📂 Working with files and directories")
+print("  Base path: ", base_path)
+print()
+
+# Example 1.1: List files in directory
+print("🔍 Example 1.1: Getting list of files in directory...")
+try {
+    let files = list_files(docs_path)
+    print("  ✓ Found ", len(files), " items in docs directory")
+    print("  ✓ Items: ", files)
+    print()
+} catch e {
+    print("  ✗ Error: ", e)
+    print()
+}
+
+# Example 1.2: Check if file exists in list
+print("🔍 Example 1.2: Checking if file exists...")
+fn file_exists(files, filename) {
+    for file in files {
+        if file.name == filename {
+            return true
+        }
+    }
+    return false
+}
+
+try {
+    let month_path = base_path / "2023" / "01"
+    let month_files = list_files(month_path)
+    
+    let test_file = "sales_2023_01.csv"
+    let exists = file_exists(month_files, test_file)
+    
+    if exists {
+        print("  ✓ File found: ", test_file)
+    } else {
+        print("  ✗ File not found: ", test_file)
+    }
+    print()
+} catch e {
+    print("  ✗ Error: ", e)
+    print()
+}
+
+# Example 1.3: Path construction
+print("🔍 Example 1.3: Building paths to files...")
+try {
+    let year = "2023"
+    let month = "01"
+    let filename = "sales_2023_01.csv"
+    
+    # Build path step by step
+    let year_path = base_path / year
+    let month_path = year_path / month
+    let full_path = month_path / filename
+    
+    print("  Path to year: ", year_path)
+    print("  Path to month: ", month_path)
+    print("  Full path: ", full_path)
+    print()
+    
+    # Read file
+    let data = read(full_path)
+    print("  ✓ File successfully read")
+    print("  ✓ Data type: ", typeof(data))
+    if typeof(data) == "table" {
+        print("  ✓ Rows: ", len(data))
+        print("  ✓ Row 1: ", data.idx[1])
+        print("  ✓ Headers: ", data.columns)
+    }
+    print()
+} catch e {
+    print("  ✗ File read error: ", e)
+    print()
+}
+
+# Example 1.4: Iterating over directory structure
+print("🔍 Example 1.4: Iterating over directory structure...")
+try {
+    let year_dirs = list_files(base_path)
+    print("  Found ", len(year_dirs), " items in base directory")
+    
+    let file_count = 0
+    for year_dir in year_dirs {
+        # Skip items that are not directories
+        if year_dir.name != "docs" and !contains(year_dir.name, ".") {
+            print("-", year_dir)
+            let month_dirs = list_files(year_dir)
+            
+            for month_dir in month_dirs {
+                if !contains(month_dir, ".") {
+                    let files = list_files(month_dir)
+                    file_count = file_count + len(files)
+                }
+            }
+        }
+    }
+    
+    print("  ✓ Total files found: ", file_count)
+    print()
+} catch e {
+    print("  ✗ Error: ", e)
+    print()
+}
+
+print("============================================================")
+print("✅ Example 1 completed")
+print("============================================================")
+

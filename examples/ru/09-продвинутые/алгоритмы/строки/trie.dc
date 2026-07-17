@@ -1,0 +1,86 @@
+# Префиксное дерево (Trie) — вставка и поиск за O(m)
+
+cls TrieNode {
+    public:
+        children: dict[str, TrieNode]
+        is_end: bool
+
+    new TrieNode() {
+        this.children = {}
+        this.is_end = false
+    }
+}
+
+cls Trie {
+    private:
+        root: TrieNode
+
+    new Trie() {
+        this.root = TrieNode()
+    }
+
+    public:
+    fn insert(word: str) {
+        node = this.root
+        for ch in word {
+            if ch not in node.children {
+                node.children[ch] = TrieNode()
+            }
+            node = node.children[ch]
+        }
+        node.is_end = true
+    }
+
+    fn search(word: str) -> bool {
+        node = this._find_node(word)
+        return node != null and node.is_end
+    }
+
+    fn starts_with(prefix: str) -> bool {
+        return this._find_node(prefix) != null
+    }
+
+    fn autocomplete(prefix: str) -> list[str] {
+        """Все слова с данным префиксом."""
+        node = this._find_node(prefix)
+        if node == null: return []
+        result = []
+        this._collect(node, prefix, result)
+        return sort(result)
+    }
+
+    private:
+    fn _find_node(word: str) -> Optional[TrieNode] {
+        node = this.root
+        for ch in word {
+            if ch not in node.children: return null
+            node = node.children[ch]
+        }
+        return node
+    }
+
+    fn _collect(node: TrieNode, path: str, result: list[str]) {
+        if node.is_end: result.push(path)
+        for ch in node.children.keys {
+            this._collect(node.children[ch], path + ch, result)
+        }
+    }
+}
+
+fn __main__() {
+    print("=== Trie ===")
+
+    trie = Trie()
+    for w in ["apple", "app", "application", "apply", "banana", "band"] {
+        trie.insert(w)
+    }
+
+    print("search 'app': ${trie.search('app')}")
+    print("search 'appl': ${trie.search('appl')}")
+    print("starts_with 'app': ${trie.starts_with('app')}")
+    print("autocomplete 'app': ${trie.autocomplete('app')}")
+
+    expected = ["app", "apple", "application", "apply"]
+    status = if trie.search("app") and trie.autocomplete("app") == expected { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

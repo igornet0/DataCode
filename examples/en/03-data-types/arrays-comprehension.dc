@@ -1,0 +1,17 @@
+# List comprehension — [expr for … in …]
+
+print("=== List comprehension ===")
+
+squares = [x * x for x in [1, 2, 3, 4, 5]]
+print("squares:", squares)
+
+evens = [x for x in range(10) if x % 2 == 0]
+print("evens 0..9:", evens)
+
+pairs = [10 * x + y for x in [1, 2] for y in [1, 2]]
+print("Cartesian product:", pairs)
+
+# Loop variable does not leak outside
+outer = 99
+a = [x for x in [1, 2, 3]]
+print("outer unchanged:", outer, "| a:", a)

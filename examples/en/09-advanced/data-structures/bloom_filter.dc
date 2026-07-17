@@ -1,0 +1,57 @@
+# Bloom Filter - probabilistic structure “definitely not / maybe yes”
+
+cls BloomFilter {
+    private:
+        bits: list[bool]
+        size: int
+        hash_count: int
+
+    new BloomFilter(size: int, hash_count: int = 3) {
+        this.size = size
+        this.hash_count = hash_count
+        this.bits = [false for _ in range(size)]
+    }
+
+    private:
+    fn _hash(item: str, seed: int) -> int {
+        h = seed
+        for ch in item { h = (h * 31 + ord(ch)) % this.size }
+        return abs(h)
+    }
+
+    public:
+    fn add(item: str) {
+        for i in range(this.hash_count) {
+            idx = this._hash(item, i * 17 + 13)
+            this.bits[idx] = true
+        }
+    }
+
+    fn might_contain(item: str) -> bool {
+        for i in range(this.hash_count) {
+            if !this.bits[this._hash(item, i * 17 + 13)]: return false
+        }
+        return true
+    }
+
+    fn fill_ratio() -> float {
+        count = 0
+        for b in this.bits { if b { count += 1 } }
+        return count / this.size
+    }
+}
+
+fn __main__() {
+    print("=== Bloom Filter ===")
+
+    bf = BloomFilter(64, 4)
+    words = ["apple", "banana", "cherry", "date"]
+    for w in words { bf.add(w) }
+
+    print("apple: ${bf.might_contain('apple')} (expected true)")
+    print("grape: ${bf.might_contain('grape')} (expected false)")
+    print("padding: ${bf.fill_ratio()}")
+
+    status = if bf.might_contain("apple") and !bf.might_contain("grape") { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

@@ -1,0 +1,15 @@
+{
+  "name": "Example configuration",
+  "version": 1,
+  "debug": true,
+  "paths": [
+    "input/",
+    "output/"
+  ],
+  "database": {
+    "host": "localhost",
+    "port": 5432,
+    "user": "admin",
+    "password": "secret"
+  }
+}

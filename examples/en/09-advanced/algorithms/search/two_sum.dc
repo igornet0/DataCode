@@ -1,0 +1,44 @@
+# Two Sum - find two indexes with the target sum (O(n) via hash table)
+
+fn two_sum(nums: list[int], target: int) -> Optional[tuple[int, int]] {
+    """
+    Returns the index pair (i, j), i < j, or null.
+    """
+    seen = {}
+    for i in range(len(nums)) {
+        need = target - nums[i]
+        if need in seen {
+            return (seen[need], i)
+        }
+        seen[nums[i]] = i
+    }
+    return null
+}
+
+fn two_sum_values(nums: list[int], target: int) -> Optional[tuple[int, int]] {
+    """Returns a pair of values (not indexes)."""
+    pair = two_sum(nums, target)
+    if pair == null: return null
+    return (nums[pair[0]], nums[pair[1]])
+}
+
+fn __main__() {
+    print("=== Two Sum ===")
+
+    tests = [
+        ([2, 7, 11, 15], 9, (0, 1)),
+        ([3, 2, 4], 6, (1, 2)),
+        ([3, 3], 6, (0, 1)),
+        ([1, 2, 3], 10, null),
+    ]
+
+    for t in tests {
+        nums, target, expected = t[0], t[1], t[2]
+        got = two_sum(nums, target)
+        status = if got == expected { "OK" } else { "FAIL" }
+        print("  ${status}: two_sum(${nums}, ${target}) = ${got}, expected ${expected}")
+    }
+
+    vals = two_sum_values([2, 7, 11, 15], 9)
+    print("\nValues for sum 9: ${vals} (expected (2, 7))")
+}

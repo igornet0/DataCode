@@ -1,0 +1,118 @@
+# LFU cache - evicts the least frequently used one
+
+from hash_map import HashMap
+
+cls LfuNode {
+    public:
+        key: str
+        value: int
+        freq: int
+        prev: Optional[LfuNode]
+        next: Optional[LfuNode]
+
+    new LfuNode(key: str, value: int) {
+        this.key = key
+        this.value = value
+        this.freq = 1
+        this.prev = null
+        this.next = null
+    }
+}
+
+cls LFUCache {
+    private:
+        capacity: int
+        key_map: dict[str, LfuNode]
+        freq_map: dict[int, LfuNode]
+        min_freq: int
+
+    new LFUCache(capacity: int) {
+        this.capacity = capacity
+        this.key_map = {}
+        this.freq_map = {}
+        this.min_freq = 0
+    }
+
+    private:
+    fn _insert_head(node: LfuNode, freq: int) {
+        dummy = this.freq_map.get(freq)
+        if dummy == null {
+            head = LfuNode("", 0)
+            tail = LfuNode("", 0)
+            head.next = tail
+            tail.prev = head
+            this.freq_map[freq] = head
+            dummy = head
+        }
+        first = dummy.next
+        node.next = first
+        node.prev = dummy
+        dummy.next = node
+        first.prev = node
+    }
+
+    fn _remove(node: LfuNode) {
+        node.prev.next = node.next
+        node.next.prev = node.prev
+    }
+
+    fn _update_freq(node: LfuNode) {
+        old_f = node.freq
+        this._remove(node)
+        node.freq += 1
+        this._insert_head(node, node.freq)
+        if old_f == this.min_freq and this.freq_map[old_f].next.next == null {
+            this.min_freq += 1
+        }
+    }
+
+    public:
+    fn get(key: str) {
+        if key not in this.key_map: return null
+        node = this.key_map[key]
+        this._update_freq(node)
+        return node.value
+    }
+
+    fn put(key: str, value: int) {
+        if this.capacity <= 0: return
+
+        if key in this.key_map {
+            node = this.key_map[key]
+            node.value = value
+            this._update_freq(node)
+            return
+        }
+
+        if len(this.key_map) >= this.capacity {
+            head = this.freq_map[this.min_freq]
+            lru = head.next
+            evict_key = lru.key
+            this._remove(lru)
+            new_map = {}
+            for k in this.key_map.keys {
+                if k != evict_key { new_map[k] = this.key_map[k] }
+            }
+            this.key_map = new_map
+        }
+        node = LfuNode(key, value)
+        this.key_map[key] = node
+        this._insert_head(node, 1)
+        this.min_freq = 1
+    }
+}
+
+fn __main__() {
+    print("=== LFU Cache ===")
+
+    cache = LFUCache(2)
+    cache.put("a", 1)
+    cache.put("b", 2)
+    print("get a: ${cache.get('a')}")
+    cache.put("c", 3)
+    print("get b: ${cache.get('b')} (expected null)")
+    print("get c: ${cache.get('c')} (expected 3)")
+
+    status = if cache.get("b") == null and cache.get("c") == 3 { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

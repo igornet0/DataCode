@@ -1,0 +1,139 @@
+# Hash map with chaining method - separate chaining on an array of buckets
+
+cls HashMap {
+    private:
+        buckets: list[list[tuple]]
+        bucket_count: int
+        size_: int
+
+    fn _hash(key) -> int {
+        """Simple hash function for int and str."""
+        if typeof(key) == "int" {
+            h = abs(key)
+
+        } else if typeof(key) == "str" {
+            h = 0
+            print("${key=}")
+            for ch in key {
+                h = h * 31 + ord(ch)
+            }
+            h = abs(h)
+        } else {
+            h = abs(len(str(key)))
+        }
+        return h % this.bucket_count
+    }
+
+    fn _find_slot(bucket: list[tuple], key) -> int {
+        for i in range(len(bucket)) {
+            if bucket[i][0] == key: return i
+        }
+        return -1
+    }
+
+    fn _rehash() {
+        old_entries = this.entries()
+        new_cap = this.bucket_count * 2
+        this.bucket_count = new_cap
+        this.buckets = []
+        this.size_ = 0
+        for _ in range(new_cap) { this.buckets.push([]) }
+        for e in old_entries {
+            this.put(e[0], e[1])
+        }
+    }
+
+    public:
+    new HashMap(initial_capacity: int = 8) {
+        this.bucket_count = initial_capacity
+        this.buckets = []
+        this.size_ = 0
+        for _ in range(initial_capacity) {
+            this.buckets.push([])
+        }
+    }
+
+    fn put(key, value) {
+        idx = this._hash(key)
+        bucket = this.buckets[idx]
+        pos = this._find_slot(bucket, key)
+        if pos >= 0 {
+            bucket[pos] = (key, value)
+        } else {
+            bucket.push((key, value))
+            this.size_ = this.size_ + 1
+        }
+        if this.size_ > this.bucket_count * 2 {
+            this._rehash()
+        }
+    }
+
+    fn get(key) {
+        idx = this._hash(key)
+        pos = this._find_slot(this.buckets[idx], key)
+        if pos < 0: return null
+        return this.buckets[idx][pos][1]
+    }
+
+    fn contains(key) -> bool {
+        idx = this._hash(key)
+        return this._find_slot(this.buckets[idx], key) >= 0
+    }
+
+    fn remove(key) -> bool {
+        idx = this._hash(key)
+        bucket = this.buckets[idx]
+        pos = this._find_slot(bucket, key)
+        if pos < 0: return false
+        bucket.pop(pos)
+        this.size_ = this.size_ - 1
+        return true
+    }
+
+    fn size() -> int {
+        return this.size_
+    }
+
+    fn entries() -> list[tuple] {
+        result = []
+        for bucket in this.buckets {
+            for pair in bucket {
+                result.push(pair)
+            }
+        }
+        return result
+    }
+}
+
+fn word_frequency(words: list[str]) -> HashMap {
+    freq = HashMap(16)
+    for w in words {
+        count = freq.get(w)
+        if count == null { count = 0 }
+        freq.put(w, count + 1)
+    }
+    return freq
+}
+
+fn __main__() {
+    print("=== HashMap (separate chaining) ===")
+
+    map = HashMap(4)
+    map.put("apple", 3)
+    map.put("banana", 1)
+    map.put("apple", 5)
+    map.put(42, 100)
+
+    print("get('apple')=${map.get('apple')}, get(42)=${map.get(42)}, size=${map.size()}")
+    print("contains('cherry')=${map.contains('cherry')}")
+
+    map.remove("banana")
+    print("After remove('banana'): size=${map.size()}, get=${map.get('banana')}")
+
+    words = ["a", "b", "a", "c", "b", "a"]
+    freq = word_frequency(words)
+    print("Frequencies: a=${freq.get('a')}, b=${freq.get('b')}, c=${freq.get('c')}")
+
+    status = if map.get("apple") == 5 and freq.get("a") == 3 and freq.get("c") == 1 { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

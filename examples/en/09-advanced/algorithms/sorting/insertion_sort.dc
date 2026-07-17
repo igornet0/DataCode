@@ -1,0 +1,40 @@
+# Insertion sort - O(n²), stable, effective on almost sorted data
+
+fn array_copy(arr: list) -> list {
+    copy = []
+    for x in arr { copy.push(x) }
+    return copy
+}
+
+fn insertion_sort(arr: list[int]) -> list[int] {
+    a = array_copy(arr)
+    for i in range(1, len(a)) {
+        key = a[i]
+        j = i - 1
+        while j >= 0 and a[j] > key {
+            a[j + 1] = a[j]
+            j = j - 1
+        }
+        a[j + 1] = key
+    }
+    return a
+}
+
+fn __main__() {
+    print("=== Insertion Sort ===")
+
+    tests = [
+        [5, 1, 4, 2, 8],
+        [1, 2, 3, 4, 5],
+        [5, 4, 3, 2, 1],
+        [],
+    ]
+
+    for data in tests {
+        result = insertion_sort(data)
+        print("  ${data} → ${result}")
+    }
+
+    nearly = [1, 2, 4, 3, 5, 6]
+    print("\nAlmost sorted: ${insertion_sort(nearly)}")
+}

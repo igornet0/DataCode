@@ -1,0 +1,11 @@
+# Модуль debug — таблица зарегистрированных операторов
+
+import debug
+
+text = debug.operators()
+print("debug.operators() (первые 500 символов):")
+if len(text) > 500 {
+    print(str(text)[0:500] + "...")
+} else {
+    print(text)
+}

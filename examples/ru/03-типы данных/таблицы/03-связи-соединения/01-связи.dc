@@ -1,0 +1,65 @@
+# Связи между таблицами: primary_key и relate
+# CSV: data/employees.csv, data/orders.csv, data/duplicates.csv, data/text_products.csv
+
+employees = read(path("data/employees.csv"))
+orders = read(path("data/orders.csv"))
+dup = read(path("data/duplicates.csv"))
+products = read(path("data/text_products.csv"))
+
+print("=== primary_key ===")
+print("orders rows:", len(orders), "| columns:", orders.columns)
+print("products rows:", len(products), "| columns:", products.columns)
+
+# Помечаем первичные ключи (метаданные для модели данных)
+primary_key(orders["OrderId"])
+primary_key(products["SKU"])
+primary_key(dup["ID"])
+print("primary_key(orders.OrderId) — OK")
+print("primary_key(products.SKU) — OK")
+print("primary_key(dup.ID) — OK")
+
+print("\n=== relate: справочник отделов ↔ сотрудники ===")
+# Уникальные отделы из employees через aggregate_group
+departments = employees.aggregate_group({
+  group: "Department",
+  headcount: "count",
+})
+print("departments rows:", len(departments))
+print("department columns: ", departments.columns)
+show_table(table_head(departments, 10))
+
+# Связь: departments.Department → employees.Department
+relate(departments["Department"], employees["Department"])
+print("relate(departments.Department, employees.Department) — OK")
+
+print("\n=== relate: несколько связей в одной модели ===")
+# Продажи по SKU (синтетическая таблица для демонстрации FK)
+sales = table([
+  ["SALE_001", "A-01", 2],
+  ["SALE_002", "B-02", 5],
+  ["SALE_003", "A-01", 1],
+], ["sale_id", "SKU", "qty"])
+
+relate(products["SKU"], sales["SKU"])
+print("relate(products.SKU, sales.SKU) — OK")
+
+# Составной ключ: duplicates.ID + Category
+dup_keys = dup.aggregate_group({
+  group: ["ID", "Category"],
+  cnt: "count",
+})
+relate(dup_keys["ID"], dup["ID"])
+relate(dup_keys["Category"], dup["Category"])
+print("relate(dup_keys.ID, dup.ID) — OK")
+print("relate(dup_keys.Category, dup.Category) — OK")
+
+print("\n=== проверка: JOIN после объявления связей ===")
+# Связь не меняет данные, но join по тем же колонкам должен работать
+joined = inner_join(departments, employees, "Department", "Department")
+expected = len(employees)
+actual = len(joined)
+status = if actual == expected { "OK" } else { "FAIL" }
+print("inner_join(departments, employees) rows:", actual, "ожидали", expected, status)
+
+print("\nDone.")
+

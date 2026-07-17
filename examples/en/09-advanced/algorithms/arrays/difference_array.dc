@@ -1,0 +1,41 @@
+# Difference array - O(1) addition on a segment, O(n) restoration
+
+fn build_difference(n: int) -> list[int] {
+    """Difference array of length n+1 (convenient for segments [l, r])."""
+    return [0 for _ in range(n + 1)]
+}
+
+fn range_add(diff: list[int], left: int, right: int, value: int) -> list[int] {
+    """Add value to all elements of the original array at [left, right]."""
+    diff[left] += value
+    diff[right + 1] -= value
+    return diff
+}
+
+fn apply_difference(diff: list[int]) -> list[int] {
+    """Restore the final array (without the last sentinel element)."""
+    n = len(diff) - 1
+    arr = [0 for _ in range(n)]
+    current = 0
+    for i in range(n) {
+        current += diff[i]
+        arr[i] = current
+    }
+    return arr
+}
+
+fn __main__() {
+    print("=== Difference Array ===")
+
+    n = 6
+    diff = build_difference(n)
+    updates = [(1, 3, 10), (2, 5, 2), (0, 0, -1)]
+    for u in updates {
+        diff = range_add(diff, u[0], u[1], u[2])
+    }
+    result = apply_difference(diff)
+    print("After updates: ${result}")
+    expected = [-1, 10, 12, 12, 2, 2]
+    status = if result == expected { "OK" } else { "FAIL" }
+    print("Test: ${status} (expected ${expected})")
+}

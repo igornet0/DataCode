@@ -1,0 +1,48 @@
+# Counting sort — O(n + k), only integers in a known range
+
+fn counting_sort(arr: list[int], min_val: int, max_val: int) -> list[int] {
+    """
+    Sorting numbers in the range [min_val, max_val].
+    Stable: Preserves the relative order of equal elements.
+    """
+    if len(arr) == 0: return []
+
+    k = max_val - min_val + 1
+    count = [0 for _ in range(k)]
+
+    for x in arr {
+        count[x - min_val] = count[x - min_val] + 1
+    }
+
+    result = []
+    for i in range(k) {
+        for _ in range(count[i]) {
+            result.push(i + min_val)
+        }
+    }
+    return result
+}
+
+fn counting_sort_auto(arr: list[int]) -> list[int] {
+    """Auto-detect min/max."""
+    if len(arr) == 0: return []
+    lo = min(arr)
+    hi = max(arr)
+    return counting_sort(arr, lo, hi)
+}
+
+fn __main__() {
+    print("=== Counting Sort ===")
+
+    data = [4, 2, 2, 8, 3, 3, 1]
+    result = counting_sort_auto(data)
+    print("Original: ${data}")
+    print("Result: ${result}")
+    print("Test: ${result == [1, 2, 2, 3, 3, 4, 8]} (expected true)")
+
+    # Negative numbers
+    neg = [-3, 0, 2, -1, 0, 2]
+    neg_sorted = counting_sort_auto(neg)
+    print("\nWith negative: ${neg} → ${neg_sorted}")
+    print("Test: ${neg_sorted == [-3, -1, 0, 0, 2, 2]} (expected true)")
+}

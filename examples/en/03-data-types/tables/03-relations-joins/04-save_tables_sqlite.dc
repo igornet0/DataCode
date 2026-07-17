@@ -1,0 +1,20 @@
+# Export multiple tables to one SQLite file: save_tables_sqlite
+# relate and primary_key relations go into the DB schema; kwargs — into _datacode_variables
+
+users = table([[1, "Alice"], [2, "Kate"]], ["id", "name"])
+orders = table([[1, 100], [2, 200]], ["user_id", "amount"])
+
+primary_key(users["id"])
+relate(users["id"], orders["user_id"])
+
+# Positional path
+path1 = save_tables_sqlite([users, orders], "demo_model")
+print("saved:", path1)
+
+# Named arguments + kwargs
+path2 = save_tables_sqlite([users, orders], filename="demo_model_kw", env="dev", version=1)
+print("saved with kwargs:", path2)
+
+meta = { "env": "prod", "tag": "example" }
+path3 = save_tables_sqlite([users, orders], **meta, filename="demo_model_spread")
+print("saved with **meta:", path3)

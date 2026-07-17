@@ -1,0 +1,154 @@
+# LCA (Lowest Common Ancestor) — бинарный lifting, O(log n) на запрос
+
+cls LCA {
+    private:
+        n: int
+        log_n: int
+        depth: list[int]
+        up: list[list[int]]
+
+    new LCA(n: int, edges: list[tuple[int, int]], root: int = 0) {
+        """
+        Дерево на вершинах 0..n-1, рёбра без весов.
+        """
+        this.n = n
+        this.log_n = 0
+        t = n
+        while t > 0 {
+            this.log_n = this.log_n + 1
+            t = t // 2
+        }
+
+        adj = {}
+        for i in range(n) { adj[i] = [] }
+        for e in edges {
+            u, v = e[0], e[1]
+            adj[u].push(v)
+            adj[v].push(u)
+        }
+
+        this.depth = []
+        for _ in range(n) { this.depth.push(0) }
+
+        this.up = []
+        for _ in range(n) {
+            row = []
+            for _ in range(this.log_n) { row.push(0) }
+            this.up.push(row)
+        }
+
+        this._dfs(root, root, adj)
+    }
+
+    private:
+    fn _dfs(v: int, p: int, adj: dict[int, list[int]]) {
+        this.up[v][0] = p
+        for k in range(1, this.log_n) {
+            this.up[v][k] = this.up[this.up[v][k - 1]][k - 1]
+        }
+        for u in adj[v] {
+            if u == p: continue
+            this.depth[u] = this.depth[v] + 1
+            this._dfs(u, v, adj)
+        }
+    }
+
+    fn _lift(v: int, steps: int) -> int {
+        i = 0
+        while steps > 0 {
+            if steps % 2 == 1 {
+                v = this.up[v][i]
+            }
+            steps = steps // 2
+            i = i + 1
+        }
+        return v
+    }
+
+    public:
+    fn lca(a: int, b: int) -> int {
+        """Наименьший общий предок вершин a и b."""
+        u, v = a, b
+        if this.depth[u] < this.depth[v] {
+            u, v = v, u
+        }
+
+        diff = this.depth[u] - this.depth[v]
+        u = this._lift(u, diff)
+
+        if u == v: return u
+
+        for k in range(this.log_n - 1, -1, -1) {
+            if this.up[u][k] != this.up[v][k] {
+                u = this.up[u][k]
+                v = this.up[v][k]
+            }
+        }
+        return this.up[u][0]
+    }
+
+    fn distance(a: int, b: int) -> int {
+        """Расстояние между a и b (число рёбер)."""
+        w = this.lca(a, b)
+        return this.depth[a] + this.depth[b] - 2 * this.depth[w]
+    }
+
+    fn path(a: int, b: int) -> list[int] {
+        """Путь a → b через LCA."""
+        w = this.lca(a, b)
+        up_path = []
+        cur = a
+        while cur != w {
+            up_path.push(cur)
+            cur = this.up[cur][0]
+        }
+        up_path.push(w)
+
+        down_path = []
+        cur = b
+        while cur != w {
+            down_path.push(cur)
+            cur = this.up[cur][0]
+        }
+
+        result = up_path
+        for i in range(len(down_path) - 1, -1, -1) {
+            result.push(down_path[i])
+        }
+        return result
+    }
+}
+
+fn build_sample_tree() -> tuple[int, list[tuple[int, int]]] {
+    """
+         0
+        / \\
+       1   2
+      / \\   \\
+     3   4   5
+    """
+    edges = [(0, 1), (0, 2), (1, 3), (1, 4), (2, 5)]
+    return (6, edges)
+}
+
+fn __main__() {
+    print("=== LCA (Binary Lifting) ===")
+
+    n, edges = build_sample_tree()
+    lca = LCA(n, edges, 0)
+
+    pairs = [(3, 4), (3, 5), (4, 5), (0, 5)]
+    print("--- LCA запросы ---")
+    for p in pairs {
+        a, b = p[0], p[1]
+        print("  lca(${a}, ${b}) = ${lca.lca(a, b)}, dist = ${lca.distance(a, b)}")
+    }
+
+    path = lca.path(3, 5)
+    print("Путь 3 → 5: ${path}")
+
+    expected_lca = lca.lca(3, 5)
+    expected_path = [3, 1, 0, 2, 5]
+    status = if expected_lca == 0 and path == expected_path and lca.distance(3, 5) == 4 { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

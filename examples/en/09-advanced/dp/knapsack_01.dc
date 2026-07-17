@@ -1,0 +1,103 @@
+# 0/1 knapsack — maximum value and item set reconstruction
+
+fn knapsack_01(weights: list[int], values: list[int], capacity: int) -> int {
+    """
+    Classic 0/1 knapsack: each item at most once.
+    dp[w] — maximum value at capacity w.
+    """
+    n = len(weights)
+    if n != len(values): throw "weights and values must have the same length"
+
+    dp = [0 for _ in range(capacity + 1)]
+
+    for i in range(n) {
+        w_i = weights[i]
+        v_i = values[i]
+        # Reverse pass — ensures 0/1, not unbounded knapsack
+        for w in range(capacity, w_i - 1, -1) {
+            candidate = dp[w - w_i] + v_i
+            if candidate > dp[w]: dp[w] = candidate
+        }
+    }
+    return dp[capacity]
+}
+
+fn knapsack_01_items(weights: list[int], values: list[int], capacity: int) -> list[int] {
+    """Returns the indices of the selected items (0-based) that maximize value."""
+    n = len(weights)
+    if n != len(values): throw "weights and values must have the same length"
+
+    # dp[w] — (max_value, last_item_index or -1, prev_capacity)
+    dp = [[0, -1, 0] for _ in range(capacity + 1)]
+
+    for i in range(n) {
+        w_i = weights[i]
+        v_i = values[i]
+        for w in range(capacity, w_i - 1, -1) {
+            candidate = dp[w - w_i][0] + v_i
+            if candidate > dp[w][0] {
+                dp[w] = [candidate, i, w - w_i]
+            }
+        }
+    }
+
+    chosen = []
+    w = capacity
+    while dp[w][1] >= 0 {
+        item = dp[w][1]
+        chosen.push(item)
+        w = dp[w][2]
+    }
+    return sort(chosen)
+}
+
+fn knapsack_01_table(weights: list[int], values: list[int], capacity: int) -> list[list[int]] {
+    """
+    Full 2D table dp[i][w] - the best value of the first i items with capacity w.
+    Convenient for learning; for larger inputs use the 1D version above.
+    """
+    n = len(weights)
+    dp = [[0 for _ in range(capacity + 1)] for _ in range(n + 1)]
+
+    for i in range(1, n + 1) {
+        w_i = weights[i - 1]
+        v_i = values[i - 1]
+        for w in range(capacity + 1) {
+            dp[i][w] = dp[i - 1][w]
+            if w >= w_i {
+                take = dp[i - 1][w - w_i] + v_i
+                if take > dp[i][w]: dp[i][w] = take
+            }
+        }
+    }
+    return dp
+}
+
+fn __main__() {
+    print("=== 0/1 Knapsack ===")
+
+    weights = [2, 3, 4, 5]
+    values = [3, 4, 5, 6]
+    capacity = 8
+
+    best = knapsack_01(weights, values, capacity)
+    items = knapsack_01_items(weights, values, capacity)
+    table = knapsack_01_table(weights, values, capacity)
+
+    print("Weights: ${weights}")
+    print("Values:${values}")
+    print("Capacity: ${capacity}")
+    print("Max value: ${best}")
+    print("Items: ${items}")
+
+    picked_weight = sum([weights[i] for i in items])
+    picked_value = sum([values[i] for i in items])
+    print("Check: weight=${picked_weight}, value=${picked_value}")
+    print("Table angle dp[n][capacity]: ${table[len(weights)][capacity]}")
+
+    # Additional test
+    w2 = [10, 20, 30]
+    v2 = [60, 100, 120]
+    cap2 = 50
+    print("\nClassic example: max=${knapsack_01(w2, v2, cap2)}, items=${knapsack_01_items(w2, v2, cap2)}")
+}

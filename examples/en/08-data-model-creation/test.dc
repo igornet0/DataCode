@@ -1,0 +1,22 @@
+global data = read(path("sample.csv"))
+
+print(table_info(data))
+
+r1 = data["Age" > 25 or "City" == "Houston"]
+
+r2 = data["Salary" > 40000]
+
+r3 = data["Age" > 25]["City" == "Houston"]
+r4 = data["Age" > 25 and "City" == "Houston"]  # equivalent to r3
+
+r5 = data["City" in ["Houston", "Chicago"]]
+r6 = data["City" not in ["Houston", "Chicago"]]
+
+r7 = data["City" & contains("Hou")]
+r8 = data["City" & starts_with("Ho")]
+r9 = data["City" & ends_with("n")]
+
+print("r1 (or):", len(r1))
+print("r3/r4 (and):", len(r3), len(r4))
+print("r5/r6 (in):", len(r5), len(r6))
+print("r7/r8/r9 (str):", len(r7), len(r8), len(r9))

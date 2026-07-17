@@ -1,0 +1,74 @@
+# Debounce - deferred call, reset when repeated events occur
+
+cls Debouncer {
+    private:
+        delay_ms: int
+        last_call_time: int
+        pending_value: Optional[str]
+        fired_count: int
+
+    new Debouncer(delay_ms: int) {
+        this.delay_ms = delay_ms
+        this.last_call_time = -1000000
+        this.pending_value = null
+        this.fired_count = 0
+    }
+
+    public:
+    fn schedule(value: str, now_ms: int) -> bool {
+        """
+        Schedule a call. Returns true if the callback should be executed now
+        (delay_ms has passed since the last schedule without new events - simulation).
+        """
+        this.pending_value = value
+        elapsed = now_ms - this.last_call_time
+
+        if elapsed >= this.delay_ms {
+            this.last_call_time = now_ms
+            this.pending_value = null
+            this.fired_count += 1
+            return true
+        }
+        return false
+    }
+
+    fn flush(now_ms: int) -> Optional[str] {
+        """Force a delayed call if time is up."""
+        if this.pending_value == null: return null
+        if now_ms - this.last_call_time >= this.delay_ms {
+            val = this.pending_value
+            this.pending_value = null
+            this.last_call_time = now_ms
+            this.fired_count += 1
+            return val
+        }
+        return null
+    }
+
+    fn fired() -> int { return this.fired_count }
+}
+
+fn simulate_debounce(events: list[tuple[int, str]], delay: int) -> list[str] {
+    """events: (timestamp_ms, value)."""
+    db = Debouncer(delay)
+    output = []
+    for e in events {
+        if db.schedule(e[1], e[0]) { output.push(e[1]) }
+        flushed = db.flush(e[0] + delay)
+        if flushed != null { output.push(flushed) }
+    }
+    return output
+}
+
+fn __main__() {
+    print("=== Debounce ===")
+
+    events = [(0, "a"), (50, "ab"), (100, "abc"), (400, "final")]
+    result = simulate_debounce(events, 300)
+
+    print("events: ${events}")
+    print("debounced calls: ${result}")
+
+    status = if len(result) >= 1 { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

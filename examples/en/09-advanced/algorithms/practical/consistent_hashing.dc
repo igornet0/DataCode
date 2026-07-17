@@ -1,0 +1,73 @@
+# Consistent Hashing - uniform distribution of keys across nodes
+
+fn hash_key(key: str, buckets: int) -> int {
+    h = 0
+    for ch in key { h = (h * 31 + ord(ch)) % buckets }
+    return abs(h)
+}
+
+cls ConsistentHash {
+    private:
+        ring: list[tuple[int, str]]
+        replicas: int
+
+    new ConsistentHash(replicas: int = 100) {
+        this.ring = []
+        this.replicas = replicas
+    }
+
+    public:
+    fn add_node(node: str) {
+        for i in range(this.replicas) {
+            token = hash_key(node + "#" + str(i), 1000000)
+            this.ring.push((token, node))
+        }
+        this.ring = sort(this.ring)
+    }
+
+    fn remove_node(node: str) {
+        new_ring = []
+        for entry in this.ring {
+            if entry[1] != node { new_ring.push(entry) }
+        }
+        this.ring = new_ring
+    }
+
+    fn get_node(key: str) -> Optional[str] {
+        if len(this.ring) == 0: return null
+        h = hash_key(key, 1000000)
+
+        lo = 0
+        hi = len(this.ring) - 1
+        while lo < hi {
+            mid = lo + (hi - lo) // 2
+            if this.ring[mid][0] < h {
+                lo = mid + 1
+            } else {
+                hi = mid
+            }
+        }
+        return this.ring[lo][1]
+    }
+}
+
+fn __main__() {
+    print("=== Consistent Hashing ===")
+
+    ring = ConsistentHash(50)
+    for node in ["server-a", "server-b", "server-c"] { ring.add_node(node) }
+
+    keys = ["user:1", "user:2", "session:abc", "file:42"]
+    mapping = {}
+    for k in keys { mapping[k] = ring.get_node(k) }
+
+    print("distribution: ${mapping}")
+
+    ring.remove_node("server-b")
+    mapping2 = {}
+    for k in keys { mapping2[k] = ring.get_node(k) }
+    print("after removing server-b: ${mapping2}")
+
+    status = if len(mapping) == len(keys) { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

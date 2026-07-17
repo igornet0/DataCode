@@ -1,0 +1,38 @@
+# Splitting the array into two subsets with equal sum
+
+fn can_partition(nums: list[int]) -> bool {
+    """
+    Is it possible to split nums into two parts with equal sum?
+    Reduces to subset sum by half the total.
+    """
+    total = sum(nums)
+    if total % 2 != 0: return false
+    target = total // 2
+
+    dp = [false for _ in range(target + 1)]
+    dp[0] = true
+
+    for x in nums {
+        for s in range(target, x - 1, -1) {
+            if dp[s - x]: dp[s] = true
+        }
+    }
+    return dp[target]
+}
+
+fn __main__() {
+    print("=== Partition Equal Subset ===")
+
+    tests = [
+        ([1, 5, 11, 5], true),
+        ([1, 2, 3, 5], false),
+        ([2, 2, 1, 1], true),
+    ]
+
+    for t in tests {
+        nums, expected = t[0], t[1]
+        got = can_partition(nums)
+        status = if got == expected { "OK" } else { "FAIL" }
+        print("  ${status}: ${nums} → ${got}, expected ${expected}")
+    }
+}

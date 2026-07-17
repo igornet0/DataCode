@@ -1,0 +1,15 @@
+{
+  "database": {
+    "host": "localhost",
+    "password": "secret",
+    "port": 5432.0,
+    "user": "admin"
+  },
+  "debug": true,
+  "name": "Example configuration",
+  "paths": [
+    "input/",
+    "output/"
+  ],
+  "version": 1.0
+}

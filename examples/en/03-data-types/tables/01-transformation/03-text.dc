@@ -1,0 +1,57 @@
+# Transformation: Text group
+# CSV: data/text_products.csv, data/employees.csv
+#
+# UI operations: trim, upper, lower, capitalize, replace, splitColumn, joinColumns
+#
+# data.map("Column", fn) — new table with transformed column (others unchanged).
+
+products = read(path("data/text_products.csv"))
+employees = read(path("data/employees.csv"))
+
+print("=== trim — strip whitespace ===")
+trimmed = products.map("FullName", trim)
+print("before/after:", products["FullName"][1], "→", trimmed["FullName"][1])
+
+print("\n=== upper / lower — case ===")
+upper_tbl = products.map("FullName", upper)
+lower_tbl = products.map("FullName", lower)
+print("upper:", upper_tbl["FullName"][0])
+print("lower:", lower_tbl["FullName"][0])
+
+print("\n=== isupper / islower — case check ===")
+print('isupper("HELLO"):', isupper("HELLO"), '| islower("hello"):', islower("hello"))
+print('isupper("Hello"):', isupper("Hello"), '| islower("Hello"):', islower("Hello"))
+
+print("\n=== capitalize — first letter uppercase ===")
+cap_tbl = products.map("Tag", capitalize)
+print("capitalize Tag:", cap_tbl["Tag"][0])
+
+print("\n=== replace — substring replacement ===")
+fn archive_tag(s) {
+    return replace(s, "old", "archive")
+}
+replaced_tbl = products.map("Tag", archive_tag)
+print("replace Tag:", replaced_tbl["Tag"][3])
+
+# Planned syntax:
+#   table_replace(table, column, find, replacement)
+#   data = table_replace(data, "Description", "widget", "product")
+#
+# Arguments:
+#   table       — source table
+#   column      — column name (string) where substring is searched in cells
+#   find        — what to replace (string)
+#   replacement — replacement (string); all occurrences of find in each cell
+#
+# Returns: new table (like data.map after column replacement)
+
+print("\n=== splitColumn — split a column ===")
+split_tbl = trimmed.split_column("FullName", " ", ["NamePart1", "NamePart2"])
+# or with callback: split_column("FullName", fn(x) => x.split(" "), ["NamePart1", "NamePart2"])
+print("split FullName[0] →", split_tbl["NamePart1"][0], split_tbl["NamePart2"][0])
+
+print("\n=== joinColumns — join columns ===")
+joined_tbl = employees.join_columns(["Name", "Department"], "NameDept", " — ")
+print("join Name + Department:", joined_tbl["NameDept"][0])
+
+print("\nDone.")

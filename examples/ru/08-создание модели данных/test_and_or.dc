@@ -1,0 +1,20 @@
+global data = read(path("sample.csv"))
+
+r1 = data["Age" > 25 or "City" == "Houston"]
+print("r1 or:", len(r1))
+
+r2 = data["Salary" > 40000]
+print("r2:", len(r2))
+
+r3 = data["Age" > 25]["City" == "Houston"]
+print("r3 chain:", len(r3))
+
+r4 = data["Age" > 25 and "City" == "Houston"]
+print("r4 and:", len(r4))
+
+r5 = data[("Age" > 25 or "City" == "Houston") and "Salary" > 40000]
+print("r5 mixed:", len(r5))
+
+r6 = data["City" in ["Houston", "Chicago"]]
+r7 = data["City" not in ["Houston", "Chicago"]]
+print("r6 in:", len(r6), "r7 not in:", len(r7))

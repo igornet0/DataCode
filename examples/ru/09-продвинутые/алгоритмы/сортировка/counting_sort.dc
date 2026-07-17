@@ -1,0 +1,48 @@
+# Сортировка подсчётом — O(n + k), только целые числа в известном диапазоне
+
+fn counting_sort(arr: list[int], min_val: int, max_val: int) -> list[int] {
+    """
+    Сортировка чисел в диапазоне [min_val, max_val].
+    Стабильная: сохраняет относительный порядок равных элементов.
+    """
+    if len(arr) == 0: return []
+
+    k = max_val - min_val + 1
+    count = [0 for _ in range(k)]
+
+    for x in arr {
+        count[x - min_val] = count[x - min_val] + 1
+    }
+
+    result = []
+    for i in range(k) {
+        for _ in range(count[i]) {
+            result.push(i + min_val)
+        }
+    }
+    return result
+}
+
+fn counting_sort_auto(arr: list[int]) -> list[int] {
+    """Автоопределение min/max."""
+    if len(arr) == 0: return []
+    lo = min(arr)
+    hi = max(arr)
+    return counting_sort(arr, lo, hi)
+}
+
+fn __main__() {
+    print("=== Counting Sort ===")
+
+    data = [4, 2, 2, 8, 3, 3, 1]
+    result = counting_sort_auto(data)
+    print("Исходный:  ${data}")
+    print("Результат: ${result}")
+    print("Тест: ${result == [1, 2, 2, 3, 3, 4, 8]} (ожид. true)")
+
+    # Отрицательные числа
+    neg = [-3, 0, 2, -1, 0, 2]
+    neg_sorted = counting_sort_auto(neg)
+    print("\nС отрицательными: ${neg} → ${neg_sorted}")
+    print("Тест: ${neg_sorted == [-3, -1, 0, 0, 2, 2]} (ожид. true)")
+}

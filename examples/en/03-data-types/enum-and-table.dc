@@ -1,0 +1,14 @@
+# enum(iterable) and Table(path) constructor
+
+print("=== enum — index + element ===")
+items = ["a", "b", "c"]
+for i, x in enum(items) {
+    print("enum:", i, x)
+}
+
+print("\n=== Table(path) — load CSV ===")
+t = Table(path("tables/01-transformation/data/employees.csv"))
+print("rows:", len(t))
+show_table(table_head(t, 3))
+print("typeof(Table(...)):", typeof(t))
+print("isinstance(t, Table):", isinstance(t, Table))

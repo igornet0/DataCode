@@ -1,0 +1,88 @@
+# Очередь с приоритетом (min-heap) — обёртка над модулем heapq
+
+import heapq
+
+cls PriorityQueue {
+    private:
+        heap: list[tuple]
+
+    new PriorityQueue() {
+        this.heap = []
+    }
+
+    public:
+    fn push(priority, item) {
+        """Меньший priority извлекается первым."""
+        heapq.heappush(this.heap, (priority, item))
+    }
+
+    fn pop() {
+        if this.is_empty(): return null
+        entry = heapq.heappop(this.heap)
+        return entry[1]
+    }
+
+    fn pop_with_priority() {
+        if this.is_empty(): return null
+        return heapq.heappop(this.heap)
+    }
+
+    fn peek() {
+        if this.is_empty(): return null
+        return heapq.heappeek(this.heap)[1]
+    }
+
+    fn is_empty() -> bool {
+        return len(this.heap) == 0
+    }
+
+    fn size() -> int {
+        return len(this.heap)
+    }
+}
+
+fn merge_k_sorted_lists(lists: list[list[int]]) -> list[int] {
+    """Слияние k отсортированных списков через min-heap."""
+    heap = []
+    for i in range(len(lists)) {
+        if len(lists[i]) > 0 {
+            heapq.heappush(heap, (lists[i][0], (i, 0)))
+        }
+    }
+
+    result = []
+    while len(heap) > 0 {
+        item = heapq.heappop(heap)
+        val = item[1]
+        list_idx, elem_idx = val[0], val[1]
+        result.push(lists[list_idx][elem_idx])
+
+        next_idx = elem_idx + 1
+        if next_idx < len(lists[list_idx]) {
+            heapq.heappush(heap, (lists[list_idx][next_idx], (list_idx, next_idx)))
+        }
+    }
+    return result
+}
+
+fn __main__() {
+    print("=== Priority Queue (heapq) ===")
+
+    pq = PriorityQueue()
+    tasks = [(5, "low"), (1, "critical"), (3, "medium"), (1, "urgent")]
+    for t in tasks { pq.push(t[0], t[1]) }
+
+    order = []
+    while !pq.is_empty() {
+        order.push(pq.pop())
+    }
+    print("Извлечение по приоритету: ${order}")
+
+    lists = [[1, 4, 7], [2, 5, 8], [3, 6, 9]]
+    merged = merge_k_sorted_lists(lists)
+    print("merge k sorted: ${merged}")
+
+    expected = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+    status = if merged == expected and order[0] == "critical" { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

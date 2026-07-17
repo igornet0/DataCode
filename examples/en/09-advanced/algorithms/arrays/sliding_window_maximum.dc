@@ -1,0 +1,44 @@
+# Maximum in a sliding window - monotonic deck, O(n)
+
+fn sliding_window_maximum(nums: list[int], k: int) -> list[int] {
+    """
+    For each window of size k, return the maximum.
+    deque stores indexes in descending order nums[index].
+    """
+    if k <= 0 or len(nums) == 0: return []
+    if k == 1: return nums
+
+    deque = []
+    result = []
+
+    for i in range(len(nums)) {
+        # Remove indexes outside the window
+        while len(deque) > 0 and deque[0] <= i - k {
+            deque.pop(0)
+        }
+        # Maintain descending sequence of values
+        while len(deque) > 0 and nums[deque[-1]] <= nums[i] {
+            deque.pop()
+        }
+        deque.push(i)
+
+        if i >= k - 1 {
+            result.push(nums[deque[0]])
+        }
+    }
+    return result
+}
+
+fn __main__() {
+    print("=== Sliding Window Maximum ===")
+
+    nums = [1, 3, -1, -3, 5, 3, 6, 7]
+    k = 3
+    got = sliding_window_maximum(nums, k)
+    expected = [3, 3, 5, 5, 6, 7]
+
+    print("nums: ${nums}")
+    print("k=${k} → ${got}")
+    status = if got == expected { "OK" } else { "FAIL" }
+    print("Test: ${status} (expected ${expected})")
+}

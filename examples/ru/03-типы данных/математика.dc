@@ -1,0 +1,11 @@
+# sqrt, isinf — математические функции
+
+print("=== sqrt ===")
+print("sqrt(16) =", sqrt(16))
+print("sqrt(2) =", sqrt(2))
+print("sqrt(-1) =", sqrt(-1))
+
+print("\n=== isinf ===")
+print("isinf(42) =", isinf(42))
+print("isinf(float(inf)) =", isinf(float(inf)))
+print("isinf(float(-inf)) =", isinf(float(-inf)))

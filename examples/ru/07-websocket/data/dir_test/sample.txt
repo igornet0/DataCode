@@ -1,0 +1,6 @@
+Hello, DataCode!
+This is a test text file.
+Line 1: Testing text file reading
+Line 2: Multiple lines support
+Line 3: UTF-8 characters: привет мир! 🌍
+End of file.

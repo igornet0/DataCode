@@ -1,0 +1,75 @@
+# Longest palindromic substring - DP O(n²)
+
+fn longest_palindrome_substring(s: str) -> str {
+    n = len(s)
+    if n == 0: return ""
+
+    best_start = 0
+    best_len = 1
+    dp = [[false for _ in range(n)] for _ in range(n)]
+
+    for i in range(n) { dp[i][i] = true }
+
+    for length in range(2, n + 1) {
+        for i in range(n - length + 1) {
+            j = i + length - 1
+            if length == 2 {
+                dp[i][j] = s[i] == s[j]
+            } else {
+                dp[i][j] = s[i] == s[j] and dp[i + 1][j - 1]
+            }
+            if dp[i][j] and length > best_len {
+                best_len = length
+                best_start = i
+            }
+        }
+    }
+    return s[best_start:best_start + best_len]
+}
+
+fn expand_around_center(s: str, left: int, right: int) -> int {
+    """Auxiliary expand for centers."""
+    while left >= 0 and right < len(s) and s[left] == s[right] {
+        left -= 1
+        right += 1
+    }
+    return right - left - 1
+}
+
+fn longest_palindrome_expand(s: str) -> str {
+    """Alternative: expand around center, O(n²) time, O(1) memory."""
+    if len(s) == 0: return ""
+    start = 0
+    max_len = 1
+
+    for i in range(len(s)) {
+        len1 = expand_around_center(s, i, i)
+        len2 = expand_around_center(s, i, i + 1)
+        cur = max(len1, len2)
+        if cur > max_len {
+            max_len = cur
+            start = i - (cur - 1) // 2
+        }
+    }
+    return s[start:start + max_len]
+}
+
+fn __main__() {
+    print("=== Longest Palindrome Substring ===")
+
+    tests = [
+        ("babad", "bab"),
+        ("cbbd", "bb"),
+        ("a", "a"),
+        ("forgeeksskeegfor", "geeksskeeg"),
+    ]
+
+    for t in tests {
+        s, expected = t[0], t[1]
+        got = longest_palindrome_substring(s)
+        got2 = longest_palindrome_expand(s)
+        ok = len(got) == len(expected) and len(got2) == len(expected)
+        status = if ok { "OK" } else { "FAIL" }
+        print("  ${status}: '${s}' → '${got}' (len=${len(got)}, expected len=${len(expected)})")
+    }
+}

@@ -1,0 +1,47 @@
+# Convex hull - Graham's algorithm, O(n log n)
+
+fn cross(o: tuple[float, float], a: tuple[float, float], b: tuple[float, float]) -> float {
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+}
+
+fn convex_hull(points: list[tuple[float, float]]) -> list[tuple[float, float]] {
+    n = len(points)
+    if n <= 1: return points
+
+    pts = sort(points)
+
+    lower = []
+    for p in pts {
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], p) <= 0 {
+            lower.pop()
+        }
+        lower.push(p)
+    }
+
+    upper = []
+    for p in reverse(pts) {
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], p) <= 0 {
+            upper.pop()
+        }
+        upper.push(p)
+    }
+
+    lower.pop()
+    upper.pop()
+    for p in upper { lower.push(p) }
+    return lower
+}
+
+fn __main__() {
+    print("=== Convex Hull (Graham) ===")
+
+    points = [(0.0, 3.0), (1.0, 1.0), (2.0, 2.0), (4.0, 4.0),
+              (0.0, 0.0), (1.0, 2.0), (3.0, 1.0), (3.0, 3.0)]
+
+    hull = convex_hull(points)
+    print("dots: ${len(points)}")
+    print("shell (${len(hull)} vertices): ${hull}")
+
+    status = if len(hull) >= 3 { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

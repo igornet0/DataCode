@@ -1,0 +1,120 @@
+# LRU-кэш — O(1) get/put через хеш-таблицу + двусвязный список
+
+cls LruNode {
+    public:
+        key: str
+        value: int
+        prev: Optional[LruNode]
+        next: Optional[LruNode]
+
+    new LruNode(key: str, value: int) {
+        this.key = key
+        this.value = value
+        this.prev = null
+        this.next = null
+    }
+}
+
+cls LRUCache {
+    private:
+        capacity: int
+        index: dict[str, LruNode]
+        head: LruNode
+        tail: LruNode
+
+    new LRUCache(capacity: int) {
+        this.capacity = capacity
+        this.index = {}
+        this.head = LruNode("", 0)
+        this.tail = LruNode("", 0)
+        this.head.next = this.tail
+        this.tail.prev = this.head
+    }
+
+    private:
+    fn _remove(node: LruNode) {
+        prev = node.prev
+        nxt = node.next
+        prev.next = nxt
+        nxt.prev = prev
+    }
+
+    fn _insert_front(node: LruNode) {
+        node.next = this.head.next
+        node.prev = this.head
+        this.head.next.prev = node
+        this.head.next = node
+    }
+
+    fn _move_to_front(node: LruNode) {
+        this._remove(node)
+        this._insert_front(node)
+    }
+
+    public:
+    fn get(key: str) {
+        if key not in this.index: return null
+        node = this.index[key]
+        this._move_to_front(node)
+        return node.value
+    }
+
+    fn put(key: str, value: int) {
+        if key in this.index {
+            node = this.index[key]
+            node.value = value
+            this._move_to_front(node)
+            return
+        }
+
+        node = LruNode(key, value)
+        this.index[key] = node
+        this._insert_front(node)
+
+        if len(this.index) > this.capacity {
+            lru = this.tail.prev
+            this._remove(lru)
+            this.index[lru.key] = null
+            this.index[lru.key] = null  # placeholder — remove key
+            # Удаление ключа из dict
+            new_index = {}
+            for k in this.index.keys {
+                if k != lru.key { new_index[k] = this.index[k] }
+            }
+            this.index = new_index
+        }
+    }
+
+    fn keys_by_recency() -> list[str] {
+        """От MRU к LRU (без sentinel-узлов)."""
+        result = []
+        cur = this.head.next
+        while cur != this.tail {
+            result.push(cur.key)
+            cur = cur.next
+        }
+        return result
+    }
+}
+
+fn __main__() {
+    print("=== LRU Cache ===")
+
+    cache = LRUCache(3)
+    cache.put("a", 1)
+    cache.put("b", 2)
+    cache.put("c", 3)
+    print("После a,b,c: ${cache.keys_by_recency()}")
+
+    cache.get("a")
+    print("После get('a'): ${cache.keys_by_recency()} (a → MRU)")
+
+    cache.put("d", 4)
+    print("После put('d',4): ${cache.keys_by_recency()} (вытеснен LRU)")
+
+    print("get('b')=${cache.get('b')} (ожид. null — вытеснен)")
+    print("get('a')=${cache.get('a')}, get('d')=${cache.get('d')}")
+
+    status = if cache.get("a") == 1 and cache.get("d") == 4 and cache.get("b") == null { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

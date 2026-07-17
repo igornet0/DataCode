@@ -24,3 +24,9 @@ let num = 42
 let num_str = "Число: " + "42"
 print(num_str)
 
+# Срезы подстроки s[start:stop:step] (индексы по символам Unicode)
+let s = "Hello, World!"
+print("s[1:4] = " + s[1:4])
+print("s[-3:] = " + s[-3:])
+print("s[::2] = " + s[::2])
+

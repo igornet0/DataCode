@@ -1,0 +1,14 @@
+# SQLite DataSource
+
+db = datasource({ type: "sqlite", url: "sqlite:///:memory:" })
+db.connect()
+
+db.request({ sql: "CREATE TABLE users (id INT, name TEXT)" })
+
+rows = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+db.send_table({ table: rows, mode: "append", table_name: "users" })
+
+result = db.get_table({ sql: "SELECT * FROM users" })
+print("строк:", len(result))
+
+db.disconnect()

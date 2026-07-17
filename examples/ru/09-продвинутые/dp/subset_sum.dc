@@ -1,0 +1,43 @@
+# Подмножество с заданной суммой — классический 0/1 DP
+
+fn subset_sum_possible(nums: list[int], target: int) -> bool {
+    """Существует ли подмножество nums с суммой target."""
+    dp = [false for _ in range(target + 1)]
+    dp[0] = true
+
+    for x in nums {
+        for s in range(target, x - 1, -1) {
+            if dp[s - x]: dp[s] = true
+        }
+    }
+    return dp[target]
+}
+
+fn subset_sum_count(nums: list[int], target: int) -> int {
+    """Число подмножеств с суммой target."""
+    dp = [0 for _ in range(target + 1)]
+    dp[0] = 1
+
+    for x in nums {
+        for s in range(target, x - 1, -1) {
+            dp[s] += dp[s - x]
+        }
+    }
+    return dp[target]
+}
+
+fn __main__() {
+    print("=== Subset Sum ===")
+
+    nums = [3, 34, 4, 12, 5, 2]
+    tests = [(9, true), (30, false), (32, true)]
+
+    for t in tests {
+        target, expected = t[0], t[1]
+        got = subset_sum_possible(nums, target)
+        status = if got == expected { "OK" } else { "FAIL" }
+        print("  ${status}: sum=${target} → ${got}, ожид. ${expected}")
+    }
+
+    print("число подмножеств с суммой 9: ${subset_sum_count(nums, 9)}")
+}

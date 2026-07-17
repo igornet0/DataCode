@@ -1,0 +1,73 @@
+# Kruskal's algorithm - minimum spanning tree (MST)
+# Edges: (weight, u, v); verticals 0..n-1
+
+from union_find import UnionFind
+
+fn kruskal_mst(n: int, edges: list[tuple[float, int, int]]) -> tuple[float, list[tuple[int, int, float]]] {
+    """
+    Returns (total MST weight, list of MST edges as (u, v, weight)).
+    """
+    sorted_edges = sort(edges)
+    uf = UnionFind(n)
+    total = 0.0
+    mst = []
+
+    for e in sorted_edges {
+        w, u, v = e[0], e[1], e[2]
+        if uf.union(u, v) {
+            total += w
+            mst.push((u, v, w))
+        }
+    }
+
+    if len(mst) != n - 1 {
+        return (-1.0, [])
+    }
+    return (total, mst)
+}
+
+fn build_sample_graph() -> tuple[int, list[tuple[float, int, int]]] {
+    """
+    Classic example from textbooks (6 vertices).
+    Expected weight MST = 16.
+    """
+    n = 6
+    edges = [
+        (4.0, 0, 1),
+        (8.0, 0, 2),
+        (7.0, 1, 2),
+        (9.0, 1, 3),
+        (10.0, 2, 3),
+        (2.0, 2, 4),
+        (1.0, 3, 4),
+        (6.0, 3, 5),
+        (5.0, 4, 5),
+    ]
+    return (n, edges)
+}
+
+fn __main__() {
+    print("=== Kruskal MST ===")
+
+    n, edges = build_sample_graph()
+    weight, mst = kruskal_mst(n, edges)
+
+    print("Vertexes: ${n}, Edges: ${len(edges)}")
+    print("MST weight: ${weight}")
+    print("MST ribs:")
+    for e in mst {
+        print("  ${e[0]} — ${e[1]}  (w=${e[2]})")
+    }
+
+    # Cycle graph: MST on 3 vertices with triangle
+    n2 = 3
+    edges2 = [(1.0, 0, 1), (2.0, 1, 2), (3.0, 0, 2)]
+    w2, mst2 = kruskal_mst(n2, edges2)
+    print("\nTriangle: weight=${w2}, edges in MST=${len(mst2)} (expected 2, weight=3)")
+
+    # Disconnected graph
+    n3 = 4
+    edges3 = [(1.0, 0, 1), (2.0, 2, 3)]
+    w3, mst3 = kruskal_mst(n3, edges3)
+    print("Disconnected graph: weight=${w3}, MST empty=${len(mst3) == 0} (expected -1 and empty)")
+}

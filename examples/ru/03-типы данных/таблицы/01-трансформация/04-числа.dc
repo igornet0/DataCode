@@ -1,0 +1,42 @@
+# Трансформация: группа «Числа»
+# CSV: data/orders.csv, data/employees.csv
+#
+# Операции UI: round, ceil, floor, abs
+#
+# data.map("Column", fn) — новая таблица с преобразованной колонкой (остальные без изменений).
+# Надёжно с нативами: round, abs, int, …
+# Обёртка fn с вызовом round(x, n) внутри map — пока ненадёжна; см. комментарии ниже.
+
+orders = read(path("data/orders.csv"))
+employees = read(path("data/employees.csv"))
+
+print("=== round — округление ===")
+rounded_tbl = orders.map("Amount", round)
+print("исходное:", orders["Amount"][0], "| round():", rounded_tbl["Amount"][0])
+# round(x, decimals) на колонке — когда стабилизируется map+user-fn:
+#   fn round1(x) { return round(x, 1) }
+#   rounded1_tbl = orders.map("Amount", round1)
+print("| round(1) на ячейке:", round(orders["Amount"][0], 1))
+
+print("\n=== abs — модуль ===")
+abs_tbl = orders.map("Amount", abs)
+print("Amount[2]:", orders["Amount"][2], "→ abs:", abs_tbl["Amount"][2])
+
+print("\n=== ceil / floor — потолок / пол ===")
+
+floor_tbl = orders.map("Amount", floor)
+ceil_tbl = orders.map("Amount", ceil)
+print("floor Amount[0]:", floor_tbl["Amount"][0])
+print("ceil Amount[0]:", ceil_tbl["Amount"][0])
+print("floor(123.456):", pseudo_floor(123.456))
+print("ceil(89.991):", pseudo_ceil(89.991))
+
+print("\n=== применение к колонке Salary ===")
+# Эквивалент round(x / 1000, 1) без вызова round внутри callback:
+fn salary_thousands(x) {
+    return int(x / 100) / 10
+}
+salary_tbl = employees.map("Salary", salary_thousands)
+print("Salary в тысячах:", salary_tbl["Salary"][0])
+
+print("\nDone.")

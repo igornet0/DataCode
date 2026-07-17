@@ -1,0 +1,19 @@
+# Restrict execute sandbox + custom routes
+from websocket import configure, disable_builtin
+
+configure({"execute_policy": "restricted"})
+
+# Optional: disable built-in upload (requires --use-ve on server)
+# disable_builtin("upload_file")
+
+@ws_route("ping")
+fn ping(req) {
+    return {"success": true, "message": "pong"}
+}
+
+@ws_route("version")
+fn version(req) {
+    return {"success": true, "version": "1.0", "app": "ws_app.dc"}
+}
+
+print("WebSocket app configured")

@@ -1,0 +1,69 @@
+# Планирование интервалов с весами — DP O(n log n) или жадный для единичных весов
+
+fn weighted_interval_scheduling(starts: list[int], ends: list[int], weights: list[int]) -> int {
+    """
+    Максимальная сумма весов непересекающихся интервалов [start, end).
+    """
+    n = len(starts)
+    if n != len(ends) or n != len(weights): throw "длины массивов должны совпадать"
+
+    jobs = []
+    for i in range(n) { jobs.push((ends[i], starts[i], weights[i], i)) }
+    jobs = sort(jobs)
+
+    ends_sorted = [jobs[i][0] for i in range(n)]
+
+    # p[i] — последний интервал, не пересекающийся с i
+    p = [-1 for _ in range(n)]
+    for i in range(n) {
+        for j in range(i - 1, -1, -1) {
+            if jobs[j][0] <= jobs[i][1] {
+                p[i] = j
+                break
+            }
+        }
+    }
+
+    dp = [0 for _ in range(n)]
+    for i in range(n) {
+        w = jobs[i][2]
+        take = w
+        if p[i] >= 0: take += dp[p[i]]
+        skip = 0 if i == 0 else dp[i - 1]
+        dp[i] = max(take, skip)
+    }
+    return dp[n - 1] if n > 0 else 0
+}
+
+fn max_non_overlapping_count(starts: list[int], ends: list[int]) -> int {
+    """Жадный подсчёт числа интервалов (веса = 1)."""
+    items = []
+    for i in range(len(starts)) { items.push((ends[i], starts[i])) }
+    items = sort(items)
+    count = 0
+    last_end = -1000000000
+    for item in items {
+        if item[1] >= last_end {
+            count += 1
+            last_end = item[0]
+        }
+    }
+    return count
+}
+
+fn __main__() {
+    print("=== Interval Scheduling ===")
+
+    starts = [1, 2, 3, 4]
+    ends = [3, 5, 6, 7]
+    weights = [5, 6, 5, 4]
+
+    best = weighted_interval_scheduling(starts, ends, weights)
+    count = max_non_overlapping_count(starts, ends)
+
+    print("макс. вес: ${best}")
+    print("макс. число интервалов: ${count} (ожид. 2)")
+
+    status = if count == 2 { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

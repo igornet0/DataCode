@@ -1,0 +1,45 @@
+# Трансформация: группа «Строки»
+# CSV: data/duplicates.csv, data/employees.csv
+#
+# Операции UI: distinct, sort, rowNumber
+
+dup = read(path("data/duplicates.csv"))
+employees = read(path("data/employees.csv"))
+
+print("=== sort — сортировка ===")
+# table_sort(table, column, ascending?)
+# table.sort(column, ascending?)
+by_id = table_sort(dup, "ID", true)
+print("sort ID asc:", by_id["ID"])
+
+by_age_desc = table_sort(employees, "Age", false)
+print("sort Age desc, первый:", by_age_desc["Name"][0], by_age_desc["Age"][0])
+
+# Многоуровневая сортировка (sorts: [{column, ascending}, ...]) — отдельной функции нет.
+# Планируемый синтаксис:
+#   sorted = table_sort_multi(employees, [{column: "Department", ascending: true}, {column: "Age", ascending: false}])
+
+print("\n=== rowNumber — нумерация строк ===")
+numbered = table_row_number(employees, "RowNumber", 1)
+print("RowNumber[0]:", numbered["RowNumber"][0])
+print("RowNumber[2]:", numbered["RowNumber"][2])
+
+# Метод-форма:
+numbered2 = employees.row_number("Num", 100)
+print("Num[0]:", numbered2["Num"][0])
+
+print("\n=== distinct — удалить дубликаты строк ===")
+print("дубликаты (исходно):", len(dup), "строк")
+
+ids = dup["ID"]
+unique_ids = unique(ids)
+print("unique(ID) как массив:", unique_ids)
+
+distinct_rows = table_distinct(dup, ["ID", "Category"])
+print("distinct по ID+Category:", len(distinct_rows), "строк")
+
+# Метод-форма и режим по всей строке (без columns):
+distinct_all = dup.distinct()
+print("distinct по всей строке:", len(distinct_all), "строк")
+
+print("\nDone.")

@@ -1,0 +1,42 @@
+# Линейный поиск — O(n)
+
+fn linear_search(arr: list[int], target: int) -> int {
+    """
+    Возвращает индекс первого вхождения target или -1.
+    """
+    for i in range(len(arr)) {
+        if arr[i] == target: return i
+    }
+    return -1
+}
+
+fn linear_search_all(arr: list[int], target: int) -> list[int] {
+    """Все индексы, где arr[i] == target."""
+    result = []
+    for i in range(len(arr)) {
+        if arr[i] == target: result.push(i)
+    }
+    return result
+}
+
+fn __main__() {
+    print("=== Linear Search ===")
+
+    data = [4, 2, 7, 2, 9, 2, 1]
+    tests = [
+        (7, 2),
+        (2, 1),
+        (1, 6),
+        (99, -1),
+    ]
+
+    print("Массив: ${data}")
+    for t in tests {
+        target, expected = t[0], t[1]
+        got = linear_search(data, target)
+        status = if got == expected { "OK" } else { "FAIL" }
+        print("  ${status}: search(${target}) = ${got}, ожид. ${expected}")
+    }
+
+    print("Все вхождения 2: ${linear_search_all(data, 2)} (ожид. [1, 3, 5])")
+}

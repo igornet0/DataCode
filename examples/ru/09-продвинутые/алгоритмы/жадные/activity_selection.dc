@@ -1,0 +1,42 @@
+# Жадный выбор интервалов (Activity Selection) — O(n log n)
+
+fn activity_selection(starts: list[int], ends: list[int]) -> list[int] {
+    """
+    Максимальное число непересекающихся интервалов [start, end).
+    Возвращает индексы выбранных активностей.
+    """
+    n = len(starts)
+    if n != len(ends): throw "starts и ends должны быть одинаковой длины"
+
+    items = []
+    for i in range(n) { items.push((ends[i], starts[i], i)) }
+    items = sort(items)
+
+    chosen = []
+    last_end = -1000000000
+
+    for item in items {
+        end_t, start_t, idx = item[0], item[1], item[2]
+        if start_t >= last_end {
+            chosen.push(idx)
+            last_end = end_t
+        }
+    }
+    return chosen
+}
+
+fn __main__() {
+    print("=== Activity Selection ===")
+
+    starts = [1, 3, 0, 5, 8, 5]
+    ends = [2, 4, 6, 7, 9, 9]
+    chosen = activity_selection(starts, ends)
+
+    print("starts: ${starts}")
+    print("ends:   ${ends}")
+    print("выбраны индексы: ${chosen}")
+
+    expected = [0, 1, 3, 4]
+    status = if chosen == expected { "OK" } else { "FAIL" }
+    print("Тест: ${status} (ожид. ${expected}, макс. 4 интервала)")
+}

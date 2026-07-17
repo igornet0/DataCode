@@ -1,0 +1,98 @@
+# Strongly connected components (Kosaraju algorithm: two DFS passes)
+# Directed graph: graph[u] = [v, ...]
+
+fn dfs_fill_order(graph: dict[int, list[int]], node: int, visited: list[int], order: list[int]) -> tuple[list[int], list[int]] {
+    visited = push(visited, node)
+    for nxt in graph.get(node, []) {
+        if !nxt in visited {
+            res = dfs_fill_order(graph, nxt, visited, order)
+            visited = res[0]
+            order = res[1]
+        }
+    }
+    order = push(order, node)
+    return [visited, order]
+}
+
+fn dfs_collect(graph: dict[int, list[int]], node: int, visited: list[int], component: list[int]) -> tuple[list[int], list[int]] {
+    visited = push(visited, node)
+    component = push(component, node)
+    for nxt in graph.get(node, []) {
+        if !nxt in visited {
+            res = dfs_collect(graph, nxt, visited, component)
+            visited = res[0]
+            component = res[1]
+        }
+    }
+    return [visited, component]
+}
+
+fn reverse_graph(graph: dict[int, list[int]]) -> dict[int, list[int]] {
+    rev = {}
+    for v in graph.keys { rev[v] = [] }
+    for u in graph.keys {
+        for v in graph[u] {
+            rev[v].push(u)
+        }
+    }
+    return rev
+}
+
+fn kosaraju_scc(graph: dict[int, list[int]]) -> list[list[int]] {
+    visited = []
+    order = []
+
+    for v in graph.keys {
+         if !v in visited {
+            res = dfs_fill_order(graph, v, visited, order)
+            visited = res[0]
+            order = res[1]
+        }
+    }
+
+    rev = reverse_graph(graph)
+    visited = []
+    sccs = []
+
+    for v in reverse(order) {
+        if !v in visited {
+            comp = []
+            res = dfs_collect(rev, v, visited, comp)
+            visited = res[0]
+            comp = res[1]
+            sccs.push(sort(comp))
+        }
+    }
+    return sort(sccs)
+}
+
+fn normalize_sccs(sccs: list[list[int]]) -> list[list[int]] {
+    result = []
+    for comp in sccs { result.push(sort(comp)) }
+    return sort(result)
+}
+
+fn __main__() {
+    print("=== Strongly Connected Components (Kosaraju) ===")
+
+    graph = {
+        0: [1],
+        1: [2],
+        2: [0, 3],
+        3: [4],
+        4: [5],
+        5: [3],
+    }
+
+    sccs = kosaraju_scc(graph)
+    normalized = normalize_sccs(sccs)
+    expected = [[0, 1, 2], [3, 4, 5]]
+
+    print("SCC: ${normalized}")
+    status = if normalized == expected { "OK" } else { "FAIL" }
+    print("Test: ${status} (expected ${expected})")
+
+    dag = {0: [1], 1: [2], 2: []}
+    sccs2 = normalize_sccs(kosaraju_scc(dag))
+    print("\nDAG 0→1→2: ${sccs2} (expected [[0], [1], [2]])")
+}

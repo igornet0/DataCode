@@ -1,0 +1,27 @@
+# Transformation: Dates group
+# CSV: data/orders.csv, data/employees.csv
+#
+# UI operation: extractDatePart(column, part, targetColumn)
+
+orders = read(path("data/orders.csv"))
+employees = read(path("data/employees.csv"))
+
+print("=== extractDatePart — extract date part ===")
+# First cast column to date(), then read .year / .month / .day / ...
+orders_with_dates = table_map(orders, "OrderDate", date)
+print("OrderDate[0]:", orders_with_dates["OrderDate"][0])
+print("year:", orders_with_dates["OrderDate"][0].year, "| month:", orders_with_dates["OrderDate"][0].month, "| day:", orders_with_dates["OrderDate"][0].day)
+print("hour:", orders_with_dates["OrderDate"][0].hour, "| minute:", orders_with_dates["OrderDate"][0].minute)
+
+years = array(map(orders_with_dates["OrderDate"], fn(d) => d.year))
+months = array(map(orders_with_dates["OrderDate"], fn(d) => d.month))
+with_year = table_add_column(orders_with_dates, "OrderYear", years)
+with_month = table_add_column(with_year, "OrderMonth", months)
+print("new columns:", with_month.columns)
+print("OrderYear[0]:", with_month["OrderYear"][0])
+
+# For SignedUp (calendar date without time in CSV):
+employees_with_dates = table_map(employees, "SignedUp", date)
+print("SignedUp year:", employees_with_dates["SignedUp"][0].year)
+
+print("\nDone.")

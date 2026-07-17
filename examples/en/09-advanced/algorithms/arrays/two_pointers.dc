@@ -1,0 +1,79 @@
+# Two pointers - classic problems on a sorted array
+
+fn two_sum_sorted(arr: list[int], target: int) -> Optional[tuple[int, int]] {
+    """
+    Find a pair of indices (i, j), i < j, arr[i] + arr[j] == target.
+    The array must be sorted in ascending order.
+    """
+    lo = 0
+    hi = len(arr) - 1
+
+    while lo < hi {
+        s = arr[lo] + arr[hi]
+        if s == target: return (lo, hi)
+        if s < target {
+            lo += 1
+        } else {
+            hi -= 1
+        }
+    }
+    return null
+}
+
+fn remove_duplicates_sorted(arr: list[int]) -> list[int] {
+    """Remove duplicates with in-place style - return a new unique list."""
+    if len(arr) == 0: return []
+    result = [arr[0]]
+    for i in range(1, len(arr)) {
+        if arr[i] != result[-1]: result.push(arr[i])
+    }
+    return result
+}
+
+fn is_palindrome(s: str) -> bool {
+    """Testing a palindrome using two pointers."""
+    lo = 0
+    hi = len(s) - 1
+    while lo < hi {
+        if s[lo] != s[hi]: return false
+        lo += 1
+        hi -= 1
+    }
+    return true
+}
+
+fn container_with_most_water(heights: list[int]) -> int {
+    """Maximum area of the "water container.""""
+    lo = 0
+    hi = len(heights) - 1
+    best = 0
+
+    while lo < hi {
+        h = min(heights[lo], heights[hi])
+        area = h * (hi - lo)
+        best = max(best, area)
+        if heights[lo] < heights[hi] {
+            lo += 1
+        } else {
+            hi -= 1
+        }
+    }
+    return best
+}
+
+fn __main__() {
+    print("=== Two Pointers ===")
+
+    arr = [1, 2, 3, 4, 6, 8, 11]
+    pair = two_sum_sorted(arr, 10)
+    print("two_sum(10): ${pair} (expected (1, 5))")
+
+    uniq = remove_duplicates_sorted([1, 1, 2, 2, 2, 3, 4, 4])
+    print("unique: ${uniq}")
+
+    print("palindrome 'level': ${is_palindrome('level')}")
+    print("max water: ${container_with_most_water([1, 8, 6, 2, 5, 4, 8, 3, 7])} (expected 49)")
+
+    status = if pair == (1, 5) and uniq == [1, 2, 3, 4] { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

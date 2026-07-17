@@ -1,0 +1,41 @@
+# table.push() — добавление строк в таблицу
+
+print("=== 1. Объект → одна строка ===")
+users = table([[1, "Ann"]], ["id", "name"])
+inserted = users.push({id: 2, name: "Bob"})
+print("inserted:", inserted)
+print("rows:", len(users))
+
+print("\n=== 2. Массив объектов (batch) ===")
+users = table([], ["id", "name"])
+n = users.push([
+    {id: 1, name: "Alex"},
+    {id: 2, name: "Kate"},
+    {id: 3, name: "Bob"},
+])
+print("batch inserted:", n)
+print("rows:", len(users))
+
+print("\n=== 3. Массив значений (порядок колонок) ===")
+users = table([], ["id", "name", "age"])
+users.push([10, "John", 25])
+print("row:", users[0])
+
+print("\n=== 4. Другая таблица ===")
+left = table([[1, "a"], [2, "b"]], ["id", "name"])
+right = table([[3, "c"]], ["id", "name"])
+left.push(right)
+print("merged rows:", len(left))
+
+print("\n=== 5. ignore=true — расширение схемы ===")
+base = table([[1, "Ann"]], ["id", "name"])
+extra = table([[2, "Bob", 30]], ["id", "name", "age"])
+base.push(extra, true)
+print("columns:", base["columns"])
+print("age col row0:", base[0]["age"])
+print("age col row1:", base[1]["age"])
+
+print("\n=== 6. Возвращаемое значение ===")
+t = table([], ["id"])
+count = t.push([{id: 1}, {id: 2}])
+print("count == 2:", count == 2)

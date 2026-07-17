@@ -1,0 +1,47 @@
+# Fractional knapsack - greedy in terms of specific value, O(n log n)
+
+fn fractional_knapsack(weights: list[float], values: list[float], capacity: float) -> float {
+    """
+    You can take a fractional part of an object.
+    Returns the maximum total value.
+    """
+    n = len(weights)
+    if n != len(values): throw "weights and values must be the same length"
+
+    items = []
+    for i in range(n) {
+        if weights[i] > 0 {
+            ratio = values[i] / weights[i]
+            items.push((ratio, weights[i], values[i]))
+        }
+    }
+    items = sort(items)
+    reverse(items)
+
+    total_value = 0.0
+    remaining = capacity
+
+    for item in items {
+        ratio, w, v = item[0], item[1], item[2]
+        if remaining <= 0: break
+        take = min(w, remaining)
+        total_value += take * ratio
+        remaining -= take
+    }
+    return total_value
+}
+
+fn __main__() {
+    print("=== Fractional Knapsack ===")
+
+    weights = [10.0, 20.0, 30.0]
+    values = [60.0, 100.0, 120.0]
+    capacity = 50.0
+
+    best = fractional_knapsack(weights, values, capacity)
+    print("weights: ${weights}, values: ${values}, capacity: ${capacity}")
+    print("max value: ${best} (expected 240.0)")
+
+    status = if best == 240.0 { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

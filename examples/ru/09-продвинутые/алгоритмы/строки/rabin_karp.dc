@@ -1,0 +1,49 @@
+# Поиск подстроки Рабина-Карпа — скользящий хеш
+
+fn rabin_karp_search(text: str, pattern: str) -> list[int] {
+    n = len(text)
+    m = len(pattern)
+    if m == 0 or m > n: return []
+
+    base = 256
+    mod = 1000000007
+    pattern_hash = 0
+    window_hash = 0
+    highest = 1
+
+    for i in range(m - 1) { highest = (highest * base) % mod }
+
+    for i in range(m) {
+        pattern_hash = (pattern_hash * base + ord(pattern[i])) % mod
+        window_hash = (window_hash * base + ord(text[i])) % mod
+    }
+
+    result = []
+    for i in range(n - m + 1) {
+        if pattern_hash == window_hash {
+            match = true
+            for j in range(m) {
+                if text[i + j] != pattern[j] { match = false; break }
+            }
+            if match: result.push(i)
+        }
+        if i < n - m {
+            window_hash = (window_hash - ord(text[i]) * highest) % mod
+            window_hash = (window_hash * base + ord(text[i + m])) % mod
+            window_hash = (window_hash + mod) % mod
+        }
+    }
+    return result
+}
+
+fn __main__() {
+    print("=== Rabin-Karp ===")
+
+    text = "ababcababcabc"
+    pattern = "abc"
+    positions = rabin_karp_search(text, pattern)
+
+    print("позиции: ${positions} (ожид. [2, 7, 10])")
+    status = if positions == [2, 7, 10] { "OK" } else { "FAIL" }
+    print("Тест: ${status}")
+}

@@ -1,0 +1,73 @@
+# Huffman coding - optimal prefix codes
+
+import heapq
+
+fn build_huffman_codes(freq: dict[str, int]) -> dict[str, str] {
+    """
+    Based on symbol frequencies, a dictionary is built: symbol → bit string ('0'/'1').
+    """
+    if len(freq) == 0: return {}
+    if len(freq) == 1 {
+        key = freq.keys[0]
+        return {key: "0"}
+    }
+
+    heap = []
+    uid = 0
+    for ch in freq.keys {
+        heapq.heappush(heap, (freq[ch], uid, ch, null, null))
+        uid += 1
+    }
+
+    while len(heap) > 1 {
+        a = heapq.heappop(heap)
+        b = heapq.heappop(heap)
+        merged = (a[0] + b[0], uid, null, a, b)
+        uid += 1
+        heapq.heappush(heap, merged)
+    }
+
+    root = heapq.heappop(heap)
+    codes = {}
+
+    fn walk(node, prefix: str) {
+        ch = node[2]
+        left = node[3]
+        right = node[4]
+        if ch != null and left == null and right == null {
+            codes[ch] = if len(prefix) > 0 { prefix } else { "0" }
+            return
+        }
+        if left != null: walk(left, prefix + "0")
+        if right != null: walk(right, prefix + "1")
+    }
+
+    walk(root, "")
+    return codes
+}
+
+fn huffman_encode(text: str, codes: dict[str, str]) -> str {
+    result = ""
+    for ch in text { result += codes[ch] }
+    return result
+}
+
+fn __main__() {
+    print("=== Huffman Coding ===")
+
+    text = "aabbbcdddd"
+    freq = {}
+    for ch in text {
+        if ch in freq { freq[ch] += 1 } else { freq[ch] = 1 }
+    }
+
+    codes = build_huffman_codes(freq)
+    encoded = huffman_encode(text, codes)
+
+    print("frequencies: ${freq}")
+    print("codes: ${codes}")
+    print("'${text}' → '${encoded}'")
+
+    status = if len(encoded) > 0 and len(codes) == len(freq) { "OK" } else { "FAIL" }
+    print("Test: ${status}")
+}

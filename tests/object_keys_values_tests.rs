@@ -96,3 +96,18 @@ len(o.keys)"#,
         1.0,
     );
 }
+
+#[test]
+fn class_instance_field_named_keys_not_dict_projection() {
+    assert_number(
+        r#"
+            cls Node {
+                public:
+                    keys: list[int]
+                new Node() { this.keys = [1, 2, 3] }
+            }
+            len(Node().keys)
+        "#,
+        3.0,
+    );
+}

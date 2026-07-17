@@ -1,4 +1,5 @@
 use crate::common::error::LangError;
+use crate::common::numeric::IntValue;
 use crate::common::value::Value;
 use crate::lexer::TokenKind;
 /// Константное сворачивание (constant folding) - вычисление константных выражений во время компиляции
@@ -9,6 +10,31 @@ fn finite_ieee_pair(l: &Value, r: &Value) -> Option<(f64, f64)> {
     let x = l.as_ieee_f64()?;
     let y = r.as_ieee_f64()?;
     (x.is_finite() && y.is_finite()).then_some((x, y))
+}
+
+fn value_as_bitwise_int(v: &Value) -> Option<i64> {
+    match v {
+        Value::Int(IntValue::Finite(n)) => Some(*n),
+        Value::Number(n) if n.is_finite() && n.fract() == 0.0 => {
+            Some(crate::common::numeric::f64_trunc_to_i64_clamped(*n))
+        }
+        _ => None,
+    }
+}
+
+fn int_pair(l: &Value, r: &Value) -> Option<(i64, i64)> {
+    Some((value_as_bitwise_int(l)?, value_as_bitwise_int(r)?))
+}
+
+fn shift_amount(b: i64) -> Option<u32> {
+    if b < 0 {
+        return None;
+    }
+    Some((b as u32).min(63))
+}
+
+fn int_result(n: i64) -> Value {
+    Value::Int(IntValue::Finite(n))
 }
 
 fn numeric_string_concat(n: &Value) -> Option<String> {
@@ -141,6 +167,15 @@ pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
                     } else {
                         return Ok(None);
                     })),
+                    TokenKind::Amp => Ok(int_pair(&l, &r).map(|(a, b)| int_result(a & b))),
+                    TokenKind::Pipe => Ok(int_pair(&l, &r).map(|(a, b)| int_result(a | b))),
+                    TokenKind::Caret => Ok(int_pair(&l, &r).map(|(a, b)| int_result(a ^ b))),
+                    TokenKind::LessLess => Ok(int_pair(&l, &r).and_then(|(a, b)| {
+                        shift_amount(b).map(|s| int_result(a.wrapping_shl(s)))
+                    })),
+                    TokenKind::GreaterGreater => Ok(int_pair(&l, &r).and_then(|(a, b)| {
+                        shift_amount(b).map(|s| int_result(a >> s))
+                    })),
                     _ => Ok(None),
                 }
             } else {
@@ -157,6 +192,7 @@ pub fn evaluate_constant_expr(expr: &Expr) -> Result<Option<Value>, LangError> {
                         _ => return Ok(None),
                     })),
                     TokenKind::Bang => Ok(Some(Value::Bool(!r.is_truthy()))),
+                    TokenKind::Tilde => Ok(value_as_bitwise_int(&r).map(|n| int_result(!n))),
                     _ => Ok(None),
                 }
             } else {

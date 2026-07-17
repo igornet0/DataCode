@@ -146,7 +146,7 @@ two()"#,
             from core.config import load_settings, get_settings
             load_settings("prod")
             let s = get_settings()
-            s.env == "prod" and typeof(s) == "object"
+            s.env == "prod" and isinstance(s, object)
             "#,
             Some(vec!["prod".to_string()]),
             None,

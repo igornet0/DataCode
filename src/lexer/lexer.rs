@@ -99,6 +99,11 @@ impl Lexer {
                 let token = self.make_token(TokenKind::Colon);
                 return Ok(token);
             }
+            // Single `?` — ternary. Future `?.` / `??` need peek here before emitting Question.
+            '?' => {
+                let token = self.make_token(TokenKind::Question);
+                return Ok(token);
+            }
             '|' => {
                 let token = self.make_token(TokenKind::Pipe);
                 return Ok(token);
@@ -212,7 +217,9 @@ impl Lexer {
                 return Ok(token);
             }
             '<' => {
-                let kind = if self.match_char('=') {
+                let kind = if self.match_char('<') {
+                    TokenKind::LessLess
+                } else if self.match_char('=') {
                     TokenKind::LessEqual
                 } else {
                     TokenKind::Less
@@ -221,12 +228,26 @@ impl Lexer {
                 return Ok(token);
             }
             '>' => {
-                let kind = if self.match_char('=') {
+                let kind = if self.match_char('>') {
+                    TokenKind::GreaterGreater
+                } else if self.match_char('=') {
                     TokenKind::GreaterEqual
                 } else {
                     TokenKind::Greater
                 };
                 let token = self.make_token(kind);
+                return Ok(token);
+            }
+            '&' => {
+                let token = self.make_token(TokenKind::Amp);
+                return Ok(token);
+            }
+            '^' => {
+                let token = self.make_token(TokenKind::Caret);
+                return Ok(token);
+            }
+            '~' => {
+                let token = self.make_token(TokenKind::Tilde);
                 return Ok(token);
             }
             '"' => {
@@ -245,7 +266,16 @@ impl Lexer {
             }
             c if c.is_alphabetic() || c == '_' => {
                 self.current = start;
-                self.identifier()
+                let tok = self.identifier();
+                // Python f-string: `f"..."` / `f'...'` → DataCode `"${...}"` interpolation
+                if tok.lexeme == "f"
+                    && !self.is_at_end()
+                    && (self.peek() == '"' || self.peek() == '\'')
+                {
+                    let delim = self.advance();
+                    return self.f_string(delim);
+                }
+                return Ok(tok);
             }
             _ => {
                 return Err(LangError::LexError {
@@ -312,6 +342,75 @@ impl Lexer {
         Ok(Token::new(TokenKind::String, lexeme, start_line))
     }
 
+    /// Python f-string (`f"..."`): `{expr}` → `${expr}`, `{{` / `}}` → literal braces.
+    fn f_string(&mut self, delimiter: char) -> Result<Token, LangError> {
+        let start_line = self.line;
+        let mut value = String::new();
+
+        while self.peek() != delimiter && !self.is_at_end() {
+            if self.peek() == '\\' {
+                self.advance();
+                if self.is_at_end() {
+                    return Err(LangError::LexError {
+                        message: "Unterminated f-string".to_string(),
+                        line: start_line,
+                        file: self.source_name.clone(),
+                    });
+                }
+                let escaped = self.advance();
+                match escaped {
+                    'n' => value.push('\n'),
+                    't' => value.push('\t'),
+                    'r' => value.push('\r'),
+                    '\\' => value.push('\\'),
+                    '"' => value.push('"'),
+                    '\'' => value.push('\''),
+                    '$' => value.push('\u{E000}'),
+                    _ => {
+                        value.push('\\');
+                        value.push(escaped);
+                    }
+                }
+            } else if self.peek() == '{' {
+                if self.peek_next() == '{' {
+                    self.advance();
+                    self.advance();
+                    value.push('{');
+                } else {
+                    value.push('$');
+                    value.push(self.advance());
+                }
+            } else if self.peek() == '}' {
+                if self.peek_next() == '}' {
+                    self.advance();
+                    self.advance();
+                    value.push('}');
+                } else {
+                    if self.peek() == '\n' {
+                        self.line += 1;
+                    }
+                    value.push(self.advance());
+                }
+            } else {
+                if self.peek() == '\n' {
+                    self.line += 1;
+                }
+                value.push(self.advance());
+            }
+        }
+
+        if self.is_at_end() {
+            return Err(LangError::LexError {
+                message: "Unterminated f-string".to_string(),
+                line: start_line,
+                file: self.source_name.clone(),
+            });
+        }
+        self.advance(); // closing quote
+        let lexeme = format!("{}{}{}", delimiter, value, delimiter);
+        Ok(Token::new(TokenKind::String, lexeme, start_line))
+    }
+
     /// Содержимое между `"""` и `"""`, с теми же escape-последовательностями, что и в `string()`.
     fn triple_quoted_string(&mut self) -> Result<Token, LangError> {
         let start_line = self.line;
@@ -370,19 +469,41 @@ impl Lexer {
         })
     }
 
+    fn scan_decimal_digits(&mut self) {
+        while self.peek().is_ascii_digit() {
+            self.advance();
+        }
+        while self.peek() == '_' && self.peek_next().is_ascii_digit() {
+            self.advance();
+            while self.peek().is_ascii_digit() {
+                self.advance();
+            }
+        }
+    }
+
     fn number(&mut self) -> Token {
         let start_line = self.line;
         let start = self.current;
 
-        while self.peek().is_ascii_digit() {
-            self.advance();
-        }
+        self.scan_decimal_digits();
 
         // Дробная часть
         if self.peek() == '.' && self.peek_next().is_ascii_digit() {
             self.advance(); // Пропускаем точку
-            while self.peek().is_ascii_digit() {
+            self.scan_decimal_digits();
+        }
+
+        // Экспоненциальная часть: 1e-9, 2.5E+10
+        if self.peek() == 'e' || self.peek() == 'E' {
+            let exp_start = self.current;
+            self.advance();
+            if self.peek() == '+' || self.peek() == '-' {
                 self.advance();
+            }
+            if self.peek().is_ascii_digit() {
+                self.scan_decimal_digits();
+            } else {
+                self.current = exp_start;
             }
         }
 
@@ -421,6 +542,8 @@ impl Lexer {
             "true" => TokenKind::True,
             "false" => TokenKind::False,
             "null" => TokenKind::Null,
+            "inf" => TokenKind::Inf,
+            "nan" => TokenKind::Nan,
             "in" => TokenKind::In,
             "or" => TokenKind::Or,
             "and" => TokenKind::And,
@@ -428,7 +551,6 @@ impl Lexer {
             "catch" => TokenKind::Catch,
             "throw" => TokenKind::Throw,
             "finally" => TokenKind::Finally,
-            "cache" => TokenKind::Cache,
             "import" => TokenKind::Import,
             "from" => TokenKind::From,
             "as" => TokenKind::As,
@@ -504,6 +626,7 @@ impl Lexer {
             TokenKind::MinusEqual => "-=".to_string(),
             TokenKind::Arrow => "->".to_string(),
             TokenKind::FatArrow => "=>".to_string(),
+            TokenKind::Question => "?".to_string(),
             TokenKind::StarEqual => "*=".to_string(),
             TokenKind::StarStar => "**".to_string(),
             TokenKind::StarStarEqual => "**=".to_string(),

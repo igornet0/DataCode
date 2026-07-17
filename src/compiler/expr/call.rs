@@ -5,18 +5,35 @@ use crate::compiler::args;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
 use crate::compiler::stmt::class::{CONSTRUCTING_CLASS_GLOBAL_NAME, MODEL_CONFIG_CLASS_LOAD_INDEX};
+use crate::compiler::stmt::function;
 /// Компиляция вызовов функций
 use crate::debug_println;
-use crate::parser::ast::{Arg, Expr};
+use crate::parser::ast::{Arg, BinaryOpKind, Expr, TypePart};
+
+/// Class constructor call: name starts with ASCII uppercase (`Foo`, `Config`). Not `__main__`, `get_marker`, etc.
+fn is_class_style_constructor_name(name: &str) -> bool {
+    name.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_uppercase())
+}
+
+/// PascalCase builtin exports that are [`Value::NativeFunction`] factories, not user classes.
+fn is_builtin_pascal_native_callable(name: &str) -> bool {
+    matches!(
+        name,
+        "Column" | "MetaData" | "DatabaseCluster" | "Config" | "Field"
+    )
+}
+
+/// First type-name component for constructor suffix (matches `param_types_suffix` in class.rs).
+fn type_suffix_from_param_annotation(param_types: &Option<Vec<TypePart>>) -> Option<String> {
+    let parts = param_types.as_ref()?;
+    let first = parts.first()?;
+    Some(first.format_display())
+}
 
 /// Infer argument type from expression for constructor/function overload resolution.
-/// Returns None when type cannot be inferred at compile time (e.g. variable).
-fn infer_arg_type_from_expr(arg: &Arg) -> Option<String> {
-    let expr = match arg {
-        Arg::Positional(e) => e,
-        Arg::Named { value, .. } => value,
-        Arg::UnpackObject(_) => return None,
-    };
+fn infer_arg_type_from_expr(expr: &Expr, ctx: Option<&CompilationContext>) -> Option<String> {
     match expr {
         Expr::Literal { value, .. } => match value {
             Value::Number(n) => {
@@ -33,7 +50,120 @@ fn infer_arg_type_from_expr(arg: &Arg) -> Option<String> {
             Value::Object(_) => Some("object".to_string()),
             _ => None,
         },
+        Expr::Variable { name, .. } => {
+            let fn_idx = ctx?.current_function?;
+            let func = ctx?.functions.get(fn_idx)?;
+            let pos = func.param_names.iter().position(|p| p == name)?;
+            type_suffix_from_param_annotation(func.param_types.get(pos)?)
+        }
+        Expr::InterpolatedString { .. } => Some("str".to_string()),
+        Expr::ArrayLiteral { .. } => Some("array".to_string()),
+        Expr::TupleLiteral { .. } => Some("tuple".to_string()),
         _ => None,
+    }
+}
+
+fn infer_arg_type_from_arg(arg: &Arg, ctx: Option<&CompilationContext>) -> Option<String> {
+    let expr = match arg {
+        Arg::Positional(e) => e,
+        Arg::Named { value, .. } => value,
+        Arg::UnpackObject(_) | Arg::UnpackArray(_) => return None,
+    };
+    infer_arg_type_from_expr(expr, ctx)
+}
+
+/// Collect typed constructor names `{Class}::new_{arity}_{types...}` registered for a class.
+fn typed_constructor_candidates(
+    class_name: &str,
+    arity: usize,
+    function_names: &[String],
+    globals: &std::collections::HashMap<String, usize>,
+) -> Vec<String> {
+    let prefix = format!("{}::new_{}_", class_name, arity);
+    let mut candidates: Vec<String> = function_names
+        .iter()
+        .filter(|n| n.starts_with(&prefix))
+        .cloned()
+        .collect();
+    for key in globals.keys() {
+        if key.starts_with(&prefix) && !candidates.iter().any(|c| c == key) {
+            candidates.push(key.clone());
+        }
+    }
+    candidates.sort();
+    candidates
+}
+
+fn find_typed_constructor_by_inferred_types(
+    class_name: &str,
+    arity: usize,
+    inferred_types: &[String],
+    function_names: &[String],
+    globals: &std::collections::HashMap<String, usize>,
+) -> Option<String> {
+    let candidates = typed_constructor_candidates(class_name, arity, function_names, globals);
+    if candidates.is_empty() {
+        return None;
+    }
+    let prefix = format!("{}::new_{}_", class_name, arity);
+    let combined = inferred_types.join("_");
+    if let Some(exact) = candidates
+        .iter()
+        .find(|c| c.strip_prefix(&prefix).is_some_and(|s| s == combined))
+    {
+        return Some(exact.clone());
+    }
+    if arity == 1 && inferred_types.len() == 1 {
+        let inferred = &inferred_types[0];
+        let matched: Vec<_> = candidates
+            .iter()
+            .filter(|c| {
+                c.strip_prefix(&prefix)
+                    .is_some_and(|suffix| crate::common::constructor_overload::ctor_suffix_matches_inferred(suffix, inferred))
+            })
+            .collect();
+        if matched.len() == 1 {
+            return Some(matched[0].clone());
+        }
+    }
+    None
+}
+
+fn infer_arg_types(call_args: &[Arg], ctx: Option<&CompilationContext>) -> Option<Vec<String>> {
+    call_args
+        .iter()
+        .map(|a| infer_arg_type_from_arg(a, ctx))
+        .collect()
+}
+
+fn runtime_typed_constructor_call(
+    class_name: &str,
+    call_args: &[Arg],
+) -> ResolvedConstructor {
+    ResolvedConstructor {
+        ctor_name: class_name.to_string(),
+        function_index: 0,
+        resolved_args: call_args.to_vec(),
+        via_class_object: true,
+    }
+}
+
+/// When exactly one typed overload exists for this arity, use it (even if base `Class::new_N` is already in globals as a placeholder).
+fn apply_single_typed_constructor_override(
+    class_name: &str,
+    arity: usize,
+    constructor_name: &str,
+    function_names: &[String],
+    globals: &std::collections::HashMap<String, usize>,
+) -> String {
+    if crate::common::constructor_overload::is_typed_constructor(class_name, constructor_name, arity) {
+        return constructor_name.to_string();
+    }
+    let candidates = typed_constructor_candidates(class_name, arity, function_names, globals);
+    if candidates.len() == 1 {
+        candidates[0].clone()
+    } else {
+        constructor_name.to_string()
     }
 }
 
@@ -43,11 +173,15 @@ fn resolve_constructor_name(
     call_args: &[Arg],
     function_names: &[String],
     globals: &std::collections::HashMap<String, usize>,
+    ctx: Option<&CompilationContext>,
 ) -> String {
     let arity = call_args.len();
     let base_name = format!("{}::new_{}", name, arity);
-    // Try to infer types from positional args (must be all inferrable)
-    let types: Option<Vec<String>> = call_args.iter().map(infer_arg_type_from_expr).collect();
+    // Try to infer types from positional args (all must be inferrable: literals or enclosing params).
+    let types: Option<Vec<String>> = call_args
+        .iter()
+        .map(|a| infer_arg_type_from_arg(a, ctx))
+        .collect();
     if let Some(types) = &types {
         if !types.is_empty() {
             let suffix = types.join("_");
@@ -55,9 +189,524 @@ fn resolve_constructor_name(
             if function_names.contains(&typed_name) || globals.contains_key(&typed_name) {
                 return typed_name;
             }
+            if let Some(found) =
+                find_typed_constructor_by_inferred_types(name, arity, types, function_names, globals)
+            {
+                return found;
+            }
+            // Imported class: ctor lives in the module namespace under the typed name.
+            if ctx
+                .map(|c| c.imported_symbols.contains_key(name))
+                .unwrap_or(false)
+            {
+                return typed_name;
+            }
         }
     }
-    base_name
+    if function_names.contains(&base_name) || globals.contains_key(&base_name) {
+        return base_name;
+    }
+    apply_single_typed_constructor_override(name, arity, &base_name, function_names, globals)
+}
+
+/// Resolved class constructor call (arity may differ from syntactic call after default args).
+struct ResolvedConstructor {
+    ctor_name: String,
+    #[allow(dead_code)]
+    function_index: usize,
+    resolved_args: Vec<Arg>,
+    /// Imported class: emit `LoadGlobal(Class) + Call(arity)` so runtime picks `new_N` and default args.
+    via_class_object: bool,
+}
+
+fn constructor_arity_from_name(class_name: &str, ctor_name: &str) -> Option<usize> {
+    let prefix = format!("{}::new_", class_name);
+    let rest = ctor_name.strip_prefix(&prefix)?;
+    let digit_len = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digit_len == 0 {
+        return None;
+    }
+    rest[..digit_len].parse().ok()
+}
+
+fn list_constructor_names(
+    class_name: &str,
+    function_names: &[String],
+    globals: &std::collections::HashMap<String, usize>,
+) -> Vec<String> {
+    let prefix = format!("{}::new_", class_name);
+    let mut names: Vec<String> = function_names
+        .iter()
+        .filter(|n| n.starts_with(&prefix))
+        .cloned()
+        .collect();
+    for key in globals.keys() {
+        if key.starts_with(&prefix) && !names.iter().any(|n| n == key) {
+            names.push(key.clone());
+        }
+    }
+    names.sort();
+    names
+}
+
+fn function_index_for_ctor(ctx: &CompilationContext, ctor_name: &str) -> Option<usize> {
+    ctx.function_names.iter().position(|n| n == ctor_name)
+}
+
+fn ctor_supplies_defaults(func: &crate::bytecode::Function, call_arity: usize) -> bool {
+    let m = func.param_names.len();
+    if m < call_arity {
+        return false;
+    }
+    (call_arity..m).all(|i| {
+        func.default_values
+            .get(i)
+            .and_then(|v| v.as_ref())
+            .is_some()
+    })
+}
+
+/// Resolve `ClassName(...)` to a constructor function, applying default parameter values when needed.
+fn resolve_constructor_call(
+    ctx: &CompilationContext,
+    class_name: &str,
+    call_args: &[Arg],
+    line: usize,
+) -> Result<Option<ResolvedConstructor>, LangError> {
+    let call_arity = call_args.len();
+
+    if is_builtin_pascal_native_callable(class_name) {
+        return Ok(None);
+    }
+
+    let try_resolve = |ctor_name: &str| -> Result<Option<ResolvedConstructor>, LangError> {
+        let Some(function_index) = function_index_for_ctor(ctx, ctor_name) else {
+            return Ok(None);
+        };
+        let func = &ctx.functions[function_index];
+        if call_arity > func.param_names.len() {
+            return Ok(None);
+        }
+        if !ctor_supplies_defaults(func, call_arity)
+            && call_arity != func.param_names.len()
+        {
+            return Ok(None);
+        }
+        let resolved_args = args::resolve_function_args(
+            ctor_name,
+            call_args,
+            Some((function_index, func)),
+            line,
+            ctx.source_name,
+            None,
+            None,
+        )?;
+        Ok(Some(ResolvedConstructor {
+            ctor_name: ctor_name.to_string(),
+            function_index,
+            resolved_args,
+            via_class_object: false,
+        }))
+    };
+
+    let exact_name = resolve_constructor_name(
+        class_name,
+        call_args,
+        ctx.function_names,
+        &ctx.scope.globals,
+        Some(ctx),
+    );
+    if function_index_for_ctor(ctx, &exact_name).is_some() {
+        return try_resolve(&exact_name);
+    }
+
+    // Imported class without local function body: call via class object so runtime resolves
+    // `new_N` (including constructors whose parameters have defaults, e.g. `HashMap()` → `new_1`).
+    if ctx.imported_symbols.contains_key(class_name)
+        && !is_builtin_pascal_native_callable(class_name)
+        && function_index_for_ctor(ctx, &exact_name).is_none()
+    {
+        if let Some(m) = constructor_arity_from_name(class_name, &exact_name) {
+            if call_arity == m {
+                return Ok(Some(ResolvedConstructor {
+                    ctor_name: class_name.to_string(),
+                    function_index: 0,
+                    resolved_args: call_args.to_vec(),
+                    via_class_object: true,
+                }));
+            }
+        }
+    }
+
+    // Pre-reserved global constructor slot (body in merged module at runtime, not in this compiler unit).
+    if let Some(m) = constructor_arity_from_name(class_name, &exact_name) {
+        let typed_overloads =
+            typed_constructor_candidates(class_name, call_arity, ctx.function_names, &ctx.scope.globals);
+        if typed_overloads.len() <= 1
+            && call_arity == m
+            && ctx.scope.globals.contains_key(&exact_name)
+            && !ctx.imported_symbols.contains_key(class_name)
+        {
+            return Ok(Some(ResolvedConstructor {
+                ctor_name: exact_name,
+                function_index: 0,
+                resolved_args: call_args.to_vec(),
+                via_class_object: false,
+            }));
+        }
+    }
+
+    let mut matching: Vec<String> = Vec::new();
+    let mut min_m: Option<usize> = None;
+    for ctor_name in list_constructor_names(class_name, ctx.function_names, &ctx.scope.globals) {
+        let Some(m) = constructor_arity_from_name(class_name, &ctor_name) else {
+            continue;
+        };
+        if m < call_arity {
+            continue;
+        }
+        let Some(function_index) = function_index_for_ctor(ctx, &ctor_name) else {
+            continue;
+        };
+        let func = &ctx.functions[function_index];
+        if !ctor_supplies_defaults(func, call_arity) {
+            continue;
+        }
+        match min_m {
+            None => {
+                min_m = Some(m);
+                matching.push(ctor_name);
+            }
+            Some(best_m) if m < best_m => {
+                min_m = Some(m);
+                matching.clear();
+                matching.push(ctor_name);
+            }
+            Some(best_m) if m == best_m => matching.push(ctor_name),
+            _ => {}
+        }
+    }
+
+    if matching.len() == 1 {
+        return try_resolve(&matching[0]);
+    }
+
+    if matching.len() > 1 {
+        if let Some(types) = infer_arg_types(call_args, Some(ctx)) {
+            if let Some(typed) = find_typed_constructor_by_inferred_types(
+                class_name,
+                call_arity,
+                &types,
+                ctx.function_names,
+                &ctx.scope.globals,
+            ) {
+                return try_resolve(&typed);
+            }
+        }
+        if matching.iter().all(|n| {
+            crate::common::constructor_overload::is_typed_constructor(class_name, n, call_arity)
+        }) {
+            return Ok(Some(runtime_typed_constructor_call(
+                class_name,
+                call_args,
+            )));
+        }
+        return Err(LangError::ParseError {
+            message: format!(
+                "Ambiguous constructor call for class '{}': multiple constructors match {} argument(s)",
+                class_name, call_arity
+            ),
+            line,
+            file: None,
+        });
+    }
+
+    if let Some(resolved) = try_imported_or_none(ctx, class_name, call_args) {
+        return Ok(Some(resolved));
+    }
+
+    Ok(None)
+}
+
+fn try_imported_or_none(
+    ctx: &CompilationContext,
+    class_name: &str,
+    call_args: &[Arg],
+) -> Option<ResolvedConstructor> {
+    if ctx.imported_symbols.contains_key(class_name)
+        && !is_builtin_pascal_native_callable(class_name)
+    {
+        return Some(runtime_typed_constructor_call(class_name, call_args));
+    }
+    None
+}
+
+fn ensure_constructor_global_slot(ctx: &mut CompilationContext, ctor_name: &str) -> usize {
+    if let Some(&idx) = ctx.scope.globals.get(ctor_name) {
+        return idx;
+    }
+    let idx = ctx.scope.globals.len();
+    ctx.scope.globals.insert(ctor_name.to_string(), idx);
+    ctx.chunk
+        .global_names
+        .insert(idx, ctor_name.to_string());
+    idx
+}
+
+fn emit_resolved_constructor_call(
+    ctx: &mut CompilationContext,
+    resolved: &ResolvedConstructor,
+    line: usize,
+) -> Result<(), LangError> {
+    for arg in &resolved.resolved_args {
+        match arg {
+            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
+            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+            Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => expr::compile_expr(ctx, expr)?,
+        }
+    }
+    let arity = resolved.resolved_args.len();
+    if resolved.via_class_object {
+        let class_global_index = ensure_constructor_global_slot(ctx, &resolved.ctor_name);
+        ctx.chunk
+            .global_names
+            .insert(class_global_index, resolved.ctor_name.clone());
+        ctx.chunk
+            .write_with_line(OpCode::LoadGlobal(class_global_index), line);
+    } else if let Some(function_index) = function_index_for_ctor(ctx, &resolved.ctor_name) {
+        let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
+        ctx.chunk
+            .write_with_line(OpCode::Constant(constant_index), line);
+    } else {
+        let global_index = ensure_constructor_global_slot(ctx, &resolved.ctor_name);
+        ctx.chunk
+            .write_with_line(OpCode::LoadGlobal(global_index), line);
+    }
+    ctx.chunk.write_with_line(OpCode::Call(arity), line);
+    Ok(())
+}
+
+/// Emit `: this(...)` delegation to another constructor overload in the same class (no superclass).
+pub fn emit_same_class_delegate(
+    ctx: &mut CompilationContext,
+    class_name: &str,
+    current_ctor_name: &str,
+    class_global_index: usize,
+    delegate_exprs: &[Expr],
+    this_slot: usize,
+    line: usize,
+) -> Result<(), LangError> {
+    let delegate_args: Vec<Arg> = delegate_exprs
+        .iter()
+        .map(|e| Arg::Positional(e.clone()))
+        .collect();
+    let arity = delegate_args.len();
+
+    let (target_ctor, via_class_object) = resolve_same_class_delegate_ctor(
+        class_name,
+        current_ctor_name,
+        &delegate_args,
+        ctx,
+        line,
+    )?;
+
+    if target_ctor == current_ctor_name {
+        return Err(LangError::ParseError {
+            message: format!(
+                "Constructor ': this(...)' in class '{}' cannot delegate to itself ('{}')",
+                class_name, current_ctor_name
+            ),
+            line,
+            file: None,
+        });
+    }
+
+    for arg in &delegate_args {
+        match arg {
+            Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
+            Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+            Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => expr::compile_expr(ctx, expr)?,
+        }
+    }
+
+    if via_class_object {
+        ctx.chunk
+            .global_names
+            .insert(class_global_index, class_name.to_string());
+        ctx.chunk
+            .write_with_line(OpCode::LoadGlobal(class_global_index), line);
+    } else if let Some(function_index) = function_index_for_ctor(ctx, &target_ctor) {
+        let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
+        ctx.chunk
+            .write_with_line(OpCode::Constant(constant_index), line);
+    } else if let Some(&global_index) = ctx.scope.globals.get(&target_ctor) {
+        ctx.chunk
+            .global_names
+            .insert(global_index, target_ctor.clone());
+        ctx.chunk
+            .write_with_line(OpCode::LoadGlobal(global_index), line);
+    } else {
+        return Err(LangError::ParseError {
+            message: format!(
+                "Constructor ': this(...)' in class '{}' could not resolve target '{}'",
+                class_name, target_ctor
+            ),
+            line,
+            file: None,
+        });
+    }
+
+    ctx.chunk.write_with_line(OpCode::Call(arity), line);
+    ctx.chunk
+        .write_with_line(OpCode::StoreLocal(this_slot), line);
+    Ok(())
+}
+
+fn resolve_same_class_delegate_ctor(
+    class_name: &str,
+    current_ctor_name: &str,
+    delegate_args: &[Arg],
+    ctx: &CompilationContext,
+    line: usize,
+) -> Result<(String, bool), LangError> {
+    let arity = delegate_args.len();
+    let mut resolved = resolve_constructor_name(
+        class_name,
+        delegate_args,
+        ctx.function_names,
+        &ctx.scope.globals,
+        Some(ctx),
+    );
+    resolved = apply_single_typed_constructor_override(
+        class_name,
+        arity,
+        &resolved,
+        ctx.function_names,
+        &ctx.scope.globals,
+    );
+
+    if resolved != current_ctor_name
+        && (function_index_for_ctor(ctx, &resolved).is_some()
+            || ctx.scope.globals.contains_key(&resolved))
+    {
+        return Ok((resolved, false));
+    }
+
+    let candidates = typed_constructor_candidates(
+        class_name,
+        arity,
+        ctx.function_names,
+        &ctx.scope.globals,
+    );
+    let others: Vec<&String> = candidates
+        .iter()
+        .filter(|c| *c != current_ctor_name)
+        .collect();
+
+    match others.len() {
+        0 => Err(LangError::ParseError {
+            message: format!(
+                "Constructor ': this(...)' in class '{}' has no other overload with {} argument(s) to delegate to",
+                class_name, arity
+            ),
+            line,
+            file: None,
+        }),
+        1 => Ok((others[0].clone(), false)),
+        _ => {
+            if let Some(types) = infer_arg_types(delegate_args, Some(ctx)) {
+                if let Some(found) = find_typed_constructor_by_inferred_types(
+                    class_name,
+                    arity,
+                    &types,
+                    ctx.function_names,
+                    &ctx.scope.globals,
+                ) {
+                    if found != current_ctor_name {
+                        return Ok((found, false));
+                    }
+                }
+            }
+            Ok((class_name.to_string(), true))
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn resolve_constructor_name_uses_unique_typed_overload_when_arg_type_unknown() {
+        let function_names = vec!["Deque::new_1_int".to_string()];
+        let globals = HashMap::new();
+        let args = vec![Arg::Positional(Expr::Binary {
+            left: Box::new(Expr::Call {
+                name: "len".to_string(),
+                args: vec![Arg::Positional(Expr::Variable {
+                    name: "s".to_string(),
+                    line: 1,
+                })],
+                line: 1,
+            }),
+            op: crate::parser::ast::BinaryOpKind::Builtin(crate::lexer::TokenKind::Plus),
+            right: Box::new(Expr::Literal {
+                value: Value::Number(4.0),
+                line: 1,
+            }),
+            line: 1,
+        })];
+        assert_eq!(
+            resolve_constructor_name("Deque", &args, &function_names, &globals, None),
+            "Deque::new_1_int"
+        );
+    }
+
+    #[test]
+    fn resolve_constructor_name_prefers_inferred_literal_type() {
+        let function_names = vec![
+            "Deque::new_1".to_string(),
+            "Deque::new_1_int".to_string(),
+        ];
+        let globals = HashMap::new();
+        let args = vec![Arg::Positional(Expr::Literal {
+            value: Value::Number(4.0),
+            line: 1,
+        })];
+        assert_eq!(
+            resolve_constructor_name("Deque", &args, &function_names, &globals, None),
+            "Deque::new_1_int"
+        );
+    }
+
+    #[test]
+    fn constructor_arity_from_name_parses_typed_suffix() {
+        assert_eq!(
+            constructor_arity_from_name("HashSet", "HashSet::new_1"),
+            Some(1)
+        );
+        assert_eq!(
+            constructor_arity_from_name("Deque", "Deque::new_1_int"),
+            Some(1)
+        );
+    }
+
+    fn resolve_constructor_name_keeps_base_when_multiple_typed_overloads() {
+        let function_names = vec![
+            "Foo::new_1_int".to_string(),
+            "Foo::new_1_str".to_string(),
+        ];
+        let globals = HashMap::new();
+        let args = vec![Arg::Positional(Expr::Variable {
+            name: "x".to_string(),
+            line: 1,
+        })];
+        assert_eq!(
+            resolve_constructor_name("Foo", &args, &function_names, &globals, None),
+            "Foo::new_1"
+        );
+    }
 }
 
 /// True if class name is "Settings" or has Settings as an ancestor (used for 1-arg call expansion).
@@ -83,6 +732,40 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
     {
         *ctx.current_line = *line;
 
+        if name.starts_with('@') {
+            return Err(LangError::ParseError {
+                message: format!(
+                    "Special methods cannot be called directly (got `{}()`); they are invoked by operators and builtins",
+                    name
+                ),
+                line: *line,
+                file: ctx.source_name.map(|s| s.to_string()),
+            });
+        }
+
+        if name == "abs" && call_args.len() == 1 {
+            if let Arg::Positional(arg_expr) = &call_args[0] {
+                if let Expr::Binary {
+                    left,
+                    op: BinaryOpKind::Builtin(crate::lexer::TokenKind::Minus),
+                    right: sub_right,
+                    ..
+                } = arg_expr
+                {
+                    expr::compile_expr(ctx, left)?;
+                    expr::compile_expr(ctx, sub_right)?;
+                    ctx.chunk.write_with_line(OpCode::Sub, *line);
+                    ctx.chunk.write_with_line(OpCode::AbsI32, *line);
+                    return Ok(());
+                }
+                if crate::compiler::expr::integral_peephole::expr_may_be_integral(arg_expr) {
+                    expr::compile_expr(ctx, arg_expr)?;
+                    ctx.chunk.write_with_line(OpCode::AbsI32, *line);
+                    return Ok(());
+                }
+            }
+        }
+
         // array(map(labels, fn(x) => one_hot(x, K)[0])) → onehots(tensor(labels), K); requires `onehots` in scope (injected import).
         if name == "array" && call_args.len() == 1 {
             if let Some((labels_expr, k_expr)) =
@@ -107,23 +790,69 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             }
         }
 
-        // Проверяем, начинается ли имя с маленькой буквы
-        // Функции, начинающиеся с маленькой буквы, не могут быть конструкторами классов
-        let is_lowercase = name
-            .chars()
-            .next()
-            .map(|c| c.is_lowercase())
-            .unwrap_or(false);
+        // Constructor resolution only for PascalCase names (`Foo()`). `__main__`, `get_marker`, `_private` are functions.
+        let is_class_style_ctor = is_class_style_constructor_name(name);
 
-        if is_lowercase {
-            // Это обычная функция (нативная или пользовательская) - обрабатываем как обычный вызов
-            debug_println!("[DEBUG compile_call] Функция '{}' начинается с маленькой буквы, обрабатываем как обычную функцию", name);
-            // Пропускаем все проверки конструктора и переходим к обработке обычной функции
+        if !is_class_style_ctor {
+            // Обычная функция (нативная или пользовательская) — не конструктор класса
+            debug_println!(
+                "[DEBUG compile_call] Функция '{}' не PascalCase-конструктор, обрабатываем как обычный вызов",
+                name
+            );
+        } else if name == "ValueError" {
+            let resolved_args = args::resolve_function_args(
+                name,
+                call_args,
+                None,
+                *line,
+                ctx.source_name,
+                ctx.imported_symbols.get(name).map(|s| s.as_str()),
+                None,
+            )?;
+            for arg in &resolved_args {
+                match arg {
+                    Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
+                    Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
+                    Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => expr::compile_expr(ctx, expr)?,
+                }
+            }
+            let ctor_name = format!("ValueError::new_{}", resolved_args.len());
+            let global_index = ensure_constructor_global_slot(ctx, &ctor_name);
+            ctx.chunk
+                .global_names
+                .insert(global_index, ctor_name.clone());
+            ctx.chunk
+                .write_with_line(OpCode::LoadGlobal(global_index), *line);
+            ctx.chunk
+                .write_with_line(OpCode::Call(resolved_args.len()), *line);
+            return Ok(());
         } else {
             // Имя начинается с заглавной буквы - это может быть конструктор класса
+            let skip_default_ctor_resolve = name == "Settings"
+                || is_in_settings_chain(name, ctx.class_superclass)
+                || ctx.abstract_classes.contains(name);
+            if !skip_default_ctor_resolve {
+                if let Some(resolved) = resolve_constructor_call(ctx, name, call_args, *line)? {
+                    emit_resolved_constructor_call(ctx, &resolved, *line)?;
+                    return Ok(());
+                }
+            }
+
             // Конструкторы: ClassName::new_<arity> или ClassName::new_<arity>_<type1>_<type2> для overloading by type
-            let constructor_name =
-                resolve_constructor_name(name, call_args, ctx.function_names, &ctx.scope.globals);
+            let mut constructor_name = resolve_constructor_name(
+                name,
+                call_args,
+                ctx.function_names,
+                &ctx.scope.globals,
+                Some(ctx),
+            );
+            constructor_name = apply_single_typed_constructor_override(
+                name,
+                call_args.len(),
+                &constructor_name,
+                ctx.function_names,
+                &ctx.scope.globals,
+            );
             debug_println!(
                 "[DEBUG compile_call] Проверяем вызов '{}' с {} аргументами",
                 name,
@@ -303,7 +1032,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                         match &call_args[0] {
                             Arg::Positional(e) => expr::compile_expr(ctx, e)?,
                             Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                            Arg::UnpackObject(e) => expr::compile_expr(ctx, e)?,
+                            Arg::UnpackObject(e) | Arg::UnpackArray(e) => expr::compile_expr(ctx, e)?,
                         }
                         let req_const = ctx.chunk.add_constant(required_keys_value);
                         ctx.chunk
@@ -346,7 +1075,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                             debug_println!("[DEBUG compile_call] Компилируем именованный аргумент {} из {} (function_names)", i + 1, arg_count);
                             expr::compile_expr(ctx, value)?;
                         }
-                        Arg::UnpackObject(expr) => {
+                        Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                             debug_println!("[DEBUG compile_call] Компилируем ** аргумент {} из {} (function_names)", i + 1, arg_count);
                             expr::compile_expr(ctx, expr)?;
                         }
@@ -424,7 +1153,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                         match &call_args[0] {
                             Arg::Positional(e) => expr::compile_expr(ctx, e)?,
                             Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                            Arg::UnpackObject(e) => expr::compile_expr(ctx, e)?,
+                            Arg::UnpackObject(e) | Arg::UnpackArray(e) => expr::compile_expr(ctx, e)?,
                         }
                         let req_const = ctx.chunk.add_constant(required_keys_value);
                         ctx.chunk
@@ -468,7 +1197,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                             debug_println!("[DEBUG compile_call] Компилируем именованный аргумент {} из {} (globals)", i + 1, arg_count);
                             expr::compile_expr(ctx, value)?;
                         }
-                        Arg::UnpackObject(expr) => {
+                        Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                             debug_println!(
                                 "[DEBUG compile_call] Компилируем ** аргумент {} из {} (globals)",
                                 i + 1,
@@ -512,7 +1241,10 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             // Не входим сюда для обычной функции с заглавной буквы (например Base) — только для классов.
             let has_constructor = ctx.scope.globals.contains_key(&constructor_name)
                 || ctx.function_names.iter().any(|n| n == &constructor_name);
-            if ctx.scope.globals.contains_key(name) && has_constructor {
+            if ctx.scope.globals.contains_key(name)
+                && has_constructor
+                && !is_builtin_pascal_native_callable(name)
+            {
                 debug_println!("[DEBUG compile_call] Класс '{}' найден в globals, генерируем код для проверки конструктора во время выполнения", name);
                 let arg_count = call_args.len();
                 debug_println!("[DEBUG compile_call] Сохранено количество аргументов: {} для конструктора '{}' (класс в globals)", arg_count, constructor_name);
@@ -545,7 +1277,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                             debug_println!("[DEBUG compile_call] Компилируем именованный аргумент {} из {} (класс в globals)", i + 1, arg_count);
                             expr::compile_expr(ctx, value)?;
                         }
-                        Arg::UnpackObject(expr) => {
+                        Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                             debug_println!("[DEBUG compile_call] Компилируем ** аргумент {} из {} (класс в globals)", i + 1, arg_count);
                             expr::compile_expr(ctx, expr)?;
                         }
@@ -677,7 +1409,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                             );
                             expr::compile_expr(ctx, value)?;
                         }
-                        Arg::UnpackObject(expr) => {
+                        Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                             debug_println!(
                                 "[DEBUG compile_call] Компилируем ** аргумент {} из {}",
                                 i + 1,
@@ -768,10 +1500,10 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                     "plot" | "settings_env" | "uuid" | "database_engine" | "system"
                 )
             }
-            // Column, MetaData from database_engine are NativeFunctions, not classes.
-            // When re-exported via core.database.base, treat as direct call, not constructor.
+            // Builtin PascalCase natives (database_engine, settings_env) are not class constructors.
+            // When re-exported from file modules, treat as direct call, not constructor.
             fn is_native_callable_uppercase(name: &str) -> bool {
-                matches!(name, "Column" | "MetaData")
+                is_builtin_pascal_native_callable(name)
             }
             if name
                 .chars()
@@ -828,7 +1560,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                     match arg {
                         Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                         Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                        Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
+                        Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => expr::compile_expr(ctx, expr)?,
                     }
                 }
                 ctx.chunk
@@ -841,10 +1573,10 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         }
 
         // If constructor not found by arity but we have named args: resolve via class_constructor (extends_table field-based constructor)
-        if !is_lowercase {
+        if is_class_style_ctor {
             let has_named = call_args
                 .iter()
-                .any(|a| matches!(a, Arg::Named { .. } | Arg::UnpackObject(_)));
+                .any(|a| matches!(a, Arg::Named { .. } | Arg::UnpackObject(_) | Arg::UnpackArray(_) | Arg::UnpackArray(_)));
             if has_named {
                 let ctor_info = ctx
                     .class_constructor
@@ -867,7 +1599,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                         match arg {
                             Arg::Positional(expr) => expr::compile_expr(ctx, expr)?,
                             Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                            Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
+                            Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => expr::compile_expr(ctx, expr)?,
                         }
                     }
                     if let Some(&global_index) = ctx.scope.globals.get(&ctor_name) {
@@ -891,30 +1623,29 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         // Обработка обычной функции (для функций, начинающихся с маленькой буквы, или если конструктор не найден)
         // Находим функцию для получения информации о параметрах. Сначала проверяем function_names,
         // чтобы пользовательские функции с default-параметрами получали подстановку аргументов.
-        let function_info =
-            if let Some(function_index) = ctx.function_names.iter().position(|n| n == name) {
+        let function_info = if let Some(info) = function::user_function_info_for_call(ctx, name) {
+            debug_println!(
+                "[DEBUG compile_call] Найдена функция '{}' с индексом {}",
+                name,
+                info.0
+            );
+            Some(info)
+        } else if !is_class_style_ctor && ctx.scope.globals.contains_key(name) {
+            // Builtin — arity разрешается во время выполнения
+            None
+        } else {
+            if is_class_style_ctor {
                 debug_println!(
-                    "[DEBUG compile_call] Найдена функция '{}' с индексом {}",
-                    name,
-                    function_index
+                    "[DEBUG compile_call] WARNING: Функция '{}' не найдена в function_names",
+                    name
                 );
-                Some((function_index, &ctx.functions[function_index]))
-            } else if is_lowercase && ctx.scope.globals.contains_key(name) {
-                // Builtin — arity разрешается во время выполнения
-                None
-            } else {
-                if !is_lowercase {
-                    debug_println!(
-                        "[DEBUG compile_call] WARNING: Функция '{}' не найдена в function_names",
-                        name
-                    );
-                    debug_println!(
-                        "[DEBUG compile_call] Доступные функции: {:?}",
-                        ctx.function_names.iter().take(20).collect::<Vec<_>>()
-                    );
-                }
-                None
-            };
+                debug_println!(
+                    "[DEBUG compile_call] Доступные функции: {:?}",
+                    ctx.function_names.iter().take(20).collect::<Vec<_>>()
+                );
+            }
+            None
+        };
 
         // Разрешаем аргументы: именованные -> позиционные, применяем значения по умолчанию
         let imported_from = ctx.imported_symbols.get(name).map(|s| s.as_str());
@@ -931,21 +1662,40 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         // Специальная обработка для isinstance: преобразуем идентификаторы типов в строки
         let processed_args = if name == "isinstance" && resolved_args.len() >= 2 {
             let mut new_args = resolved_args.clone();
-            if let Arg::Positional(Expr::Variable {
-                name: type_name, ..
-            }) = &resolved_args[1]
-            {
-                let type_names = vec![
-                    "int", "str", "bool", "array", "null", "num", "float", "table", "Table",
-                ];
-                if type_names.contains(&type_name.as_str()) {
+            let type_arg_line = match &resolved_args[1] {
+                Arg::Positional(e) => e.line(),
+                Arg::Named { value, .. } => value.line(),
+                Arg::UnpackObject(e) | Arg::UnpackArray(e) => e.line(),
+            };
+            let type_name_opt = match &resolved_args[1] {
+                Arg::Positional(Expr::Variable { name, .. }) => Some(name.as_str()),
+                _ => None,
+            };
+            if let Some(type_name) = type_name_opt {
+                let is_type_literal = matches!(
+                    type_name,
+                    "int" | "integer" | "str" | "string" | "bool" | "boolean" | "array" | "list"
+                        | "bytes" | "null" | "none" | "num" | "number" | "float" | "table"
+                        | "tuple" | "set" | "object" | "dict" | "dictionary" | "path" | "uuid"
+                        | "function" | "date" | "money" | "duration" | "enumerate"
+                        | "iterable" | "generator" | "ellipsis" | "column" | "window" | "image"
+                        | "figure" | "axis" | "plugin_opaque"
+                ) || type_name == "Table"
+                    || ctx.scope.globals.get(type_name).is_some_and(|&idx| {
+                        idx < crate::vm::globals::BUILTIN_GLOBAL_COUNT
+                            && matches!(
+                                crate::vm::globals::builtin_global_name(idx),
+                                Some(
+                                    "int" | "float" | "bool" | "str" | "array" | "set" | "tuple"
+                                        | "table" | "Table" | "path" | "date" | "money"
+                                        | "duration" | "typeof" | "enum"
+                                )
+                            )
+                    });
+                if is_type_literal {
                     new_args[1] = Arg::Positional(Expr::Literal {
-                        value: Value::String(type_name.clone()),
-                        line: match &resolved_args[1] {
-                            Arg::Positional(e) => e.line(),
-                            Arg::Named { value, .. } => value.line(),
-                            Arg::UnpackObject(e) => e.line(),
-                        },
+                        value: Value::String(type_name.to_string()),
+                        line: type_arg_line,
                     });
                 }
             }
@@ -978,6 +1728,81 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         let is_single_unpack =
             processed_args.len() == 1 && matches!(&processed_args[0], Arg::UnpackObject(_));
 
+        let user_has_variadic = function::user_function_info_for_call(ctx, name)
+            .map(|(_, f)| f.variadic_pos_index.is_some() || f.variadic_kw_index.is_some())
+            .unwrap_or(false);
+        let needs_variadic_opcode = crate::compiler::natives::call_needs_variadic_opcode(&processed_args)
+            || user_has_variadic;
+
+        if needs_variadic_opcode {
+            let mut pos_exprs: Vec<&Expr> = Vec::new();
+            let mut star_exprs: Vec<&Expr> = Vec::new();
+            let mut named_pairs: Vec<(&String, &Expr)> = Vec::new();
+            let mut starstar_exprs: Vec<&Expr> = Vec::new();
+            for arg in &processed_args {
+                match arg {
+                    Arg::Positional(expr) => pos_exprs.push(expr),
+                    Arg::UnpackArray(expr) => star_exprs.push(expr),
+                    Arg::Named { name, value } => named_pairs.push((name, value)),
+                    Arg::UnpackObject(expr) => starstar_exprs.push(expr),
+                }
+            }
+            let n_pos = pos_exprs.len();
+            let n_star = star_exprs.len();
+            let n_named = named_pairs.len();
+            let n_starstar = starstar_exprs.len();
+            // Stack layout (bottom → top): positional, *spread, named (key, val)…, **spread, callee
+            for expr in &pos_exprs {
+                expr::compile_expr(ctx, expr)?;
+            }
+            for expr in &star_exprs {
+                expr::compile_expr(ctx, expr)?;
+            }
+            for (kw, value) in &named_pairs {
+                let key_idx = ctx.chunk.add_constant(Value::String((*kw).clone()));
+                ctx.chunk.write_with_line(OpCode::Constant(key_idx), *line);
+                expr::compile_expr(ctx, value)?;
+            }
+            for expr in &starstar_exprs {
+                expr::compile_expr(ctx, expr)?;
+            }
+            // load callee (same as below)
+            if let Some(local_index) = ctx.scope.resolve_local(name) {
+                ctx.chunk
+                    .write_with_line(OpCode::LoadLocal(local_index), *ctx.current_line);
+            } else if ctx.function_names.iter().any(|n| n == name) {
+                if let Some(&global_index) = ctx.scope.globals.get(name) {
+                    ctx.chunk.global_names.insert(global_index, name.clone());
+                    ctx.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), *ctx.current_line);
+                } else {
+                    let function_index = ctx.function_names.iter().position(|n| n == name).unwrap();
+                    let constant_index = ctx.chunk.add_constant(Value::Function(function_index));
+                    ctx.chunk
+                        .write_with_line(OpCode::Constant(constant_index), *ctx.current_line);
+                }
+            } else if !is_class_style_ctor && ctx.scope.globals.contains_key(name) {
+                let &global_index = ctx.scope.globals.get(name).unwrap();
+                ctx.chunk.global_names.insert(global_index, name.clone());
+                ctx.chunk
+                    .write_with_line(OpCode::LoadGlobal(global_index), *ctx.current_line);
+            } else if let Some(&global_index) = ctx.scope.globals.get(name) {
+                ctx.chunk.global_names.insert(global_index, name.clone());
+                ctx.chunk
+                    .write_with_line(OpCode::LoadGlobal(global_index), *ctx.current_line);
+            } else {
+                return Err(LangError::ParseError {
+                    message: format!("Undefined function: {}", name),
+                    line: *line,
+                    file: None,
+                });
+            }
+            let packed = crate::compiler::natives::pack_call_variadic_operand(
+                n_pos, n_star, n_named, n_starstar,
+            );
+            ctx.chunk
+                .write_with_line(OpCode::CallVariadic(packed), *line);
+        } else {
         // Компилируем аргументы на стек
         for arg in &processed_args {
             match arg {
@@ -987,7 +1812,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                 Arg::Named { value, .. } => {
                     expr::compile_expr(ctx, value)?;
                 }
-                Arg::UnpackObject(expr) => {
+                Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                     expr::compile_expr(ctx, expr)?;
                 }
             }
@@ -1012,8 +1837,8 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                 ctx.chunk
                     .write_with_line(OpCode::Constant(constant_index), *ctx.current_line);
             }
-        } else if is_lowercase && ctx.scope.globals.contains_key(name) {
-            // Для имён с маленькой буквы без пользовательского переопределения — встроенные
+        } else if !is_class_style_ctor && ctx.scope.globals.contains_key(name) {
+            // Для имён не PascalCase без пользовательского переопределения — встроенные
             let &global_index = ctx.scope.globals.get(name).unwrap();
             ctx.chunk.global_names.insert(global_index, name.clone());
             ctx.chunk
@@ -1038,6 +1863,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         } else {
             ctx.chunk
                 .write_with_line(OpCode::Call(processed_args.len()), *line);
+        }
         }
 
         // Если нужно присвоить результат обратно в переменную

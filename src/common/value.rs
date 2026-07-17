@@ -4,7 +4,7 @@ use crate::common::numeric::{self, FloatValue, IntValue};
 use crate::common::object_map::ObjectMap;
 use crate::common::set_map::SetMap;
 use crate::common::table::Table;
-use crate::common::value_host_types::{Axis, DatabaseCluster, DatabaseEngine, Figure, Image, PlotWindowHandle};
+use crate::common::value_host_types::{Archive, Axis, DataSource, DataSourceResponse, DatabaseCluster, DatabaseEngine, Figure, Image, PlotWindowHandle};
 use chrono::{DateTime, Duration, FixedOffset};
 use crate::common::value_store::{ObjectProjectionKind, ValueId};
 use crate::common::TaggedValue;
@@ -29,6 +29,8 @@ pub struct ByteBuffer {
     pub bytes: Rc<Vec<u8>>,
     pub offset: usize,
     pub len: usize,
+    /// When true, `str()` / `print()` show lowercase hex (crypto digests).
+    pub display_hex: bool,
 }
 
 impl ByteBuffer {
@@ -38,7 +40,27 @@ impl ByteBuffer {
             bytes: Rc::new(v),
             offset: 0,
             len,
+            display_hex: false,
         }
+    }
+
+    /// Binary payload with hex display in `str()` / `print()` (sha256, hmac, etc.).
+    pub fn from_vec_hex(v: Vec<u8>) -> Self {
+        let len = v.len();
+        Self {
+            bytes: Rc::new(v),
+            offset: 0,
+            len,
+            display_hex: true,
+        }
+    }
+
+    /// Lowercase hex of bytes in `[offset .. offset + len)`.
+    pub fn hex_string(&self) -> String {
+        self.bytes[self.offset..self.offset + self.len]
+            .iter()
+            .map(|b| format!("{:02x}", b))
+            .collect()
     }
 
     pub fn slice_range(&self, start: usize, end: usize) -> Option<Self> {
@@ -49,6 +71,7 @@ impl ByteBuffer {
             bytes: Rc::clone(&self.bytes),
             offset: self.offset + start,
             len: end - start,
+            display_hex: self.display_hex,
         })
     }
 }
@@ -156,6 +179,9 @@ pub enum Value {
     Axis(Rc<RefCell<Axis>>),
     DatabaseEngine(Rc<RefCell<DatabaseEngine>>),
     DatabaseCluster(Rc<RefCell<DatabaseCluster>>),
+    Archive(Rc<RefCell<Archive>>),
+    DataSource(Rc<RefCell<DataSource>>),
+    DataSourceResponse(Rc<RefCell<DataSourceResponse>>),
     Enumerate {
         data: Rc<RefCell<Vec<Value>>>,
         start: i64,
@@ -431,6 +457,21 @@ pub enum IterableInner {
         index: usize,
         start_generation: u64,
     },
+    /// `for ch in str`: yields each Unicode code point as a single-character string.
+    String {
+        text: String,
+        index: usize,
+    },
+    /// Lazy `range(start, end, step)` — O(1) memory; yields [`Value::Number`] per element.
+    Range {
+        current: i64,
+        end: i64,
+        step: i64,
+    },
+    /// Class instance with `@iter` / `@next` protocol.
+    SpecialInstance {
+        receiver_id: ValueId,
+    },
 }
 
 impl Clone for IterableInner {
@@ -504,6 +545,22 @@ impl Clone for IterableInner {
                 element_ids: Rc::clone(element_ids),
                 index: 0,
                 start_generation: *start_generation,
+            },
+            Self::String { text, .. } => Self::String {
+                text: text.clone(),
+                index: 0,
+            },
+            Self::Range {
+                current,
+                end,
+                step,
+            } => Self::Range {
+                current: *current,
+                end: *end,
+                step: *step,
+            },
+            Self::SpecialInstance { receiver_id } => Self::SpecialInstance {
+                receiver_id: *receiver_id,
             },
         }
     }
@@ -670,6 +727,11 @@ impl std::fmt::Debug for Value {
                 }
                 Value::DatabaseCluster(c) => {
                     f.debug_tuple("DatabaseCluster").field(&c.borrow()).finish()
+                }
+                Value::Archive(a) => f.debug_tuple("Archive").field(&a.borrow()).finish(),
+                Value::DataSource(_) => f.debug_tuple("DataSource").finish_non_exhaustive(),
+                Value::DataSourceResponse(_) => {
+                    f.debug_tuple("DataSourceResponse").finish_non_exhaustive()
                 }
                 Value::Enumerate { data, start } => f
                     .debug_struct("Enumerate")
@@ -1018,6 +1080,9 @@ impl PartialEq for Value {
             (Value::Axis(a), Value::Axis(b)) => Rc::ptr_eq(a, b),
             (Value::DatabaseEngine(a), Value::DatabaseEngine(b)) => Rc::ptr_eq(a, b),
             (Value::DatabaseCluster(a), Value::DatabaseCluster(b)) => Rc::ptr_eq(a, b),
+            (Value::Archive(a), Value::Archive(b)) => Rc::ptr_eq(a, b),
+            (Value::DataSource(a), Value::DataSource(b)) => Rc::ptr_eq(a, b),
+            (Value::DataSourceResponse(a), Value::DataSourceResponse(b)) => Rc::ptr_eq(a, b),
             (Value::Enumerate { data: a, start: sa }, Value::Enumerate { data: b, start: sb }) => {
                 Rc::ptr_eq(a, b) && sa == sb
             }
@@ -1126,6 +1191,9 @@ impl Value {
             Value::Axis(_) => true,
             Value::DatabaseEngine(_) => true,
             Value::DatabaseCluster(c) => !c.borrow().connections.is_empty(),
+            Value::Archive(_) => true,
+            Value::DataSource(_) => true,
+            Value::DataSourceResponse(r) => !r.borrow().body.is_empty(),
             Value::Enumerate { data, .. } => !data.borrow().is_empty(),
             Value::Iterable(_) => true,
             Value::ByteBuffer(b) => b.len > 0,
@@ -1156,6 +1224,7 @@ impl Value {
             Value::ArrayView(av) => {
                 format!("<array view len={}>", av.length)
             }
+            Value::ByteBuffer(b) if b.display_hex => b.hex_string(),
             Value::ByteBuffer(b) => {
                 format!("<bytes len={}>", b.len)
             }
@@ -1241,6 +1310,9 @@ impl Value {
             }
             Value::Set(s) => format!("set(<{} elements>)", s.borrow().len()),
             Value::Object(map_rc) => {
+                if let Some(s) = crate::vm::special_methods::try_instance_string(self) {
+                    return s;
+                }
                 let kind = map_rc.borrow();
                 if let Some(v) = sqenum_member_stored_value_ref(&*kind) {
                     return v.to_string();
@@ -1326,6 +1398,9 @@ impl Value {
                     IterableInner::StreamGenerator { .. } => "stream_generator",
                     IterableInner::ObjectFieldList { .. } => "dict_field_view",
                     IterableInner::Set { .. } => "set_iter",
+                    IterableInner::String { .. } => "str_iter",
+                    IterableInner::Range { .. } => "range",
+                    IterableInner::SpecialInstance { .. } => "special_instance",
                 };
                 format!("<{} object at {:p}>", kind, ptr)
             }
@@ -1339,6 +1414,22 @@ impl Value {
             Value::DatabaseCluster(c) => {
                 let n = c.borrow().connections.len();
                 format!("<database_cluster: {} connections>", n)
+            }
+            Value::Archive(a) => {
+                let arch = a.borrow();
+                format!(
+                    "<archive: {} ({})>",
+                    arch.path.display(),
+                    arch.format.as_str()
+                )
+            }
+            Value::DataSource(ds) => {
+                let d = ds.borrow();
+                format!("<datasource: {}>", d.connector_type())
+            }
+            Value::DataSourceResponse(r) => {
+                let resp = r.borrow();
+                format!("<response: {} {}>", resp.status, resp.url)
             }
             Value::Uuid(hi, lo) => {
                 let hi_b = hi.to_be_bytes();
@@ -1516,6 +1607,9 @@ impl Clone for Value {
             }
             Value::DatabaseEngine(engine) => Value::DatabaseEngine(engine.clone()),
             Value::DatabaseCluster(cluster) => Value::DatabaseCluster(cluster.clone()),
+            Value::Archive(archive) => Value::Archive(archive.clone()),
+            Value::DataSource(ds) => Value::DataSource(ds.clone()),
+            Value::DataSourceResponse(r) => Value::DataSourceResponse(r.clone()),
             Value::Enumerate { data, start } => Value::Enumerate {
                 data: data.clone(),
                 start: *start,
@@ -1537,5 +1631,36 @@ impl Clone for Value {
             Value::Null => Value::Null,
             Value::Ellipsis => Value::Ellipsis,
         }
+    }
+}
+
+#[cfg(test)]
+mod byte_buffer_tests {
+    use super::ByteBuffer;
+
+    #[test]
+    fn hex_string_lowercase() {
+        let b = ByteBuffer::from_vec_hex(vec![0x2c, 0xf2, 0x4d]);
+        assert_eq!(b.hex_string(), "2cf24d");
+    }
+
+    #[test]
+    fn slice_inherits_display_hex() {
+        let b = ByteBuffer::from_vec_hex(vec![1, 2, 3, 4]);
+        let slice = b.slice_range(1, 3).unwrap();
+        assert!(slice.display_hex);
+        assert_eq!(slice.hex_string(), "0203");
+    }
+
+    #[test]
+    fn to_string_summary_without_hex_flag() {
+        let v = super::Value::ByteBuffer(ByteBuffer::from_vec(vec![1, 2]));
+        assert_eq!(v.to_string(), "<bytes len=2>");
+    }
+
+    #[test]
+    fn to_string_hex_with_flag() {
+        let v = super::Value::ByteBuffer(ByteBuffer::from_vec_hex(vec![0xab, 0xcd]));
+        assert_eq!(v.to_string(), "abcd");
     }
 }

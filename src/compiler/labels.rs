@@ -6,6 +6,8 @@ pub struct LabelManager {
     pub label_counter: usize,
     pub labels: std::collections::HashMap<usize, usize>,
     pub pending_jumps: Vec<(usize, usize, bool)>, // (индекс_инструкции, label_id, is_conditional)
+    /// (jump_ip, local_slot, end_label_id) for [`OpCode::JumpIfLocalHeapArrayEmptyLabel`].
+    pub pending_local_heap_empty_jumps: Vec<(usize, usize, usize)>,
     /// (forrange_instruction_index, end_label_id) — патчим end_offset в ForRange при finalize_jumps
     pub pending_for_range: Vec<(usize, usize)>,
 }
@@ -16,6 +18,7 @@ impl LabelManager {
             label_counter: 0,
             labels: std::collections::HashMap::new(),
             pending_jumps: Vec::new(),
+            pending_local_heap_empty_jumps: Vec::new(),
             pending_for_range: Vec::new(),
         }
     }
@@ -59,6 +62,23 @@ impl LabelManager {
         Ok(jump_index)
     }
 
+    pub fn emit_local_heap_array_empty_jump(
+        &mut self,
+        chunk: &mut Chunk,
+        current_line: usize,
+        slot: usize,
+        label_id: usize,
+    ) -> usize {
+        let jump_index = chunk.code.len();
+        chunk.write_with_line(
+            OpCode::JumpIfLocalHeapArrayEmptyLabel(slot, label_id),
+            current_line,
+        );
+        self.pending_local_heap_empty_jumps
+            .push((jump_index, slot, label_id));
+        jump_index
+    }
+
     pub fn emit_loop(
         &mut self,
         chunk: &mut Chunk,
@@ -77,6 +97,10 @@ impl LabelManager {
             OpCode::Jump16(_) | OpCode::JumpIfFalse16(_) => 1,
             OpCode::Jump32(_) | OpCode::JumpIfFalse32(_) => 1,
             OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_) => 2, // Временно считаем как Jump8 до финализации
+            OpCode::JumpIfLocalHeapArrayEmptyLabel(_, _) => 2,
+            OpCode::JumpIfLocalHeapArrayEmpty8(_, _)
+            | OpCode::JumpIfLocalHeapArrayEmpty16(_, _)
+            | OpCode::JumpIfLocalHeapArrayEmpty32(_, _) => 2,
             OpCode::ForRange(_, _, _, _, _) | OpCode::ForRangeNext(_) | OpCode::PopForRange => 1,
             OpCode::CoerceForInIterable(_) | OpCode::ForIterableNext(_) => 1,
 
@@ -86,6 +110,7 @@ impl LabelManager {
             OpCode::LoadGlobal(_) | OpCode::StoreGlobal(_) => 2, // 1 байт opcode + 1 байт индекс
             OpCode::Call(_) => 2,     // 1 байт opcode + 1 байт количество аргументов
             OpCode::CallWithUnpack(_) => 2, // 1 байт opcode + 1 байт количество аргументов (1 для kwargs)
+            OpCode::CallVariadic(_) => 2, // 1 байт opcode + packed u32 operand (stored as usize in chunk)
             OpCode::MakeArray(_) => 2,      // 1 байт opcode + 1 байт размер
             OpCode::MakeTuple(_) => 2,      // 1 байт opcode + 1 байт размер
             OpCode::MakeArrayDynamic => 1, // 1 байт opcode (размер на стеке) 1 байт opcode + 1 байт количество элементов
@@ -255,6 +280,7 @@ impl LabelManager {
                         jumps_to_finalize.push((jump_index, *label_id, true));
                     }
                 }
+                OpCode::JumpIfLocalHeapArrayEmptyLabel(_, _) => {}
                 _ => {}
             }
         }
@@ -337,6 +363,29 @@ impl LabelManager {
             };
 
             chunk.code[*jump_index] = final_opcode;
+        }
+
+        let local_heap_empty = std::mem::take(&mut self.pending_local_heap_empty_jumps);
+        for (jump_index, slot, end_label_id) in local_heap_empty {
+            if jump_index >= chunk.code.len() {
+                continue;
+            }
+            let dst_instruction_index = *self.labels.get(&end_label_id).ok_or_else(|| {
+                LangError::ParseError {
+                    message: format!("Label {} not found", end_label_id),
+                    line: current_line,
+                    file: None,
+                }
+            })?;
+            let offset = (dst_instruction_index as i64 - (jump_index as i64 + 1)) as i32;
+            let final_opcode = if offset >= -128 && offset <= 127 {
+                OpCode::JumpIfLocalHeapArrayEmpty8(slot, offset as i8)
+            } else if offset >= -32768 && offset <= 32767 {
+                OpCode::JumpIfLocalHeapArrayEmpty16(slot, offset as i16)
+            } else {
+                OpCode::JumpIfLocalHeapArrayEmpty32(slot, offset)
+            };
+            chunk.code[jump_index] = final_opcode;
         }
 
         // Патчим ForRange: подставляем end_offset по end_label_id

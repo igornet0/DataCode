@@ -9,6 +9,7 @@ pub mod abi_policy;
 pub mod bytecode;
 pub mod common;
 pub mod compiler;
+pub mod compute;
 pub mod dcmodule;
 pub mod dpm;
 pub mod infra;
@@ -31,6 +32,18 @@ pub mod sqlite_export;
 pub mod system;
 #[path = "lib/uuid/mod.rs"]
 pub mod uuid;
+#[path = "lib/heapq/mod.rs"]
+pub mod heapq;
+#[path = "lib/pathfind/mod.rs"]
+pub mod pathfind;
+#[path = "lib/grid/mod.rs"]
+pub mod grid;
+#[path = "lib/file_io/mod.rs"]
+pub mod file_io;
+#[path = "lib/archive/mod.rs"]
+pub mod archive;
+#[path = "lib/datasource/mod.rs"]
+pub mod datasource;
 #[path = "lib/websocket/mod.rs"]
 pub mod websocket;
 
@@ -42,7 +55,8 @@ pub use common::{error::LangError, value::Value};
 pub use run_api::{
     compile, extract_globals_from_vm, get_main_entry_params, run, run_debug, run_lib_file,
     run_with_base_path, run_with_existing_vm, run_with_options, run_with_vm, run_with_vm_and_path,
-    run_with_vm_with_args, run_with_vm_with_args_and_lib, PreloadContext, RunOptions,
+    run_with_vm_with_args, run_with_vm_with_args_and_lib, run_with_vm_with_policy, PreloadContext,
+    RunOptions,
 };
 pub use vm::PermissionPolicy;
 pub use vm::Vm;

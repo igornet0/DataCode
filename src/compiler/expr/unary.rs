@@ -15,8 +15,21 @@ pub fn compile_unary(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
                 expr::compile_expr(ctx, right)?;
                 ctx.chunk.write_with_line(OpCode::Negate, *line);
             }
+            TokenKind::Tilde => {
+                expr::compile_expr(ctx, right)?;
+                ctx.chunk.write_with_line(OpCode::BitNot, *line);
+            }
             TokenKind::Bang => {
-                // Унарный Bang: !value (логическое отрицание)
+                if crate::compiler::expr::integral_peephole::try_compile_negated_grid_bounds(
+                    ctx, right, *line,
+                )? {
+                    return Ok(());
+                }
+                if crate::compiler::expr::integral_peephole::try_compile_not_in_integral(
+                    ctx, right, *line,
+                )? {
+                    return Ok(());
+                }
                 expr::compile_expr(ctx, right)?;
                 ctx.chunk.write_with_line(OpCode::Not, *line);
             }

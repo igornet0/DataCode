@@ -65,7 +65,7 @@ pub(crate) fn execute_call(
                     r.current_ip,
                     r.function_index_final,
                     r.constructing_class_opt.clone(),
-                    arity,
+                    r.effective_arity,
                     line,
                     stack,
                     frames,

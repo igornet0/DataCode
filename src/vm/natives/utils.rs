@@ -20,7 +20,7 @@ pub fn resolve_global_by_name(name: &str) -> Option<Value> {
         let value_id = vm.resolve_global_to_value_id(idx);
         let value = load_value(value_id, vm.value_store(), vm.heavy_store());
         if let Value::Object(rc) = &value {
-            if rc.borrow().get("__class_name").is_some() {
+            if rc.borrow().str_key_get("__class_name").is_some() {
                 return Some(value);
             }
         }
@@ -103,6 +103,24 @@ pub fn call_user_function(function_index: usize, args: &[Value]) -> Result<Value
         unsafe {
             let vm = &mut *vm_ptr;
             vm.call_function_by_index(function_index, args)
+        }
+    } else {
+        Err(LangError::runtime_error(
+            "Cannot call user function: VM context not available".to_string(),
+            0,
+        ))
+    }
+}
+
+pub fn call_user_function_with_arg_ids(
+    function_index: usize,
+    arg_ids: &[crate::common::value_store::ValueId],
+) -> Result<Value, LangError> {
+    let vm_ptr = current_vm_ptr();
+    if let Some(vm_ptr) = vm_ptr {
+        unsafe {
+            let vm = &mut *vm_ptr;
+            vm.call_function_by_index_with_arg_ids(function_index, arg_ids)
         }
     } else {
         Err(LangError::runtime_error(

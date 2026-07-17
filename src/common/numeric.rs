@@ -319,6 +319,14 @@ pub fn floor_div_i64(a: i64, b: i64) -> i64 {
     q
 }
 
+/// Python-style `%` on `i64` (same remainder as [`divmod_i64`]); `b != 0`.
+#[inline]
+pub fn floor_mod_i64(a: i64, b: i64) -> i64 {
+    debug_assert_ne!(b, 0);
+    let q = floor_div_i64(a, b);
+    a - q * b
+}
+
 /// `(a // b, a % b)` with Python floor-div semantics; `b != 0`.
 #[inline]
 pub fn divmod_i64(a: i64, b: i64) -> (i64, i64) {
@@ -483,6 +491,30 @@ pub fn parse_special_float_string(s: &str) -> Option<FloatValue> {
     }
 }
 
+/// Parse a numeric literal lexeme, allowing `_` separators between digits (not at edges).
+pub fn parse_number_lexeme(lexeme: &str) -> Result<f64, ()> {
+    if lexeme.is_empty() {
+        return Err(());
+    }
+    let bytes = lexeme.as_bytes();
+    let mut compact = String::with_capacity(lexeme.len());
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'_' => {
+                if i == 0 || i + 1 >= bytes.len() {
+                    return Err(());
+                }
+                if !bytes[i - 1].is_ascii_digit() || !bytes[i + 1].is_ascii_digit() {
+                    return Err(());
+                }
+            }
+            b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-' => compact.push(b as char),
+            _ => return Err(()),
+        }
+    }
+    compact.parse::<f64>().map_err(|_| ())
+}
+
 /// `float(...)` coercion: preserves NaN / ±∞ on `Number` and strings; `Int` widens via [`IntValue::widen_to_float`].
 pub fn coerce_to_float_value(v: &Value) -> FloatValue {
     match v {
@@ -505,6 +537,23 @@ pub fn coerce_to_float_value(v: &Value) -> FloatValue {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_number_lexeme_underscores() {
+        assert_eq!(parse_number_lexeme("2_000_000_000").unwrap(), 2_000_000_000.0);
+        assert_eq!(parse_number_lexeme("1_234.5_6").unwrap(), 1234.56);
+        assert!(parse_number_lexeme("_1").is_err());
+        assert!(parse_number_lexeme("1_").is_err());
+        assert!(parse_number_lexeme("1__2").is_err());
+    }
+
+    #[test]
+    fn parse_number_lexeme_scientific() {
+        assert!((parse_number_lexeme("1e-9").unwrap() - 1e-9).abs() < 1e-20);
+        assert!((parse_number_lexeme("1E9").unwrap() - 1e9).abs() < 1.0);
+        assert!((parse_number_lexeme("2.5e+10").unwrap() - 2.5e10).abs() < 1.0);
+        assert!((parse_number_lexeme("6.022e23").unwrap() - 6.022e23).abs() < 1e15);
+    }
 
     #[test]
     fn ieee_nan_never_partial_eq_itself_via_pattern() {
@@ -600,6 +649,22 @@ mod tests {
         let i = coerce_to_int_value(&Value::Number(f64::INFINITY));
         let f = coerce_to_float_value(&Value::Number(f64::INFINITY));
         assert!(numeric_eq_int_float(i, f));
+    }
+
+    #[test]
+    fn floor_mod_i64_matches_divmod_remainder() {
+        for (a, b) in [
+            (10, 3),
+            (-10, 3),
+            (10, -3),
+            (-10, -3),
+            (-1, 5),
+            (1, -5),
+            (-1, -5),
+        ] {
+            let (_, r) = divmod_i64(a, b);
+            assert_eq!(floor_mod_i64(a, b), r, "floor_mod_i64({a}, {b})");
+        }
     }
 
     #[test]

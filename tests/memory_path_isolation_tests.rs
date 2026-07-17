@@ -5,14 +5,16 @@ use std::time::Instant;
 
 fn assert_number(source: &str, expected: f64) {
     match run(source) {
-        Ok(Value::Number(n)) => assert!(
-            (n - expected).abs() < 1e-6,
-            "expected {}, got {}\n{}",
-            expected,
-            n,
-            source
-        ),
-        Ok(v) => panic!("expected Number, got {:?}\n{}", v, source),
+        Ok(v) => {
+            let n = v.as_ieee_f64().unwrap_or_else(|| panic!("expected number, got {:?}\n{}", v, source));
+            assert!(
+                (n - expected).abs() < 1e-6,
+                "expected {}, got {}\n{}",
+                expected,
+                n,
+                source
+            );
+        }
         Err(e) => panic!("{:#?}\n{}", e, source),
     }
 }
@@ -388,11 +390,13 @@ fn a_star(rows, cols, start, goal, blocked) {
 a_star(200, 500, (0, 0), (50, 250), set())
 "#;
     match run(source) {
-        Ok(Value::Number(n)) => {
+        Ok(v) => {
+            let n = v
+                .as_ieee_f64()
+                .unwrap_or_else(|| panic!("expected number, got {:?}", v));
             assert!(n > 0.0, "expected positive pop count, got {}", n);
             println!("part_astar_200x500_no_came_from: pops={}", n);
         }
-        Ok(v) => panic!("expected Number, got {:?}", v),
         Err(e) => panic!("{:#?}", e),
     }
 }

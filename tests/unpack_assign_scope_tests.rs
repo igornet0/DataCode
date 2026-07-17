@@ -4,13 +4,10 @@ use data_code::{run, Value};
 
 fn assert_number(source: &str, expected: f64) {
     match run(source) {
-        Ok(Value::Number(n)) => assert!(
-            (n - expected).abs() < 1e-9,
-            "expected {}, got {}",
-            expected,
-            n
-        ),
-        Ok(v) => panic!("expected Number, got {:?}", v),
+        Ok(v) => {
+            let n = v.as_ieee_f64().unwrap_or(f64::NAN);
+            assert!((n - expected).abs() < 1e-9, "expected {}, got {:?}", expected, v);
+        }
         Err(e) => panic!("error: {:?}", e),
     }
 }

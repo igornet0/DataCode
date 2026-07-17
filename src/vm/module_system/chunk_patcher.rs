@@ -45,7 +45,11 @@ pub fn update_chunk_indices_from_names(
         .collect();
     name_index_pairs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
     let can_prefer_non_null = globals_for_verify.is_some() && store.is_some() && heap.is_some();
+    const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
     for (old_idx, name) in &name_index_pairs {
+        if *old_idx == UNDEFINED_GLOBAL_SENTINEL && !resolve_undefined_sentinel {
+            continue;
+        }
         let real_idx: Option<usize> = if name == "argv" && argv_slot_index.is_some() {
             argv_slot_index
         } else {
@@ -167,7 +171,6 @@ pub fn update_chunk_indices_from_names(
             }
         }
     }
-    const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
     if resolve_undefined_sentinel {
         if let Some(name) = chunk.global_names.get(&UNDEFINED_GLOBAL_SENTINEL) {
             let matching: Vec<usize> = global_names
@@ -210,8 +213,8 @@ pub fn update_chunk_indices_from_names(
                             let v = load_value(id, store, heap);
                             if let Value::Object(obj_rc) = &v {
                                 let obj = obj_rc.borrow();
-                                if obj.get("__class_name").is_some()
-                                    && obj.get("model_config").is_some()
+                                if obj.str_key_get("__class_name").is_some()
+                                    && obj.str_key_get("model_config").is_some()
                                 {
                                     class_slots.push(idx);
                                 }
@@ -241,13 +244,13 @@ pub fn update_chunk_indices_from_names(
                         debug_println!("[DEBUG update_chunk_indices] sentinel '{}' -> globals[{}], значение в слоте: {}", name, real_idx, slot_type);
                         if let Value::Object(obj_rc) = &v {
                             let obj = obj_rc.borrow();
-                            if let Some(Value::String(actual_name)) = obj.get("__class_name") {
+                            if let Some(Value::String(actual_name)) = obj.str_key_get("__class_name") {
                                 debug_println!(
                                     "[DEBUG update_chunk_indices] globals[{}].__class_name = '{}'",
                                     real_idx,
                                     actual_name
                                 );
-                                if actual_name != name {
+                                if actual_name != name.as_str() {
                                     debug_println!(
                                         "[DEBUG update_chunk_indices] WARNING: ожидался класс '{}', в слоте {} — класс '{}'",
                                         name, real_idx, actual_name

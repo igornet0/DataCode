@@ -1,6 +1,6 @@
 //! Module namespace: own globals and global_names. Used for module isolation.
 
-use crate::common::value::Value;
+use crate::common::value::{ObjectKind, Value};
 use crate::vm::global_slot::{default_global_slot, GlobalSlot};
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
@@ -18,8 +18,8 @@ pub struct ModuleObject {
     pub globals: Vec<GlobalSlot>,
     /// Map bytecode global index (>= BUILTIN_END) -> name.
     pub global_names: BTreeMap<usize, String>,
-    /// Export namespace (name -> Value). Set when module is loaded from .dc; used for from X import a.
-    pub namespace: Option<Rc<RefCell<HashMap<String, Value>>>>,
+    /// Export namespace (name -> Value). Always [`ObjectKind::Legacy`] string map for .dc modules.
+    pub namespace: Option<Rc<RefCell<ObjectKind>>>,
 }
 
 impl ModuleObject {
@@ -38,12 +38,12 @@ impl ModuleObject {
             name: name.clone(),
             globals: Vec::new(),
             global_names: BTreeMap::new(),
-            namespace: Some(Rc::new(RefCell::new(exports))),
+            namespace: Some(Rc::new(RefCell::new(ObjectKind::Legacy(exports)))),
         }
     }
 
     /// Create a module that shares the same namespace as the given Rc (avoids cloning the export map).
-    pub fn from_namespace(name: String, namespace: Rc<RefCell<HashMap<String, Value>>>) -> Self {
+    pub fn from_namespace(name: String, namespace: Rc<RefCell<ObjectKind>>) -> Self {
         Self {
             name,
             globals: Vec::new(),
@@ -56,13 +56,15 @@ impl ModuleObject {
     pub fn get_export(&self, name: &str) -> Option<Value> {
         self.namespace
             .as_ref()
-            .and_then(|rc| rc.borrow().get(name).cloned())
+            .and_then(|rc| rc.borrow().legacy_get(name).cloned())
     }
 
     /// Set export by name (for StoreGlobal in module context). Updates shared namespace.
     pub fn set_export(&self, name: &str, value: Value) {
         if let Some(ref rc) = self.namespace {
-            rc.borrow_mut().insert(name.to_string(), value);
+            if let Some(m) = rc.borrow_mut().legacy_mut() {
+                m.insert(name.to_string(), value);
+            }
         }
     }
 
@@ -127,4 +129,18 @@ impl std::fmt::Debug for ModuleObject {
             .field("has_namespace", &self.namespace.is_some())
             .finish()
     }
+}
+
+/// Resolve owning module name for a merged function index (ModuleFunction call targets).
+pub(crate) fn module_name_for_function_index(
+    registry: &std::collections::HashMap<u64, crate::vm::types::ModuleInfo>,
+    function_index: usize,
+) -> Option<String> {
+    for info in registry.values() {
+        let start = info.function_offset;
+        if function_index >= start && function_index < start + info.function_count {
+            return Some(info.name.clone());
+        }
+    }
+    None
 }

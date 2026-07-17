@@ -190,7 +190,7 @@ pub(crate) fn run_generator_resume(
     'resume: loop {
         let stack_start = vm.stack_len();
         let mut frame = vm.with_stores_mut(|store, heap| {
-            CallFrame::new(function.clone(), stack_start, store, heap)
+            CallFrame::new(function.clone(), gen.fn_index, stack_start, store, heap)
         });
         frame.slots = gen.slots.clone();
         frame.ip = gen.ip;

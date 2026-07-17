@@ -2,15 +2,24 @@
 
 #[cfg(test)]
 mod tests {
+    use data_code::common::numeric::IntValue;
     use data_code::{run, Value};
 
     fn assert_number(source: &str, expected: f64) {
         let result = run(source);
-        match result {
-            Ok(Value::Number(n)) => assert_eq!(n, expected, "expr:\n{}", source),
+        let n = match result {
+            Ok(Value::Number(n)) => n,
+            Ok(Value::Int(IntValue::Finite(i))) => i as f64,
             Ok(v) => panic!("expected Number({}), got {:?}\n{}", expected, v, source),
             Err(e) => panic!("error {:?}\n{}", e, source),
-        }
+        };
+        assert!(
+            (n - expected).abs() < 1e-9,
+            "expected {}, got {}\nexpr:\n{}",
+            expected,
+            n,
+            source
+        );
     }
 
     fn assert_bool(source: &str, expected: bool) {
@@ -175,6 +184,27 @@ fn test() {
         it = it + 1
     }
     return 0
+}
+test()
+"#;
+        assert_number(source, 2.0);
+    }
+
+    /// Regression: two `HeappushFlat` calls per loop when priority is a heap-stored int (e.g. `steps + 1`).
+    #[test]
+    fn heappush_flat_twice_per_iter_heap_int_priority() {
+        let source = r#"
+import heapq
+fn test() {
+    h = [(1, 0)]
+    steps = 0
+    while h and steps < 2 {
+        cf, c = heapq.heappop(h)
+        steps = steps + 1
+        heapq.heappush(h, (steps, c + 1))
+        heapq.heappush(h, (steps, c + 2))
+    }
+    return steps
 }
 test()
 "#;

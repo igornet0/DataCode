@@ -9,10 +9,8 @@ mod tests {
     fn assert_number_result(source: &str, expected: f64) {
         let result = run(source);
         match result {
-            Ok(Value::Number(n)) => {
-                assert_eq!(n, expected, "Expected {}, got {}", expected, n);
-            }
-            Ok(v) => panic!("Expected Number({}), got {:?}", expected, v),
+            Ok(v) if v.as_ieee_f64() == Some(expected) => {}
+            Ok(v) => panic!("Expected numeric({}), got {:?}", expected, v),
             Err(e) => panic!("Error: {:?}", e),
         }
     }
@@ -394,6 +392,109 @@ mod tests {
             test()
         "#;
         assert_number_result(source, 50.0);
+    }
+
+    #[test]
+    fn test_local_shadows_global_function() {
+        let source = r#"
+            fn is_prime(n) {
+                return n == 2
+            }
+            fn sieve(n) {
+                is_prime = [true, false]
+                return len(is_prime)
+            }
+            sieve(2) + (if is_prime(2) { 10 } else { 0 })
+        "#;
+        assert_number_result(source, 12.0);
+    }
+
+    #[test]
+    fn test_chained_property_assignment() {
+        let source = r#"
+            cls Node {
+                public:
+                    next: Node
+                    prev: Node
+                    tag: int
+                new Node(t: int) {
+                    this.tag = t
+                    this.next = null
+                    this.prev = null
+                }
+            }
+            head = Node(1)
+            mid = Node(2)
+            tail = Node(3)
+            head.next = mid
+            mid.prev = head
+            mid.next = tail
+            tail.prev = mid
+            mid.prev.next = tail
+            mid.prev.next.tag
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_doubly_linked_cycle_assignment() {
+        let source = r#"
+            cls LfuNode {
+                public:
+                    prev: LfuNode
+                    next: LfuNode
+                new LfuNode() {
+                    this.prev = null
+                    this.next = null
+                }
+            }
+            dummy = LfuNode()
+            first = LfuNode()
+            node = LfuNode()
+            node.next = first
+            node.prev = dummy
+            dummy.next = node
+            first.prev = node
+            1
+        "#;
+        assert_number_result(source, 1.0);
+    }
+
+    #[test]
+    fn test_array_pop_preserves_object_identity_for_field_mutation() {
+        let source = r#"
+            cls Node {
+                public:
+                    children: dict[str, Node]
+                    fail: Optional[Node]
+                new Node() {
+                    this.children = {}
+                    this.fail = null
+                }
+            }
+            cls Bfs {
+                fn run(root: Node) {
+                    s = Node()
+                    h = Node()
+                    root.children["s"] = s
+                    s.children["h"] = h
+                    queue = []
+                    queue.push(root.children["s"])
+                    current = queue.pop(0)
+                    child = current.children["h"]
+                    child.fail = root
+                    if root.children["s"].children["h"].fail == null { this.result = 0 } else { this.result = 1 }
+                }
+                public:
+                    result: int
+                new Bfs() { this.result = 0 }
+            }
+            root = Node()
+            job = Bfs()
+            job.run(root)
+            job.result
+        "#;
+        assert_number_result(source, 1.0);
     }
 
     #[test]

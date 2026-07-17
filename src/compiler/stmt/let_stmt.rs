@@ -2,10 +2,12 @@ use crate::bytecode::OpCode;
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use crate::compiler::context::CompilationContext;
+use crate::compiler::defaults;
 use crate::compiler::expr;
+use crate::compiler::stmt::for_stmt;
 use crate::compiler::variable::VariableResolver;
+use crate::parser::ast::{AssignTarget, Expr, Stmt};
 /// Компиляция let statements
-use crate::parser::ast::{Expr, Stmt};
 
 pub fn compile_let(
     ctx: &mut CompilationContext,
@@ -23,35 +25,34 @@ pub fn compile_let(
 
         // Проверяем, является ли value UnpackAssign (распаковка кортежа)
         if let Expr::UnpackAssign {
-            names,
+            targets,
             value: tuple_value,
             ..
         } = value
         {
             // Распаковка кортежа в let statement
-            // tuple_value - это &Box<Expr> в match, нужно получить &Expr
             expr::compile_expr(ctx, &**tuple_value)?;
 
-            // Сохраняем кортеж во временную переменную
             let tuple_temp = ctx.scope.declare_local(&format!("__tuple_temp_{}", line));
             ctx.chunk
                 .write_with_line(OpCode::StoreLocal(tuple_temp), *line);
 
-            // Для каждой переменной извлекаем элемент кортежа и сохраняем
-            for (index, var_name) in names.iter().enumerate() {
-                // Загружаем кортеж
+            for (index, target) in targets.iter().enumerate() {
+                let AssignTarget::Name(var_name) = target else {
+                    return Err(LangError::ParseError {
+                        message: "let unpack supports variable names only".to_string(),
+                        line: *line,
+                        file: None,
+                    });
+                };
                 ctx.chunk
                     .write_with_line(OpCode::LoadLocal(tuple_temp), *line);
-                // Загружаем индекс
                 let index_const = ctx.chunk.add_constant(Value::Number(index as f64));
                 ctx.chunk
                     .write_with_line(OpCode::Constant(index_const), *line);
-                // Получаем элемент по индексу
                 ctx.chunk.write_with_line(OpCode::GetArrayElement, *line);
 
-                // Сохраняем в переменную
                 if *is_global {
-                    // Глобальная переменная
                     let global_index = if let Some(&idx) = ctx.scope.globals.get(var_name) {
                         idx
                     } else {
@@ -65,40 +66,35 @@ pub fn compile_let(
                     ctx.chunk
                         .explicit_global_names
                         .insert(global_index, var_name.clone());
+                    ctx.scope.explicit_globals.insert(var_name.clone());
+                    ctx.chunk
+                        .write_with_line(OpCode::StoreGlobal(global_index), *line);
+                } else if let Some(local_index) = ctx.scope.resolve_local(var_name) {
+                    ctx.chunk
+                        .write_with_line(OpCode::StoreLocal(local_index), *line);
+                } else if ctx.current_function.is_some() {
+                    let var_index = ctx.declare_local_for_binding(var_name);
+                    ctx.chunk
+                        .write_with_line(OpCode::StoreLocal(var_index), *line);
+                } else if let Some(&global_index) = ctx.scope.globals.get(var_name) {
+                    ctx.chunk
+                        .global_names
+                        .insert(global_index, var_name.clone());
                     ctx.chunk
                         .write_with_line(OpCode::StoreGlobal(global_index), *line);
                 } else {
-                    // Локальная переменная
-                    if let Some(local_index) = ctx.scope.resolve_local(var_name) {
-                        ctx.chunk
-                            .write_with_line(OpCode::StoreLocal(local_index), *line);
-                    } else if ctx.current_function.is_some() {
-                        let var_index = ctx.scope.declare_local(var_name);
-                        ctx.chunk
-                            .write_with_line(OpCode::StoreLocal(var_index), *line);
-                    } else {
-                        // На верхнем уровне - проверяем, есть ли глобальная переменная
-                        if let Some(&global_index) = ctx.scope.globals.get(var_name) {
-                            ctx.chunk
-                                .global_names
-                                .insert(global_index, var_name.clone());
-                            ctx.chunk
-                                .write_with_line(OpCode::StoreGlobal(global_index), *line);
-                        } else {
-                            let global_index = ctx.scope.globals.len();
-                            ctx.scope.globals.insert(var_name.clone(), global_index);
-                            ctx.chunk
-                                .global_names
-                                .insert(global_index, var_name.clone());
-                            ctx.chunk
-                                .write_with_line(OpCode::StoreGlobal(global_index), *line);
-                        }
-                    }
+                    let global_index = ctx.scope.globals.len();
+                    ctx.scope.globals.insert(var_name.clone(), global_index);
+                    ctx.chunk
+                        .global_names
+                        .insert(global_index, var_name.clone());
+                    ctx.chunk
+                        .write_with_line(OpCode::StoreGlobal(global_index), *line);
                 }
+                ctx.record_bound_name(var_name);
             }
 
-            // Загружаем последнее значение на стек
-            if let Some(last_name) = names.last() {
+            if let Some(AssignTarget::Name(last_name)) = targets.last() {
                 VariableResolver::resolve_and_load(ctx, last_name, *line)?;
             }
             // Когда pop_value (не последний statement или результат не нужен), снимаем значение со стека
@@ -109,9 +105,40 @@ pub fn compile_let(
         }
 
         // Обычное присваивание
+        // Best-effort tracking for `set()` locals to safely emit SetAddIntegral/SetDiscardIntegral.
+        // (Used by A* and by opcode-emission regression tests.)
+        let is_set_call = matches!(
+            value,
+            Expr::Call { name: callee, args, .. } if callee == "set" && args.is_empty()
+        );
+        if is_set_call {
+            ctx.known_set_vars.insert(name.clone());
+        } else {
+            ctx.known_set_vars.remove(name);
+        }
+        // Best-effort: track constructor-like assignments (UpperCamelCase(...)) to avoid miscompiling `.add`.
+        let is_ctor_like_call = matches!(
+            value,
+            Expr::Call { name: callee, .. }
+                if callee.chars().next().is_some_and(|ch| ch.is_uppercase())
+        );
+        if is_ctor_like_call {
+            ctx.known_class_instance_vars.insert(name.clone());
+        } else {
+            ctx.known_class_instance_vars.remove(name);
+        }
+        if let Some(pairs) = for_stmt::try_const_tuple_of_pairs(value) {
+            ctx.known_const_pair_tuples.insert(name.clone(), pairs);
+        } else {
+            ctx.known_const_pair_tuples.remove(name);
+        }
+        if ctx.current_function.is_none() {
+            defaults::update_compile_time_binding(ctx.compile_time_bindings, name, value);
+        }
         expr::compile_expr(ctx, value)?;
         // Не клонируем автоматически - переменные должны разделять ссылки на массивы/таблицы/объекты
         VariableResolver::resolve_and_store(ctx, name, *is_global, *line)?;
+        ctx.record_bound_name(name);
 
         Ok(())
     } else {

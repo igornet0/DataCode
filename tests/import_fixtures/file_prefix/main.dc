@@ -1,0 +1,5 @@
+from foo.bar import y
+
+fn __main__() {
+    print(y)
+}

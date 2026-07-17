@@ -48,6 +48,13 @@ pub fn finalize_nested_chunk(
 ) -> Result<(), LangError> {
     labels.stabilize_layout(chunk, line)?;
     labels.finalize_jumps(chunk, line)?;
-    restore_labels(labels, checkpoint);
+    // Only restore the global label id counter. `labels` / `pending_*` from the checkpoint
+    // belong to the outer chunk; restoring them after patching a nested method chunk would
+    // apply wrong jump indices to the next nested compile (class methods regression).
+    labels.label_counter = checkpoint.label_counter;
+    labels.labels.clear();
+    labels.pending_jumps.clear();
+    labels.pending_for_range.clear();
+    labels.pending_local_heap_empty_jumps.clear();
     Ok(())
 }

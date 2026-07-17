@@ -3,7 +3,7 @@ use crate::common::error::LangError;
 use crate::common::value::Value;
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
-use crate::lexer::TokenKind;
+use crate::compiler::expr::object_literal;
 /// Компиляция массивов, кортежей и индексации
 use crate::parser::ast::{Expr, IndexExpr};
 
@@ -33,80 +33,7 @@ pub fn compile_array(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
             Ok(())
         }
         Expr::ObjectLiteral { pairs, line } => {
-            *ctx.current_line = *line;
-            use crate::common::value::Value;
-            use crate::parser::ast::{ObjectLiteralKey, ObjectPair};
-            let has_spread = pairs.iter().any(|p| matches!(p, ObjectPair::Spread(_)));
-            if !has_spread {
-                let n_pairs = pairs
-                    .iter()
-                    .filter(|p| {
-                        matches!(
-                            p,
-                            ObjectPair::KeyValue(_, _) | ObjectPair::KeyValueExpr(_, _)
-                        )
-                    })
-                    .count();
-                for p in pairs.iter().rev() {
-                    if let ObjectPair::KeyValue(key, value) = p {
-                        let key_val = match key {
-                            ObjectLiteralKey::Ident(s) | ObjectLiteralKey::String(s) => {
-                                Value::String(s.clone())
-                            }
-                            ObjectLiteralKey::Number(n) => Value::Number(*n),
-                        };
-                        let key_index = ctx.chunk.add_constant(key_val);
-                        ctx.chunk.write_with_line(OpCode::Constant(key_index), *line);
-                        expr::compile_expr(ctx, value)?;
-                    } else if let ObjectPair::KeyValueExpr(key, value) = p {
-                        expr::compile_expr(ctx, key)?;
-                        expr::compile_expr(ctx, value)?;
-                    }
-                }
-                ctx.chunk
-                    .write_with_line(OpCode::MakeObject(n_pairs), *line);
-            } else {
-                let count_slot = ctx.scope.declare_local("__object_pair_count");
-                let zero_index = ctx.chunk.add_constant(Value::Number(0.0));
-                ctx.chunk.write_with_line(OpCode::Constant(zero_index), *line);
-                ctx.chunk.write_with_line(OpCode::StoreLocal(count_slot), *line);
-                for p in pairs {
-                    match p {
-                        ObjectPair::KeyValue(key, value) => {
-                            let key_val = match &key {
-                                ObjectLiteralKey::Ident(s) | ObjectLiteralKey::String(s) => {
-                                    Value::String(s.clone())
-                                }
-                                ObjectLiteralKey::Number(n) => Value::Number(*n),
-                            };
-                            let key_index = ctx.chunk.add_constant(key_val);
-                            ctx.chunk.write_with_line(OpCode::Constant(key_index), *line);
-                            expr::compile_expr(ctx, value)?;
-                            ctx.chunk.write_with_line(OpCode::LoadLocal(count_slot), *line);
-                            let one_index = ctx.chunk.add_constant(Value::Number(1.0));
-                            ctx.chunk.write_with_line(OpCode::Constant(one_index), *line);
-                            ctx.chunk.write_with_line(OpCode::Add, *line);
-                            ctx.chunk.write_with_line(OpCode::StoreLocal(count_slot), *line);
-                        }
-                        ObjectPair::KeyValueExpr(key, value) => {
-                            expr::compile_expr(ctx, key)?;
-                            expr::compile_expr(ctx, value)?;
-                            ctx.chunk.write_with_line(OpCode::LoadLocal(count_slot), *line);
-                            let one_index = ctx.chunk.add_constant(Value::Number(1.0));
-                            ctx.chunk.write_with_line(OpCode::Constant(one_index), *line);
-                            ctx.chunk.write_with_line(OpCode::Add, *line);
-                            ctx.chunk.write_with_line(OpCode::StoreLocal(count_slot), *line);
-                        }
-                        ObjectPair::Spread(expr) => {
-                            expr::compile_expr(ctx, expr)?;
-                            ctx.chunk.write_with_line(OpCode::UnpackObject(count_slot), *line);
-                        }
-                    }
-                }
-                ctx.chunk.write_with_line(OpCode::LoadLocal(count_slot), *line);
-                ctx.chunk.write_with_line(OpCode::MakeObjectDynamic, *line);
-            }
-            Ok(())
+            object_literal::compile_object_literal(ctx, pairs, *line)
         }
         Expr::ArrayIndex { array, index, line } => {
             *ctx.current_line = *line;
@@ -131,27 +58,9 @@ pub fn compile_array(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), La
             }
             Ok(())
         }
-        Expr::TableFilter { table, column, op, value, line } => {
-            *ctx.current_line = *line;
-            expr::compile_expr(ctx, table)?;
-            let column_index = ctx.chunk.add_constant(Value::String(column.clone()));
-            ctx.chunk.write_with_line(OpCode::Constant(column_index), *line);
-            let op_str = match op {
-                TokenKind::Equal => "=",
-                TokenKind::EqualEqual => "==",
-                TokenKind::BangEqual => "!=",
-                TokenKind::Less => "<",
-                TokenKind::Greater => ">",
-                TokenKind::LessEqual => "<=",
-                TokenKind::GreaterEqual => ">=",
-                _ => "==",
-            };
-            let op_index = ctx.chunk.add_constant(Value::String(op_str.to_string()));
-            ctx.chunk.write_with_line(OpCode::Constant(op_index), *line);
-            expr::compile_expr(ctx, value)?;
-            ctx.chunk.write_with_line(OpCode::TableFilter, *line);
-            Ok(())
-        }
+        Expr::TableFilter {
+            table, predicate, line,
+        } => crate::compiler::expr::table_filter::compile_table_filter(ctx, table, predicate, *line),
         _ => Err(LangError::ParseError {
             message: "Expected ArrayLiteral, TupleLiteral, ObjectLiteral, ArrayIndex, or TableFilter expression".to_string(),
             line: expr.line(),

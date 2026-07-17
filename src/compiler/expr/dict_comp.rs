@@ -53,8 +53,7 @@ pub fn compile_dict_comprehension(
             .emit_jump(ctx.chunk, *ctx.current_line, true, skip_pair)?;
     }
 
-    expr::compile_expr(ctx, key_expr)?;
-    expr::compile_expr(ctx, value_expr)?;
+    // Increment count before pushing key/value so stack holds only pairs at loop end.
     ctx.chunk
         .write_with_line(OpCode::LoadLocal(count_slot), line);
     let one = ctx.chunk.add_constant(Value::Number(1.0));
@@ -62,6 +61,9 @@ pub fn compile_dict_comprehension(
     ctx.chunk.write_with_line(OpCode::Add, line);
     ctx.chunk
         .write_with_line(OpCode::StoreLocal(count_slot), line);
+
+    expr::compile_expr(ctx, key_expr)?;
+    expr::compile_expr(ctx, value_expr)?;
 
     if condition.is_some() {
         ctx.labels.mark_label(skip_pair, ctx.chunk.code.len());

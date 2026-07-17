@@ -8,10 +8,34 @@ use crate::common::{
 };
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
-use crate::vm::store_convert::load_value;
+use crate::vm::store_convert::value_id_is_truthy_mut;
 use crate::vm::types::VMStatus;
 
-use super::helpers::pop_to_value_id;
+use crate::vm::stack;
+
+#[inline]
+fn cond_tagged_is_truthy(
+    cond_tv: TaggedValue,
+    value_store: &mut ValueStore,
+    heavy_store: &HeavyStore,
+) -> bool {
+    if cond_tv.is_null() {
+        return false;
+    }
+    if cond_tv.is_bool() {
+        return cond_tv.get_bool();
+    }
+    if cond_tv.is_number() {
+        return cond_tv.get_f64() != 0.0;
+    }
+    if cond_tv.is_int() {
+        return cond_tv.get_i32() != 0;
+    }
+    if cond_tv.is_heap() {
+        return value_id_is_truthy_mut(cond_tv.get_heap_id(), value_store, heavy_store);
+    }
+    true
+}
 
 pub fn op_jump8(offset: i8, frames: &mut Vec<CallFrame>) -> Result<VMStatus, LangError> {
     let frame = frames.last_mut().unwrap();
@@ -39,10 +63,9 @@ pub fn op_jump_if_false8(
     value_store: &mut ValueStore,
     heavy_store: &mut HeavyStore,
 ) -> Result<VMStatus, LangError> {
-    let cond_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
-    let condition = load_value(cond_id, value_store, heavy_store);
+    let cond_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let frame = frames.last_mut().unwrap();
-    if !condition.is_truthy() {
+    if !cond_tagged_is_truthy(cond_tv, value_store, heavy_store) {
         frame.ip = (frame.ip as i32 + offset as i32) as usize;
     }
     Ok(VMStatus::Continue)
@@ -56,10 +79,9 @@ pub fn op_jump_if_false16(
     value_store: &mut ValueStore,
     heavy_store: &mut HeavyStore,
 ) -> Result<VMStatus, LangError> {
-    let cond_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
-    let condition = load_value(cond_id, value_store, heavy_store);
+    let cond_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let frame = frames.last_mut().unwrap();
-    if !condition.is_truthy() {
+    if !cond_tagged_is_truthy(cond_tv, value_store, heavy_store) {
         frame.ip = (frame.ip as i32 + offset as i32) as usize;
     }
     Ok(VMStatus::Continue)
@@ -73,10 +95,77 @@ pub fn op_jump_if_false32(
     value_store: &mut ValueStore,
     heavy_store: &mut HeavyStore,
 ) -> Result<VMStatus, LangError> {
-    let cond_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
-    let condition = load_value(cond_id, value_store, heavy_store);
+    let cond_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let frame = frames.last_mut().unwrap();
-    if !condition.is_truthy() {
+    if !cond_tagged_is_truthy(cond_tv, value_store, heavy_store) {
+        frame.ip = (frame.ip as i64 + offset as i64) as usize;
+    }
+    Ok(VMStatus::Continue)
+}
+
+#[inline]
+fn local_heap_array_is_empty(
+    slot: usize,
+    frames: &[CallFrame],
+    value_store: &mut ValueStore,
+) -> bool {
+    let frame = frames.last().unwrap();
+    let tv = frame
+        .slots
+        .get(slot)
+        .copied()
+        .unwrap_or(TaggedValue::null());
+    if !tv.is_heap() {
+        return true;
+    }
+    let id = tv.get_heap_id();
+    let is_flat = value_store.is_flat_heap(id);
+    match value_store.get_mut(id) {
+        Some(ValueCell::Array(slots)) => {
+            if is_flat {
+                slots.len() < 2
+            } else {
+                slots.is_empty()
+            }
+        }
+        _ => true,
+    }
+}
+
+pub fn op_jump_if_local_heap_array_empty8(
+    slot: usize,
+    offset: i8,
+    frames: &mut Vec<CallFrame>,
+    value_store: &mut ValueStore,
+) -> Result<VMStatus, LangError> {
+    if local_heap_array_is_empty(slot, frames, value_store) {
+        let frame = frames.last_mut().unwrap();
+        frame.ip = (frame.ip as i32 + offset as i32) as usize;
+    }
+    Ok(VMStatus::Continue)
+}
+
+pub fn op_jump_if_local_heap_array_empty16(
+    slot: usize,
+    offset: i16,
+    frames: &mut Vec<CallFrame>,
+    value_store: &mut ValueStore,
+) -> Result<VMStatus, LangError> {
+    if local_heap_array_is_empty(slot, frames, value_store) {
+        let frame = frames.last_mut().unwrap();
+        frame.ip = (frame.ip as i32 + offset as i32) as usize;
+    }
+    Ok(VMStatus::Continue)
+}
+
+pub fn op_jump_if_local_heap_array_empty32(
+    slot: usize,
+    offset: i32,
+    frames: &mut Vec<CallFrame>,
+    value_store: &mut ValueStore,
+) -> Result<VMStatus, LangError> {
+    if local_heap_array_is_empty(slot, frames, value_store) {
+        let frame = frames.last_mut().unwrap();
         frame.ip = (frame.ip as i64 + offset as i64) as usize;
     }
     Ok(VMStatus::Continue)

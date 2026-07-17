@@ -22,6 +22,10 @@ pub enum TokenKind {
     True,
     False,
     Null,
+    /// Литерал IEEE +∞ (`inf`); `int(inf)` / `float(inf)` → доменные ±∞.
+    Inf,
+    /// Литерал IEEE NaN (`nan`); `float(nan)` → [`FloatValue::NaN`].
+    Nan,
     Import,
     From,
     As,
@@ -54,6 +58,11 @@ pub enum TokenKind {
     Greater,         // >
     LessEqual,       // <=
     GreaterEqual,    // >=
+    LessLess,        // <<
+    GreaterGreater,  // >>
+    Amp,             // &
+    Caret,           // ^
+    Tilde,           // ~
     Or,              // or
     And,             // and
 
@@ -69,6 +78,7 @@ pub enum TokenKind {
     Dot,       // .
     Ellipsis,  // ...
     Colon,     // :
+    Question,  // ? (C-style ternary; future: peek for ?. / ??)
     Arrow,     // ->
     FatArrow,  // =>
     Pipe,      // |
@@ -83,8 +93,7 @@ pub enum TokenKind {
     Finally, // finally
 
     // Аннотации
-    At,    // @
-    Cache, // cache
+    At, // @
 
     // Ключевые слова для классов
     Abstract,  // @Abstract for abstract class

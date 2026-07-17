@@ -1,0 +1,17 @@
+cls HashMap {
+    public:
+        size_: int
+
+    new HashMap(capacity: int = 4) {
+        this.size_ = capacity
+    }
+}
+
+cls Box {
+    public:
+        inner: HashMap
+
+    new Box(capacity: int = 8) {
+        this.inner = HashMap(capacity)
+    }
+}

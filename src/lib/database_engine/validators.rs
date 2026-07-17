@@ -23,7 +23,7 @@ fn get_bool(v: &Value, default: bool) -> bool {
 
 fn make_desc(kind: &str, mut fields: HashMap<String, Value>) -> Value {
     fields.insert(TAG.to_string(), Value::String(kind.to_string()));
-    Value::Object(Rc::new(RefCell::new(fields)))
+    Value::legacy_object(fields)
 }
 
 fn usize_arg(v: &Value, _name: &str) -> Option<usize> {
@@ -129,15 +129,15 @@ pub fn native_validator_password_policy(args: &[Value]) -> Value {
         Some(Value::Object(rc)) => {
             let o = rc.borrow();
             let ml = o
-                .get("min_length")
+                .str_key_get("min_length")
                 .and_then(|v| usize_arg(v, "min_length"))
                 .unwrap_or(8);
             let uppercase = o
-                .get("uppercase")
+                .str_key_get("uppercase")
                 .map(|v| get_bool(v, true))
                 .unwrap_or(true);
-            let digits = o.get("digits").map(|v| get_bool(v, true)).unwrap_or(true);
-            let special = o.get("special").map(|v| get_bool(v, true)).unwrap_or(true);
+            let digits = o.str_key_get("digits").map(|v| get_bool(v, true)).unwrap_or(true);
+            let special = o.str_key_get("special").map(|v| get_bool(v, true)).unwrap_or(true);
             (ml, uppercase, digits, special)
         }
         Some(_) | None => (8, true, true, true),
@@ -268,7 +268,7 @@ fn validate_one_descriptor(desc: &Value, value: &Value, column_name: &str) -> Re
         ));
     };
     let obj = rc.borrow();
-    let Some(Value::String(kind)) = obj.get(TAG) else {
+    let Some(Value::String(kind)) = obj.str_key_get(TAG) else {
         return Err(format!(
             "column '{}': validator missing __validator tag",
             column_name
@@ -279,7 +279,7 @@ fn validate_one_descriptor(desc: &Value, value: &Value, column_name: &str) -> Re
         "min_length" => {
             let s = require_str(value, column_name, "min_length")?;
             let n = obj
-                .get("n")
+                .str_key_get("n")
                 .and_then(|v| usize_arg(v, "n"))
                 .ok_or_else(|| format!("column '{}': invalid min_length descriptor", column_name))?;
             if s.chars().count() >= n {
@@ -294,7 +294,7 @@ fn validate_one_descriptor(desc: &Value, value: &Value, column_name: &str) -> Re
         "max_length" => {
             let s = require_str(value, column_name, "max_length")?;
             let n = obj
-                .get("n")
+                .str_key_get("n")
                 .and_then(|v| usize_arg(v, "n"))
                 .ok_or_else(|| format!("column '{}': invalid max_length descriptor", column_name))?;
             if s.chars().count() <= n {
@@ -309,11 +309,11 @@ fn validate_one_descriptor(desc: &Value, value: &Value, column_name: &str) -> Re
         "length_between" => {
             let s = require_str(value, column_name, "length_between")?;
             let lo = obj
-                .get("min")
+                .str_key_get("min")
                 .and_then(|v| usize_arg(v, "min"))
                 .ok_or_else(|| format!("column '{}': invalid length_between", column_name))?;
             let hi = obj
-                .get("max")
+                .str_key_get("max")
                 .and_then(|v| usize_arg(v, "max"))
                 .ok_or_else(|| format!("column '{}': invalid length_between", column_name))?;
             let len = s.chars().count();
@@ -329,7 +329,7 @@ fn validate_one_descriptor(desc: &Value, value: &Value, column_name: &str) -> Re
         "regex" => {
             let s = require_str(value, column_name, "regex")?;
             let pattern = obj
-                .get("pattern")
+                .str_key_get("pattern")
                 .and_then(|v| {
                     if let Value::String(p) = v {
                         Some(p.as_str())
@@ -383,15 +383,15 @@ fn validate_one_descriptor(desc: &Value, value: &Value, column_name: &str) -> Re
         "password_policy" => {
             let s = require_str(value, column_name, "password_policy")?;
             let min_len = obj
-                .get("min_length")
+                .str_key_get("min_length")
                 .and_then(|v| usize_arg(v, "min_length"))
                 .unwrap_or(8);
             let need_upper = obj
-                .get("uppercase")
+                .str_key_get("uppercase")
                 .map(|v| get_bool(v, true))
                 .unwrap_or(true);
-            let need_digits = obj.get("digits").map(|v| get_bool(v, true)).unwrap_or(true);
-            let need_special = obj.get("special").map(|v| get_bool(v, true)).unwrap_or(true);
+            let need_digits = obj.str_key_get("digits").map(|v| get_bool(v, true)).unwrap_or(true);
+            let need_special = obj.str_key_get("special").map(|v| get_bool(v, true)).unwrap_or(true);
             if s.chars().count() < min_len {
                 return Err(format!(
                     "column '{}': password shorter than {}",
@@ -419,7 +419,7 @@ fn validate_one_descriptor(desc: &Value, value: &Value, column_name: &str) -> Re
             Ok(())
         }
         "one_of" => {
-            let Some(Value::Array(choices_rc)) = obj.get("choices") else {
+            let Some(Value::Array(choices_rc)) = obj.str_key_get("choices") else {
                 return Err(format!(
                     "column '{}': one_of descriptor missing choices",
                     column_name
@@ -438,7 +438,7 @@ fn validate_one_descriptor(desc: &Value, value: &Value, column_name: &str) -> Re
         "min_value" => {
             let n = require_num(value, column_name, "min_value")?;
             let bound = obj
-                .get("n")
+                .str_key_get("n")
                 .and_then(|v| {
                     if let Value::Number(x) = v {
                         Some(*x)
@@ -459,7 +459,7 @@ fn validate_one_descriptor(desc: &Value, value: &Value, column_name: &str) -> Re
         "max_value" => {
             let n = require_num(value, column_name, "max_value")?;
             let bound = obj
-                .get("n")
+                .str_key_get("n")
                 .and_then(|v| {
                     if let Value::Number(x) = v {
                         Some(*x)
@@ -480,7 +480,7 @@ fn validate_one_descriptor(desc: &Value, value: &Value, column_name: &str) -> Re
         "range_value" => {
             let n = require_num(value, column_name, "range_value")?;
             let lo = obj
-                .get("min")
+                .str_key_get("min")
                 .and_then(|v| {
                     if let Value::Number(x) = v {
                         Some(*x)
@@ -490,7 +490,7 @@ fn validate_one_descriptor(desc: &Value, value: &Value, column_name: &str) -> Re
                 })
                 .ok_or_else(|| format!("column '{}': invalid range_value", column_name))?;
             let hi = obj
-                .get("max")
+                .str_key_get("max")
                 .and_then(|v| {
                     if let Value::Number(x) = v {
                         Some(*x)
@@ -509,7 +509,7 @@ fn validate_one_descriptor(desc: &Value, value: &Value, column_name: &str) -> Re
             }
         }
         "custom" => {
-            let Some(callable) = obj.get("callable") else {
+            let Some(callable) = obj.str_key_get("callable") else {
                 return Err(format!(
                     "column '{}': custom validator missing callable",
                     column_name

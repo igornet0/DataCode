@@ -35,6 +35,8 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "min");
     register(globals, "max");
     register(globals, "round");
+    register(globals, "ceil");
+    register(globals, "floor");
 
     // Строковые функции
     register(globals, "upper");
@@ -43,8 +45,12 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "split");
     register(globals, "join");
     register(globals, "contains");
+    register(globals, "starts_with");
+    register(globals, "ends_with");
     register(globals, "isupper");
     register(globals, "islower");
+    register(globals, "replace");
+    register(globals, "capitalize");
 
     // Функции массивов
     register(globals, "push");
@@ -68,6 +74,14 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "table_select");
     register(globals, "table_sort");
     register(globals, "table_where");
+    register(globals, "table_drop_nulls");
+    register(globals, "table_replace_nulls");
+    register(globals, "table_rename");
+    register(globals, "table_drop_column");
+    register(globals, "table_add_column");
+    register(globals, "table_map");
+    register(globals, "table_split_column");
+    register(globals, "table_join_columns");
     register(globals, "show_table");
     register(globals, "merge_tables");
     register(globals, "now");
@@ -102,19 +116,42 @@ pub fn register_natives(globals: &mut std::collections::HashMap<String, usize>) 
     register(globals, "random_bytes");
     register(globals, "random_int");
     register(globals, "random_seed");
+    register(globals, "random");
     register(globals, "date_to_unix");
+    register(globals, "parse_date");
+    register(globals, "format_date");
     register(globals, "duration");
     register(globals, "set");
     register(globals, "divmod");
     register(globals, "isinf");
+    register(globals, "copy");
+    register(globals, "ord");
+    register(globals, "table_row_number");
+    register(globals, "table_distinct");
+    register(globals, "table_value_map");
+    register(globals, "table_aggregate");
+    register(globals, "table_aggregate_group");
+    register(globals, "archive");
+    register(globals, "datasource");
 
-    // Built-in module globals (plot, uuid, debug, …) so `uuid.foo()` / `debug.operators()` resolve without `import`.
+    // Built-in module globals
     // Order matches `crate::vm::modules::BUILTIN_MODULE_NAMES` (deterministic indices for chunk/linker).
     for name in crate::vm::modules::BUILTIN_MODULE_NAMES {
         if !globals.contains_key(*name) {
             register(globals, name);
         }
     }
+    if let Some(&idx) = globals.get("read_file") {
+        globals.insert("read".to_string(), idx);
+    }
+    globals.insert(
+        "save".to_string(),
+        crate::vm::native_indices::builtin::SAVE,
+    );
+    globals.insert(
+        "save_tables_sqlite".to_string(),
+        crate::vm::native_indices::builtin::SAVE_TABLES_SQLITE,
+    );
 }
 
 fn register(globals: &mut std::collections::HashMap<String, usize>, name: &str) {
@@ -127,7 +164,7 @@ fn register(globals: &mut std::collections::HashMap<String, usize>, name: &str) 
 pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
     match function_name {
         // Функции с переменным числом аргументов — kwargs не задаём здесь
-        "print" | "array" | "set" => None,
+        "print" | "array" | "set" | "random" => None,
 
         // iterable + опциональный key (именованный key= поддерживается; varargs через позиционные вызовы)
         "min" => Some(vec!["iterable".to_string(), "key".to_string()]),
@@ -139,6 +176,8 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "int" => Some(vec!["value".to_string()]),
         "float" => Some(vec!["value".to_string()]),
         "isinf" => Some(vec!["value".to_string()]),
+        "copy" => Some(vec!["value".to_string()]),
+        "ord" => Some(vec!["ch".to_string()]),
         "bool" => Some(vec!["value".to_string()]),
         "str" => Some(vec!["value".to_string()]),
         "typeof" => Some(vec!["value".to_string()]),
@@ -155,11 +194,19 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "abs" => Some(vec!["n".to_string()]),
         "sqrt" => Some(vec!["n".to_string()]),
         "round" => Some(vec!["n".to_string()]),
+        "ceil" => Some(vec!["n".to_string()]),
+        "floor" => Some(vec!["n".to_string()]),
         "upper" => Some(vec!["str".to_string()]),
         "lower" => Some(vec!["str".to_string()]),
         "trim" => Some(vec!["str".to_string()]),
         "isupper" => Some(vec!["str".to_string()]),
         "islower" => Some(vec!["str".to_string()]),
+        "replace" => Some(vec![
+            "str".to_string(),
+            "find".to_string(),
+            "replacement".to_string(),
+        ]),
+        "capitalize" => Some(vec!["str".to_string()]),
         "pop" => Some(vec!["array".to_string(), "idx".to_string()]),
         "unique" => Some(vec!["array".to_string()]),
         "reverse" => Some(vec!["array".to_string()]),
@@ -187,6 +234,8 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "random_int" => Some(vec!["min".to_string(), "max".to_string()]),
         "random_seed" => Some(vec!["seed".to_string()]),
         "date_to_unix" => Some(vec!["value".to_string()]),
+        "parse_date" => Some(vec!["string".to_string(), "format".to_string()]),
+        "format_date" => Some(vec!["date".to_string(), "format".to_string()]),
         "duration" => Some(vec![
             "seconds".to_string(),
             "minutes".to_string(),
@@ -206,6 +255,8 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         "split" => Some(vec!["str".to_string(), "delim".to_string()]),
         "join" => Some(vec!["array".to_string(), "delim".to_string()]),
         "contains" => Some(vec!["str".to_string(), "substr".to_string()]),
+        "starts_with" => Some(vec!["str".to_string(), "prefix".to_string()]),
+        "ends_with" => Some(vec!["str".to_string(), "suffix".to_string()]),
         "push" => Some(vec!["array".to_string(), "item".to_string()]),
         "isinstance" => Some(vec!["value".to_string(), "type".to_string()]),
         "money" => Some(vec!["amount".to_string(), "format".to_string()]),
@@ -218,8 +269,18 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "header_row".to_string(),
             "sheet_name".to_string(),
             "header".to_string(),
+            "headerT".to_string(),
+        ]),
+        "read" => Some(vec![
+            "path".to_string(),
+            "header_row".to_string(),
+            "sheet_name".to_string(),
+            "header".to_string(),
+            "headerT".to_string(),
         ]),
         "read_file_bin" => Some(vec!["path".to_string()]),
+        "save" => Some(vec!["data".to_string(), "filename".to_string()]),
+        "save_tables_sqlite" => Some(vec!["tables".to_string(), "filename".to_string()]),
         "table_head" => Some(vec!["table".to_string(), "n".to_string()]),
         "table_tail" => Some(vec!["table".to_string(), "n".to_string()]),
         "table_select" => Some(vec!["table".to_string(), "cols".to_string()]),
@@ -233,6 +294,43 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "col".to_string(),
             "op".to_string(),
             "value".to_string(),
+        ]),
+        "table_drop_nulls" => Some(vec!["table".to_string(), "column".to_string()]),
+        "table_replace_nulls" => Some(vec![
+            "table".to_string(),
+            "column_or_replacement".to_string(),
+            "replacement".to_string(),
+        ]),
+        "table_row_number" => Some(vec![
+            "table".to_string(),
+            "column_name".to_string(),
+            "start_from".to_string(),
+        ]),
+        "table_distinct" => Some(vec!["table".to_string(), "columns".to_string()]),
+        "table_value_map" => Some(vec![
+            "table".to_string(),
+            "column".to_string(),
+            "mappings".to_string(),
+        ]),
+        "table_aggregate" => Some(vec!["table".to_string(), "spec".to_string()]),
+        "table_aggregate_group" => Some(vec!["table".to_string(), "spec".to_string()]),
+        "archive" => Some(vec!["path".to_string()]),
+        "datasource" => Some(vec!["config".to_string()]),
+        "table_rename" => Some(vec!["table".to_string(), "mapping".to_string(), "new_name".to_string()]),
+        "table_drop_column" => Some(vec!["table".to_string(), "column".to_string()]),
+        "table_add_column" => Some(vec!["table".to_string(), "name".to_string(), "value".to_string()]),
+        "table_map" => Some(vec!["table".to_string(), "column".to_string(), "function".to_string()]),
+        "table_split_column" => Some(vec![
+            "table".to_string(),
+            "column".to_string(),
+            "iter_fn".to_string(),
+            "new_columns".to_string(),
+        ]),
+        "table_join_columns" => Some(vec![
+            "table".to_string(),
+            "source_columns".to_string(),
+            "new_column".to_string(),
+            "delimiter".to_string(),
         ]),
         "merge_tables" => Some(vec!["tables".to_string(), "mode".to_string()]),
         "cross_join" => Some(vec!["left".to_string(), "right".to_string()]),
@@ -334,4 +432,61 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
         // Функция не найдена или не поддерживает именованные аргументы
         _ => None,
     }
+}
+
+/// Optional trailing `**kwargs` parameter name for natives that collect extra keyword arguments.
+pub fn get_native_varkw_param(function_name: &str) -> Option<&'static str> {
+    match function_name {
+        "save_tables_sqlite" => Some("kwargs"),
+        _ => None,
+    }
+}
+
+/// Whether a call site must emit `CallVariadic` due to spread syntax at the call site.
+pub fn call_needs_variadic_opcode(args: &[crate::parser::ast::Arg]) -> bool {
+    use crate::parser::ast::Arg;
+    args.iter().any(|a| matches!(a, Arg::UnpackArray(_) | Arg::UnpackObject(_)))
+}
+
+/// Pack CallVariadic operand: `(n_pos) | (n_star << 8) | (n_named << 16) | (n_starstar << 24)`.
+pub fn pack_call_variadic_operand(
+    n_pos: usize,
+    n_star: usize,
+    n_named: usize,
+    n_starstar: usize,
+) -> u32 {
+    ((n_starstar as u32) << 24)
+        | ((n_named as u32) << 16)
+        | ((n_star as u32) << 8)
+        | (n_pos as u32)
+}
+
+/// Parameter names for **method** calls (`receiver.method(...)`), distinct from globals with the same name.
+pub fn get_method_param_names(method: &str) -> Option<Vec<String>> {
+    match method {
+        "push" => Some(vec!["item".to_string(), "ignore".to_string()]),
+        "save_csv" | "save_sqlite" => Some(vec!["path".to_string()]),
+        _ => None,
+    }
+}
+
+/// Map legacy/alternate keyword names to canonical method parameter names.
+pub fn normalize_method_kwargs(method: &str, args: &[crate::parser::ast::Arg]) -> Vec<crate::parser::ast::Arg> {
+    use crate::parser::ast::Arg;
+    args.iter()
+        .map(|a| match a {
+            Arg::Named { name, value } => {
+                let canonical = match (method, name.as_str()) {
+                    ("push", "data") => "item",
+                    ("save_csv" | "save_sqlite", "filename" | "namefile") => "path",
+                    _ => name.as_str(),
+                };
+                Arg::Named {
+                    name: canonical.to_string(),
+                    value: value.clone(),
+                }
+            }
+            other => other.clone(),
+        })
+        .collect()
 }

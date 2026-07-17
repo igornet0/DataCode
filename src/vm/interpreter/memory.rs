@@ -16,11 +16,9 @@ use crate::vm::module_object::BUILTIN_END;
 use crate::vm::modules;
 use crate::vm::stack;
 use crate::vm::store_convert::{
-    load_value, store_value, store_value_arena, tagged_to_value_id_arena,
+    load_value, slot_to_value, store_value, store_value_arena, tagged_to_value_id_arena,
 };
 use crate::vm::types::VMStatus;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 /// Execute LoadGlobal(index).
 #[allow(clippy::too_many_arguments)]
@@ -51,7 +49,11 @@ pub(crate) fn op_load_global(
             .map(|n| n.as_str())
             == Some("__constructing_class__");
     // Per-module isolation: resolve from frame's module namespace (and builtins) when frame has module_name.
-    if let Some(ref mod_name) = frame.module_name {
+    let load_mod_name = frame
+        .module_name
+        .clone()
+        .or_else(|| frame.function.module_name.clone());
+    if let Some(ref mod_name) = load_mod_name {
         if is_constructing_class_load {
             // Fall through to globals path so we use caller's __constructing_class__ (leaf class), not module export.
         } else if index < BUILTIN_END {
@@ -97,7 +99,22 @@ pub(crate) fn op_load_global(
                     .chunk
                     .global_names
                     .get(&index)
-                    .map(String::as_str);
+                    .map(String::as_str)
+                    .or_else(|| global_names.get(&index).map(String::as_str));
+                // Prefer host VM globals only when THIS index is actually named the same in the host
+                // name table. Module chunk indices are not host indices: treating chunk name presence
+                // alone as "name_matches" was a tautology and leaked unrelated host objects (e.g.
+                // a Settings instance) into get_settings' `settings` load.
+                if var_name != Some("__constructing_class__") && index < globals.len() {
+                    let host_name = global_names.get(&index).map(|n| n.as_str());
+                    if host_name == var_name {
+                        let id = globals[index].resolve_to_value_id(value_store);
+                        if !matches!(load_value(id, value_store, heavy_store), Value::Null) {
+                            stack::push_id(stack, id);
+                            return Ok(VMStatus::Continue);
+                        }
+                    }
+                }
                 let class_name = frame.function.name.split("::").next().unwrap_or("");
                 let value_opt = {
                     let module = rc.borrow();
@@ -220,9 +237,14 @@ pub(crate) fn op_load_global(
 
     let mut effective_index = index;
     let argv_slot_for_resolve = unsafe { (*vm_ptr).get_argv_slot_index() };
+    const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
     if index >= globals.len() {
-        // Resolve by name from current chunk (e.g. merged module function with unpatched sentinel)
-        if let Some(var_name) = frame.function.chunk.global_names.get(&index) {
+        // Main chunk: never resolve undefined sentinel after ImportFrom — internal module
+        // names (e.g. `settings`) may exist in caller global_names for patched module functions
+        // but must not become visible to unimported bare names in the importer.
+        if frame.function.name == "<main>" && index == UNDEFINED_GLOBAL_SENTINEL {
+            // keep effective_index out of bounds → Undefined variable below
+        } else if let Some(var_name) = frame.function.chunk.global_names.get(&index) {
             let real_idx_opt = if *var_name == "argv" && argv_slot_for_resolve.is_some() {
                 argv_slot_for_resolve
             } else {
@@ -501,36 +523,48 @@ pub(crate) fn op_store_global(
     frames: &mut Vec<CallFrame>,
     globals: &mut Vec<GlobalSlot>,
     global_names: &mut std::collections::BTreeMap<usize, String>,
+    explicit_global_names: &std::collections::BTreeMap<usize, String>,
     exception_handlers: &mut Vec<ExceptionHandler>,
     value_store: &mut ValueStore,
     heavy_store: &mut HeavyStore,
     vm_ptr: *mut crate::vm::vm::Vm,
 ) -> Result<VMStatus, LangError> {
     let tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+    let tv = crate::vm::array_view::materialize_tagged_if_array_view(tv, value_store, heavy_store);
     // Per-module isolation: write to frame's module namespace when frame has module_name.
-    let store_mod_name = frames.last().and_then(|f| f.module_name.clone());
+    let store_mod_name = frames.last().and_then(|f| {
+        f.module_name
+            .clone()
+            .or_else(|| f.function.module_name.clone())
+            .or_else(|| {
+                let registry = unsafe { (*vm_ptr).get_module_registry() };
+                crate::vm::module_object::module_name_for_function_index(&registry, f.function_index)
+            })
+    });
     let store_global_name = frames
         .last()
-        .and_then(|f| f.function.chunk.global_names.get(&index).cloned());
-    if let Some(ref mod_name) = store_mod_name {
-        if index >= BUILTIN_END {
+        .and_then(|f| f.function.chunk.global_names.get(&index).cloned())
+        .or_else(|| global_names.get(&index).cloned())
+        .or_else(|| explicit_global_names.get(&index).cloned());
+    // Defer namespace sync until the final stored value is known (objects may need store_value_arena).
+    let module_export = if index >= BUILTIN_END {
+        if let (Some(ref mod_name), Some(ref name)) = (&store_mod_name, &store_global_name) {
             let module_rc = {
                 let modules = unsafe { (*vm_ptr).get_modules() };
                 modules.get(mod_name).cloned()
             };
-            if let Some(rc) = module_rc {
-                if let Some(name) = store_global_name {
-                    let value = load_value(
-                        tagged_to_value_id_arena(tv, value_store),
-                        value_store,
-                        heavy_store,
-                    );
-                    rc.borrow().set_export(&name, value);
-                    return Ok(VMStatus::Continue);
-                }
-            }
+            module_rc.map(|rc| (rc, name.clone()))
+        } else {
+            None
         }
-    }
+    } else {
+        None
+    };
+    let sync_module_export = |value: Value| {
+        if let Some((rc, name)) = &module_export {
+            rc.borrow().set_export(name, value);
+        }
+    };
     // Do not allow script to overwrite the argv slot (host-only, read-only).
     // Debug: see if StoreGlobal is ever executed for constructor new_0 (diagnose Null in export).
     let name_at_idx = global_names.get(&index).map(|s| s.as_str());
@@ -565,6 +599,7 @@ pub(crate) fn op_store_global(
             globals.resize(index + 1, default_global_slot());
         }
         globals[index] = GlobalSlot::Inline(tv);
+        sync_module_export(slot_to_value(tv, value_store, heavy_store));
         return Ok(VMStatus::Continue);
     }
     let value_id = tagged_to_value_id_arena(tv, value_store);
@@ -584,6 +619,8 @@ pub(crate) fn op_store_global(
                 | ValueCell::ModuleFunction { .. }
                 | ValueCell::NativeFunction(_)
                 | ValueCell::String(_)
+                | ValueCell::Int(_)
+                | ValueCell::Float(_)
                 | ValueCell::Number(_)
                 | ValueCell::Bool(_)
                 | ValueCell::Null
@@ -593,6 +630,13 @@ pub(crate) fn op_store_global(
                 | ValueCell::PluginOpaque { .. }
                 | ValueCell::Window(_)
                 | ValueCell::Enumerate { .. }
+                | ValueCell::Date { .. }
+                | ValueCell::Duration { .. }
+                | ValueCell::ObjectFieldList { .. }
+                | ValueCell::Set(_)
+                | ValueCell::GridBufferI32(_)
+                | ValueCell::GridBufferU8(_)
+                | ValueCell::GridHeapU32(_)
                 | ValueCell::Ellipsis => true,
                 ValueCell::Object(_) | ValueCell::Heavy(_) => false,
             };
@@ -601,13 +645,17 @@ pub(crate) fn op_store_global(
                     globals.resize(index + 1, default_global_slot());
                 }
                 globals[index] = GlobalSlot::Heap(value_id);
+                sync_module_export(load_value(value_id, value_store, heavy_store));
                 return Ok(VMStatus::Continue);
             }
         }
     }
     let mut value = load_value(value_id, value_store, heavy_store);
     if let Value::Table(table_rc) = &mut value {
-        if let Some(var_name) = global_names.get(&index) {
+        let var_name = global_names
+            .get(&index)
+            .or_else(|| explicit_global_names.get(&index));
+        if let Some(var_name) = var_name {
             table_rc.borrow_mut().set_name(var_name.clone());
         }
         // Table is already in heap; no need to store_value again.
@@ -615,25 +663,26 @@ pub(crate) fn op_store_global(
             globals.resize(index + 1, default_global_slot());
         }
         globals[index] = GlobalSlot::Heap(value_id);
+        sync_module_export(load_value(value_id, value_store, heavy_store));
         return Ok(VMStatus::Continue);
     }
     let (super_name, class_name, class_meta_opt) = if let Value::Object(class_rc) = &value {
         let class_obj = class_rc.borrow();
-        let super_name = class_obj.get("__superclass").and_then(|v| {
+        let super_name = class_obj.str_key_get("__superclass").and_then(|v| {
             if let Value::String(s) = v {
                 Some(s.clone())
             } else {
                 None
             }
         });
-        let class_name = class_obj.get("__class_name").and_then(|v| {
+        let class_name = class_obj.str_key_get("__class_name").and_then(|v| {
             if let Value::String(s) = v {
                 Some(s.clone())
             } else {
                 None
             }
         });
-        let class_meta_opt = class_obj.get("metadata").cloned();
+        let class_meta_opt = class_obj.str_key_get("metadata").cloned();
         (super_name, class_name, class_meta_opt)
     } else {
         (None, None, None)
@@ -648,12 +697,12 @@ pub(crate) fn op_store_global(
                 let parent_id = globals[parent_idx].resolve_to_value_id(value_store);
                 let parent_val = load_value(parent_id, value_store, heavy_store);
                 if let Value::Object(parent_rc) = &parent_val {
-                    let meta_opt = parent_rc.borrow().get("metadata").cloned();
+                    let meta_opt = parent_rc.borrow().str_key_get("metadata").cloned();
                     if let Some(Value::Object(meta_rc)) = meta_opt {
                         let (is_meta, tables_opt) = {
                             let meta_ref = meta_rc.borrow();
                             let is_m = meta_ref
-                                .get("__meta")
+                                .str_key_get("__meta")
                                 .and_then(|v| {
                                     if let Value::Bool(b) = v {
                                         Some(*b)
@@ -662,7 +711,7 @@ pub(crate) fn op_store_global(
                                     }
                                 })
                                 .unwrap_or(false);
-                            let tables = meta_ref.get("tables").cloned();
+                            let tables = meta_ref.str_key_get("tables").cloned();
                             (is_m, tables)
                         };
                         if is_meta {
@@ -670,20 +719,22 @@ pub(crate) fn op_store_global(
                                 tables_rc.borrow_mut().push(stored_value.clone());
                             }
                             let mut meta = meta_rc.borrow_mut();
-                            if !meta.contains_key("classes") {
-                                meta.insert(
+                            if !meta.str_key_contains("classes") {
+                                meta.str_key_insert(
                                     "classes".to_string(),
-                                    Value::Object(Rc::new(RefCell::new(
-                                        std::collections::HashMap::new(),
-                                    ))),
+                                    Value::legacy_object(std::collections::HashMap::new()),
                                 );
                             }
-                            let classes_rc_opt = meta.get("classes").cloned();
+                            let classes_rc_opt = meta.str_key_get("classes").cloned();
                             drop(meta);
                             if let Some(Value::Object(classes_rc)) = classes_rc_opt {
-                                let mut classes = classes_rc.borrow_mut();
-                                if let Some(ref name) = class_name {
-                                    classes.insert(name.clone(), stored_value.clone());
+                                {
+                                    let mut o = classes_rc.borrow_mut();
+                                    if let Some(classes) = o.legacy_mut() {
+                                        if let Some(ref name) = class_name {
+                                            classes.insert(name.clone(), stored_value.clone());
+                                        }
+                                    }
                                 }
                                 let mut current_name = parent_name.clone();
                                 let mut seen_ancestors = std::collections::HashSet::new();
@@ -701,8 +752,8 @@ pub(crate) fn op_store_global(
                                             let anc_val = load_value(aid, value_store, heavy_store);
                                             if let Value::Object(ancestor_rc) = &anc_val {
                                                 let a = ancestor_rc.borrow();
-                                                let has_meta = a.contains_key("metadata");
-                                                let next = a.get("__superclass").and_then(|v| {
+                                                let has_meta = a.str_key_contains("metadata");
+                                                let next = a.str_key_get("__superclass").and_then(|v| {
                                                     if let Value::String(s) = v {
                                                         Some(s.clone())
                                                     } else {
@@ -724,10 +775,13 @@ pub(crate) fn op_store_global(
                                             if idx < globals.len() {
                                                 let cid =
                                                     globals[idx].resolve_to_value_id(value_store);
-                                                classes.insert(
-                                                    current_name.clone(),
-                                                    load_value(cid, value_store, heavy_store),
-                                                );
+                                                let mut o = classes_rc.borrow_mut();
+                                                if let Some(classes) = o.legacy_mut() {
+                                                    classes.insert(
+                                                        current_name.clone(),
+                                                        load_value(cid, value_store, heavy_store),
+                                                    );
+                                                }
                                             }
                                         }
                                     }
@@ -747,16 +801,19 @@ pub(crate) fn op_store_global(
     if let Some(name) = class_name {
         if let Some(Value::Object(meta_rc)) = class_meta_opt {
             let mut meta = meta_rc.borrow_mut();
-            if !meta.contains_key("classes") {
-                meta.insert(
+            if !meta.str_key_contains("classes") {
+                meta.str_key_insert(
                     "classes".to_string(),
-                    Value::Object(Rc::new(RefCell::new(std::collections::HashMap::new()))),
+                    Value::legacy_object(std::collections::HashMap::new()),
                 );
             }
-            let classes_rc_opt = meta.get("classes").cloned();
+            let classes_rc_opt = meta.str_key_get("classes").cloned();
             drop(meta);
             if let Some(Value::Object(classes_rc)) = classes_rc_opt {
-                classes_rc.borrow_mut().insert(name, stored_value.clone());
+                let mut o = classes_rc.borrow_mut();
+                if let Some(classes) = o.legacy_mut() {
+                    classes.insert(name, stored_value.clone());
+                }
             }
         }
     }
@@ -764,5 +821,6 @@ pub(crate) fn op_store_global(
         globals.resize(index + 1, default_global_slot());
     }
     globals[index] = GlobalSlot::Heap(final_id);
-    return Ok(VMStatus::Continue);
+    sync_module_export(stored_value);
+    Ok(VMStatus::Continue)
 }

@@ -6,4 +6,4 @@ mod resolve_callee;
 mod unpack;
 
 pub(crate) use execute_call::execute_call;
-pub(crate) use unpack::execute_call_with_unpack;
+pub(crate) use unpack::{execute_call_variadic, execute_call_with_unpack};

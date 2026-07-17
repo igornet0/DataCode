@@ -186,9 +186,16 @@ impl ExceptionHandler {
                     // Нашли подходящий catch блок
                     handler.had_error = true;
 
-                    // Очищаем стек до нужной высоты
-                    while vm_stack.len() > handler.stack_height {
-                        vm_stack.pop();
+                    // Очищаем стек до нужной высоты (logical watermark + physical truncate)
+                    if let Some(vm_ptr) = crate::vm::vm::current_vm_ptr() {
+                        let vm = unsafe { &mut *vm_ptr };
+                        crate::vm::stack::truncate_to(
+                            vm_stack,
+                            &mut vm.stack_sp,
+                            handler.stack_height,
+                        );
+                    } else {
+                        vm_stack.truncate(handler.stack_height);
                     }
 
                     // Удаляем все фреймы до фрейма с обработчиком

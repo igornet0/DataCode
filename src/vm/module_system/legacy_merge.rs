@@ -9,9 +9,7 @@
 //! `pub(crate)`). Enable Cargo feature `legacy_vm_merge` if you need a future public re-export
 //! (currently reserved; same behavior as default build).
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::common::value::Value;
 use crate::common::value_store::ValueStore;
@@ -115,33 +113,33 @@ pub(crate) fn merge_globals_from_into(
             Value::Object(obj_rc) => {
                 let obj = obj_rc.borrow();
                 let mut new_obj = HashMap::new();
-                for (key, val) in obj.iter() {
+                for (key, val) in obj.str_key_entries_cloned() {
                     let updated_val = match val {
                         Value::Function(function_index) => {
-                            Value::Function(start_function_index + *function_index)
+                            Value::Function(start_function_index + function_index)
                         }
                         Value::NativeFunction(i) => {
-                            if *i >= other_natives.len() {
-                                val.clone()
-                            } else if let Some(fn_ptr) = other_natives[*i].as_fn_ptr() {
+                            if i >= other_natives.len() {
+                                Value::NativeFunction(i)
+                            } else if let Some(fn_ptr) = other_natives[i].as_fn_ptr() {
                                 let remapped = target_natives[BUILTIN_COUNT..]
                                     .iter()
                                     .position(|e| e.as_fn_ptr() == Some(fn_ptr))
                                     .map(|pos| BUILTIN_COUNT + pos)
                                     .unwrap_or_else(|| {
-                                        target_natives.push(other_natives[*i].clone());
+                                        target_natives.push(other_natives[i].clone());
                                         target_natives.len() - 1
                                     });
                                 Value::NativeFunction(remapped)
                             } else {
-                                val.clone()
+                                Value::NativeFunction(i)
                             }
                         }
-                        _ => val.clone(),
+                        other => other,
                     };
-                    new_obj.insert(key.clone(), updated_val);
+                    new_obj.insert(key, updated_val);
                 }
-                Value::Object(Rc::new(RefCell::new(new_obj)))
+                Value::legacy_object(new_obj)
             }
             Value::NativeFunction(i) if i >= BUILTIN_COUNT => {
                 if i >= other_natives.len() {
@@ -348,39 +346,39 @@ pub(crate) fn merge_globals_from(
             Value::Object(obj_rc) => {
                 let obj = obj_rc.borrow();
                 let mut new_obj = HashMap::new();
-                for (key, val) in obj.iter() {
+                for (key, val) in obj.str_key_entries_cloned() {
                     let updated_val = match val {
                         Value::Function(function_index) => {
-                            Value::Function(start_function_index + *function_index)
+                            Value::Function(start_function_index + function_index)
                         }
                         Value::NativeFunction(i) => {
-                            if *i >= other_natives.len() {
-                                val.clone()
-                            } else if let Some(fn_ptr) = other_natives[*i].as_fn_ptr() {
-                                let remapped = if *i < target_natives.len()
-                                    && target_natives[*i].as_fn_ptr() == Some(fn_ptr)
+                            if i >= other_natives.len() {
+                                Value::NativeFunction(i)
+                            } else if let Some(fn_ptr) = other_natives[i].as_fn_ptr() {
+                                let remapped = if i < target_natives.len()
+                                    && target_natives[i].as_fn_ptr() == Some(fn_ptr)
                                 {
-                                    *i
+                                    i
                                 } else {
                                     target_natives[BUILTIN_COUNT..]
                                         .iter()
                                         .position(|e| e.as_fn_ptr() == Some(fn_ptr))
                                         .map(|pos| BUILTIN_COUNT + pos)
                                         .unwrap_or_else(|| {
-                                            target_natives.push(other_natives[*i].clone());
+                                            target_natives.push(other_natives[i].clone());
                                             target_natives.len() - 1
                                         })
                                 };
                                 Value::NativeFunction(remapped)
                             } else {
-                                val.clone()
+                                Value::NativeFunction(i)
                             }
                         }
-                        _ => val.clone(),
+                        other => other,
                     };
-                    new_obj.insert(key.clone(), updated_val);
+                    new_obj.insert(key, updated_val);
                 }
-                Value::Object(Rc::new(RefCell::new(new_obj)))
+                Value::legacy_object(new_obj)
             }
             Value::NativeFunction(i) if i >= BUILTIN_COUNT => {
                 if i >= other_natives.len() {

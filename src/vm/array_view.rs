@@ -2,6 +2,7 @@
 
 use crate::common::value::{ArrayViewData, ArrayViewSource, Value};
 use crate::common::value_store::{ValueCell, ValueId, ValueStore};
+use crate::common::TaggedValue;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::store_convert::slot_to_value;
 use std::cell::RefCell;
@@ -170,6 +171,38 @@ pub fn materialize_array_view(av: &ArrayViewData, store: &ValueStore, heap: &Hea
         }
     }
     Value::Array(Rc::new(RefCell::new(out)))
+}
+
+/// When assigning a slice view, store an owned copy so later mutations do not alias the parent.
+pub fn materialize_value_if_array_view(
+    value: Value,
+    store: &ValueStore,
+    heap: &HeavyStore,
+) -> Value {
+    match value {
+        Value::ArrayView(av) => materialize_array_view(&av, store, heap),
+        other => other,
+    }
+}
+
+/// Materialize heap-backed array views before storing into locals / fields.
+pub fn materialize_tagged_if_array_view(
+    tv: TaggedValue,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
+) -> TaggedValue {
+    if !tv.is_heap() {
+        return tv;
+    }
+    let id = tv.get_heap_id();
+    let v = crate::vm::store_convert::load_value(id, store, heap);
+    match v {
+        Value::ArrayView(av) => {
+            let mat = materialize_array_view(&av, store, heap);
+            TaggedValue::from_heap(crate::vm::store_convert::store_value(mat, store, heap))
+        }
+        _ => tv,
+    }
 }
 
 /// Store an [`ArrayViewData`] as [`ValueCell::ArrayView`] (store-backed) or [`ValueCell::Heavy`] (heap-backed).

@@ -3,114 +3,81 @@
 use crate::common::{
     error::{ErrorType, LangError},
     value::{GeneratorState, Value},
-    value_store::ValueStore,
+    value_store::{ValueId, ValueStore},
     TaggedValue,
 };
 use crate::debug_println;
 use crate::parser::ast::TypePart;
 use crate::vm::frame::CallFrame;
+use crate::vm::global_slot::GlobalSlot;
+use crate::vm::global_utils::get_superclass_chain;
 use crate::vm::heavy_store::HeavyStore;
-use crate::vm::store_convert::store_value;
+use crate::vm::store_convert::{load_value, store_value};
+use crate::vm::type_compat;
 use std::cell::RefCell;
 use std::rc::Rc;
 
-/// Проверяет, соответствует ли значение одному типу
-fn check_single_type(value: &Value, type_name: &str) -> bool {
-    let type_name_lower = type_name.to_lowercase();
-    if let Value::PluginOpaque { .. } = value {
-        return type_name_lower == "plugin_opaque";
-    }
-    match (value, type_name_lower.as_str()) {
-        // Числовые типы
-        (Value::Number(n), "int" | "integer") => n.fract() == 0.0,
-        (Value::Number(_), "float" | "num" | "number") => true,
-        // Строковые типы
-        (Value::String(_), "str" | "string") => true,
-        // Булевы типы
-        (Value::Bool(_), "bool" | "boolean") => true,
-        // Коллекции
-        (Value::Array(_) | Value::ArrayView(_) | Value::ByteBuffer(_), "array" | "list") => true,
-        (Value::Iterable(_), "iterable") => true,
-        (Value::Tuple(_), "tuple") => true,
-        (Value::Object(_), "object" | "dict" | "dictionary") => true,
-        (Value::Object(map_rc), "table") => {
-            // Object extends Table (cls Base(Table), class User(Base), etc.)
-            map_rc.borrow().get("__extends_table") == Some(&Value::Bool(true))
-        }
-        (Value::Table(_), "table") => true,
-        // Специальные типы
-        (Value::Null, "null" | "none") => true,
-        (Value::Path(_), "path") => true,
-        (
-            Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_),
-            "function" | "fn",
-        ) => true,
-        // Графические типы
-        (Value::Window(_), "window") => true,
-        (Value::Image(_), "image") => true,
-        (Value::Figure(_), "figure") => true,
-        (Value::Axis(_), "axis") => true,
-        (Value::DatabaseEngine(_), "database_engine") => true,
-        (Value::DatabaseCluster(_), "database_cluster") => true,
-        (Value::ColumnReference { .. }, "column") => true,
-        (Value::Generator(_), "generator") => true,
-        _ => false,
+use crate::bytecode::function::CapturedVar;
+
+/// Index of the frame whose `slots[parent_slot_index]` must be copied for a closure capture.
+#[inline]
+pub(crate) fn ancestor_frame_index_for_capture(
+    frames: &[CallFrame],
+    c: &CapturedVar,
+) -> Option<usize> {
+    if c.parent_function_index != usize::MAX {
+        frames
+            .iter()
+            .rposition(|f| f.function_index == c.parent_function_index)
+    } else {
+        let i = frames.len().saturating_sub(1 + c.ancestor_depth);
+        (i < frames.len()).then_some(i)
     }
 }
 
-/// Проверяет, соответствует ли значение хотя бы одному из типов (union: TypeName + LiteralStr)
+/// Проверяет, соответствует ли значение хотя бы одному из типов (union на уровне параметра).
 pub fn check_type_value(value: &Value, type_parts: &[TypePart]) -> bool {
-    type_parts.iter().any(|part| match part {
-        TypePart::LiteralStr(s) => matches!(value, Value::String(v) if v == s),
-        TypePart::TypeName(n) => check_single_type(value, n),
-    })
+    type_compat::value_matches_type_parts(value, type_parts, None)
+}
+
+/// Like [`check_type_value`], resolving user class supertypes via class objects in globals.
+pub fn check_type_value_with_globals(
+    value: &Value,
+    type_parts: &[TypePart],
+    globals: &mut [GlobalSlot],
+    global_names: &std::collections::BTreeMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &HeavyStore,
+) -> bool {
+    let chain = superclass_chain_for_instance(value, globals, global_names, store, heap);
+    type_compat::value_matches_type_parts(value, type_parts, chain.as_deref())
+}
+
+/// Class hierarchy for a class instance (`[Self, Parent, …]`) from globals, if applicable.
+pub fn superclass_chain_for_instance(
+    value: &Value,
+    globals: &mut [GlobalSlot],
+    global_names: &std::collections::BTreeMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &HeavyStore,
+) -> Option<Vec<String>> {
+    type_compat::instance_class_name(value)
+        .map(|cn| get_superclass_chain(globals, global_names, &cn, store, heap))
 }
 
 /// Форматирует список типов для сообщения об ошибке (LiteralStr в кавычках)
 pub fn format_type_parts(type_parts: &[TypePart]) -> String {
     type_parts
         .iter()
-        .map(|p| match p {
-            TypePart::TypeName(s) => s.clone(),
-            TypePart::LiteralStr(s) => format!("\"{}\"", s),
-        })
+        .map(TypePart::format_display)
         .collect::<Vec<_>>()
         .join(" | ")
 }
 
-/// Возвращает имя типа значения
+/// Возвращает имя типа значения (примитивы — статическая строка; классы — `"object"`).
+/// For error messages prefer [`type_compat::display_value_type`].
 pub fn get_type_name_value(value: &Value) -> &'static str {
-    match value {
-        Value::Number(n) => {
-            if n.fract() == 0.0 {
-                "int"
-            } else {
-                "float"
-            }
-        }
-        Value::Bool(_) => "bool",
-        Value::String(_) => "str",
-        Value::Array(_) | Value::ArrayView(_) | Value::ByteBuffer(_) => "array",
-        Value::Iterable(_) => "iterable",
-        Value::Tuple(_) => "tuple",
-        Value::Object(_) => "object",
-        Value::Table(_) => "table",
-        Value::Null => "null",
-        Value::Path(_) => "path",
-        Value::Uuid(_, _) => "uuid",
-        Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_) => "function",
-        Value::PluginOpaque { .. } => "plugin_opaque",
-        Value::Window(_) => "window",
-        Value::Image(_) => "image",
-        Value::Figure(_) => "figure",
-        Value::Axis(_) => "axis",
-        Value::DatabaseEngine(_) => "database_engine",
-        Value::DatabaseCluster(_) => "database_cluster",
-        Value::ColumnReference { .. } => "column",
-        Value::Enumerate { .. } => "enumerate",
-        Value::Generator(_) => "generator",
-        Value::Ellipsis => "ellipsis",
-    }
+    type_compat::primitive_display_value_type(value)
 }
 
 /// Setup a function call by creating a new call frame and setting up captured variables (Stage 1: stack/slots as ValueId).
@@ -124,6 +91,8 @@ pub fn setup_function_call(
     error_type_table: &mut Vec<String>,
     store: &mut ValueStore,
     heap: &mut HeavyStore,
+    globals: &mut [GlobalSlot],
+    global_names: &std::collections::BTreeMap<usize, String>,
 ) -> Result<Option<Value>, LangError> {
     if function_index >= functions.len() {
         return Err(LangError::runtime_error(
@@ -167,7 +136,8 @@ pub fn setup_function_call(
     // Проверяем типы аргументов, если указаны аннотации типов
     for (i, (arg, expected_types)) in effective_args.iter().zip(&function.param_types).enumerate() {
         if let Some(type_names) = expected_types {
-            if !check_type_value(arg, type_names) {
+            if !check_type_value_with_globals(arg, type_names, globals, global_names, store, heap)
+            {
                 let param_name = function
                     .param_names
                     .get(i)
@@ -178,7 +148,7 @@ pub fn setup_function_call(
                         "Argument '{}' expected type '{}', got '{}'",
                         param_name,
                         format_type_parts(type_names),
-                        get_type_name_value(arg)
+                        type_compat::display_value_type(arg)
                     ),
                     0,
                     ErrorType::TypeError,
@@ -228,11 +198,24 @@ pub fn setup_function_call(
         .iter()
         .map(|a| TaggedValue::from_heap(store_value(a.clone(), store, heap)))
         .collect();
-    let stack_start = stack.len();
+    let stack_start = crate::vm::stack::truncate_to_current_sp(stack);
     let mut new_frame = if function.is_cached {
-        CallFrame::new_with_cache(function.clone(), stack_start, args_tvs.clone(), store, heap)
+        CallFrame::new_with_cache(
+            function.clone(),
+            function_index,
+            stack_start,
+            args_tvs.clone(),
+            store,
+            heap,
+        )
     } else {
-        CallFrame::new(function.clone(), stack_start, store, heap)
+        CallFrame::new(
+            function.clone(),
+            function_index,
+            stack_start,
+            store,
+            heap,
+        )
     };
 
     if !function.chunk.error_type_table.is_empty() {
@@ -246,18 +229,17 @@ pub fn setup_function_call(
                     .slots
                     .resize(captured_var.local_slot_index + 1, TaggedValue::null());
             }
-            let ancestor_index = frames.len().saturating_sub(1 + captured_var.ancestor_depth);
-            if ancestor_index < frames.len() {
-                let ancestor_frame = &frames[ancestor_index];
-                if captured_var.parent_slot_index < ancestor_frame.slots.len() {
-                    new_frame.slots[captured_var.local_slot_index] =
-                        ancestor_frame.slots[captured_var.parent_slot_index];
-                } else {
-                    new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
+            if let Some(ancestor_index) = ancestor_frame_index_for_capture(frames, captured_var) {
+                if ancestor_index < frames.len() {
+                    let ancestor_frame = &frames[ancestor_index];
+                    if captured_var.parent_slot_index < ancestor_frame.slots.len() {
+                        new_frame.slots[captured_var.local_slot_index] =
+                            ancestor_frame.slots[captured_var.parent_slot_index];
+                        continue;
+                    }
                 }
-            } else {
-                new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
             }
+            new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
         }
     }
 
@@ -271,5 +253,153 @@ pub fn setup_function_call(
     }
 
     frames.push(new_frame);
+    store.enter_ephemeral();
+    Ok(None)
+}
+
+/// Like [`setup_function_call`], but passes canonical [`ValueId`]s as arguments (no rematerialize/copy of `this`).
+pub fn setup_function_call_with_arg_ids(
+    function_index: usize,
+    arg_ids: &[ValueId],
+    functions: &[crate::bytecode::Function],
+    stack: &mut Vec<crate::common::TaggedValue>,
+    frames: &mut Vec<CallFrame>,
+    error_type_table: &mut Vec<String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
+    globals: &mut [GlobalSlot],
+    global_names: &std::collections::BTreeMap<usize, String>,
+) -> Result<Option<Value>, LangError> {
+    if function_index >= functions.len() {
+        return Err(LangError::runtime_error(
+            format!(
+                "Function index {} out of bounds (functions.len() = {})",
+                function_index,
+                functions.len()
+            ),
+            0,
+        ));
+    }
+
+    let function = functions[function_index].clone();
+
+    if arg_ids.len() != function.arity {
+        return Err(LangError::runtime_error(
+            format!(
+                "Expected {} arguments but got {}",
+                function.arity,
+                arg_ids.len()
+            ),
+            0,
+        ));
+    }
+
+    for (i, (&arg_id, expected_types)) in arg_ids.iter().zip(&function.param_types).enumerate() {
+        if let Some(type_names) = expected_types {
+            let arg = load_value(arg_id, store, heap);
+            if !check_type_value_with_globals(&arg, type_names, globals, global_names, store, heap)
+            {
+                let param_name = function
+                    .param_names
+                    .get(i)
+                    .map(|s| s.as_str())
+                    .unwrap_or("unknown");
+                return Err(LangError::runtime_error_with_type(
+                    format!(
+                        "Argument '{}' expected type '{}', got '{}'",
+                        param_name,
+                        format_type_parts(type_names),
+                        type_compat::display_value_type(&arg)
+                    ),
+                    0,
+                    ErrorType::TypeError,
+                ));
+            }
+        }
+    }
+
+    if function.is_stream {
+        return Err(LangError::runtime_error(
+            "stream fn with captured variables is not supported yet".to_string(),
+            0,
+        ));
+    }
+
+    if function.is_cached {
+        use crate::bytecode::function::CacheKey;
+        let args: Vec<Value> = arg_ids
+            .iter()
+            .map(|&id| load_value(id, store, heap))
+            .collect();
+        if let Some(cache_key) = CacheKey::new(&args) {
+            if let Some(cache_rc) = &function.cache {
+                let cache = cache_rc.borrow();
+                if let Some(cached_result) = cache.map.get(&cache_key) {
+                    return Ok(Some(cached_result.clone()));
+                }
+            }
+        }
+    }
+
+    let args_tvs: Vec<TaggedValue> = arg_ids
+        .iter()
+        .map(|&id| TaggedValue::from_heap(id))
+        .collect();
+    let stack_start = crate::vm::stack::truncate_to_current_sp(stack);
+    let mut new_frame = if function.is_cached {
+        CallFrame::new_with_cache(
+            function.clone(),
+            function_index,
+            stack_start,
+            args_tvs.clone(),
+            store,
+            heap,
+        )
+    } else {
+        CallFrame::new(
+            function.clone(),
+            function_index,
+            stack_start,
+            store,
+            heap,
+        )
+    };
+
+    if !function.chunk.error_type_table.is_empty() {
+        *error_type_table = function.chunk.error_type_table.clone();
+    }
+
+    if !frames.is_empty() && !function.captured_vars.is_empty() {
+        for captured_var in &function.captured_vars {
+            if captured_var.local_slot_index >= new_frame.slots.len() {
+                new_frame
+                    .slots
+                    .resize(captured_var.local_slot_index + 1, TaggedValue::null());
+            }
+            if let Some(ancestor_index) = ancestor_frame_index_for_capture(frames, captured_var) {
+                if ancestor_index < frames.len() {
+                    let ancestor_frame = &frames[ancestor_index];
+                    if captured_var.parent_slot_index < ancestor_frame.slots.len() {
+                        new_frame.slots[captured_var.local_slot_index] =
+                            ancestor_frame.slots[captured_var.parent_slot_index];
+                        continue;
+                    }
+                }
+            }
+            new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
+        }
+    }
+
+    let param_start_index = function.captured_vars.len();
+    for (i, &arg_tv) in args_tvs.iter().enumerate() {
+        let slot_index = param_start_index + i;
+        if slot_index >= new_frame.slots.len() {
+            new_frame.slots.resize(slot_index + 1, TaggedValue::null());
+        }
+        new_frame.slots[slot_index] = arg_tv;
+    }
+
+    frames.push(new_frame);
+    store.enter_ephemeral();
     Ok(None)
 }

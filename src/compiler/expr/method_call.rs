@@ -8,6 +8,115 @@ use crate::compiler::builtin_methods::{self, ReceiverFamily, ZeroArgDispatch};
 use crate::compiler::context::CompilationContext;
 use crate::compiler::expr;
 use crate::compiler::variable::VariableResolver;
+
+/// Compile-time filter for [`OpCode::SetAddIntegral`] / [`OpCode::SetDiscardIntegral`].
+/// Non-integral keys fall back at runtime to hash-based mutation (see `set_mut_material_from_stack`).
+fn set_method_key_may_be_integral(key_expr: &Expr) -> bool {
+    match key_expr {
+        Expr::Literal {
+            value: Value::Number(n),
+            ..
+        } => n.fract() == 0.0,
+        Expr::Literal {
+            value: Value::Int(_), ..
+        } => true,
+        Expr::Variable { .. } => true,
+        _ => false,
+    }
+}
+
+fn is_grid_module(receiver: Option<&Expr>) -> bool {
+    matches!(receiver, Some(Expr::Variable { name, .. }) if name == "grid")
+}
+
+fn expr_var_name(expr: &Expr) -> Option<&str> {
+    if let Expr::Variable { name, .. } = expr {
+        Some(name.as_str())
+    } else {
+        None
+    }
+}
+
+fn try_emit_grid_module_opcode(
+    ctx: &mut CompilationContext,
+    method: &str,
+    args: &[Arg],
+    line: usize,
+) -> bool {
+    let slot2 = |a0: &Expr, a1: &Expr| {
+        let b = expr_var_name(a0)?;
+        let i = expr_var_name(a1)?;
+        let bs = ctx.scope.resolve_local(b)?;
+        let is = ctx.scope.resolve_local(i)?;
+        Some((bs, is))
+    };
+    let slot3 = |a0: &Expr, a1: &Expr, a2: &Expr| {
+        let b = expr_var_name(a0)?;
+        let i = expr_var_name(a1)?;
+        let v = expr_var_name(a2)?;
+        let bs = ctx.scope.resolve_local(b)?;
+        let is = ctx.scope.resolve_local(i)?;
+        let vs = ctx.scope.resolve_local(v)?;
+        Some((bs, is, vs))
+    };
+    match (method, args) {
+        ("get_i32", [Arg::Positional(a0), Arg::Positional(a1)]) => {
+            if let Some((bs, is)) = slot2(a0, a1) {
+                ctx.chunk
+                    .write_with_line(OpCode::GridGetI32(bs, is), line);
+                return true;
+            }
+        }
+        ("set_i32", [Arg::Positional(a0), Arg::Positional(a1), Arg::Positional(a2)]) => {
+            if let Some((bs, is, vs)) = slot3(a0, a1, a2) {
+                ctx.chunk
+                    .write_with_line(OpCode::GridSetI32(bs, is, vs), line);
+                return true;
+            }
+        }
+        ("get_u8", [Arg::Positional(a0), Arg::Positional(a1)]) => {
+            if let Some((bs, is)) = slot2(a0, a1) {
+                ctx.chunk
+                    .write_with_line(OpCode::GridGetU8(bs, is), line);
+                return true;
+            }
+        }
+        ("set_u8", [Arg::Positional(a0), Arg::Positional(a1), Arg::Positional(a2)]) => {
+            if let Some((bs, is, vs)) = slot3(a0, a1, a2) {
+                ctx.chunk
+                    .write_with_line(OpCode::GridSetU8(bs, is, vs), line);
+                return true;
+            }
+        }
+        ("test_blocked", [Arg::Positional(a0), Arg::Positional(a1)]) => {
+            if let Some((bs, is)) = slot2(a0, a1) {
+                ctx.chunk
+                    .write_with_line(OpCode::GridTestBlocked(bs, is), line);
+                return true;
+            }
+        }
+        (
+            "heap_push",
+            [Arg::Positional(a0), Arg::Positional(a1), Arg::Positional(a2)],
+        ) => {
+            if let Some((hs, ns, fs)) = slot3(a0, a1, a2) {
+                ctx.chunk
+                    .write_with_line(OpCode::GridHeapPush(hs, ns, fs), line);
+                return true;
+            }
+        }
+        ("heap_len", [Arg::Positional(a0)]) => {
+            if let Some(h) = expr_var_name(a0) {
+                if let Some(hs) = ctx.scope.resolve_local(h) {
+                    ctx.chunk.write_with_line(OpCode::GridHeapLen(hs), line);
+                    return true;
+                }
+            }
+        }
+        _ => {}
+    }
+    false
+}
 use crate::debug_println;
 use crate::parser::ast::{Arg, Expr};
 
@@ -33,6 +142,20 @@ fn object_kind_lacks_visibility_metadata(o: &ObjectKind) -> bool {
         && !o.str_key_contains("__protected_fields")
         && !o.str_key_contains("__private_methods")
         && !o.str_key_contains("__protected_methods")
+}
+
+/// Whether `.get()` / `.clear()` may use plain-dict fast opcodes (`ObjectGetIntegral` / `ObjectClear`).
+/// Class instances (`map = HashMap()`) must use `GetArrayElement + Call` so user `fn get` runs.
+fn should_emit_plain_dict_method_fast_path(
+    receiver_ast: Option<&Expr>,
+    ctx: &CompilationContext,
+) -> bool {
+    match receiver_ast {
+        Some(Expr::Variable { name, .. }) => !ctx.known_class_instance_vars.contains(name),
+        Some(e) if expr_is_definitely_plain_dict_literal(e) => true,
+        Some(_) => false,
+        None => false,
+    }
 }
 
 /// `cluster.get("primary")` keeps the DB receiver path (args evaluated before receiver).
@@ -61,7 +184,7 @@ fn compile_call_arg(ctx: &mut CompilationContext, arg: &Arg) -> Result<(), LangE
     match arg {
         Arg::Positional(expr) => expr::compile_expr(ctx, expr),
         Arg::Named { value, .. } => expr::compile_expr(ctx, value),
-        Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr),
+        Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => expr::compile_expr(ctx, expr),
     }
 }
 
@@ -74,6 +197,17 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
     } = expr
     {
         *ctx.current_line = *line;
+
+        if method.starts_with('@') {
+            return Err(LangError::ParseError {
+                message: format!(
+                    "Special methods cannot be called directly (got `.{}()`); they are invoked by operators and builtins",
+                    method
+                ),
+                line: *line,
+                file: ctx.source_name.map(|s| s.to_string()),
+            });
+        }
 
         // Специальная обработка для метода clone()
         if method == "clone" {
@@ -299,6 +433,7 @@ fn compile_generic_method(
     let is_string_method = matches!(
         method,
         "lower" | "upper" | "isupper" | "islower" | "trim" | "join" | "contains" | "split"
+            | "replace" | "capitalize"
     );
 
     if is_axis_method {
@@ -413,7 +548,10 @@ fn compile_string_method(
         ctx.chunk
             .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
     } else {
-        if matches!(method, "lower" | "upper" | "isupper" | "islower" | "trim") && n != 0 {
+        if matches!(
+            method,
+            "lower" | "upper" | "isupper" | "islower" | "trim" | "capitalize"
+        ) && n != 0 {
             return Err(LangError::ParseError {
                 message: format!("string.{}() takes no arguments", method),
                 line,
@@ -423,6 +561,13 @@ fn compile_string_method(
         if matches!(method, "split" | "contains") && n != 1 {
             return Err(LangError::ParseError {
                 message: format!("string.{}() takes exactly 1 argument", method),
+                line,
+                file: None,
+            });
+        }
+        if method == "replace" && n != 2 {
+            return Err(LangError::ParseError {
+                message: "string.replace() takes exactly 2 arguments (find, replacement)".to_string(),
                 line,
                 file: None,
             });
@@ -453,14 +598,31 @@ fn compile_module_method(
     method_receiver_ast: Option<&Expr>,
 ) -> Result<(), LangError> {
     // Generic method call (module functions or class instance methods): pass receiver as first arg so method receives (self, arg_1, ...).
+    let normalized_args = crate::compiler::natives::normalize_method_kwargs(method, args);
+    let method_param_owned = override_native_param_names
+        .is_none()
+        .then(|| crate::compiler::natives::get_method_param_names(method))
+        .flatten();
+    let method_param_refs: Vec<&str> = method_param_owned
+        .as_ref()
+        .map(|v| v.iter().map(|s| s.as_str()).collect())
+        .unwrap_or_default();
+    let effective_override = override_native_param_names.or_else(|| {
+        if method_param_refs.is_empty() {
+            None
+        } else {
+            Some(method_param_refs.as_slice())
+        }
+    });
+
     let resolved_args = match args::resolve_function_args(
         method,
-        args,
+        &normalized_args,
         None,
         line,
         ctx.source_name,
         None,
-        override_native_param_names,
+        effective_override,
     ) {
         Ok(resolved) => resolved,
         Err(e) => {
@@ -478,7 +640,7 @@ fn compile_module_method(
                     .map(|a| match a {
                         Arg::Positional(e) => Arg::Positional(e.clone()),
                         Arg::Named { value, .. } => Arg::Positional(value.clone()),
-                        Arg::UnpackObject(e) => Arg::Positional(e.clone()),
+                        Arg::UnpackObject(e) | Arg::UnpackArray(e) => Arg::Positional(e.clone()),
                     })
                     .collect()
             } else {
@@ -499,7 +661,7 @@ fn compile_module_method(
             .map(|a| match a {
                 Arg::Positional(e) => Arg::Positional(e.clone()),
                 Arg::Named { value, .. } => Arg::Positional(value.clone()),
-                Arg::UnpackObject(e) => Arg::Positional(e.clone()),
+                Arg::UnpackObject(e) | Arg::UnpackArray(e) => Arg::Positional(e.clone()),
             })
             .collect::<Vec<_>>()
     } else {
@@ -534,14 +696,59 @@ fn compile_module_method(
         return Ok(());
     }
 
+    // Plain `set.add` / `set.discard` on a local variable — stack `[set, key]` (see `op_set_add_integral`).
+    // To avoid miscompiling class methods named `add` (e.g. `Calc.add`), we skip this fast path
+    // when the receiver variable looks like a class instance (UpperCamelCase constructor assignment).
+    if matches!(method, "add" | "discard") && args_to_compile.len() == 1 {
+        if let Some(Expr::Variable { name: recv, .. }) = method_receiver_ast {
+            if !ctx.known_class_instance_vars.contains(recv) {
+            if let Arg::Positional(key_expr) = &args_to_compile[0] {
+                if set_method_key_may_be_integral(key_expr) {
+                    VariableResolver::resolve_and_load(ctx, recv, line)?;
+                    expr::compile_expr(ctx, key_expr)?;
+                    let op = if method == "add" {
+                        OpCode::SetAddIntegral
+                    } else {
+                        OpCode::SetDiscardIntegral
+                    };
+                    ctx.chunk.write_with_line(op, line);
+                    return Ok(());
+                }
+            }
+            }
+        }
+    }
+
+    // Plain dict `.clear()` on a local variable — stack `[dict]` (stress-test reuse).
+    if method == "clear"
+        && args_to_compile.is_empty()
+        && should_emit_plain_dict_method_fast_path(method_receiver_ast, ctx)
+    {
+        if let Some(Expr::Variable { name: recv, .. }) = method_receiver_ast {
+            VariableResolver::resolve_and_load(ctx, recv, line)?;
+            ctx.chunk.write_with_line(OpCode::ObjectClear, line);
+            return Ok(());
+        }
+    }
+
     // Plain dict `.get(key [, default])` — no GetArrayElement + Call (A* g_score / f_score).
-    if method == "get" && !args_to_compile.is_empty() && args_to_compile.len() <= 2 {
+    if method == "get"
+        && !args_to_compile.is_empty()
+        && args_to_compile.len() <= 2
+        && should_emit_plain_dict_method_fast_path(method_receiver_ast, ctx)
+    {
         ctx.chunk
             .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
-        for arg in &args_to_compile {
-            compile_call_arg(ctx, arg)?;
-        }
-        if args_to_compile.len() == 1 {
+        compile_call_arg(ctx, &args_to_compile[0])?;
+        if args_to_compile.len() == 2 {
+            if !crate::compiler::expr::integral_peephole::try_compile_get_default_constant(
+                ctx,
+                &args_to_compile[1],
+                line,
+            )? {
+                compile_call_arg(ctx, &args_to_compile[1])?;
+            }
+        } else {
             let null_idx = ctx.chunk.add_constant(Value::Null);
             ctx.chunk.write_with_line(OpCode::Constant(null_idx), line);
         }
@@ -563,30 +770,42 @@ fn compile_module_method(
         }
     }
 
-    // A* peephole: heapq.heappush(open_heap, (f, node)) — stack `[heap, tuple]` → flat push without Call.
+    // A* peephole: heapq.heappush(open_heap, (f, node)) — stack `[heap, f, node]` → flat push without Call.
     // Skip tuples with string elements (lexicographic tie-break tests use nested heap via native).
     if method == "heappush" && args_to_compile.len() == 2 {
-        if let (
-            Arg::Positional(heap_expr),
-            Arg::Positional(Expr::TupleLiteral { elements, .. }),
-        ) = (&args_to_compile[0], &args_to_compile[1])
-        {
-            let flat_ok = elements.len() == 2
-                && !elements.iter().any(|el| {
-                    matches!(el, Expr::Literal { value: Value::String(_), .. })
-                });
-            if flat_ok {
-                expr::compile_expr(ctx, heap_expr)?;
-                for el in elements {
-                    expr::compile_expr(ctx, el)?;
+        if let (Arg::Positional(heap_expr), Arg::Positional(pair_expr)) = (
+            &args_to_compile[0],
+            &args_to_compile[1],
+        ) {
+            let elements = match pair_expr {
+                Expr::TupleLiteral { elements, .. } => Some(elements.as_slice()),
+                Expr::ArrayLiteral { elements: _, .. } => None,
+                _ => None,
+            };
+            if let Some(elements) = elements {
+                let flat_ok = elements.len() == 2
+                    && !elements.iter().any(|el| {
+                        matches!(el, Expr::Literal { value: Value::String(_), .. })
+                            || matches!(el, Expr::TupleLiteral { .. })
+                            || matches!(el, Expr::ArrayLiteral { .. })
+                    });
+                if flat_ok {
+                    expr::compile_expr(ctx, heap_expr)?;
+                    for el in elements {
+                        expr::compile_expr(ctx, el)?;
+                    }
+                    ctx.chunk.write_with_line(OpCode::HeappushFlat, line);
+                    return Ok(());
                 }
-                ctx.chunk
-                    .write_with_line(OpCode::MakeTuple(2), line);
-                ctx.chunk
-                    .write_with_line(OpCode::HeappushFlat, line);
-                return Ok(());
             }
         }
+    }
+
+    // `grid.*` buffer / heap fast opcodes (A* on flat buffers).
+    if is_grid_module(method_receiver_ast)
+        && try_emit_grid_module_opcode(ctx, method, &args_to_compile, line)
+    {
+        return Ok(());
     }
 
     // 1. Push receiver first, then compile args → stack [receiver, arg_1, ..., arg_n]

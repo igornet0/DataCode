@@ -35,6 +35,24 @@ mod tests {
         }
     }
 
+    fn assert_null_result(source: &str) {
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Null) => {}
+            Ok(v) => panic!("Expected Null, got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    fn assert_bool_result(source: &str, expected: bool) {
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Bool(v)) => assert_eq!(v, expected, "Expected {}, got {}", expected, v),
+            Ok(v) => panic!("Expected Bool({}), got {:?}", expected, v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
     // Вспомогательная функция для получения пути к тестовым данным
     fn get_test_data_path(filename: &str) -> String {
         let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -216,7 +234,7 @@ mod tests {
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}")
+            let csv_table = read("{}")
             len(csv_table["Name"])
             "#,
             csv_path
@@ -231,7 +249,7 @@ mod tests {
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}")
+            let csv_table = read("{}")
             let names = csv_table["Name"]
             names[0]
             "#,
@@ -246,7 +264,7 @@ mod tests {
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}")
+            let csv_table = read("{}")
             let ages = csv_table["Age"]
             ages[0]
             "#,
@@ -261,7 +279,7 @@ mod tests {
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}")
+            let csv_table = read("{}")
             let names = csv_table["Name"]
             let cities = csv_table["City"]
             len(names) + len(cities)
@@ -277,7 +295,7 @@ mod tests {
         let xlsx_path = get_test_data_path("sample.xlsx");
         let source = format!(
             r#"
-            let xlsx_table = read_file("{}")
+            let xlsx_table = read("{}")
             len(xlsx_table)
             "#,
             xlsx_path
@@ -291,7 +309,7 @@ mod tests {
     fn test_load_table_nonexistent_file() {
         // Обработка несуществующего файла
         let source = r#"
-            let table = read_file("nonexistent_file.csv")
+            let table = read("nonexistent_file.csv")
         "#;
         let result = run_and_get_result(source);
         // Должна быть ошибка или null
@@ -299,11 +317,11 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_bin_sample_bytes() {
+    fn test_read_sample_bytes() {
         let bin_path = get_test_data_path("read_file_bin_sample.bin");
         let source = format!(
             r#"
-            let b = read_file_bin("{}")
+            let b = read("{}")
             b[0] + b[1] + b[2]
             "#,
             bin_path
@@ -312,11 +330,11 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_bin_length() {
+    fn test_read_length() {
         let bin_path = get_test_data_path("read_file_bin_sample.bin");
         let source = format!(
             r#"
-            len(read_file_bin("{}"))
+            len(read("{}"))
             "#,
             bin_path
         );
@@ -324,11 +342,11 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_bin_empty_file() {
+    fn test_read_empty_file() {
         let bin_path = get_test_data_path("read_file_bin_empty.bin");
         let source = format!(
             r#"
-            len(read_file_bin("{}"))
+            len(read("{}"))
             "#,
             bin_path
         );
@@ -336,23 +354,23 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_bin_nonexistent_file() {
+    fn test_read_nonexistent_file() {
         let source = r#"
-            read_file_bin("nonexistent_read_file_bin.bin")
+            read("nonexistent_read.bin")
         "#;
         let result = run_and_get_result(source);
         assert!(result.is_err() || matches!(result, Ok(Value::Null)));
     }
 
-    // ========== Тесты для параметра header в read_file ==========
+    // ========== Тесты для параметра header в read ==========
 
     #[test]
-    fn test_read_file_with_header_array() {
+    fn test_read_with_header_array() {
         // Загрузка только указанных колонок через массив
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header=["Name", "Age"])
+            let csv_table = read("{}", header_row=0, header=["Name", "Age"])
             let columns = csv_table.columns
             len(columns)
             "#,
@@ -363,12 +381,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_array_column_order() {
+    fn test_read_with_header_array_column_order() {
         // Проверка порядка колонок в результате
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header=["Age", "Name"])
+            let csv_table = read("{}", header_row=0, header=["Age", "Name"])
             let columns = csv_table.columns
             columns[0]
             "#,
@@ -379,12 +397,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_array_data_access() {
+    fn test_read_with_header_array_data_access() {
         // Проверка доступа к данным после фильтрации
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header=["Name", "Age"])
+            let csv_table = read("{}", header_row=0, header=["Name", "Age"])
             let names = csv_table["Name"]
             names[0]
             "#,
@@ -395,12 +413,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_array_single_column() {
+    fn test_read_with_header_array_single_column() {
         // Загрузка только одной колонки
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header=["Age"])
+            let csv_table = read("{}", header_row=0, header=["Age"])
             let ages = csv_table["Age"]
             ages[0]
             "#,
@@ -411,12 +429,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_dict_rename() {
+    fn test_read_with_header_dict_rename() {
         // Переименование колонок через словарь
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header={{"Name": "FullName", "Age": null, "City": null, "Salary": null}})
+            let csv_table = read("{}", header_row=0, header={{"Name": "FullName", "Age": null, "City": null, "Salary": null}})
             let columns = csv_table.columns
             columns[0]
             "#,
@@ -427,12 +445,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_dict_keep_original() {
+    fn test_read_with_header_dict_keep_original() {
         // Переименование одной колонки, остальные без изменений
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header={{"Name": "FullName", "Age": null}})
+            let csv_table = read("{}", header_row=0, header={{"Name": "FullName", "Age": null}})
             let columns = csv_table.columns
             columns[1]
             "#,
@@ -443,12 +461,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_dict_access_renamed() {
+    fn test_read_with_header_dict_access_renamed() {
         // Доступ к переименованной колонке
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header={{"Name": "FullName", "Age": null, "City": null, "Salary": null}})
+            let csv_table = read("{}", header_row=0, header={{"Name": "FullName", "Age": null, "City": null, "Salary": null}})
             let names = csv_table["FullName"]
             names[0]
             "#,
@@ -459,12 +477,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_dict_multiple_renames() {
+    fn test_read_with_header_dict_multiple_renames() {
         // Переименование нескольких колонок
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header={{"Name": "FullName", "Age": "Years", "City": null, "Salary": "Income"}})
+            let csv_table = read("{}", header_row=0, header={{"Name": "FullName", "Age": "Years", "City": null, "Salary": "Income"}})
             let columns = csv_table.columns
             columns[1]
             "#,
@@ -475,12 +493,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_array_and_header_row() {
+    fn test_read_with_header_array_and_header_row() {
         // Комбинация header_row и header (массив)
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header=["Name", "Salary"])
+            let csv_table = read("{}", header_row=0, header=["Name", "Salary"])
             let columns = csv_table.columns
             len(columns)
             "#,
@@ -491,12 +509,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_dict_and_header_row() {
+    fn test_read_with_header_dict_and_header_row() {
         // Комбинация header_row и header (словарь)
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header={{"Name": "FullName"}})
+            let csv_table = read("{}", header_row=0, header={{"Name": "FullName"}})
             let columns = csv_table.columns
             columns[0]
             "#,
@@ -507,12 +525,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_array_nonexistent_column() {
+    fn test_read_with_header_array_nonexistent_column() {
         // Игнорирование несуществующих колонок в массиве
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header=["Name", "NonExistent", "Age"])
+            let csv_table = read("{}", header_row=0, header=["Name", "NonExistent", "Age"])
             let columns = csv_table.columns
             len(columns)
             "#,
@@ -523,12 +541,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_dict_nonexistent_column() {
+    fn test_read_with_header_dict_nonexistent_column() {
         // Игнорирование несуществующих колонок в словаре
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header={{"Name": "FullName", "NonExistent": "Test"}})
+            let csv_table = read("{}", header_row=0, header={{"Name": "FullName", "NonExistent": "Test"}})
             let columns = csv_table.columns
             columns[0]
             "#,
@@ -539,12 +557,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_array_empty() {
+    fn test_read_with_header_array_empty() {
         // Пустой массив header должен вернуть пустую таблицу или исходную
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header=[])
+            let csv_table = read("{}", header_row=0, header=[])
             let columns = csv_table.columns
             len(columns)
             "#,
@@ -556,12 +574,12 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_dict_empty() {
+    fn test_read_with_header_dict_empty() {
         // Пустой словарь header должен вернуть исходную таблицу
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}", header_row=0, header={{}})
+            let csv_table = read("{}", header_row=0, header={{}})
             let columns = csv_table.columns
             len(columns)
             "#,
@@ -572,12 +590,64 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_with_header_xlsx() {
+    fn test_read_with_headerT_transposed_csv() {
+        let csv_path = get_test_data_path("transposed_source.csv");
+        let source = format!(
+            r#"
+            let t = read("{}", header_row=0, headerT=["Metric", "Revenue", "Cost"])
+            len(t.columns)
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 3.0);
+    }
+
+    #[test]
+    fn test_read_with_headerT_transposed_data() {
+        let csv_path = get_test_data_path("transposed_source.csv");
+        let source = format!(
+            r#"
+            let t = read("{}", header_row=0, headerT=["Metric", "Revenue", "Cost"])
+            t["Revenue"][0]
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 100.0);
+    }
+
+    #[test]
+    fn test_read_with_headerT_column_filter() {
+        let csv_path = get_test_data_path("transposed_source.csv");
+        let source = format!(
+            r#"
+            let t = read("{}", header_row=0, headerT=["Revenue", "Cost"])
+            len(t.columns)
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 2.0);
+    }
+
+    #[test]
+    fn test_read_header_and_headerT_mutual_exclusion() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            read("{}", header=["Name"], headerT=["Name"])
+            "#,
+            csv_path
+        );
+        let result = run_and_get_result(&source);
+        assert!(result.is_err(), "header and headerT together should error");
+    }
+
+    #[test]
+    fn test_read_with_header_xlsx() {
         // Тест header для XLSX файлов
         let xlsx_path = get_test_data_path("sample.xlsx");
         let source = format!(
             r#"
-            let xlsx_table = read_file("{}", header_row=0, header=["Name", "Age"])
+            let xlsx_table = read("{}", header_row=0, header=["Name", "Age"])
             let columns = xlsx_table.columns
             len(columns)
             "#,
@@ -712,6 +782,1035 @@ mod tests {
     }
 
     #[test]
+    fn test_table_drop_nulls_all_columns() {
+        let source = r#"
+            let data = [[1, "Alice", 28], [2, null, 35], [3, "Charlie", null], [4, "David", 40]]
+            let headers = ["id", "name", "age"]
+            let my_table = table(data, headers)
+            let cleaned = table_drop_nulls(my_table)
+            len(cleaned["id"])
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_drop_nulls_single_column() {
+        let source = r#"
+            let data = [[1, "Alice", 28], [2, null, 35], [3, "Charlie", null]]
+            let headers = ["id", "name", "age"]
+            let my_table = table(data, headers)
+            let cleaned = table_drop_nulls(my_table, "name")
+            len(cleaned["id"])
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_drop_nulls_column_list() {
+        let source = r#"
+            let data = [[1, "Alice", 28], [2, null, 35], [3, "Charlie", null], [4, "David", 40]]
+            let headers = ["id", "name", "age"]
+            let my_table = table(data, headers)
+            let cleaned = table_drop_nulls(my_table, ["name", "age"])
+            len(cleaned["id"])
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_drop_nulls_method() {
+        let source = r#"
+            let data = [[1, "Alice", 28], [2, null, 35], [3, "Charlie", null]]
+            let headers = ["id", "name", "age"]
+            let my_table = table(data, headers)
+            let cleaned = my_table.drop_nulls("name")
+            len(cleaned["id"])
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_drop_nulls_unknown_column() {
+        let source = r#"
+            let data = [[1, "Alice", 28]]
+            let headers = ["id", "name", "age"]
+            let my_table = table(data, headers)
+            table_drop_nulls(my_table, "City")
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for unknown column name");
+    }
+
+    #[test]
+    fn test_table_replace_nulls_all_columns_scalar() {
+        let source = r#"
+            let data = [[1, null, 28], [2, "Bob", null]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            let cleaned = table_replace_nulls(t, "Unknown")
+            cleaned["name"][0]
+        "#;
+        assert_string_result(source, "Unknown");
+    }
+
+    #[test]
+    fn test_table_replace_nulls_single_column_scalar() {
+        let source = r#"
+            let data = [[1, null, 28], [2, "Bob", null]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            let cleaned = table_replace_nulls(t, "name", "Unknown")
+            cleaned["age"][1]
+        "#;
+        assert_null_result(source);
+    }
+
+    #[test]
+    fn test_table_replace_nulls_column_list_scalar() {
+        let source = r#"
+            let data = [[1, null, 28], [2, "Bob", null]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            let cleaned = table_replace_nulls(t, ["name", "age"], "Unknown")
+            cleaned["age"][1]
+        "#;
+        assert_string_result(source, "Unknown");
+    }
+
+    #[test]
+    fn test_table_replace_nulls_method_overloads() {
+        let source = r#"
+            let data = [[1, null, 28], [2, "Bob", null]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            let a = t.replace_nulls("Unknown")
+            let b = t.replace_nulls("name", "N/A")
+            len(a["id"]) + len(b["id"])
+        "#;
+        assert_number_result(source, 4.0);
+    }
+
+    #[test]
+    fn test_table_replace_nulls_callback_row_context() {
+        let source = r#"
+            let data = [[1, null, 900], [2, null, 1500], [3, "Carol", 500]]
+            let headers = ["id", "City", "Amount"]
+            let t = table(data, headers)
+            let cleaned = table_replace_nulls(t, ["City"], fn(row) => if row["Amount"] < 1000 { null } else { "Unknown" })
+            cleaned["City"][1]
+        "#;
+        assert_string_result(source, "Unknown");
+    }
+
+    #[test]
+    fn test_table_replace_nulls_callback_can_keep_null() {
+        let source = r#"
+            let data = [[1, null, 900]]
+            let headers = ["id", "City", "Amount"]
+            let t = table(data, headers)
+            let cleaned = table_replace_nulls(t, "City", fn(row) => null)
+            cleaned["City"][0]
+        "#;
+        assert_null_result(source);
+    }
+
+    #[test]
+    fn test_table_replace_nulls_unknown_column() {
+        let source = r#"
+            let data = [[1, "Alice", 28]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            table_replace_nulls(t, "City", "Unknown")
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for unknown column name");
+    }
+
+    #[test]
+    fn test_table_replace_nulls_invalid_column_type() {
+        let source = r#"
+            let data = [[1, "Alice", 28]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            table_replace_nulls(t, 123, "Unknown")
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for invalid column type");
+    }
+
+    #[test]
+    fn test_table_replace_nulls_callback_wrong_arity() {
+        let source = r#"
+            let data = [[1, null, 900]]
+            let headers = ["id", "City", "Amount"]
+            let t = table(data, headers)
+            table_replace_nulls(t, "City", fn(a, b) => "Unknown")
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for callback arity");
+    }
+
+    #[test]
+    fn test_table_row_number_defaults() {
+        let source = r#"
+            let data = [[10, "a"], [20, "b"], [30, "c"]]
+            let headers = ["id", "name"]
+            let t = table(data, headers)
+            let numbered = table_row_number(t)
+            numbered["RowNumber"][2]
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_table_row_number_custom_name_and_start() {
+        let source = r#"
+            let data = [[10, "a"], [20, "b"], [30, "c"]]
+            let headers = ["id", "name"]
+            let t = table(data, headers)
+            let numbered = table_row_number(t, "Num", 7)
+            numbered["Num"][0]
+        "#;
+        assert_number_result(source, 7.0);
+    }
+
+    #[test]
+    fn test_table_row_number_method_form() {
+        let source = r#"
+            let data = [[10, "a"], [20, "b"]]
+            let headers = ["id", "name"]
+            let t = table(data, headers)
+            let numbered = t.row_number("Index", 100)
+            numbered["Index"][1]
+        "#;
+        assert_number_result(source, 101.0);
+    }
+
+    #[test]
+    fn test_table_row_number_existing_column_error() {
+        let source = r#"
+            let data = [[10, "a"]]
+            let headers = ["id", "name"]
+            let t = table(data, headers)
+            table_row_number(t, "id")
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for duplicate column name");
+    }
+
+    #[test]
+    fn test_table_row_number_invalid_start_type() {
+        let source = r#"
+            let data = [[10, "a"]]
+            let headers = ["id", "name"]
+            let t = table(data, headers)
+            table_row_number(t, "RowNumber", "x")
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for invalid start_from type");
+    }
+
+    #[test]
+    fn test_table_distinct_all_columns() {
+        let source = r#"
+            let data = [[1, "A"], [1, "A"], [1, "B"], [1, "B"], [2, "A"]]
+            let headers = ["ID", "Category"]
+            let t = table(data, headers)
+            let d = table_distinct(t)
+            len(d["ID"])
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_table_distinct_single_column() {
+        let source = r#"
+            let data = [[1, "A"], [1, "B"], [2, "C"], [2, "D"]]
+            let headers = ["ID", "Category"]
+            let t = table(data, headers)
+            let d = table_distinct(t, "ID")
+            len(d["ID"])
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_distinct_column_list() {
+        let source = r#"
+            let data = [[1, "A", 10], [1, "A", 20], [1, "B", 20], [1, "B", 20]]
+            let headers = ["ID", "Category", "Amount"]
+            let t = table(data, headers)
+            let d = table_distinct(t, ["ID", "Category"])
+            len(d["ID"])
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_distinct_method_form() {
+        let source = r#"
+            let data = [[1, "A"], [1, "A"], [2, "B"]]
+            let headers = ["ID", "Category"]
+            let t = table(data, headers)
+            let d = t.distinct(["ID", "Category"])
+            len(d["ID"])
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_distinct_unknown_column_error() {
+        let source = r#"
+            let data = [[1, "A"]]
+            let headers = ["ID", "Category"]
+            let t = table(data, headers)
+            table_distinct(t, "Missing")
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for unknown distinct column");
+    }
+
+    #[test]
+    fn test_table_distinct_invalid_columns_type_error() {
+        let source = r#"
+            let data = [[1, "A"]]
+            let headers = ["ID", "Category"]
+            let t = table(data, headers)
+            table_distinct(t, 123)
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for invalid distinct columns type");
+    }
+
+    #[test]
+    fn test_table_value_map_object_mappings() {
+        let source = r#"
+            let data = [[1, "yes"], [2, "no"], [3, "maybe"]]
+            let headers = ["ID", "Active"]
+            let t = table(data, headers)
+            let mapped = table_value_map(t, "Active", {"yes": "active", "no": "inactive"})
+            mapped["Active"][1]
+        "#;
+        assert_string_result(source, "inactive");
+    }
+
+    #[test]
+    fn test_table_value_map_array_from_to() {
+        let source = r#"
+            let data = [[1, "sale"], [2, "new"], [3, "old"]]
+            let headers = ["ID", "Tag"]
+            let t = table(data, headers)
+            let mapped = table_value_map(t, "Tag", [{"from": "sale", "to": "promo"}, {"from": "new", "to": "fresh"}])
+            mapped["Tag"][0]
+        "#;
+        assert_string_result(source, "promo");
+    }
+
+    #[test]
+    fn test_table_value_map_array_old_new() {
+        let source = r#"
+            let data = [[1, "sale"], [2, "new"], [3, "old"]]
+            let headers = ["ID", "Tag"]
+            let t = table(data, headers)
+            let mapped = table_value_map(t, "Tag", [{old: "old", new: "archive"}])
+            mapped["Tag"][2]
+        "#;
+        assert_string_result(source, "archive");
+    }
+
+    #[test]
+    fn test_table_value_map_method_form() {
+        let source = r#"
+            let data = [[1, "yes"], [2, "no"]]
+            let headers = ["ID", "Active"]
+            let t = table(data, headers)
+            let mapped = t.value_map("Active", {"yes": "active", "no": "inactive"})
+            mapped["Active"][0]
+        "#;
+        assert_string_result(source, "active");
+    }
+
+    #[test]
+    fn test_table_value_map_keeps_unmapped_values() {
+        let source = r#"
+            let data = [[1, "yes"], [2, "unknown"]]
+            let headers = ["ID", "Active"]
+            let t = table(data, headers)
+            let mapped = table_value_map(t, "Active", {"yes": "active"})
+            mapped["Active"][1]
+        "#;
+        assert_string_result(source, "unknown");
+    }
+
+    #[test]
+    fn test_table_value_map_unknown_column_error() {
+        let source = r#"
+            let data = [[1, "yes"]]
+            let headers = ["ID", "Active"]
+            let t = table(data, headers)
+            table_value_map(t, "Missing", {"yes": "active"})
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for unknown column");
+    }
+
+    #[test]
+    fn test_table_value_map_invalid_mappings_type_error() {
+        let source = r#"
+            let data = [[1, "yes"]]
+            let headers = ["ID", "Active"]
+            let t = table(data, headers)
+            table_value_map(t, "Active", 123)
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for invalid mappings type");
+    }
+
+    #[test]
+    fn test_table_value_map_invalid_mapping_item_error() {
+        let source = r#"
+            let data = [[1, "yes"]]
+            let headers = ["ID", "Active"]
+            let t = table(data, headers)
+            table_value_map(t, "Active", [{"from": "yes"}])
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for invalid mapping item");
+    }
+
+    #[test]
+    fn test_table_aggregate_all_ops_happy_path() {
+        let source = r#"
+            let data = [
+                [1, "A", 100],
+                [2, "A", 200],
+                [3, "B", 300],
+                [4, "B", 400],
+                [5, "B", 500],
+            ]
+            let headers = ["Id", "Group", "Amount"]
+            let t = table(data, headers)
+            let agg = t.aggregate({
+                total_rows: "count",
+                distinct_groups: {op: "count_distinct", column: "Group"},
+                sum_amount: {op: "sum", column: "Amount"},
+                avg_amount: {op: "avg", column: "Amount"},
+                min_amount: {op: "min", column: "Amount"},
+                max_amount: {op: "max", column: "Amount"},
+                first_amount: {op: "first", column: "Amount"},
+                last_amount: {op: "last", column: "Amount"},
+                median_amount: {op: "median", column: "Amount"},
+                mode_group: {op: "mode", column: "Group"},
+                stddev_amount: {op: "stddev", column: "Amount"},
+                variance_amount: {op: "variance", column: "Amount"},
+                p90_amount: {op: "percentile", column: "Amount", p: 0.9},
+                amount_list: {op: "list", column: "Amount"},
+                any_amount_gt_450: {op: "any", column: "Amount", where: fn(x) => x > 450},
+            })
+            checks =
+                (if agg["total_rows"][0] == 5 { 1 } else { 0 }) +
+                (if agg["distinct_groups"][0] == 2 { 1 } else { 0 }) +
+                (if agg["sum_amount"][0] == 1500 { 1 } else { 0 }) +
+                (if agg["avg_amount"][0] == 300 { 1 } else { 0 }) +
+                (if agg["min_amount"][0] == 100 { 1 } else { 0 }) +
+                (if agg["max_amount"][0] == 500 { 1 } else { 0 }) +
+                (if agg["first_amount"][0] == 100 { 1 } else { 0 }) +
+                (if agg["last_amount"][0] == 500 { 1 } else { 0 }) +
+                (if agg["median_amount"][0] == 300 { 1 } else { 0 }) +
+                (if agg["mode_group"][0] == "B" { 1 } else { 0 }) +
+                (if agg["p90_amount"][0] == 460 { 1 } else { 0 }) +
+                (if len(agg["amount_list"][0]) == 5 { 1 } else { 0 }) +
+                (if agg["any_amount_gt_450"][0] { 1 } else { 0 })
+            checks + 0.0
+        "#;
+        assert_number_result(source, 13.0);
+    }
+
+    #[test]
+    fn test_table_aggregate_global_alias() {
+        let source = r#"
+            let t = table([[1, 10], [2, 20], [3, 30]], ["Id", "Amount"])
+            let agg = table_aggregate(t, {
+                c: "count",
+                s: {op: "sum", column: "Amount"},
+            })
+            agg["c"][0] + agg["s"][0]
+        "#;
+        assert_number_result(source, 63.0);
+    }
+
+    #[test]
+    fn test_table_aggregate_percentile_90() {
+        let source = r#"
+            let t = table([[100], [200], [300], [400], [500]], ["Amount"])
+            let agg = t.aggregate({
+                p90: {op: "percentile", column: "Amount", p: 0.9}
+            })
+            agg["p90"][0]
+        "#;
+        assert_number_result(source, 460.0);
+    }
+
+    #[test]
+    fn test_table_aggregate_any_where_callback() {
+        let source = r#"
+            let t = table([[10], [20], [30]], ["Amount"])
+            let agg = t.aggregate({
+                has_gt_25: {op: "any", column: "Amount", where: fn(x) => x > 25}
+            })
+            agg["has_gt_25"][0]
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
+    fn test_table_aggregate_unknown_op_error() {
+        let source = r#"
+            let t = table([[1]], ["Amount"])
+            t.aggregate({x: {op: "unknown", column: "Amount"}})
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for unknown aggregate op");
+    }
+
+    #[test]
+    fn test_table_aggregate_missing_column_error() {
+        let source = r#"
+            let t = table([[1]], ["Amount"])
+            t.aggregate({x: {op: "sum", column: "Missing"}})
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for missing aggregate column");
+    }
+
+    #[test]
+    fn test_table_aggregate_invalid_spec_type_error() {
+        let source = r#"
+            let t = table([[1]], ["Amount"])
+            t.aggregate(123)
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for invalid aggregate spec type");
+    }
+
+    #[test]
+    fn test_table_aggregate_invalid_where_error() {
+        let source = r#"
+            let t = table([[1]], ["Amount"])
+            t.aggregate({x: {op: "any", column: "Amount", where: 1}})
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for non-callable any(where)");
+    }
+
+    #[test]
+    fn test_table_aggregate_group_by_city() {
+        let source = r#"
+            let data = [
+                ["A", 100],
+                ["A", 200],
+                ["B", 300],
+            ]
+            let headers = ["City", "Amount"]
+            let t = table(data, headers)
+            let agg = t.aggregate_group({
+                group: "City",
+                count: "count",
+                sum_amount: {op: "sum", column: "Amount"},
+            })
+            len(agg)
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_aggregate_group_values() {
+        let source = r#"
+            let data = [
+                ["A", 100],
+                ["A", 200],
+                ["B", 300],
+            ]
+            let headers = ["City", "Amount"]
+            let t = table(data, headers)
+            let agg = t.aggregate_group({
+                group: "City",
+                count: "count",
+                sum_amount: {op: "sum", column: "Amount"},
+            })
+            checks =
+                (if agg["City"][0] == "A" { 1 } else { 0 }) +
+                (if agg["count"][0] == 2 { 1 } else { 0 }) +
+                (if agg["sum_amount"][0] == 300 { 1 } else { 0 })
+            checks + 0.0
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_table_aggregate_group_multi_key() {
+        let source = r#"
+            let data = [
+                ["Sales", "NY", 100],
+                ["Sales", "NY", 200],
+                ["Sales", "LA", 300],
+                ["HR", "NY", 400],
+            ]
+            let headers = ["Department", "City", "Amount"]
+            let t = table(data, headers)
+            let agg = t.aggregate_group({
+                group: ["Department", "City"],
+                count: "count",
+                sum_amount: {op: "sum", column: "Amount"},
+            })
+            len(agg)
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_table_aggregate_group_null_key() {
+        let source = r#"
+            let data = [
+                ["A", 100],
+                [null, 200],
+                [null, 300],
+            ]
+            let headers = ["City", "Amount"]
+            let t = table(data, headers)
+            let agg = t.aggregate_group({
+                group: "City",
+                count: "count",
+                sum_amount: {op: "sum", column: "Amount"},
+            })
+            checks =
+                (if agg["City"][1] == null { 1 } else { 0 }) +
+                (if agg["count"][1] == 2 { 1 } else { 0 }) +
+                (if agg["sum_amount"][1] == 500 { 1 } else { 0 })
+            checks + 0.0
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_table_aggregate_group_percentile_and_any() {
+        let source = r#"
+            let data = [
+                ["A", 100],
+                ["A", 200],
+                ["A", 500],
+            ]
+            let headers = ["City", "Amount"]
+            let t = table(data, headers)
+            let agg = t.aggregate_group({
+                group: "City",
+                p90: {op: "percentile", column: "Amount", p: 0.9},
+                has_gt_300: {op: "any", column: "Amount", where: fn(x) => x > 300},
+            })
+            if agg["has_gt_300"][0] { agg["p90"][0] } else { 0 }
+        "#;
+        assert_number_result(source, 440.0);
+    }
+
+    #[test]
+    fn test_table_aggregate_group_global_alias() {
+        let source = r#"
+            let t = table([["A", 10], ["B", 20]], ["City", "Amount"])
+            let agg = table_aggregate_group(t, {
+                group: "City",
+                sum_amount: {op: "sum", column: "Amount"},
+            })
+            agg["sum_amount"][0] + agg["sum_amount"][1]
+        "#;
+        assert_number_result(source, 30.0);
+    }
+
+    #[test]
+    fn test_table_aggregate_group_missing_group_error() {
+        let source = r#"
+            let t = table([[1]], ["Amount"])
+            t.aggregate_group({count: "count"})
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for missing group field");
+    }
+
+    #[test]
+    fn test_table_aggregate_group_unknown_group_column_error() {
+        let source = r#"
+            let t = table([[1]], ["Amount"])
+            t.aggregate_group({group: "Missing", count: "count"})
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for unknown group column");
+    }
+
+    #[test]
+    fn test_table_aggregate_group_empty_agg_spec_error() {
+        let source = r#"
+            let t = table([[1, "A"]], ["Amount", "City"])
+            t.aggregate_group({group: "City"})
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for empty aggregation spec");
+    }
+
+    #[test]
+    fn test_table_aggregate_group_unknown_op_error() {
+        let source = r#"
+            let t = table([[1, "A"]], ["Amount", "City"])
+            t.aggregate_group({group: "City", x: {op: "unknown", column: "Amount"}})
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for unknown aggregate op");
+    }
+
+    #[test]
+    fn test_table_rename_dict() {
+        let source = r#"
+            let data = [[1, "Alice", 28], [2, "Bob", 35]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            let renamed = table_rename(t, {"name": "full_name", "age": null})
+            len(renamed.columns)
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_table_rename_pair() {
+        let source = r#"
+            let data = [[1, "Alice", 28]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            let renamed = table_rename(t, "name", "full_name")
+            renamed.columns[1]
+        "#;
+        assert_string_result(source, "full_name");
+    }
+
+    #[test]
+    fn test_table_rename_method() {
+        let source = r#"
+            let data = [[1, "Alice", 28]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            let renamed = t.rename("name", "full_name")
+            renamed.columns[1]
+        "#;
+        assert_string_result(source, "full_name");
+    }
+
+    #[test]
+    fn test_table_drop_column_single() {
+        let source = r#"
+            let data = [[1, "Alice", 28], [2, "Bob", 35]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            let trimmed = table_drop_column(t, "age")
+            len(trimmed.columns)
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_drop_column_multiple() {
+        let source = r#"
+            let data = [[1, "Alice", 28]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            let trimmed = table_drop_column(t, ["name", "age"])
+            trimmed.columns[0]
+        "#;
+        assert_string_result(source, "id");
+    }
+
+    #[test]
+    fn test_table_drop_column_method() {
+        let source = r#"
+            let data = [[1, "Alice", 28]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            let trimmed = t.drop_column("name")
+            len(trimmed.columns)
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_drop_column_unknown() {
+        let source = r#"
+            let t = table([[1]], ["id"])
+            table_drop_column(t, "missing")
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for unknown column");
+    }
+
+    #[test]
+    fn test_table_add_column_scalar() {
+        let source = r#"
+            let data = [[1, "Alice"], [2, "Bob"]]
+            let headers = ["id", "name"]
+            let t = table(data, headers)
+            let extended = table_add_column(t, "region", "EMEA")
+            len(extended.columns)
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_table_add_column_array() {
+        let source = r#"
+            let data = [[1, "Alice"], [2, "Bob"]]
+            let headers = ["id", "name"]
+            let t = table(data, headers)
+            let extended = table_add_column(t, "score", [10, 20])
+            extended["score"][0] + extended["score"][1]
+        "#;
+        assert_number_result(source, 30.0);
+    }
+
+    #[test]
+    fn test_table_add_column_method() {
+        let source = r#"
+            let data = [[1, "Alice"]]
+            let headers = ["id", "name"]
+            let t = table(data, headers)
+            let extended = t.add_column("region", "EU")
+            extended.columns[2]
+        "#;
+        assert_string_result(source, "region");
+    }
+
+    #[test]
+    fn test_table_add_column_default_null() {
+        let source = r#"
+            let data = [[1, "Alice"]]
+            let headers = ["id", "name"]
+            let t = table(data, headers)
+            let extended = t.add_column("extra")
+            extended["extra"][0]
+        "#;
+        let result = run_and_get_result(source);
+        match result {
+            Ok(Value::Null) => {}
+            Ok(v) => panic!("Expected Null, got {:?}", v),
+            Err(e) => panic!("Error: {:?}", e),
+        }
+    }
+
+    #[test]
+    fn test_table_map_int() {
+        let source = r#"
+            let data = [["30"], ["25"]]
+            let headers = ["age"]
+            let t = table(data, headers)
+            let mapped = table_map(t, "age", int)
+            typeof(mapped["age"][0])
+        "#;
+        assert_string_result(source, "int");
+    }
+
+    #[test]
+    fn test_table_map_method_str() {
+        let source = r#"
+            let data = [[1, 50000]]
+            let headers = ["id", "salary"]
+            let t = table(data, headers)
+            let mapped = t.map("salary", str)
+            typeof(mapped["salary"][0])
+        "#;
+        assert_string_result(source, "string");
+    }
+
+    #[test]
+    fn test_table_map_method_capitalize() {
+        let source = r#"
+            let t = table([["HELLO"]], ["Tag"])
+            let mapped = t.map("Tag", capitalize)
+            mapped["Tag"][0]
+        "#;
+        assert_string_result(source, "Hello");
+    }
+
+    #[test]
+    fn test_table_map_user_fn() {
+        let source = r#"
+            fn inc(x) { return x + 1 }
+            let data = [[1, 10], [2, 20]]
+            let headers = ["id", "val"]
+            let t = table(data, headers)
+            let mapped = t.map("val", inc)
+            typeof(mapped["val"][0])
+        "#;
+        assert_string_result(source, "int");
+    }
+
+    #[test]
+    fn test_table_map_unknown_column() {
+        let source = r#"
+            let t = table([[1]], ["id"])
+            table_map(t, "missing", int)
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for unknown column");
+    }
+
+    #[test]
+    fn test_table_map_not_callable() {
+        let source = r#"
+            let t = table([[1]], ["id"])
+            table_map(t, "id", 42)
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for non-callable");
+    }
+
+    #[test]
+    fn test_table_map_on_view() {
+        let source = r#"
+            let data = [["30"], ["25"]]
+            let headers = ["age"]
+            let t = table(data, headers)
+            let view = t.select(["age"])
+            let mapped = view.map("age", int)
+            typeof(mapped["age"][0])
+        "#;
+        assert_string_result(source, "int");
+    }
+
+    #[test]
+    fn test_table_split_column_global() {
+        let source = r#"
+            fn two_parts(x) { return [x, "Smith"] }
+            let data = [["Alice"], ["Bob"]]
+            let headers = ["FullName"]
+            let t = table(data, headers)
+            let split_tbl = table_split_column(t, "FullName", two_parts, ["P1", "P2"])
+            split_tbl["P1"][0] + "|" + split_tbl["P2"][0]
+        "#;
+        assert_string_result(source, "Alice|Smith");
+    }
+
+    #[test]
+    fn test_table_split_column_method() {
+        let source = r#"
+            fn pair(x) { return [x, "second"] }
+            let data = [["Alice"], ["Bob"]]
+            let headers = ["FullName"]
+            let t = table(data, headers)
+            let split_tbl = t.split_column("FullName", pair, ["P1", "P2"])
+            split_tbl["P1"][1]
+        "#;
+        assert_string_result(source, "Bob");
+    }
+
+    #[test]
+    fn test_table_split_column_short_parts() {
+        let source = r#"
+            fn pad(x) { return [x, ""] }
+            let t = table([["Alice"]], ["FullName"])
+            let split_tbl = t.split_column("FullName", pad, ["P1", "P2"])
+            split_tbl["P1"][0] + "/" + split_tbl["P2"][0]
+        "#;
+        assert_string_result(source, "Alice/");
+    }
+
+    #[test]
+    fn test_table_split_column_delimiter_string() {
+        let source = r#"
+            let data = [["Alice Smith"], ["Bob"]]
+            let headers = ["FullName"]
+            let t = table(data, headers)
+            let split_tbl = t.split_column("FullName", " ", ["P1", "P2"])
+            split_tbl["P1"][0] + "|" + split_tbl["P2"][0]
+        "#;
+        assert_string_result(source, "Alice|Smith");
+    }
+
+    #[test]
+    fn test_table_join_columns_global() {
+        let source = r#"
+            let data = [["Alice", "Sales"], ["Bob", "IT"]]
+            let headers = ["Name", "Dept"]
+            let t = table(data, headers)
+            let joined = table_join_columns(t, ["Name", "Dept"], "ND", " — ")
+            joined["ND"][0]
+        "#;
+        assert_string_result(source, "Alice — Sales");
+    }
+
+    #[test]
+    fn test_table_join_columns_method() {
+        let source = r#"
+            let data = [["Alice", "Sales"]]
+            let headers = ["Name", "Dept"]
+            let t = table(data, headers)
+            let joined = t.join_columns(["Name", "Dept"], "ND", " - ")
+            joined["ND"][0]
+        "#;
+        assert_string_result(source, "Alice - Sales");
+    }
+
+    #[test]
+    fn test_split_column_unknown_column() {
+        let source = r#"
+            fn ws(x) { return split(x, " ") }
+            let t = table([["a"]], ["id"])
+            table_split_column(t, "missing", ws, ["P1"])
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for unknown column");
+    }
+
+    #[test]
+    fn test_join_columns_duplicate_name() {
+        let source = r#"
+            let t = table([["a", "b"]], ["A", "B"])
+            table_join_columns(t, ["A"], "A", "-")
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for duplicate column name");
+    }
+
+    #[test]
+    fn test_split_column_not_array() {
+        let source = r#"
+            fn bad(x) { return x }
+            let t = table([["a"]], ["id"])
+            table_split_column(t, "id", bad, ["P1"])
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error when callback does not return array");
+    }
+
+    #[test]
+    fn test_table_select_method() {
+        let source = r#"
+            let data = [[1, "Alice", 28], [2, "Bob", 35]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            let selected = t.select(["name", "age"])
+            len(selected.columns)
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_column_ops_on_view() {
+        let source = r#"
+            let data = [[1, "Alice", 28], [2, "Bob", 35], [3, "Charlie", 42]]
+            let headers = ["id", "name", "age"]
+            let t = table(data, headers)
+            let view = t["age" > 30]
+            let renamed = table_rename(view, "name", "full_name")
+            len(renamed.columns)
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
     fn test_table_filter_syntax_bracket() {
         // Фильтр через синтаксис data["col" = value] и data["col" == value]
         let source = r#"
@@ -737,6 +1836,246 @@ mod tests {
             len(filtered["age"])
         "#;
         assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_filter_or_syntax() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["Age" > 25 or "City" == "Houston"]
+            len(filtered["Age"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 4.0);
+    }
+
+    #[test]
+    fn test_table_filter_and_syntax() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["Age" > 25 and "City" == "Houston"]
+            len(filtered["Age"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 1.0);
+    }
+
+    #[test]
+    fn test_table_filter_and_equivalent_to_chain() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let chain = data["Age" > 25]["City" == "Houston"]
+            let and_expr = data["Age" > 25 and "City" == "Houston"]
+            len(chain["Age"]) + len(and_expr["Age"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 2.0);
+    }
+
+    #[test]
+    fn test_table_filter_or_and_precedence_with_parens() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data[("Age" > 25 or "City" == "Houston") and "Salary" > 40000]
+            len(filtered["Age"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 4.0);
+    }
+
+    #[test]
+    fn test_table_filter_in_literal() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["City" in ["Houston", "Chicago"]]
+            len(filtered["City"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 2.0);
+    }
+
+    #[test]
+    fn test_table_filter_not_in_literal() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["City" not in ["Houston", "Chicago"]]
+            len(filtered["City"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 3.0);
+    }
+
+    #[test]
+    fn test_table_filter_in_and_combo() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["City" in ["Houston", "Chicago"] and "Age" > 25]
+            len(filtered["City"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 2.0);
+    }
+
+    #[test]
+    fn test_table_filter_in_variable() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let cities = ["Houston"]
+            let filtered = data["City" in cities]
+            len(filtered["City"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 1.0);
+    }
+
+    #[test]
+    fn test_table_filter_in_set() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["City" in set(["Houston", "Chicago"])]
+            len(filtered["City"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 2.0);
+    }
+
+    #[test]
+    fn test_table_filter_in_or_combo() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["City" in ["Houston"] or "Age" > 30]
+            len(filtered["City"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 3.0);
+    }
+
+    #[test]
+    fn test_table_filter_str_contains() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["Name" & contains("Jo")]
+            len(filtered["Name"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 2.0);
+    }
+
+    #[test]
+    fn test_table_filter_str_starts_with() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["Name" & starts_with("J")]
+            len(filtered["Name"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 2.0);
+    }
+
+    #[test]
+    fn test_table_filter_str_ends_with() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["Name" & ends_with("n")]
+            len(filtered["Name"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 3.0);
+    }
+
+    #[test]
+    fn test_table_filter_str_and_combo() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["Name" & starts_with("B") and "Age" > 25]
+            len(filtered["Name"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 1.0);
+    }
+
+    #[test]
+    fn test_table_filter_str_or_combo() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["Name" & contains("o") or "City" & contains("Hou")]
+            len(filtered["Name"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 4.0);
+    }
+
+    #[test]
+    fn test_table_filter_str_strict_non_string_pattern() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["Name" & contains(50)]
+            len(filtered["Name"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 0.0);
+    }
+
+    #[test]
+    fn test_table_filter_str_strict_non_string_cell() {
+        let csv_path = get_test_data_path("sample.csv");
+        let source = format!(
+            r#"
+            let data = read("{}")
+            let filtered = data["Salary" & contains("50")]
+            len(filtered["Salary"])
+            "#,
+            csv_path
+        );
+        assert_number_result(&source, 0.0);
     }
 
     #[test]
@@ -814,7 +2153,7 @@ mod tests {
         let csv_path = get_test_data_path("sample.csv");
         let source = format!(
             r#"
-            let csv_table = read_file("{}")
+            let csv_table = read("{}")
             let names = csv_table["Name"]
             let ages = csv_table["Age"]
             let processed_data = []

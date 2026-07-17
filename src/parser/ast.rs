@@ -11,13 +11,60 @@ pub enum BinaryOpKind {
     Plugin { symbol: String, name: String },
 }
 
-/// Компонент аннотации типа: имя типа (str, int, …) или строковый литерал ("dev", "prod").
+/// Компонент аннотации типа: имя типа (str, int, …), строковый литерал ("dev"),
+/// параметризованный тип `tuple[int, int]`, или вложенный union `(int \| float)` внутри generic.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum TypePart {
-    /// Имя типа: str, int, null, bool, array, …
+    /// Имя типа: str, int, null, bool, array, или устаревший плоский `str[50]`
     TypeName(String),
     /// Конкретное строковое значение (литеральный тип): "dev", "prod"
     LiteralStr(String),
+    /// Параметризованный тип: `tuple[int, int]`, `Optional[T]`, `Column[int]`, …
+    Generic {
+        base: String,
+        args: Vec<TypePart>,
+    },
+    /// Альтернативы через `|` (внутри скобок в generic-параметре или после раскрытия группы).
+    Union(Vec<TypePart>),
+}
+
+impl TypePart {
+    /// Стабильная печать аннотации (для ошибок VM и суффиксов перегрузок).
+    pub fn format_display(&self) -> String {
+        match self {
+            TypePart::TypeName(s) => s.clone(),
+            TypePart::LiteralStr(s) => format!("\"{}\"", s),
+            TypePart::Generic { base, args } => {
+                let inner = args
+                    .iter()
+                    .map(|a| a.format_display())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{}[{}]", base, inner)
+            }
+            TypePart::Union(parts) => parts
+                .iter()
+                .map(|p| p.format_display())
+                .collect::<Vec<_>>()
+                .join(" | "),
+        }
+    }
+
+    /// Обход имён базовых типов (identifier в `ident[...]` и вложениях).
+    pub fn walk_type_names(&self, f: &mut impl FnMut(&str) -> bool) -> bool {
+        match self {
+            TypePart::TypeName(s) => f(s.as_str()),
+            TypePart::LiteralStr(_) => false,
+            TypePart::Union(parts) => parts.iter().any(|p| p.walk_type_names(f)),
+            TypePart::Generic { base, args } => {
+                f(base.as_str()) || args.iter().any(|p| p.walk_type_names(f))
+            }
+        }
+    }
+
+    pub fn slice_walk_type_names(parts: &[TypePart], f: &mut impl FnMut(&str) -> bool) -> bool {
+        parts.iter().any(|p| p.walk_type_names(f))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -28,27 +75,63 @@ pub struct CatchBlock {
     pub line: usize,
 }
 
+/// Вид параметра функции: обычный, *args или **kwargs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParamKind {
+    Regular,
+    VariadicPositional,
+    VariadicKeyword,
+}
+
 /// Параметр функции с опциональным значением по умолчанию и типом
 #[derive(Debug, Clone)]
 pub struct Param {
     pub name: String,
+    pub kind: ParamKind,
     pub type_annotation: Option<Vec<TypePart>>, // Типы параметра: union (TypeName + LiteralStr)
     pub default_value: Option<Expr>,            // None для обязательных параметров
 }
 
-/// Аргумент при вызове функции - позиционный, именованный или распаковка объекта
+/// Аргумент при вызове функции - позиционный, именованный или распаковка
 #[derive(Debug, Clone)]
 pub enum Arg {
     Positional(Expr),                    // Позиционный аргумент
     Named { name: String, value: Expr }, // Именованный аргумент
+    UnpackArray(Expr),                   // *expr — распаковка массива в позиционные аргументы
     UnpackObject(Expr),                  // **expr — распаковка объекта в kwargs
+}
+
+/// Ключ в объектном литерале `{ ... }` (перед `:`).
+#[derive(Debug, Clone)]
+pub enum ObjectLiteralKey {
+    /// Статический строковый ключ из parser fold (string/number literals).
+    /// Identifier keys use `KeyValueExpr` + scope-aware compile-time disambiguation.
+    Ident(String),
+    /// Строковый литерал: `{ "a": 1 }`
+    String(String),
+    /// Числовой ключ: `{ 1: [] }` — согласовано с `graph[1]`
+    Number(f64),
 }
 
 /// Элемент объектного литерала: пара ключ-значение или spread **expr
 #[derive(Debug, Clone)]
 pub enum ObjectPair {
-    KeyValue(String, Expr),
+    KeyValue(ObjectLiteralKey, Expr),
+    /// Выражение в позиции ключа: `{ start_id: 0 }`, `{ true: "yes" }`, `{ user.id: user }`.
+    KeyValueExpr(Box<Expr>, Box<Expr>),
     Spread(Expr),
+}
+
+/// Один фрагмент list comprehension: `for pat in iter` или `if cond`.
+#[derive(Debug, Clone)]
+pub enum ListComprehensionClause {
+    For {
+        pattern: Vec<UnpackPattern>,
+        iterable: Box<Expr>,
+    },
+    If {
+        condition: Box<Expr>,
+    },
 }
 
 /// Паттерн распаковки для циклов for
@@ -116,6 +199,94 @@ pub struct Method {
     pub line: usize,
     /// None = private, Some(false) = protected, Some(true) = public
     pub visibility: Option<bool>,
+    /// `fn @add` etc. — invoked only by compiler/VM, not directly from user code.
+    pub is_special: bool,
+}
+
+impl Method {
+    pub fn is_special_method(&self) -> bool {
+        self.is_special || self.name.starts_with('@')
+    }
+}
+
+/// Ветка условного выражения: одно выражение или блок `{ ... }`.
+#[derive(Debug, Clone)]
+pub enum IfBranch {
+    Expr(Box<Expr>),
+    Block(Vec<Stmt>),
+}
+
+/// Левая часть распаковки: `x` или `arr[i]`.
+#[derive(Debug, Clone)]
+pub enum AssignTarget {
+    Name(String),
+    Index {
+        array: Box<Expr>,
+        index: Box<Expr>,
+    },
+}
+
+/// Строковая операция в фильтре таблицы: `col & contains(...)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StringMatchOp {
+    Contains,
+    StartsWith,
+    EndsWith,
+}
+
+impl StringMatchOp {
+    pub fn from_call_name(name: &str) -> Option<Self> {
+        match name {
+            "contains" => Some(StringMatchOp::Contains),
+            "starts_with" => Some(StringMatchOp::StartsWith),
+            "ends_with" => Some(StringMatchOp::EndsWith),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StringMatchOp::Contains => "contains",
+            StringMatchOp::StartsWith => "starts_with",
+            StringMatchOp::EndsWith => "ends_with",
+        }
+    }
+}
+
+/// Предикат фильтра таблицы: одно сравнение или дерево and/or.
+#[derive(Debug, Clone)]
+pub enum TableFilterPred {
+    Compare {
+        column: String,
+        op: TokenKind,
+        value: Box<Expr>,
+    },
+    Membership {
+        column: String,
+        container: Box<Expr>,
+        negate: bool,
+    },
+    StringMatch {
+        column: String,
+        op: StringMatchOp,
+        pattern: Box<Expr>,
+    },
+    And(Box<TableFilterPred>, Box<TableFilterPred>),
+    Or(Box<TableFilterPred>, Box<TableFilterPred>),
+}
+
+impl TableFilterPred {
+    pub fn for_each_value_expr<F: FnMut(&Expr)>(&self, f: &mut F) {
+        match self {
+            TableFilterPred::Compare { value, .. } => f(value),
+            TableFilterPred::Membership { container, .. } => f(container),
+            TableFilterPred::StringMatch { pattern, .. } => f(pattern),
+            TableFilterPred::And(l, r) | TableFilterPred::Or(l, r) => {
+                l.for_each_value_expr(f);
+                r.for_each_value_expr(f);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -140,7 +311,7 @@ pub enum Expr {
         line: usize,
     },
     UnpackAssign {
-        names: Vec<String>,
+        targets: Vec<AssignTarget>,
         value: Box<Expr>,
         line: usize,
     },
@@ -181,6 +352,21 @@ pub enum Expr {
         pairs: Vec<ObjectPair>,
         line: usize,
     },
+    /// `{ key_expr: value_expr for loop_var in iterable [if condition] }`
+    DictComprehension {
+        key_expr: Box<Expr>,
+        value_expr: Box<Expr>,
+        loop_var: String,
+        iterable: Box<Expr>,
+        condition: Option<Box<Expr>>,
+        line: usize,
+    },
+    /// `[ elt for pattern in iterable ( for ... | if ... )* ]` — Python-style list comprehension.
+    ListComprehension {
+        elt: Box<Expr>,
+        clauses: Vec<ListComprehensionClause>,
+        line: usize,
+    },
     TupleLiteral {
         elements: Vec<Expr>,
         line: usize,
@@ -206,12 +392,10 @@ pub enum Expr {
         value: Box<Expr>,
         line: usize,
     },
-    /// Фильтр таблицы: table["col" op value] → только строки, где col op value
+    /// Фильтр таблицы: table["col" op value] / table["a" > 1 or "b" == 2]
     TableFilter {
         table: Box<Expr>,
-        column: String,
-        op: TokenKind,
-        value: Box<Expr>,
+        predicate: TableFilterPred,
         line: usize,
     },
     Property {
@@ -261,6 +445,13 @@ pub enum Expr {
         segments: Vec<InterpolatedSegment>,
         line: usize,
     },
+    /// Условное выражение: `a if cond else b` или `if cond { ... } else { ... }`.
+    If {
+        condition: Box<Expr>,
+        then_branch: IfBranch,
+        else_branch: IfBranch,
+        line: usize,
+    },
 }
 
 /// Выражение внутри квадратных скобок: один индекс или срез.
@@ -305,6 +496,8 @@ impl Expr {
             Expr::Lambda { line, .. } => *line,
             Expr::ArrayLiteral { line, .. } => *line,
             Expr::ObjectLiteral { line, .. } => *line,
+            Expr::DictComprehension { line, .. } => *line,
+            Expr::ListComprehension { line, .. } => *line,
             Expr::TupleLiteral { line, .. } => *line,
             Expr::ArrayIndex { line, .. } => *line,
             Expr::AssignArray { line, .. } => *line,
@@ -320,6 +513,7 @@ impl Expr {
             Expr::ExprReturn { line, .. } => *line,
             Expr::Ireturn { line, .. } => *line,
             Expr::InterpolatedString { line, .. } => *line,
+            Expr::If { line, .. } => *line,
         }
     }
 }
@@ -361,6 +555,8 @@ pub enum Stmt {
         is_cached: bool,
         /// Web route: (method, path) e.g. ("GET", "/") from @route("GET", "/")
         route: Option<(String, String)>,
+        /// WebSocket message type from @ws_route("execute")
+        ws_route: Option<String>,
         line: usize,
     },
     /// Генератор: `stream fn name(...) { ... }` — `return` даёт yield, `ereturn` завершает.
@@ -371,6 +567,7 @@ pub enum Stmt {
         body: Vec<Stmt>,
         is_cached: bool,
         route: Option<(String, String)>,
+        ws_route: Option<String>,
         line: usize,
     },
     Return {

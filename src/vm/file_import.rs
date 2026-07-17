@@ -1,7 +1,7 @@
 // Модуль для загрузки локальных .dc файлов как модулей
 // When VM is running, RunContext holds base_path/executing_lib/dpm_package_paths; we prefer it over thread_locals.
 
-use crate::common::{error::LangError, value::Value};
+use crate::common::{error::LangError, value::{ObjectKind, Value}};
 use crate::debug_println;
 use crate::vm::module_cache::{self, CachedModule};
 use crate::vm::run_context::RunContext;
@@ -121,6 +121,44 @@ fn try_find_module_in(module_name: &str, root: &Path) -> Option<(PathBuf, PathBu
     None
 }
 
+/// Разрешает промежуточный сегмент dotted-импорта (не последний).
+/// Пакет с __lib__.dc → директория пакета; namespace-папка без __lib__ → та же директория;
+/// файл `<segment>.dc` без директории → ошибка (нельзя `foo.bar`, если foo — файл).
+fn try_find_path_segment(
+    segment: &str,
+    full_module_name: &str,
+    root: &Path,
+) -> Result<PathBuf, LangError> {
+    let dir_path = root.join(segment);
+    let lib_path = dir_path.join("__lib__.dc");
+    if dir_path.is_dir() && lib_path.exists() {
+        return Ok(dir_path);
+    }
+    if dir_path.is_dir() {
+        return Ok(dir_path);
+    }
+    let file_path = root.join(format!("{}.dc", segment));
+    if file_path.exists() {
+        return Err(LangError::runtime_error(
+            format!(
+                "Module '{}' not found: segment '{}' is a file ('{}'), not a package or directory; cannot import '{}.…'",
+                full_module_name,
+                segment,
+                file_path.display(),
+                segment
+            ),
+            0,
+        ));
+    }
+    Err(LangError::runtime_error(
+        format!(
+            "Module '{}' not found (package segment '{}')",
+            full_module_name, segment
+        ),
+        0,
+    ))
+}
+
 /// Загружает локальный .dc файл или пакет как модуль
 ///
 /// Поддерживаются два варианта:
@@ -178,10 +216,10 @@ pub fn load_local_module(module_name: &str, base_path: &Path) -> Result<Value, L
     set_base_path(old_base_path);
 
     // 5. Экспортировать глобальные переменные в объект модуля
-    let module_object = export_globals_from_vm(&mut vm);
+    let exports = export_globals_from_vm(&mut vm);
 
     Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
-        module_object,
+        ObjectKind::Legacy(exports),
     ))))
 }
 
@@ -213,17 +251,13 @@ fn load_local_module_dotted_with_vm(
         };
         let mut full_search = roots_for_segment;
         full_search.extend(get_dpm_package_paths());
-        let (module_dir, _) = full_search
+        let segment = parts[i];
+        let module_dir = full_search
             .iter()
-            .find_map(|root| try_find_module_in(parts[i], root))
+            .find_map(|root| try_find_path_segment(segment, module_name, root).ok())
             .ok_or_else(|| {
-                LangError::runtime_error(
-                    format!(
-                        "Module '{}' not found (package segment '{}')",
-                        module_name, parts[i]
-                    ),
-                    0,
-                )
+                // Prefer a descriptive error from the first root (file-as-prefix vs not found).
+                try_find_path_segment(segment, module_name, &full_search[0]).unwrap_err()
             })?;
         current_base = module_dir;
     }
@@ -449,7 +483,8 @@ fn load_local_module_with_vm_inner(
     RunContext::set_restored_script_argv_after_import(saved_restored_argv);
     set_base_path(base_path_before);
     let exports = export_globals_from_vm(&mut module_vm);
-    let module_object = Value::Object(std::rc::Rc::new(std::cell::RefCell::new(exports)));
+    let ns = std::rc::Rc::new(std::cell::RefCell::new(ObjectKind::Legacy(exports)));
+    let module_object = Value::Object(ns.clone());
 
     // Do NOT remap here: executor will extend functions, register module in module_registry,
     // then convert Value::Function(local_index) -> Value::ModuleFunction { module_id, local_index } in this namespace.
@@ -510,7 +545,7 @@ fn compile_module(
     let import_names = import_module_names_from_stmts(&ast);
     let mut resolver = Resolver::new_with_source_name(source_name_str.as_deref());
     resolver.resolve(&ast)?;
-    let mut compiler = Compiler::new_with_source_and_native_registry(
+    let mut compiler = Compiler::for_module(
         source_name_str.as_deref(),
         Some(native_call_registry),
     );
@@ -574,9 +609,11 @@ fn compile_and_run_module(
 ) -> Result<(Value, Vm), LangError> {
     let (chunk, functions, _import_names) = compile_module(source, None)?;
     let mut vm = run_compiled_module(&chunk, &functions, module_base_path, None, None)?;
-    let module_object = export_globals_from_vm(&mut vm);
+    let exports = export_globals_from_vm(&mut vm);
     Ok((
-        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(module_object))),
+        Value::Object(std::rc::Rc::new(std::cell::RefCell::new(ObjectKind::Legacy(
+            exports,
+        )))),
         vm,
     ))
 }

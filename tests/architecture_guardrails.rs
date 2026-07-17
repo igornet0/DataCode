@@ -24,6 +24,6 @@ fn builtin_native_indices_stable_entrypoints() {
     assert_eq!(native_indices::builtin::PRINT, 0);
     assert_eq!(native_indices::builtin::RANGE, 2);
     assert_eq!(native_indices::builtin::LEN, 1);
-    assert_eq!(native_indices::builtin::PUSH, 35);
+    assert_eq!(native_indices::builtin::PUSH, 41);
     assert!(native_indices::builtin::PRINT < native_indices::builtin::LEN);
 }

@@ -100,8 +100,10 @@ fn try_load_native_module_direct_smoke() {
 
 fn assert_number(v: Result<Value, data_code::LangError>, n: f64) {
     match v {
-        Ok(Value::Number(x)) => assert!((x - n).abs() < 1e-9, "expected number {}, got {}", n, x),
-        Ok(o) => panic!("expected Number, got {:?}", o),
+        Ok(val) => {
+            let got = val.as_ieee_f64().unwrap_or(f64::NAN);
+            assert!((got - n).abs() < 1e-9, "expected number {}, got {:?}", n, val);
+        }
         Err(e) => panic!("unexpected error: {:?}", e),
     }
 }

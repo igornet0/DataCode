@@ -8,7 +8,7 @@ use crate::common::{
     value_store::{ValueId, NULL_VALUE_ID},
 };
 use crate::vm::context_guards::{ClearScriptArgvGuard, PlotContextGuard, RunContextGuard};
-use crate::vm::frame::CallFrame;
+use crate::vm::frame::{CallFrame, CALL_FRAME_FUNCTION_INDEX_MAIN};
 use crate::vm::global_slot::GlobalSlot;
 use crate::vm::store_convert::{load_value, tagged_to_value_id};
 use crate::vm::types::VMStatus;
@@ -86,10 +86,20 @@ pub fn execute_run(
         }
     }
 
+    vm.reset_execution_stack();
+
     let function = crate::bytecode::Function::new("<main>".to_string(), 0);
     let mut function = function;
     function.chunk = chunk_to_run;
-    let frame = vm.with_stores_mut(|store, heap| CallFrame::new(function, 0, store, heap));
+    let frame = vm.with_stores_mut(|store, heap| {
+        CallFrame::new(
+            function,
+            CALL_FRAME_FUNCTION_INDEX_MAIN,
+            0,
+            store,
+            heap,
+        )
+    });
     vm.push_frame(frame);
 
     if let Some((argv_slot_index, _old_indices, argv_value_id)) = argv_patch {

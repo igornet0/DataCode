@@ -20,3 +20,27 @@ thread_local! {
 pub(crate) fn current_vm_ptr() -> Option<*mut Vm> {
     VM_CALL_CONTEXT.with(|c| c.borrow().as_ref().map(|ctx| ctx.vm))
 }
+
+/// Nested native/table helpers: restore [`VM_CALL_CONTEXT`] on drop (do not set to `None` mid-opcode).
+pub(crate) struct RestoreVmCallContextGuard {
+    previous: Option<VmExecutionContext>,
+}
+
+impl RestoreVmCallContextGuard {
+    pub(crate) fn push(vm_ptr: *mut Vm) -> Self {
+        let previous = VM_CALL_CONTEXT.with(|ctx| {
+            let prev = *ctx.borrow();
+            *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+            prev
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for RestoreVmCallContextGuard {
+    fn drop(&mut self) {
+        VM_CALL_CONTEXT.with(|ctx| {
+            *ctx.borrow_mut() = self.previous;
+        });
+    }
+}

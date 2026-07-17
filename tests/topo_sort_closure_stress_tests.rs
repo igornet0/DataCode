@@ -5,7 +5,7 @@ mod tests {
     use data_code::run;
 
     fn topo_sort_source() -> &'static str {
-        include_str!("../examples/ru/04-продвинутые/структуры данных/графы/topological_sort.dc")
+        include_str!("../examples/ru/09-продвинутые/структуры данных/графы/topological_sort.dc")
     }
 
     #[test]

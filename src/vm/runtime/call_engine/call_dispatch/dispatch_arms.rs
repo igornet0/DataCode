@@ -107,7 +107,7 @@ pub(super) fn dispatch_call_arms(
                 }
             }
             let frame = frames.last().unwrap();
-            let available_args = stack.len().saturating_sub(frame.stack_start);
+            let available_args = crate::vm::stack::available_in_frame(stack, frame.stack_start);
             if available_args < arity {
                 let error = ExceptionHandler::runtime_error(
                     &frames,
@@ -172,7 +172,7 @@ pub(super) fn dispatch_call_arms(
                 Value::Array(_) => "Array",
                 Value::Object(obj_rc) => {
                     let obj = obj_rc.borrow();
-                    if obj.get("__class_name").is_some() {
+                    if obj.str_key_get("__class_name").is_some() {
                         "Object(class)"
                     } else {
                         "Object"
@@ -215,7 +215,7 @@ pub(super) fn dispatch_call_arms(
                 }
                 Value::Object(obj_rc) => {
                     let obj = obj_rc.borrow();
-                    if let Some(Value::String(class_name)) = obj.get("__class_name") {
+                    if let Some(Value::String(class_name)) = obj.str_key_get("__class_name") {
                         format!("Class '{}' cannot accept {} argument(s)", class_name, arity)
                     } else {
                         format!(

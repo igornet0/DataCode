@@ -1,12 +1,21 @@
 // Binary and unary operations for VM (stack as Vec<TaggedValue>; handle_exception needs value_store/heavy_store)
 
-use crate::common::{error::LangError, value::Value, value_store::ValueStore, TaggedValue};
+use crate::common::{
+    error::{ErrorType, LangError},
+    numeric::{divide_by_zero_raises, ieee_div_quotient_value, IntValue},
+    value::Value,
+    value_ord::value_partial_cmp,
+    value_store::ValueStore,
+    TaggedValue,
+};
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
+use crate::vm::iterable::iterable_next;
 use crate::vm::native_loader::{call_abi_native, take_last_abi_error};
 use crate::vm::vm::current_vm_ptr;
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::fmt::Write;
 use std::rc::Rc;
 
@@ -90,9 +99,33 @@ pub fn binary_add(
             let _ = write!(buf, "{}", n);
             Ok(Value::String(buf))
         }
+        (Value::String(s), v) if v.as_ieee_f64().is_some() => {
+            let mut buf = String::with_capacity(s.len() + 24);
+            buf.push_str(s);
+            buf.push_str(&v.to_string());
+            Ok(Value::String(buf))
+        }
+        (Value::String(s), Value::Date(d)) => {
+            let mut buf = String::with_capacity(s.len() + 40);
+            buf.push_str(s);
+            buf.push_str(&d.to_rfc3339());
+            Ok(Value::String(buf))
+        }
+        (Value::Date(d), Value::String(s)) => {
+            let mut buf = String::with_capacity(40 + s.len());
+            buf.push_str(&d.to_rfc3339());
+            buf.push_str(s);
+            Ok(Value::String(buf))
+        }
         (Value::Number(n), Value::String(s)) => {
             let mut buf = String::with_capacity(24 + s.len());
             let _ = write!(buf, "{}", n);
+            buf.push_str(s);
+            Ok(Value::String(buf))
+        }
+        (v, Value::String(s)) if v.as_ieee_f64().is_some() => {
+            let mut buf = String::with_capacity(24 + s.len());
+            buf.push_str(&v.to_string());
             buf.push_str(s);
             Ok(Value::String(buf))
         }
@@ -121,6 +154,94 @@ pub fn binary_add(
                 .collect::<Vec<_>>()
                 .join(", ");
             Ok(Value::String(format!("[{}]{}", inner, s)))
+        }
+        (Value::String(s), Value::Iterable(it)) => {
+            let Some(vm_ptr) = current_vm_ptr() else {
+                let error = ExceptionHandler::runtime_error(
+                    frames,
+                    "Operands must be numbers or strings".to_string(),
+                    line,
+                );
+                return ExceptionHandler::handle_exception_null_value(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                );
+            };
+            unsafe {
+                let vm = &mut *vm_ptr;
+                let mut inner = it.borrow().clone();
+                let mut parts = Vec::new();
+                loop {
+                    match iterable_next(&mut inner, vm) {
+                        Ok(None) => break,
+                        Ok(Some(elem)) => parts.push(elem.to_string()),
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(Value::String(format!(
+                    "{}[{}]",
+                    s,
+                    parts.join(", ")
+                )))
+            }
+        }
+        (Value::Iterable(it), Value::String(s)) => {
+            let Some(vm_ptr) = current_vm_ptr() else {
+                let error = ExceptionHandler::runtime_error(
+                    frames,
+                    "Operands must be numbers or strings".to_string(),
+                    line,
+                );
+                return ExceptionHandler::handle_exception_null_value(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                );
+            };
+            unsafe {
+                let vm = &mut *vm_ptr;
+                let mut inner = it.borrow().clone();
+                let mut parts = Vec::new();
+                loop {
+                    match iterable_next(&mut inner, vm) {
+                        Ok(None) => break,
+                        Ok(Some(elem)) => parts.push(elem.to_string()),
+                        Err(e) => return Err(e),
+                    }
+                }
+                Ok(Value::String(format!(
+                    "[{}]{}",
+                    parts.join(", "),
+                    s
+                )))
+            }
+        }
+        (Value::Date(d), Value::Duration(dur)) | (Value::Duration(dur), Value::Date(d)) => {
+            match d.checked_add_signed(*dur) {
+                Some(nd) => Ok(Value::Date(nd)),
+                None => {
+                    let error = ExceptionHandler::runtime_error(
+                        frames,
+                        "date arithmetic overflow".to_string(),
+                        line,
+                    );
+                    ExceptionHandler::handle_exception_null_value(
+                        stack,
+                        frames,
+                        exception_handlers,
+                        error,
+                        value_store,
+                        heavy_store,
+                    )
+                }
+            }
         }
         _ => {
             let error = ExceptionHandler::runtime_error(
@@ -168,10 +289,29 @@ pub fn binary_sub(
 
     match (a, b) {
         (Value::Number(n1), Value::Number(n2)) => Ok(Value::Number(n1 - n2)),
+        (Value::Date(d), Value::Duration(dur)) => match d.checked_sub_signed(*dur) {
+            Some(nd) => Ok(Value::Date(nd)),
+            None => {
+                let error = ExceptionHandler::runtime_error(
+                    frames,
+                    "date arithmetic overflow".to_string(),
+                    line,
+                );
+                ExceptionHandler::handle_exception_null_value(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                )
+            }
+        },
+        (Value::Date(a), Value::Date(b)) => Ok(Value::Duration(a.signed_duration_since(*b))),
         _ => {
             let error = ExceptionHandler::runtime_error(
                 frames,
-                "Operands must be numbers".to_string(),
+                "Operands must be numbers, dates, or durations".to_string(),
                 line,
             );
             ExceptionHandler::handle_exception_null_value(
@@ -210,6 +350,17 @@ pub fn binary_mul(
                 Ok(Value::String(s.repeat(count as usize)))
             }
         }
+        (Value::String(s), Value::Int(iv)) => {
+            let count = match *iv {
+                IntValue::Finite(n) => n,
+                _ => 0,
+            };
+            if count <= 0 {
+                Ok(Value::String(String::new()))
+            } else {
+                Ok(Value::String(s.repeat(count as usize)))
+            }
+        }
         (Value::Number(n), Value::String(s)) => {
             let count = *n as i64;
             if count <= 0 {
@@ -217,6 +368,44 @@ pub fn binary_mul(
             } else {
                 Ok(Value::String(s.repeat(count as usize)))
             }
+        }
+        (Value::Int(iv), Value::String(s)) => {
+            let count = match *iv {
+                IntValue::Finite(n) => n,
+                _ => 0,
+            };
+            if count <= 0 {
+                Ok(Value::String(String::new()))
+            } else {
+                Ok(Value::String(s.repeat(count as usize)))
+            }
+        }
+        (Value::Array(a1), Value::Array(a2)) => {
+            if let Some(vm_ptr) = current_vm_ptr() {
+                unsafe {
+                    let va = Value::Array(Rc::clone(a1));
+                    let vb = Value::Array(Rc::clone(a2));
+                    if let Some(out) = (*vm_ptr)
+                        .compute_mut()
+                        .try_mul_values(&va, &vb)
+                    {
+                        return Ok(out);
+                    }
+                }
+            }
+            let error = ExceptionHandler::runtime_error(
+                frames,
+                "Operands must be numbers, equal-length numeric arrays for element-wise *, or string and number for repetition".to_string(),
+                line,
+            );
+            ExceptionHandler::handle_exception_null_value(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            )
         }
         _ => {
             let error = ExceptionHandler::runtime_error(
@@ -252,20 +441,24 @@ pub fn binary_matmul(
     }
     match (a, b) {
         (Value::Number(n1), Value::Number(n2)) => Ok(Value::Number(n1 * n2)),
-        _ => {
-            let error = ExceptionHandler::runtime_error(
-                frames,
-                "Operands must be numbers or tensors for @".to_string(),
-                line,
-            );
-            ExceptionHandler::handle_exception_null_value(
-                stack,
-                frames,
-                exception_handlers,
-                error,
-                value_store,
-                heavy_store,
-            )
+        (a, b) => {
+            if let (Some(x), Some(y)) = (a.as_ieee_f64(), b.as_ieee_f64()) {
+                Ok(Value::Number(x * y))
+            } else {
+                let error = ExceptionHandler::runtime_error(
+                    frames,
+                    "Operands must be numbers or tensors for @".to_string(),
+                    line,
+                );
+                ExceptionHandler::handle_exception_null_value(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                )
+            }
         }
     }
 }
@@ -387,6 +580,21 @@ pub fn binary_div(
     heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
+    if let (Some(x), Some(y)) = (a.as_ieee_f64(), b.as_ieee_f64()) {
+        if y == 0.0 && divide_by_zero_raises(a, b) {
+            let error =
+                ExceptionHandler::runtime_error(frames, "Division by zero".to_string(), line);
+            return ExceptionHandler::handle_exception_null_value(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            );
+        }
+        return Ok(ieee_div_quotient_value(a, b, x, y));
+    }
     match (a, b) {
         (Value::Number(n1), Value::Number(n2)) => {
             if *n2 == 0.0 {
@@ -409,6 +617,13 @@ pub fn binary_div(
             let mut new_path = p.clone();
             new_path.push(s);
             Ok(Value::Path(new_path))
+        }
+        // Конкатенация путей: Path / Path -> Path
+        (Value::Path(p1), Value::Path(p2)) => Ok(Value::Path(p1.join(p2))),
+        // Конкатенация путей: String / Path -> Path
+        (Value::String(s), Value::Path(p)) => {
+            use std::path::PathBuf;
+            Ok(Value::Path(PathBuf::from(s).join(p)))
         }
         // Конкатенация путей: String / String -> Path (если контекст предполагает путь)
         (Value::String(s1), Value::String(s2)) => {
@@ -446,6 +661,21 @@ pub fn binary_int_div(
     heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
+    if let (Some(x), Some(y)) = (a.as_ieee_f64(), b.as_ieee_f64()) {
+        if y == 0.0 {
+            let error =
+                ExceptionHandler::runtime_error(frames, "Division by zero".to_string(), line);
+            return ExceptionHandler::handle_exception_null_value(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            );
+        }
+        return Ok(Value::Number((x / y).floor()));
+    }
     match (a, b) {
         (Value::Number(n1), Value::Number(n2)) => {
             if *n2 == 0.0 {
@@ -493,6 +723,22 @@ pub fn binary_mod(
     heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
+    if let (Some(x), Some(y)) = (a.as_ieee_f64(), b.as_ieee_f64()) {
+        if y == 0.0 {
+            let error =
+                ExceptionHandler::runtime_error(frames, "Modulo by zero".to_string(), line);
+            return ExceptionHandler::handle_exception_null_value(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            );
+        }
+        let q = (x / y).floor();
+        return Ok(Value::Number(x - q * y));
+    }
     match (a, b) {
         (Value::Number(n1), Value::Number(n2)) => {
             if *n2 == 0.0 {
@@ -507,7 +753,8 @@ pub fn binary_mod(
                     heavy_store,
                 )
             } else {
-                Ok(Value::Number(n1 % n2))
+                let q = (n1 / n2).floor();
+                Ok(Value::Number(n1 - q * n2))
             }
         }
         _ => {
@@ -539,6 +786,9 @@ pub fn binary_pow(
     heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
+    if let (Some(x), Some(y)) = (a.as_ieee_f64(), b.as_ieee_f64()) {
+        return Ok(Value::Number(x.powf(y)));
+    }
     match (a, b) {
         (Value::Number(n1), Value::Number(n2)) => Ok(Value::Number(n1.powf(*n2))),
         _ => {
@@ -570,14 +820,14 @@ pub fn binary_greater(
     heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
-    match (a, b) {
-        (Value::Number(n1), Value::Number(n2)) => Ok(Value::Bool(n1 > n2)),
-        (Value::String(s1), Value::String(s2)) => Ok(Value::Bool(s1 > s2)),
-        _ => {
-            let error = ExceptionHandler::runtime_error(
-                frames,
-                "Operands must be numbers or strings".to_string(),
+    match value_partial_cmp(a, b) {
+        Ok(ord) => Ok(Value::Bool(ord == Ordering::Greater)),
+        Err(msg) => {
+            let error = ExceptionHandler::runtime_error_with_type(
+                &frames,
+                msg,
                 line,
+                ErrorType::TypeError,
             );
             ExceptionHandler::handle_exception_null_value(
                 stack,
@@ -602,14 +852,14 @@ pub fn binary_less(
     heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
-    match (a, b) {
-        (Value::Number(n1), Value::Number(n2)) => Ok(Value::Bool(n1 < n2)),
-        (Value::String(s1), Value::String(s2)) => Ok(Value::Bool(s1 < s2)),
-        _ => {
-            let error = ExceptionHandler::runtime_error(
-                frames,
-                "Operands must be numbers or strings".to_string(),
+    match value_partial_cmp(a, b) {
+        Ok(ord) => Ok(Value::Bool(ord == Ordering::Less)),
+        Err(msg) => {
+            let error = ExceptionHandler::runtime_error_with_type(
+                &frames,
+                msg,
                 line,
+                ErrorType::TypeError,
             );
             ExceptionHandler::handle_exception_null_value(
                 stack,
@@ -634,14 +884,17 @@ pub fn binary_greater_equal(
     heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
-    match (a, b) {
-        (Value::Number(n1), Value::Number(n2)) => Ok(Value::Bool(n1 >= n2)),
-        (Value::String(s1), Value::String(s2)) => Ok(Value::Bool(s1 >= s2)),
-        _ => {
-            let error = ExceptionHandler::runtime_error(
-                frames,
-                "Operands must be numbers or strings".to_string(),
+    match value_partial_cmp(a, b) {
+        Ok(ord) => Ok(Value::Bool(matches!(
+            ord,
+            Ordering::Greater | Ordering::Equal
+        ))),
+        Err(msg) => {
+            let error = ExceptionHandler::runtime_error_with_type(
+                &frames,
+                msg,
                 line,
+                ErrorType::TypeError,
             );
             ExceptionHandler::handle_exception_null_value(
                 stack,
@@ -666,14 +919,14 @@ pub fn binary_less_equal(
     heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
-    match (a, b) {
-        (Value::Number(n1), Value::Number(n2)) => Ok(Value::Bool(n1 <= n2)),
-        (Value::String(s1), Value::String(s2)) => Ok(Value::Bool(s1 <= s2)),
-        _ => {
-            let error = ExceptionHandler::runtime_error(
-                frames,
-                "Operands must be numbers or strings".to_string(),
+    match value_partial_cmp(a, b) {
+        Ok(ord) => Ok(Value::Bool(matches!(ord, Ordering::Less | Ordering::Equal))),
+        Err(msg) => {
+            let error = ExceptionHandler::runtime_error_with_type(
+                &frames,
+                msg,
                 line,
+                ErrorType::TypeError,
             );
             ExceptionHandler::handle_exception_null_value(
                 stack,
@@ -699,6 +952,8 @@ pub fn unary_negate(
     let line = get_line(frames);
     match value {
         Value::Number(n) => Ok(Value::Number(-n)),
+        Value::Int(i) => Ok(Value::Int(i.neg())),
+        Value::Float(f) => Ok(Value::Float(f.neg())),
         _ => {
             let error = ExceptionHandler::runtime_error(
                 frames,

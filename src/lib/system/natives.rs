@@ -1,7 +1,9 @@
 //! Native implementations for the built-in `system` module.
 
 use crate::common::debug;
-use crate::common::value::Value;
+use crate::common::numeric::FloatValue;
+use crate::common::value::{ObjectKind, Value};
+use crate::websocket::set_native_error;
 use crate::dpm::registry::registry_index_url;
 use crate::vm::permission_policy::PermissionPolicy;
 use crate::vm::vm::current_vm_ptr;
@@ -205,12 +207,39 @@ pub fn native_system_memory_free(_args: &[Value]) -> Value {
 }
 
 pub fn native_system_gpu_count(_args: &[Value]) -> Value {
-    Value::Number(0.0)
+    let n = with_vm(|vm| {
+        let mut count = 0usize;
+        if vm.compute().has_metal() {
+            count += 1;
+        }
+        if vm.compute().has_cuda() {
+            count += 1;
+        }
+        count
+    })
+    .unwrap_or(0);
+    Value::Number(n as f64)
 }
 
-/// Array of objects `{ name, backend, detail }` (v1 stub when no GPU enumeration).
+/// Array of objects `{ name, backend, detail }`.
 pub fn native_system_gpu_info(_args: &[Value]) -> Value {
-    Value::Array(Rc::new(RefCell::new(Vec::new())))
+    let rows = with_vm(|vm| {
+        let mut out = Vec::new();
+        if vm.compute().has_metal() {
+            let info = vm.compute().info();
+            let mut m = std::collections::HashMap::new();
+            m.insert("name".to_string(), Value::String(info.gpu_name));
+            m.insert("backend".to_string(), Value::String("metal".to_string()));
+            m.insert(
+                "detail".to_string(),
+                Value::String(format!("{} MiB unified", info.memory_mb)),
+            );
+            out.push(Value::Object(Rc::new(RefCell::new(ObjectKind::Legacy(m)))));
+        }
+        out
+    })
+    .unwrap_or_default();
+    Value::Array(Rc::new(RefCell::new(rows)))
 }
 
 // --- time (21..23) ---
@@ -234,12 +263,33 @@ pub fn native_system_uptime(_args: &[Value]) -> Value {
     Value::Number(s as f64)
 }
 
+fn monotonic_anchor() -> &'static Instant {
+    static ANCHOR: OnceLock<Instant> = OnceLock::new();
+    ANCHOR.get_or_init(Instant::now)
+}
+
 /// Monotonic milliseconds since the first call to this function in the process (anchor = first invocation).
 /// Use for deltas: `t0 = system.time.monotonic_ms(); ...; t1 = system.time.monotonic_ms(); print(t1 - t0)`.
 pub fn native_system_time_monotonic_ms(_args: &[Value]) -> Value {
-    static ANCHOR: OnceLock<Instant> = OnceLock::new();
-    let anchor = ANCHOR.get_or_init(Instant::now);
-    Value::Number(anchor.elapsed().as_secs_f64() * 1000.0)
+    Value::Number(monotonic_anchor().elapsed().as_secs_f64() * 1000.0)
+}
+
+/// High-resolution monotonic timer in seconds (float). Epoch is arbitrary; use deltas for benchmarks.
+/// Analogous to Python `time.perf_counter()`.
+pub fn native_system_time_perf_counter(args: &[Value]) -> Value {
+    let user_args = if args
+        .first()
+        .is_some_and(|v| matches!(v, Value::Object(_)))
+    {
+        &args[1..]
+    } else {
+        args
+    };
+    if !user_args.is_empty() {
+        set_native_error("TypeError: perf_counter() takes 0 arguments".to_string());
+        return Value::Null;
+    }
+    Value::Float(FloatValue::Finite(monotonic_anchor().elapsed().as_secs_f64()))
 }
 
 // --- permissions (24..25) ---
@@ -328,7 +378,7 @@ pub fn native_system_net_get_interfaces(_args: &[Value]) -> Value {
                 "is_loopback".to_string(),
                 Value::Bool(iface.addr.ip().is_loopback()),
             );
-            rows.push(Value::Object(Rc::new(RefCell::new(m))));
+            rows.push(Value::Object(Rc::new(RefCell::new(ObjectKind::Legacy(m)))));
         }
     }
     Value::Array(Rc::new(RefCell::new(rows)))
@@ -403,4 +453,19 @@ pub fn native_system_fs_write(args: &[Value]) -> Value {
         Ok(()) => Value::Null,
         Err(e) => Value::String(format!("system.fs.write: {}", e)),
     }
+}
+
+/// Release allocator retained memory (Linux `malloc_trim`, jemalloc arena purge, A* scratch pool).
+pub fn native_system_trim_allocator(_args: &[Value]) -> Value {
+    crate::common::astar_grid_core::purge_astar_scratch_pool();
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    unsafe {
+        extern "C" {
+            fn malloc_trim(pad: usize) -> i32;
+        }
+        let _ = malloc_trim(0);
+    }
+
+    Value::Bool(true)
 }

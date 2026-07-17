@@ -1460,6 +1460,22 @@ mod tests {
         assert_number_result("round(0)", 0.0);
     }
 
+    #[test]
+    fn test_ceil_function() {
+        assert_number_result("ceil(3.1)", 4.0);
+        assert_number_result("ceil(-3.1)", -3.0);
+        assert_number_result("ceil(5)", 5.0);
+        assert_number_result("ceil(0)", 0.0);
+    }
+
+    #[test]
+    fn test_floor_function() {
+        assert_number_result("floor(3.9)", 3.0);
+        assert_number_result("floor(-3.1)", -4.0);
+        assert_number_result("floor(5)", 5.0);
+        assert_number_result("floor(0)", 0.0);
+    }
+
     // ========== Тесты строковых функций ==========
 
     #[test]
@@ -1591,6 +1607,18 @@ mod tests {
         assert!(
             matches!(result, Ok(Value::Null)),
             "round with string should return Null"
+        );
+
+        let result = run_and_get_result(r#"ceil("hello")"#);
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "ceil with string should return Null"
+        );
+
+        let result = run_and_get_result(r#"floor("hello")"#);
+        assert!(
+            matches!(result, Ok(Value::Null)),
+            "floor with string should return Null"
         );
     }
 

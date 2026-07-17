@@ -28,7 +28,7 @@ pub fn op_begin_try(
             *error_type_table = chunk.error_type_table.clone();
         }
 
-        let stack_height = stack.len();
+        let stack_height = crate::vm::stack::logical_len(stack);
         let frame_index = frames.len() - 1;
         let handler = ExceptionHandler {
             catch_ips: handler_info.catch_ips.clone(),
@@ -42,7 +42,7 @@ pub fn op_begin_try(
         };
         exception_handlers.push(handler);
     } else {
-        let stack_height = stack.len();
+        let stack_height = crate::vm::stack::logical_len(stack);
         let frame_index = frames.len() - 1;
         let handler = ExceptionHandler {
             catch_ips: Vec::new(),

@@ -45,6 +45,41 @@ mod tests {
     }
 
     #[test]
+    fn random_in_unit_interval() {
+        let source = r#"
+            let ok = true
+            for i in range(0, 50) {
+                let x = random()
+                if x < 0 or x >= 1 { ok = false }
+            }
+            ok
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
+    fn random_seed_reproducible_float() {
+        let source = r#"
+            random_seed(42)
+            let a = random()
+            random_seed(42)
+            let b = random()
+            a == b
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
+    fn random_rejects_args() {
+        let result = run_plain(r#"random(1)"#);
+        assert!(
+            result.is_err(),
+            "expected runtime error for random(1), got {:?}",
+            result
+        );
+    }
+
+    #[test]
     fn random_seed_reproducible() {
         let source = r#"
             random_seed(42)

@@ -17,7 +17,7 @@ fn export_data(data) {
 let bin_path = "@@CIFAR_BIN@@"
 
 let t0 = system.time.monotonic_ms()
-let data = read_file_bin(bin_path)
+let data = read(bin_path)
 let t1 = system.time.monotonic_ms()
 let y, X = export_data(data)
 let t2 = system.time.monotonic_ms()

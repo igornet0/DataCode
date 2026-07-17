@@ -77,8 +77,14 @@ pub fn register_builtin_natives(natives: &mut Vec<HostEntry>) {
         natives::native_round,
     )))); // 26 - round(...)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_ceil,
+    )))); // 27 - ceil(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_floor,
+    )))); // 28 - floor(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_upper,
-    )))); // 27 - upper(...)
+    )))); // 29 - upper(...)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_lower,
     )))); // 28 - lower(...)
@@ -95,21 +101,33 @@ pub fn register_builtin_natives(natives: &mut Vec<HostEntry>) {
         natives::native_contains,
     )))); // 32 - contains(...)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_starts_with,
+    )))); // 33 - starts_with(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_ends_with,
+    )))); // 34 - ends_with(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_isupper,
-    )))); // 33 - isupper(...)
+    )))); // 35 - isupper(...)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_islower,
-    )))); // 34 - islower(...)
+    )))); // 36 - islower(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_replace,
+    )))); // 37 - replace(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_capitalize,
+    )))); // 38 - capitalize(...)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_push,
-    )))); // 35 - push(...)
-    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(natives::native_pop)))); // 36 - pop(...)
+    )))); // 39 - push(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(natives::native_pop)))); // 38 - pop(...)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_unique,
-    )))); // 37 - unique(...)
+    )))); // 39 - unique(...)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_reverse,
-    )))); // 38 - reverse(...)
+    )))); // 40 - reverse(...)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_sort,
     )))); // 39 - sort(...)
@@ -120,8 +138,8 @@ pub fn register_builtin_natives(natives: &mut Vec<HostEntry>) {
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_count,
     )))); // 42 - count(...)
-    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(natives::native_any)))); // 43 - any(...)
-    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(natives::native_all)))); // 44 - all(...)
+    natives.push(HostEntry::Builtin(Arc::new(natives::AnyHostFunction))); // 43 - any(...)
+    natives.push(HostEntry::Builtin(Arc::new(natives::AllHostFunction))); // 44 - all(...)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_table,
     )))); // 45 - table(...)
@@ -150,12 +168,36 @@ pub fn register_builtin_natives(natives: &mut Vec<HostEntry>) {
         natives::native_table_where,
     )))); // 53 - table_where(...)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_drop_nulls,
+    )))); // 54 - table_drop_nulls(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_replace_nulls,
+    )))); // 55 - table_replace_nulls(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_rename,
+    )))); // 56 - table_rename(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_drop_column,
+    )))); // 57 - table_drop_column(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_add_column,
+    )))); // 57 - table_add_column(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_map,
+    )))); // 58 - table_map(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_split_column,
+    )))); // 59 - table_split_column(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_join_columns,
+    )))); // 60 - table_join_columns(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_show_table,
-    )))); // 54 - show_table(...)
+    )))); // 61 - show_table(...)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_merge_tables,
-    )))); // 55 - merge_tables(...)
-    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(natives::native_now)))); // 56 - now(...)
+    )))); // 56 - merge_tables(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(natives::native_now)))); // 57 - now(...)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_getcwd,
     )))); // 57 - getcwd(...)
@@ -234,19 +276,196 @@ pub fn register_builtin_natives(natives: &mut Vec<HostEntry>) {
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_random_int,
     )))); // 84 - random_int(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_random_seed,
+    )))); // 85 - random_seed(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_random,
+    )))); // 86 - random()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_date_to_unix,
+    )))); // 87 - date_to_unix(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_parse_date,
+    )))); // 88 - parse_date(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_format_date,
+    )))); // 89 - format_date(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_duration,
+    )))); // 90 - duration(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_set,
+    )))); // 89 - set(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_divmod,
+    )))); // 90 - divmod(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_isinf,
+    )))); // 91 - isinf(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_copy,
+    )))); // 92 - copy(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_ord,
+    )))); // 93 - ord(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_row_number,
+    )))); // 94 - table_row_number(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_distinct,
+    )))); // 95 - table_distinct(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_value_map,
+    )))); // 96 - table_value_map(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_aggregate,
+    )))); // 97 - table_aggregate(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_aggregate_group,
+    )))); // 98 - table_aggregate_group(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::archive::natives::native_archive,
+    )))); // archive(...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_datasource,
+    )))); // datasource(config)
     let value_error = Arc::new(FnWrapper(natives::native_value_error_new));
     while natives.len() < builtin::VALUE_ERROR {
         natives.push(HostEntry::Builtin(value_error.clone())); // placeholder so indices line up
     }
-    natives.push(HostEntry::Builtin(value_error)); // 85 - ValueError::new_1 for raise ValueError("...")
+    natives.push(HostEntry::Builtin(value_error)); // 94 - ValueError::new_1 for raise ValueError("...")
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_chunk,
-    )))); // 86 - array.chunk(n)
+    )))); // 95 - array.chunk(n)
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_generator_final,
-    )))); // 87 - generator.final()
-    natives.push(HostEntry::Builtin(Arc::new(NativeGeneratorNext))); // 88 - generator.next()
-    natives.push(HostEntry::Builtin(Arc::new(NativeGeneratorSend))); // 89 - generator.send()
+    )))); // 96 - generator.final()
+    natives.push(HostEntry::Builtin(Arc::new(NativeGeneratorNext))); // 97 - generator.next()
+    natives.push(HostEntry::Builtin(Arc::new(NativeGeneratorSend))); // 98 - generator.send()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_date_year,
+    )))); // 99 - date.year()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_date_month,
+    )))); // 100 - date.month()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_date_day,
+    )))); // 101 - date.day()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_date_hour,
+    )))); // 102 - date.hour()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_date_minute,
+    )))); // 103 - date.minute()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_date_second,
+    )))); // 104 - date.second()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_date_to_utc,
+    )))); // 105 - date.to_utc()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_set_add,
+    )))); // 106 - set.add() binding
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_set_remove,
+    )))); // 107 - set.remove()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_set_discard,
+    )))); // 108 - set.discard()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_set_pop,
+    )))); // 109 - set.pop()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_set_clear,
+    )))); // 110 - set.clear()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_set_copy,
+    )))); // 111 - set.copy()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_set_update,
+    )))); // 112 - set.update()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_set_contains,
+    )))); // 113 - set.contains()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_object_get,
+    )))); // 114 - object.get(key [, default])
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_add_row,
+    )))); // 115 - table.add_row(row)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_object_clear,
+    )))); // 116 - dict.clear()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_push,
+    )))); // 117 - table.push(data)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_save_csv,
+    )))); // 118 - table.save_csv(path)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_table_save_sqlite,
+    )))); // 119 - table.save_sqlite(path)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::file_io_compat::native_save,
+    )))); // 120 - save(...) file_io
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_save_tables_sqlite,
+    )))); // 121 - save_tables_sqlite(tables, ...)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::archive::natives::native_archive_read,
+    )))); // archive.read(path)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::archive::natives::native_archive_read_text,
+    )))); // archive.read_text(path)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::archive::natives::native_archive_extract,
+    )))); // archive.extract(dest)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::archive::natives::native_archive_close,
+    )))); // archive.close()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_datasource_request,
+    )))); // datasource.request(spec)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_datasource_get_table,
+    )))); // datasource.get_table(spec)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_datasource_send_table,
+    )))); // datasource.send_table(spec)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_datasource_connect,
+    )))); // datasource.connect()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_datasource_disconnect,
+    )))); // datasource.disconnect()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_datasource_ping,
+    )))); // datasource.ping()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_datasource_test,
+    )))); // datasource.test()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_datasource_clone,
+    )))); // datasource.clone()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_response_json,
+    )))); // response.json()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_response_table,
+    )))); // response.table()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_response_csv,
+    )))); // response.csv()
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_response_save,
+    )))); // response.save(path)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_response_save_text,
+    )))); // response.save_text(path)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        crate::datasource::natives::native_response_save_json,
+    )))); // response.save_json(path)
 }
 
 #[cfg(test)]
@@ -257,11 +476,11 @@ mod tests {
     fn builtin_register_len_matches_native_indices_constants() {
         let mut natives = Vec::new();
         register_builtin_natives(&mut natives);
-        let expected = crate::vm::native_indices::builtin::GENERATOR_SEND + 1;
+        let expected = crate::vm::native_indices::builtin::RESPONSE_SAVE_JSON + 1;
         assert_eq!(
             natives.len(),
             expected,
-            "builtin native count must match native_indices::builtin (last index GENERATOR_SEND)"
+            "builtin native count must match native_indices::builtin (last index RESPONSE_SAVE_JSON)"
         );
     }
 }

@@ -57,16 +57,43 @@ pub fn compile_binary(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                 Ok(())
             }
             BinaryOpKind::Builtin(TokenKind::BangEqual) => {
+                if crate::compiler::expr::integral_peephole::try_compile_f_score_stale_check(
+                    ctx, left, right, *line,
+                )? {
+                    return Ok(());
+                }
                 expr::compile_expr(ctx, left)?;
                 expr::compile_expr(ctx, right)?;
                 ctx.chunk.write_with_line(OpCode::NotEqual, *line);
+                Ok(())
+            }
+            BinaryOpKind::Builtin(TokenKind::Less) => {
+                if crate::compiler::expr::integral_peephole::try_compile_dict_get_integral_lt(
+                    ctx, left, right, *line,
+                )? {
+                    return Ok(());
+                }
+                expr::compile_expr(ctx, left)?;
+                expr::compile_expr(ctx, right)?;
+                ctx.chunk.write_with_line(OpCode::Less, *line);
+                Ok(())
+            }
+            BinaryOpKind::Builtin(TokenKind::Plus) => {
+                if crate::compiler::expr::integral_peephole::try_compile_dict_index_integral_add(
+                    ctx, left, right, *line,
+                )? {
+                    return Ok(());
+                }
+                expr::compile_expr(ctx, left)?;
+                expr::compile_expr(ctx, right)?;
+                ctx.chunk.write_with_line(OpCode::Add, *line);
                 Ok(())
             }
             BinaryOpKind::Builtin(tok) => {
                 expr::compile_expr(ctx, left)?;
                 expr::compile_expr(ctx, right)?;
                 match tok {
-                    TokenKind::Plus => ctx.chunk.write_with_line(OpCode::Add, *line),
+                    TokenKind::Plus => unreachable!("Plus handled above"),
                     TokenKind::Minus => ctx.chunk.write_with_line(OpCode::Sub, *line),
                     TokenKind::Star => ctx.chunk.write_with_line(OpCode::Mul, *line),
                     TokenKind::StarStar => ctx.chunk.write_with_line(OpCode::Pow, *line),
@@ -74,12 +101,25 @@ pub fn compile_binary(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
                     TokenKind::SlashSlash => ctx.chunk.write_with_line(OpCode::IntDiv, *line),
                     TokenKind::Percent => ctx.chunk.write_with_line(OpCode::Mod, *line),
                     TokenKind::Greater => ctx.chunk.write_with_line(OpCode::Greater, *line),
-                    TokenKind::Less => ctx.chunk.write_with_line(OpCode::Less, *line),
+                    TokenKind::Less => unreachable!("Less handled above"),
                     TokenKind::GreaterEqual => {
                         ctx.chunk.write_with_line(OpCode::GreaterEqual, *line)
                     }
                     TokenKind::LessEqual => ctx.chunk.write_with_line(OpCode::LessEqual, *line),
-                    TokenKind::In => ctx.chunk.write_with_line(OpCode::In, *line),
+                    TokenKind::In => {
+                        if crate::compiler::expr::integral_peephole::expr_may_be_integral(left) {
+                            ctx.chunk.write_with_line(OpCode::InIntegral, *line);
+                        } else {
+                            ctx.chunk.write_with_line(OpCode::In, *line);
+                        }
+                    }
+                    TokenKind::Amp => ctx.chunk.write_with_line(OpCode::BitAnd, *line),
+                    TokenKind::Pipe => ctx.chunk.write_with_line(OpCode::BitOr, *line),
+                    TokenKind::Caret => ctx.chunk.write_with_line(OpCode::BitXor, *line),
+                    TokenKind::LessLess => ctx.chunk.write_with_line(OpCode::ShiftLeft, *line),
+                    TokenKind::GreaterGreater => {
+                        ctx.chunk.write_with_line(OpCode::ShiftRight, *line)
+                    }
                     _ => {
                         return Err(LangError::ParseError {
                             message: format!("Unknown binary operator: {:?}", tok),

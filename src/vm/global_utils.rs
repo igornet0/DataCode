@@ -57,7 +57,7 @@ pub(crate) fn get_superclass_chain(
                     let v = load_value(id, store, heap);
                     if let Value::Object(rc) = &v {
                         let map = rc.borrow();
-                        map.get("__superclass").cloned()
+                        map.str_key_get("__superclass").cloned()
                     } else {
                         None
                     }

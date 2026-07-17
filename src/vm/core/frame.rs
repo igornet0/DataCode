@@ -11,7 +11,12 @@ use crate::vm::store_convert::store_value;
 /// Стек нужен для вложенных циклов for i in range(...).
 pub type ForRangeState = (i64, i64, i64, usize);
 
+/// Sentinel for the synthetic `<main>` chunk frame (not an entry in the VM `functions` table).
+pub const CALL_FRAME_FUNCTION_INDEX_MAIN: usize = usize::MAX;
+
 pub struct CallFrame {
+    /// Index of this frame's function in VM `functions`, or [`CALL_FRAME_FUNCTION_INDEX_MAIN`].
+    pub function_index: usize,
     pub function: Function,
     pub ip: usize,               // Instruction pointer
     pub slots: Vec<TaggedValue>, // Локальные переменные (TaggedValue: immediates без store)
@@ -45,6 +50,14 @@ pub struct CallFrame {
     pub get_array_element_cache_ip: Option<usize>,
     pub get_array_element_cache_array_number: bool,
     pub get_array_element_cache_object_string: bool,
+    /// Plain dict + whole numeric key (`dict[i]`, `dict.get(i)`).
+    pub get_array_element_cache_object_integral: bool,
+    /// Container identity for [`get_array_element_cache_*`] — fast path only when it matches the current stack value.
+    pub get_array_element_cache_container_tv: Option<TaggedValue>,
+    /// Index key for [`get_array_element_cache_*`] — fast path invalid if same IP+container but different index.
+    pub get_array_element_cache_index_tv: Option<TaggedValue>,
+    /// Canonical integral key when [`get_array_element_cache_object_integral`] (heap `Number` indices included).
+    pub get_array_element_cache_integral_key: Option<i64>,
     /// Inline cache for Call: at this IP callee was a user function (ValueCell::Function).
     pub call_cache_ip: Option<usize>,
     pub call_cache_is_user_function: bool,
@@ -61,6 +74,7 @@ pub struct CallFrame {
 impl CallFrame {
     pub fn new(
         function: Function,
+        function_index: usize,
         stack_start: usize,
         store: &mut ValueStore,
         heap: &mut HeavyStore,
@@ -82,6 +96,7 @@ impl CallFrame {
             .collect();
         let module_name = function.module_name.clone();
         Self {
+            function_index,
             slots: Vec::with_capacity(initial_slots + 64),
             ip: 0,
             function,
@@ -105,6 +120,10 @@ impl CallFrame {
             get_array_element_cache_ip: None,
             get_array_element_cache_array_number: false,
             get_array_element_cache_object_string: false,
+            get_array_element_cache_object_integral: false,
+            get_array_element_cache_container_tv: None,
+            get_array_element_cache_index_tv: None,
+            get_array_element_cache_integral_key: None,
             call_cache_ip: None,
             call_cache_is_user_function: false,
             load_local_cache_ip: None,
@@ -117,12 +136,13 @@ impl CallFrame {
 
     pub fn new_with_cache(
         function: Function,
+        function_index: usize,
         stack_start: usize,
         args: Vec<TaggedValue>,
         store: &mut ValueStore,
         heap: &mut HeavyStore,
     ) -> Self {
-        let mut frame = Self::new(function, stack_start, store, heap);
+        let mut frame = Self::new(function, function_index, stack_start, store, heap);
         frame.cached_args = Some(args);
         frame
     }
@@ -154,6 +174,10 @@ impl CallFrame {
         self.get_array_element_cache_ip = None;
         self.get_array_element_cache_array_number = false;
         self.get_array_element_cache_object_string = false;
+        self.get_array_element_cache_object_integral = false;
+        self.get_array_element_cache_container_tv = None;
+        self.get_array_element_cache_index_tv = None;
+        self.get_array_element_cache_integral_key = None;
         self.call_cache_ip = None;
         self.call_cache_is_user_function = false;
         self.load_local_cache_ip = None;

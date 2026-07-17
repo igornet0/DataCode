@@ -13,16 +13,16 @@ fn assert_numbers_array(source: &str, expected: &[f64]) {
                 v.iter().map(|x| format!("{:?}", x)).collect::<Vec<_>>()
             );
             for i in 0..v.len() {
-                match &v[i] {
-                    Value::Number(n) => assert!(
-                        (n - expected[i]).abs() < 1e-9,
-                        "idx {} expected {} got {}",
-                        i,
-                        expected[i],
-                        n
-                    ),
-                    other => panic!("expected number at {}, got {:?}", i, other),
-                }
+                let n = v[i].as_ieee_f64().unwrap_or_else(|| {
+                    panic!("expected number at {}, got {:?}", i, v[i])
+                });
+                assert!(
+                    (n - expected[i]).abs() < 1e-9,
+                    "idx {} expected {} got {}",
+                    i,
+                    expected[i],
+                    n
+                );
             }
         }
         Ok(v) => panic!("expected Array, got {:?}", v),
@@ -32,13 +32,15 @@ fn assert_numbers_array(source: &str, expected: &[f64]) {
 
 fn assert_number_line(source: &str, expected: f64) {
     match run(source) {
-        Ok(Value::Number(n)) => assert!(
-            (n - expected).abs() < 1e-9,
-            "expected {}, got {}",
-            expected,
-            n
-        ),
-        Ok(v) => panic!("expected Number, got {:?}", v),
+        Ok(v) => {
+            let n = v.as_ieee_f64().unwrap_or_else(|| panic!("expected number, got {:?}", v));
+            assert!(
+                (n - expected).abs() < 1e-9,
+                "expected {}, got {}",
+                expected,
+                n
+            );
+        }
         Err(e) => panic!("error: {:?}", e),
     }
 }

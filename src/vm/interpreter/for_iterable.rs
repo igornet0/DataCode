@@ -7,7 +7,7 @@ use crate::common::TaggedValue;
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
-use crate::vm::iterable::{iterable_next, prepare_for_in_iterable};
+use crate::vm::iterable::{iterable_next, prepare_for_in_iterable_from_id};
 use crate::vm::stack;
 use crate::vm::store_convert::{load_value, store_value, tagged_to_value_id};
 use crate::vm::types::VMStatus;
@@ -30,7 +30,7 @@ pub fn op_coerce_for_in_iterable(
     let tv = frame.slots[iter_local];
     let id = tagged_to_value_id(tv, value_store);
     let v = load_value(id, value_store, heavy_store);
-    let coerced = match prepare_for_in_iterable(v) {
+    let coerced = match prepare_for_in_iterable_from_id(id, v) {
         Ok(x) => x,
         Err(e) => {
             let msg = format!("{}", e);

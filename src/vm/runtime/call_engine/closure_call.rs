@@ -6,6 +6,7 @@ use crate::common::{
     error::LangError, value::GeneratorState, value::Value, value_store::ValueStore, TaggedValue,
 };
 use crate::debug_println;
+use crate::vm::calls::ancestor_frame_index_for_capture;
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::global_slot::GlobalSlot;
@@ -68,7 +69,7 @@ pub(crate) fn execute_closure_call(
 
     if arity > 0 {
         let frame = frames.last().unwrap();
-        if stack.len() <= frame.stack_start {
+        if crate::vm::stack::available_in_frame(stack, frame.stack_start) == 0 {
             let error = ExceptionHandler::runtime_error(
                 &frames,
                 format!(
@@ -89,7 +90,7 @@ pub(crate) fn execute_closure_call(
                 Err(e) => return Err(e),
             }
         }
-        let available_args = stack.len() - frame.stack_start;
+        let available_args = crate::vm::stack::available_in_frame(stack, frame.stack_start);
         if available_args < arity {
             let error = ExceptionHandler::runtime_error(
                 &frames,
@@ -113,12 +114,30 @@ pub(crate) fn execute_closure_call(
         }
         arg_tvs.reserve(arity);
         for _ in 0..arity {
-            let arg_tv = stack.pop().unwrap_or(TaggedValue::null());
+            let arg_tv = stack::pop_direct(stack).unwrap_or(TaggedValue::null());
             arg_tvs.push(arg_tv);
             args.push(slot_to_value(arg_tv, value_store, heavy_store));
         }
-        arg_tvs.reverse();
-        args.reverse();
+        // Stack convention from `compile_module_method`: callee is popped first elsewhere,then this
+        // loop consumes `arity` values *below* it. Typical layout bottom→top is `[receiver,
+        // arg₁, ..., argₙ]` before the callee pushed on top → pops yield `[argₙ, ..., receiver]`
+        // and reversing restores `[receiver, arg₁, ...]`.
+        //
+        // Some call sites duplicate the receiver for `GetArrayElement(method)` so the deepest
+        // receiver disappears when the callee is popped but the upper receiver ends up nearer
+        // the callee than the last (`this`, `array`-like) arguments. First popped value becomes
+        // `this` already in left‑to‑right order → reversing wrongly swaps bindings (constructor
+        // helpers like `_init(items)`). Detect the common arity‑2 `{this, array}` edge and skip.
+        let skip_reverse_two_arg_this_receiver_on_top =
+            arity == 2
+                && function.param_names.first().map(|s| s.as_str()) == Some("this")
+                && function.param_names.len() >= 2
+                && crate::vm::calls::get_type_name_value(&args[0]) == "object"
+                && crate::vm::calls::get_type_name_value(&args[1]) == "array";
+        if !(arity == 2 && skip_reverse_two_arg_this_receiver_on_top) {
+            arg_tvs.reverse();
+            args.reverse();
+        }
     }
 
     method_call::prepare_method_args(&function, &mut args, &mut arg_tvs, value_store, heavy_store);
@@ -148,7 +167,14 @@ pub(crate) fn execute_closure_call(
 
     for (i, (arg, expected_types)) in args.iter().zip(&function.param_types).enumerate() {
         if let Some(type_names) = expected_types {
-            if !crate::vm::calls::check_type_value(arg, type_names) {
+            if !crate::vm::calls::check_type_value_with_globals(
+                arg,
+                type_names,
+                globals,
+                global_names,
+                value_store,
+                heavy_store,
+            ) {
                 let param_name = function
                     .param_names
                     .get(i)
@@ -159,7 +185,7 @@ pub(crate) fn execute_closure_call(
                         "Argument '{}' expected type '{}', got '{}'",
                         param_name,
                         crate::vm::calls::format_type_parts(type_names),
-                        crate::vm::calls::get_type_name_value(arg)
+                        crate::vm::type_compat::display_value_type(arg)
                     ),
                     line,
                     ErrorType::TypeError,
@@ -221,18 +247,33 @@ pub(crate) fn execute_closure_call(
         }
     }
 
-    let stack_start = stack.len();
+    let stack_start = crate::vm::stack::truncate_to_current_sp(stack);
     let mut new_frame = if function.is_cached {
         CallFrame::new_with_cache(
             function.clone(),
+            function_index,
             stack_start,
             arg_tvs.clone(),
             value_store,
             heavy_store,
         )
     } else {
-        CallFrame::new(function.clone(), stack_start, value_store, heavy_store)
+        CallFrame::new(
+            function.clone(),
+            function_index,
+            stack_start,
+            value_store,
+            heavy_store,
+        )
     };
+    if new_frame.module_name.is_none() {
+        let registry = unsafe { (*vm_ptr).get_module_registry() };
+        if let Some(name) =
+            crate::vm::module_object::module_name_for_function_index(&registry, function_index)
+        {
+            new_frame.module_name = Some(name);
+        }
+    }
     if !function.chunk.error_type_table.is_empty() {
         *error_type_table = function.chunk.error_type_table.clone();
     }
@@ -243,21 +284,26 @@ pub(crate) fn execute_closure_call(
                     .slots
                     .resize(captured_var.local_slot_index + 1, TaggedValue::null());
             }
-            let ancestor_index = frames.len().saturating_sub(1 + captured_var.ancestor_depth);
-            if ancestor_index < frames.len() {
-                let ancestor_frame = &frames[ancestor_index];
-                if captured_var.parent_slot_index < ancestor_frame.slots.len() {
-                    new_frame.slots[captured_var.local_slot_index] =
-                        ancestor_frame.slots[captured_var.parent_slot_index];
-                } else {
-                    new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
+            if let Some(ancestor_index) = ancestor_frame_index_for_capture(frames, captured_var) {
+                if ancestor_index < frames.len() {
+                    let ancestor_frame = &frames[ancestor_index];
+                    if captured_var.parent_slot_index < ancestor_frame.slots.len() {
+                        new_frame.slots[captured_var.local_slot_index] =
+                            ancestor_frame.slots[captured_var.parent_slot_index];
+                        continue;
+                    }
                 }
-            } else {
-                new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
             }
+            new_frame.slots[captured_var.local_slot_index] = TaggedValue::null();
         }
     }
-    let param_start_index = function.captured_vars.len();
+    let param_start_index = function
+        .captured_vars
+        .iter()
+        .map(|c| c.local_slot_index)
+        .max()
+        .map(|m| m.saturating_add(1))
+        .unwrap_or(0);
     for (i, &arg_tv) in arg_tvs.iter().enumerate() {
         let slot_index = param_start_index + i;
         if slot_index >= new_frame.slots.len() {
@@ -267,5 +313,6 @@ pub(crate) fn execute_closure_call(
     }
 
     frames.push(new_frame);
+    value_store.enter_ephemeral();
     Ok(VMStatus::Continue)
 }

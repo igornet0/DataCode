@@ -1,0 +1,6 @@
+from advanced.union_find import UnionFind
+
+fn __main__() {
+    uf = UnionFind(4)
+    return uf.count_components()
+}

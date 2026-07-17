@@ -1,18 +1,24 @@
 //! Dict comprehension `{ k: v for x in it [if c] }` and hashable object keys.
 
 use data_code::{run, Value};
+use data_code::common::numeric::IntValue;
 
 fn assert_number(source: &str, expected: f64) {
-    match run(source) {
-        Ok(Value::Number(n)) => assert!(
-            (n - expected).abs() < 1e-9,
-            "expected {}, got {}",
-            expected,
-            n
-        ),
-        Ok(v) => panic!("expected Number, got {:?}", v),
+    let actual = match run(source) {
+        Ok(v) => v,
         Err(e) => panic!("error: {:?}", e),
-    }
+    };
+    let n = match actual {
+        Value::Number(n) => n,
+        Value::Int(IntValue::Finite(i)) => i as f64,
+        v => panic!("expected Number, got {:?}", v),
+    };
+    assert!(
+        (n - expected).abs() < 1e-9,
+        "expected {}, got {}",
+        expected,
+        n
+    );
 }
 
 fn assert_bool(source: &str, expected: bool) {

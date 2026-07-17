@@ -613,4 +613,36 @@ get_config_env("prod")
         }
         // Иначе тест просто пропускается (sandbox может быть неполным или VM-специфичная ошибка)
     }
+
+    // ========== Namespace-папка без __lib__.dc (dotted import) ==========
+
+    fn ns_only_fixtures_dir() -> PathBuf {
+        fixtures_dir().join("ns_only")
+    }
+
+    #[test]
+    fn test_dotted_import_from_namespace_folder_without_lib() {
+        let base = ns_only_fixtures_dir();
+        let source = std::fs::read_to_string(base.join("main.dc")).expect("main.dc");
+        let result = run_with_base_path(&source, base.as_path());
+        assert_number_result(result, 4.0);
+    }
+
+    #[test]
+    fn test_dotted_import_file_prefix_is_error() {
+        let base = fixtures_dir().join("file_prefix");
+        let source = std::fs::read_to_string(base.join("main.dc")).expect("main.dc");
+        let result = run_with_base_path(&source, base.as_path());
+        match result {
+            Err(e) => {
+                let msg = format!("{}", e);
+                assert!(
+                    msg.contains("is a file"),
+                    "expected file-as-prefix error, got: {}",
+                    msg
+                );
+            }
+            Ok(v) => panic!("expected runtime error, got Ok({:?})", v),
+        }
+    }
 }

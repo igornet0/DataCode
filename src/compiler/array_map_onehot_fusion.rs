@@ -115,7 +115,7 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
                 match a {
                     Arg::Positional(e) => walk_expr(e, f),
                     Arg::Named { value, .. } => walk_expr(value, f),
-                    Arg::UnpackObject(e) => walk_expr(e, f),
+                    Arg::UnpackObject(e) | Arg::UnpackArray(e) => walk_expr(e, f),
                 }
             }
         }
@@ -125,7 +125,7 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
                 match a {
                     Arg::Positional(e) => walk_expr(e, f),
                     Arg::Named { value, .. } => walk_expr(value, f),
-                    Arg::UnpackObject(e) => walk_expr(e, f),
+                    Arg::UnpackObject(e) | Arg::UnpackArray(e) => walk_expr(e, f),
                 }
             }
         }
@@ -256,7 +256,7 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
                 match a {
                     Arg::Positional(e) => walk_expr(e, f),
                     Arg::Named { value, .. } => walk_expr(value, f),
-                    Arg::UnpackObject(e) => walk_expr(e, f),
+                    Arg::UnpackObject(e) | Arg::UnpackArray(e) => walk_expr(e, f),
                 }
             }
         }
@@ -265,7 +265,7 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
                 match a {
                     Arg::Positional(e) => walk_expr(e, f),
                     Arg::Named { value, .. } => walk_expr(value, f),
-                    Arg::UnpackObject(e) => walk_expr(e, f),
+                    Arg::UnpackObject(e) | Arg::UnpackArray(e) => walk_expr(e, f),
                 }
             }
         }

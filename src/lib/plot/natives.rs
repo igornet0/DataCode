@@ -352,7 +352,7 @@ pub fn native_plot_show(args: &[Value]) -> Value {
             match &args[0] {
                 Value::Object(map_rc) => {
                     let map = map_rc.borrow();
-                    if let Some(Value::String(s)) = map.get("title") {
+                    if let Some(Value::String(s)) = map.str_key_get("title") {
                         Some(s.clone())
                     } else {
                         None
@@ -450,7 +450,7 @@ pub fn native_plot_show(args: &[Value]) -> Value {
             match &args[0] {
                 Value::Object(map_rc) => {
                     let map = map_rc.borrow();
-                    if let Some(Value::String(s)) = map.get("title") {
+                    if let Some(Value::String(s)) = map.str_key_get("title") {
                         Some(s.clone())
                     } else {
                         None
@@ -546,7 +546,7 @@ pub fn native_plot_show(args: &[Value]) -> Value {
             match &args[0] {
                 Value::Object(map_rc) => {
                     let map = map_rc.borrow();
-                    if let Some(Value::String(s)) = map.get("title") {
+                    if let Some(Value::String(s)) = map.str_key_get("title") {
                         Some(s.clone())
                     } else {
                         None
@@ -642,7 +642,7 @@ pub fn native_plot_show(args: &[Value]) -> Value {
             match &args[0] {
                 Value::Object(map_rc) => {
                     let map = map_rc.borrow();
-                    if let Some(Value::String(s)) = map.get("title") {
+                    if let Some(Value::String(s)) = map.str_key_get("title") {
                         Some(s.clone())
                     } else {
                         None
@@ -968,7 +968,7 @@ pub fn native_plot_subplots(args: &[Value]) -> Value {
             Value::Object(map_rc) => {
                 let map = map_rc.borrow();
                 // Named arguments: figsize=(10, 10) becomes an object
-                if let Some(Value::Array(arr)) = map.get("figsize") {
+                if let Some(Value::Array(arr)) = map.str_key_get("figsize") {
                     let arr_ref = arr.borrow();
                     if arr_ref.len() >= 2 {
                         let width = match &arr_ref[0] {
@@ -1153,7 +1153,7 @@ pub fn native_axis_imshow(args: &[Value]) -> Value {
                 Value::Object(map_rc) => {
                     let map = map_rc.borrow();
                     // Named arguments: cmap='gray' might be passed as object
-                    if let Some(Value::String(s)) = map.get("cmap") {
+                    if let Some(Value::String(s)) = map.str_key_get("cmap") {
                         Some(s.clone())
                     } else {
                         None
@@ -1582,22 +1582,22 @@ pub fn native_plot_line(args: &[Value]) -> Value {
         if let Value::Object(map_rc) = arg {
             let map = map_rc.borrow();
             // Extract all named parameters from this Object
-            if let Some(Value::Bool(b)) = map.get("marker") {
+            if let Some(Value::Bool(b)) = map.str_key_get("marker") {
                 show_points = *b;
             }
-            if let Some(Value::Bool(b)) = map.get("show_points") {
+            if let Some(Value::Bool(b)) = map.str_key_get("show_points") {
                 show_points = *b;
             }
 
-            if let Some(Value::Number(n)) = map.get("point_size") {
+            if let Some(Value::Number(n)) = map.str_key_get("point_size") {
                 point_size = (*n as usize).max(1).min(50); // Clamp between 1 and 50
             }
 
-            if let Some(Value::Number(n)) = map.get("line_width") {
+            if let Some(Value::Number(n)) = map.str_key_get("line_width") {
                 line_width = (*n as usize).max(1).min(20); // Clamp between 1 and 20
             }
 
-            if let Some(Value::String(s)) = map.get("color") {
+            if let Some(Value::String(s)) = map.str_key_get("color") {
                 color = parse_color(s);
             }
         }
@@ -1713,7 +1713,7 @@ pub fn native_plot_bar(args: &[Value]) -> Value {
     for arg in args.iter() {
         if let Value::Object(map_rc) = arg {
             let map = map_rc.borrow();
-            if let Some(Value::String(s)) = map.get("color") {
+            if let Some(Value::String(s)) = map.str_key_get("color") {
                 color = parse_color(s);
             }
         }
@@ -1824,7 +1824,7 @@ pub fn native_plot_pie(args: &[Value]) -> Value {
     for arg in args.iter() {
         if let Value::Object(map_rc) = arg {
             let map = map_rc.borrow();
-            if let Some(Value::String(s)) = map.get("color") {
+            if let Some(Value::String(s)) = map.str_key_get("color") {
                 color = parse_color(s);
             }
         }
@@ -1952,13 +1952,13 @@ pub fn native_plot_heatmap(args: &[Value]) -> Value {
     for arg in args.iter() {
         if let Value::Object(map_rc) = arg {
             let map = map_rc.borrow();
-            if let Some(Value::Number(n)) = map.get("min") {
+            if let Some(Value::Number(n)) = map.str_key_get("min") {
                 min_val = Some(*n);
             }
-            if let Some(Value::Number(n)) = map.get("max") {
+            if let Some(Value::Number(n)) = map.str_key_get("max") {
                 max_val = Some(*n);
             }
-            if let Some(Value::String(s)) = map.get("palette") {
+            if let Some(Value::String(s)) = map.str_key_get("palette") {
                 let s_lower = s.to_lowercase();
                 // Validate palette name
                 if matches!(s_lower.as_str(), "green" | "red" | "blue" | "bw") {

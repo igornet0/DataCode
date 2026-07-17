@@ -1,6 +1,7 @@
 // Basic native functions: print, len, range, type conversions, typeof, isinstance
 
 use crate::common::error::LangError;
+use crate::common::numeric::{coerce_to_float_value, coerce_to_int_value, float_is_int_surface, number_is_int_surface, FloatValue, IntValue};
 use crate::common::value::{IterableInner, Value};
 use crate::vm::host::HostFunction;
 use crate::vm::iterable::{chunk_source_count, iterable_materialize_capacity_hint, iterable_next};
@@ -31,6 +32,8 @@ pub fn native_print(args: &[Value]) -> Value {
             }
             let piece = if matches!(arg, Value::PluginOpaque { .. }) {
                 plugin_opaque_display_via_abi(arg).unwrap_or_else(|| arg.to_string())
+            } else if let Some(s) = crate::vm::special_methods::try_instance_string(arg) {
+                s
             } else {
                 arg.to_string()
             };
@@ -59,7 +62,18 @@ pub fn native_len(args: &[Value]) -> Value {
             Value::ArrayView(av) => Value::Number(av.length as f64),
             Value::ByteBuffer(b) => Value::Number(b.len as f64),
             Value::Table(table) => Value::Number(table.borrow().len() as f64),
-            Value::Object(map_rc) => Value::Number(map_rc.borrow().len() as f64),
+            Value::Object(map_rc) => {
+                if crate::vm::special_methods::class_has_special(arg, "@len") {
+                    if let Ok(Some(v)) =
+                        crate::vm::special_methods::dispatch_special(arg, "@len", &[])
+                    {
+                        return v;
+                    }
+                }
+                Value::Number(map_rc.borrow().len() as f64)
+            }
+            Value::Set(s) => Value::Number(s.borrow().len() as f64),
+            Value::Tuple(t) => Value::Number(t.borrow().len() as f64),
             Value::ColumnReference { table, column_name } => {
                 crate::vm::vm::with_current_stores(|_store, _heap| {
                     let t = table.borrow();
@@ -73,11 +87,28 @@ pub fn native_len(args: &[Value]) -> Value {
                     .unwrap_or(Value::Null)
             }
             Value::Enumerate { data, .. } => Value::Number(data.borrow().len() as f64),
+            Value::ObjectFieldList { element_ids, .. } => {
+                Value::Number(element_ids.len() as f64)
+            }
             Value::Iterable(rc) => match &*rc.borrow() {
+                IterableInner::Range {
+                    current,
+                    end,
+                    step,
+                } => Value::Number(
+                    crate::common::range_args::range_len(*current, *end, *step) as f64,
+                ),
                 IterableInner::Chunks {
                     source, chunk_size, ..
                 } => Value::Number(chunk_source_count(source, *chunk_size) as f64),
-                _ => Value::Null,
+                other => {
+                    if let Some(n) = crate::vm::iterable::iterable_materialize_capacity_hint(other)
+                    {
+                        Value::Number(n as f64)
+                    } else {
+                        Value::Null
+                    }
+                }
             },
             _ => Value::Null,
         }
@@ -87,71 +118,10 @@ pub fn native_len(args: &[Value]) -> Value {
 }
 
 pub fn native_range(args: &[Value]) -> Value {
-    // Определяем параметры в зависимости от количества аргументов
-    let (start, end, step) = match args.len() {
-        1 => {
-            // range(10) → range(0, 10, 1)
-            let end = match &args[0] {
-                Value::Number(n) => *n as i64,
-                _ => return Value::Null,
-            };
-            (0, end, 1)
-        }
-        2 => {
-            // range(1, 10) → range(1, 10, 1)
-            let start = match &args[0] {
-                Value::Number(n) => *n as i64,
-                _ => return Value::Null,
-            };
-            let end = match &args[1] {
-                Value::Number(n) => *n as i64,
-                _ => return Value::Null,
-            };
-            (start, end, 1)
-        }
-        3 => {
-            // range(1, 10, 2) → range(1, 10, 2)
-            let start = match &args[0] {
-                Value::Number(n) => *n as i64,
-                _ => return Value::Null,
-            };
-            let end = match &args[1] {
-                Value::Number(n) => *n as i64,
-                _ => return Value::Null,
-            };
-            let step = match &args[2] {
-                Value::Number(n) => *n as i64,
-                _ => return Value::Null,
-            };
-            if step == 0 {
-                return Value::Null; // Ошибка: шаг не может быть 0
-            }
-            (start, end, step)
-        }
-        _ => {
-            // Ошибка будет обработана в VM при вызове
-            return Value::Null;
-        }
-    };
-
-    // Генерация массива с учетом шага
-    let mut result = Vec::new();
-    if step > 0 {
-        let mut current = start;
-        while current < end {
-            result.push(Value::Number(current as f64));
-            current += step;
-        }
-    } else {
-        // Отрицательный шаг: идем в обратном направлении
-        let mut current = start;
-        while current > end {
-            result.push(Value::Number(current as f64));
-            current += step; // step уже отрицательный
-        }
+    match crate::common::range_args::range_spec_from_values(args) {
+        Ok(spec) => crate::common::range_args::value_from_range_spec(spec),
+        Err(_) => Value::Null,
     }
-
-    Value::Array(Rc::new(RefCell::new(result)))
 }
 
 /// enum(iterable): returns lazy (idx, element) wrapper; for (i, x) in enum(arr) yields pairs.
@@ -176,6 +146,14 @@ pub fn native_enum(args: &[Value]) -> Value {
                 start: 0,
             }
         }
+        Value::Table(t) => Value::Iterable(Rc::new(RefCell::new(IterableInner::EnumerateIter {
+            source: Rc::new(RefCell::new(IterableInner::TableRows {
+                table: Rc::clone(t),
+                index: 0,
+            })),
+            start: 0,
+            next_index: 0,
+        }))),
         _ => Value::Null,
     }
 }
@@ -183,41 +161,32 @@ pub fn native_enum(args: &[Value]) -> Value {
 // Функции преобразования типов
 
 pub fn native_int(args: &[Value]) -> Value {
-    if args.is_empty() {
-        return Value::Number(0.0);
-    }
-    match &args[0] {
-        Value::Number(n) => Value::Number(n.trunc()), // Округление вниз до целого
-        Value::String(s) => {
-            // Парсинг строки в число
-            match s.parse::<f64>() {
-                Ok(n) => Value::Number(n.trunc()),
-                Err(_) => Value::Number(0.0), // При ошибке парсинга возвращаем 0
-            }
-        }
-        Value::Bool(b) => Value::Number(if *b { 1.0 } else { 0.0 }),
-        Value::Null => Value::Number(0.0),
-        _ => Value::Number(0.0),
-    }
+    let iv = if args.is_empty() {
+        IntValue::Finite(0)
+    } else {
+        coerce_to_int_value(&args[0])
+    };
+    Value::Int(iv)
 }
 
 pub fn native_float(args: &[Value]) -> Value {
-    if args.is_empty() {
-        return Value::Number(0.0);
-    }
-    match &args[0] {
-        Value::Number(n) => Value::Number(*n), // Уже число
-        Value::String(s) => {
-            // Парсинг строки в число
-            match s.parse::<f64>() {
-                Ok(n) => Value::Number(n),
-                Err(_) => Value::Number(0.0), // При ошибке парсинга возвращаем 0.0
-            }
-        }
-        Value::Bool(b) => Value::Number(if *b { 1.0 } else { 0.0 }),
-        Value::Null => Value::Number(0.0),
-        _ => Value::Number(0.0),
-    }
+    let fv = if args.is_empty() {
+        FloatValue::Finite(0.0)
+    } else {
+        coerce_to_float_value(&args[0])
+    };
+    Value::Float(fv)
+}
+
+/// `isinf(x)` — true for ±∞ in `int`, `float`, or legacy `number` (IEEE).
+pub fn native_isinf(args: &[Value]) -> Value {
+    let inf = match args.first() {
+        Some(Value::Float(f)) => f.is_infinity(),
+        Some(Value::Int(i)) => i.is_infinity(),
+        Some(Value::Number(n)) => n.is_infinite(),
+        _ => false,
+    };
+    Value::Bool(inf)
 }
 
 pub fn native_bool(args: &[Value]) -> Value {
@@ -237,6 +206,22 @@ pub fn native_str(args: &[Value]) -> Value {
                 return Value::String(s);
             }
         }
+    }
+    if let Value::Set(s) = &args[0] {
+        if let Some(vm_ptr) = current_vm_ptr() {
+            return unsafe {
+                (*vm_ptr).with_stores_mut(|store, heap| {
+                    Value::String(crate::vm::set_ops::set_to_repr_string(
+                        &s.borrow(),
+                        store,
+                        heap,
+                    ))
+                })
+            };
+        }
+    }
+    if let Some(s) = crate::vm::special_methods::try_instance_string(&args[0]) {
+        return Value::String(s);
     }
     Value::String(args[0].to_string())
 }
@@ -301,6 +286,40 @@ impl HostFunction for ArrayHostFunction {
                     return Ok(Value::Array(Rc::new(RefCell::new(out))));
                 }
             }
+            if let Value::ArrayView(av) = &args[0] {
+                let vm_ptr = current_vm_ptr().ok_or_else(|| {
+                    LangError::runtime_error(
+                        "array(array_view): VM context not available".to_string(),
+                        0,
+                    )
+                })?;
+                unsafe {
+                    let vm = &mut *vm_ptr;
+                    return Ok(vm.with_stores_mut(|store, heap| {
+                        crate::vm::array_view::materialize_array_view(av, store, heap)
+                    }));
+                }
+            }
+            if let Value::Set(set_rc) = &args[0] {
+                let vm_ptr = current_vm_ptr().ok_or_else(|| {
+                    LangError::runtime_error(
+                        "array(set): VM context not available".to_string(),
+                        0,
+                    )
+                })?;
+                unsafe {
+                    let vm = &mut *vm_ptr;
+                    return Ok(vm.with_stores_mut(|store, heap| {
+                        let map = set_rc.borrow();
+                        let ids = crate::vm::set_ops::set_member_key_ids(&map, store);
+                        let mut out = Vec::with_capacity(ids.len());
+                        for id in ids {
+                            out.push(crate::vm::store_convert::load_value(id, store, heap));
+                        }
+                        Value::Array(Rc::new(RefCell::new(out)))
+                    }));
+                }
+            }
         }
         let result: Vec<Value> = args.to_vec();
         Ok(Value::Array(Rc::new(RefCell::new(result))))
@@ -308,35 +327,136 @@ impl HostFunction for ArrayHostFunction {
 }
 
 pub fn native_date(args: &[Value]) -> Value {
-    if args.is_empty() {
-        return Value::String(String::new());
+    use chrono::{DateTime, FixedOffset};
+    match args.first() {
+        Some(Value::Date(d)) => Value::Date(*d),
+        Some(Value::Number(n)) => {
+            let secs = n.trunc() as i64;
+            let nanos = ((n.fract().abs()) * 1e9) as u32;
+            DateTime::from_timestamp(secs, nanos)
+                .map(|utc| {
+                    Value::Date(utc.with_timezone(&FixedOffset::east_opt(0).expect("offset")))
+                })
+                .unwrap_or(Value::Null)
+        }
+        Some(Value::String(s)) => crate::vm::natives::date_format::try_parse_date(s)
+            .map(Value::Date)
+            .unwrap_or(Value::Null),
+        _ => Value::Null,
     }
+}
 
-    match &args[0] {
-        Value::String(s) => {
-            // Парсим строку даты и нормализуем в ISO формат
-            // Поддерживаем форматы: YYYY-MM-DD, YYYY-MM-DDTHH:MM:SSZ, и другие ISO форматы
-            let date_str = s.trim();
+/// Unix seconds as float (fractional sub-second nanoseconds).
+pub fn native_date_to_unix(args: &[Value]) -> Value {
+    fn unix_float(d: &chrono::DateTime<chrono::FixedOffset>) -> f64 {
+        d.timestamp() as f64 + (d.timestamp_subsec_nanos() as f64) * 1e-9
+    }
+    match args.first() {
+        Some(Value::Date(d)) => Value::Number(unix_float(d)),
+        Some(Value::String(s)) => crate::vm::natives::date_format::try_parse_date(s)
+            .map(|d| Value::Number(unix_float(&d)))
+            .unwrap_or(Value::Null),
+        Some(Value::Number(n)) => Value::Number(*n),
+        _ => Value::Null,
+    }
+}
 
-            // Если уже в формате ISO (YYYY-MM-DD или YYYY-MM-DDTHH:MM:SSZ), возвращаем как есть
-            if date_str.len() >= 10
-                && date_str.chars().nth(4) == Some('-')
-                && date_str.chars().nth(7) == Some('-')
-            {
-                Value::String(date_str.to_string())
+fn first_arg_datetime(args: &[Value]) -> Option<chrono::DateTime<chrono::FixedOffset>> {
+    match args.first() {
+        Some(Value::Date(d)) => Some(*d),
+        Some(Value::String(s)) => crate::vm::natives::date_format::try_parse_date(s),
+        _ => None,
+    }
+}
+
+/// Calendar/time fields in the date's own offset; `to_utc` / `utc` — same instant with offset 0.
+pub(crate) fn date_property_value(
+    dt: chrono::DateTime<chrono::FixedOffset>,
+    key: &str,
+) -> Option<Value> {
+    use chrono::{Datelike, FixedOffset, Timelike};
+    match key {
+        "year" => Some(Value::Number(dt.year() as f64)),
+        "month" => Some(Value::Number(dt.month() as f64)),
+        "quarter" => Some(Value::Number((((dt.month() - 1) / 3) + 1) as f64)),
+        "day" => Some(Value::Number(dt.day() as f64)),
+        "hour" => Some(Value::Number(dt.hour() as f64)),
+        "minute" => Some(Value::Number(dt.minute() as f64)),
+        "second" => Some(Value::Number(dt.second() as f64)),
+        "weekday" => Some(Value::Number(dt.weekday().number_from_monday() as f64)),
+        "to_utc" | "utc" => {
+            let zulu = FixedOffset::east_opt(0)?;
+            Some(Value::Date(dt.with_timezone(&zulu)))
+        }
+        _ => None,
+    }
+}
+
+pub fn native_date_year(args: &[Value]) -> Value {
+    first_arg_datetime(args)
+        .and_then(|dt| date_property_value(dt, "year"))
+        .unwrap_or(Value::Null)
+}
+
+pub fn native_date_month(args: &[Value]) -> Value {
+    first_arg_datetime(args)
+        .and_then(|dt| date_property_value(dt, "month"))
+        .unwrap_or(Value::Null)
+}
+
+pub fn native_date_day(args: &[Value]) -> Value {
+    first_arg_datetime(args)
+        .and_then(|dt| date_property_value(dt, "day"))
+        .unwrap_or(Value::Null)
+}
+
+pub fn native_date_hour(args: &[Value]) -> Value {
+    first_arg_datetime(args)
+        .and_then(|dt| date_property_value(dt, "hour"))
+        .unwrap_or(Value::Null)
+}
+
+pub fn native_date_minute(args: &[Value]) -> Value {
+    first_arg_datetime(args)
+        .and_then(|dt| date_property_value(dt, "minute"))
+        .unwrap_or(Value::Null)
+}
+
+pub fn native_date_second(args: &[Value]) -> Value {
+    first_arg_datetime(args)
+        .and_then(|dt| date_property_value(dt, "second"))
+        .unwrap_or(Value::Null)
+}
+
+pub fn native_date_to_utc(args: &[Value]) -> Value {
+    first_arg_datetime(args)
+        .and_then(|dt| date_property_value(dt, "to_utc"))
+        .unwrap_or(Value::Null)
+}
+
+/// Wall-clock span: `seconds + minutes*60 + hours*3600 + days*86400 + milliseconds*0.001` (all args optional, default 0).
+pub fn native_duration(args: &[Value]) -> Value {
+    fn n(v: Option<&Value>) -> f64 {
+        v.and_then(|x| {
+            if let Value::Number(n) = x {
+                Some(*n)
             } else {
-                // Для других форматов пока возвращаем как есть
-                // В будущем можно добавить парсинг других форматов
-                Value::String(date_str.to_string())
+                None
             }
-        }
-        Value::Number(n) => {
-            // Если передано число (timestamp), конвертируем в ISO формат
-            // Для простоты пока возвращаем как строку числа
-            Value::String(format!("{}", n))
-        }
-        _ => Value::String(String::new()),
+        })
+        .unwrap_or(0.0)
     }
+    let total_secs = n(args.first())
+        + n(args.get(1)) * 60.0
+        + n(args.get(2)) * 3600.0
+        + n(args.get(3)) * 86_400.0
+        + n(args.get(4)) * 0.001;
+    let secs_i = total_secs.trunc() as i64;
+    let nanos_i = (total_secs.fract() * 1e9) as i64;
+    let d = chrono::Duration::seconds(secs_i)
+        .checked_add(&chrono::Duration::nanoseconds(nanos_i))
+        .unwrap_or_else(chrono::Duration::zero);
+    Value::Duration(d)
 }
 
 pub fn native_money(args: &[Value]) -> Value {
@@ -467,9 +587,16 @@ pub fn native_typeof(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::String("null".to_string());
     }
+    // Imported `SQLEnum` marker is a module object, not a user enum class instance.
+    if crate::database_engine::sqenum::is_sqenum_marker_object(&args[0]) {
+        return Value::String("object".to_string());
+    }
+    if let Some(class_name) = crate::vm::type_compat::instance_class_name(&args[0]) {
+        return Value::String(class_name);
+    }
     if let Value::Object(map_rc) = &args[0] {
         let map = map_rc.borrow();
-        if let Some(Value::String(ns)) = map.get("__plugin_namespace") {
+        if let Some(Value::String(ns)) = map.str_key_get("__plugin_namespace") {
             return Value::String(ns.clone());
         }
     }
@@ -479,15 +606,24 @@ pub fn native_typeof(args: &[Value]) -> Value {
         None
     };
     let type_name = match &args[0] {
+        Value::Int(_) => "int",
+        Value::Float(f) => {
+            if float_is_int_surface(*f) {
+                "int"
+            } else {
+                "float"
+            }
+        }
         Value::Number(n) => {
-            // Различаем int и float по дробной части
-            if n.fract() == 0.0 {
+            if number_is_int_surface(*n) {
                 "int"
             } else {
                 "float"
             }
         }
         Value::Bool(_) => "bool",
+        Value::Date(_) => "date",
+        Value::Duration(_) => "duration",
         Value::String(s) => {
             // Проверяем, является ли строка датой или деньгами
             let s_trimmed = s.trim();
@@ -507,13 +643,16 @@ pub fn native_typeof(args: &[Value]) -> Value {
                 "string"
             }
         }
-        Value::Array(_) | Value::ArrayView(_) | Value::ByteBuffer(_) => "array",
+        Value::Array(_) | Value::ArrayView(_) | Value::ObjectFieldList { .. } | Value::ByteBuffer(_) => {
+            "array"
+        }
         Value::Iterable(_) => "iterable",
         Value::Tuple(_) => "tuple",
         Value::Path(_) => "path",
         Value::Uuid(_, _) => "uuid",
         Value::Table(_) => "table",
-        Value::Object(_) => "object",
+        Value::Object(_) => crate::vm::type_compat::primitive_display_value_type(&args[0]),
+        Value::Set(_) => "set",
         Value::ColumnReference { .. } => "column",
         Value::Null => "null",
         Value::Function(_) | Value::ModuleFunction { .. } => "function",
@@ -525,6 +664,9 @@ pub fn native_typeof(args: &[Value]) -> Value {
         Value::Axis(_) => "axis",
         Value::DatabaseEngine(_) => "database_engine",
         Value::DatabaseCluster(_) => "database_cluster",
+        Value::Archive(_) => "archive",
+        Value::DataSource(_) => "datasource",
+        Value::DataSourceResponse(_) => "response",
         Value::Enumerate { .. } => "enumerate",
         Value::Generator(_) => "generator",
         Value::Ellipsis => "ellipsis",
@@ -539,46 +681,22 @@ pub fn native_isinstance(args: &[Value]) -> Value {
     native_isinstance_impl(args)
 }
 
-/// Check if an Object's __class_name or __superclass chain includes target_class.
-fn object_class_chain_contains(obj: &Value, target_class: &str) -> bool {
-    let Value::Object(map_rc) = obj else {
-        return false;
-    };
-    let map = map_rc.borrow();
-    if let Some(Value::String(ref cn)) = map.get("__class_name") {
-        if cn == target_class {
-            return true;
-        }
-        if let Some(Value::String(ref super_name)) = map.get("__superclass") {
-            if super_name == target_class {
-                return true;
-            }
-        }
-        // For Table: check __extends_table (set by compiler for classes inheriting from Table)
-        if target_class == "Table" {
-            if let Some(Value::Bool(true)) = map.get("__extends_table") {
-                return true;
-            }
-        }
-        if target_class == "SQLEnum" {
-            if let Some(Value::Bool(true)) = map.get("__extends_sqenum") {
-                return true;
-            }
-        }
-    }
-    false
-}
-
 fn native_isinstance_impl(args: &[Value]) -> Value {
     let value = &args[0];
     // Если второй аргумент — класс (Object с __class_name), проверяем наследование
     if let Value::Object(class_map_rc) = &args[1] {
         let class_map = class_map_rc.borrow();
-        if let Some(Value::String(ref target_class)) = class_map.get("__class_name") {
+        if let Some(Value::String(ref target_class)) = class_map.str_key_get("__class_name") {
             let target = target_class.as_str();
+            let class_chain = current_vm_ptr()
+                .and_then(|vm_ptr| unsafe { (*vm_ptr).superclass_chain_for_instance_value(value) });
             return Value::Bool(match value {
                 Value::Table(_) => target == "Table",
-                Value::Object(_) => object_class_chain_contains(value, target),
+                Value::Object(_) => crate::vm::type_compat::value_matches_user_class_name(
+                    value,
+                    target,
+                    class_chain.as_deref(),
+                ),
                 _ => false,
             });
         }
@@ -603,7 +721,7 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
         if let Value::Object(map_rc) = &args[1] {
             let map = map_rc.borrow();
             if let Some(Value::String(ns)) =
-                map.get(crate::vm::native_loader::NATIVE_MODULE_TYPEOF_NAMESPACE)
+                map.str_key_get(crate::vm::native_loader::NATIVE_MODULE_TYPEOF_NAMESPACE)
             {
                 if let Some(tn) = plugin_opaque_type_name_via_abi(value) {
                     return Value::Bool(tn.eq_ignore_ascii_case(ns));
@@ -618,20 +736,10 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
     let type_name_str = match &args[1] {
         Value::String(s) => s.clone(),
         Value::NativeFunction(index) => {
-            // Если передан NativeFunction, извлекаем имя типа по индексу
-            // Индексы: 0=print, 1=len, 2=range, 3=int, 4=float, 5=bool, 6=str, 7=array, 8=typeof, 9=isinstance, 10=date, 11=money, 12=path
-            match *index {
-                3 => "int".to_string(),
-                4 => "float".to_string(),
-                5 => "bool".to_string(),
-                6 => "string".to_string(),
-                7 => "array".to_string(),
-                10 => "date".to_string(),
-                11 => "money".to_string(),
-                12 => "path".to_string(),
-                73 => "table".to_string(),
-                _ => "unknown".to_string(),
-            }
+            // Второй аргумент — встроенный тип/функция из глобалов (int, array, set, Table, …).
+            crate::vm::globals::builtin_global_name(*index)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "unknown".to_string())
         }
         // Для обратной совместимости: если это не строка, пытаемся преобразовать в строку
         // Это позволит работать с константами типов, которые уже являются строками
@@ -642,6 +750,19 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
     let type_name_lower = type_name_str.to_lowercase();
 
     let matches = match value {
+        Value::Int(_) => {
+            type_name_lower == "int"
+                || type_name_lower == "integer"
+                || type_name_lower == "num"
+                || type_name_lower == "number"
+                || type_name_lower == "money"
+        }
+        Value::Float(_) => {
+            type_name_lower == "float"
+                || type_name_lower == "num"
+                || type_name_lower == "number"
+                || type_name_lower == "money"
+        }
         Value::Number(n) => {
             // Для чисел проверяем int, float и money
             if type_name_lower == "int"
@@ -660,6 +781,8 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
             }
         }
         Value::Bool(_) => type_name_lower == "bool" || type_name_lower == "boolean",
+        Value::Date(_) => type_name_lower == "date",
+        Value::Duration(_) => type_name_lower == "duration",
         Value::String(s) => {
             let s_trimmed = s.trim();
             if type_name_lower == "string" || type_name_lower == "str" {
@@ -681,11 +804,14 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
         Value::Array(_) | Value::ArrayView(_) | Value::ByteBuffer(_) => {
             type_name_lower == "array" || type_name_lower == "list"
         }
+        Value::ObjectFieldList { .. } => {
+            type_name_lower == "array" || type_name_lower == "list"
+        }
         Value::Tuple(_) => type_name_lower == "tuple",
         Value::Table(_) => type_name_lower == "table",
         Value::Object(map_rc) => {
             let map = map_rc.borrow();
-            if let Some(Value::String(ns)) = map.get("__plugin_namespace") {
+            if let Some(Value::String(ns)) = map.str_key_get("__plugin_namespace") {
                 type_name_lower == ns.to_lowercase()
             } else if type_name_lower == "object"
                 || type_name_lower == "dict"
@@ -693,11 +819,20 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
             {
                 true
             } else if type_name_lower == "table" {
-                map.get("__extends_table") == Some(&Value::Bool(true))
+                matches!(map.str_key_get("__extends_table"), Some(Value::Bool(true)))
+            } else if !crate::vm::type_compat::is_language_primitive_type(type_name_str.as_str()) {
+                let class_chain = current_vm_ptr()
+                    .and_then(|vm_ptr| unsafe { (*vm_ptr).superclass_chain_for_instance_value(value) });
+                crate::vm::type_compat::value_matches_user_class_name(
+                    value,
+                    type_name_str.as_str(),
+                    class_chain.as_deref(),
+                )
             } else {
                 false
             }
         }
+        Value::Set(_) => type_name_lower == "set",
         Value::ColumnReference { .. } => type_name_lower == "column",
         Value::Null => type_name_lower == "null" || type_name_lower == "none",
         Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_) => {
@@ -716,6 +851,9 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
         Value::Axis(_) => type_name_lower == "axis",
         Value::DatabaseEngine(_) => type_name_lower == "database_engine",
         Value::DatabaseCluster(_) => type_name_lower == "database_cluster",
+        Value::Archive(_) => type_name_lower == "archive",
+        Value::DataSource(_) => type_name_lower == "datasource",
+        Value::DataSourceResponse(_) => type_name_lower == "response",
         Value::Enumerate { .. } => type_name_lower == "enumerate",
         Value::Iterable(_) => type_name_lower == "iterable",
         Value::Generator(_) => type_name_lower == "generator",
@@ -852,7 +990,7 @@ pub fn native_table_class(args: &[Value]) -> Value {
     if let Some(arg) = args.first() {
         obj.insert("__path".to_string(), arg.clone());
     }
-    Value::Object(Rc::new(RefCell::new(obj)))
+    Value::legacy_object(obj)
 }
 
 /// Constructor for raise ValueError("message"). Called as ValueError("..."); returns a Value whose to_string() is used for the exception message.

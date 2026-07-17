@@ -119,10 +119,16 @@ pub struct Function {
     /// Web route: (method, path) from @route("METHOD", "/path")
     pub route_method: Option<String>,
     pub route_path: Option<String>,
+    /// WebSocket message type from @ws_route("type")
+    pub ws_route_type: Option<String>,
     /// Module this function belongs to (e.g. "core.config", "__main__"). None = legacy single global space.
     pub module_name: Option<String>,
     /// `stream fn` — тело компилируется с yield; вызов возвращает [`crate::common::value::Value::Generator`].
     pub is_stream: bool,
+    /// Индекс параметра `*args` в `param_names`, если объявлен.
+    pub variadic_pos_index: Option<usize>,
+    /// Индекс параметра `**kwargs` в `param_names`, если объявлен.
+    pub variadic_kw_index: Option<usize>,
 }
 
 impl Function {
@@ -140,8 +146,11 @@ impl Function {
             cache: None,
             route_method: None,
             route_path: None,
+            ws_route_type: None,
             module_name: None,
             is_stream: false,
+            variadic_pos_index: None,
+            variadic_kw_index: None,
         }
     }
 
@@ -159,8 +168,11 @@ impl Function {
             cache: Some(Rc::new(RefCell::new(FnCache::new()))),
             route_method: None,
             route_path: None,
+            ws_route_type: None,
             module_name: None,
             is_stream: false,
+            variadic_pos_index: None,
+            variadic_kw_index: None,
         }
     }
 }
@@ -180,8 +192,11 @@ impl Clone for Function {
             cache: self.cache.clone(),
             route_method: self.route_method.clone(),
             route_path: self.route_path.clone(),
+            ws_route_type: self.ws_route_type.clone(),
             module_name: self.module_name.clone(),
             is_stream: self.is_stream,
+            variadic_pos_index: self.variadic_pos_index,
+            variadic_kw_index: self.variadic_kw_index,
         }
     }
 }

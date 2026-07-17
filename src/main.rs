@@ -230,7 +230,7 @@ fn execute_file(config: cli::FileExecutionConfig) {
                         };
 
                         // Export tables to SQLite
-                        match sqlite_export::export_to_sqlite(&mut vm, &db_filename) {
+                        match sqlite_export::export_to_sqlite(&mut vm, &db_filename, false) {
                             Ok(_) => {
                                 println!("✅ База данных создана: {}", db_filename);
                             }

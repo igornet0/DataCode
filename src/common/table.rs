@@ -187,7 +187,10 @@ impl Table {
         if data.is_empty() {
             let mut table = Self::new();
             if let Some(h) = headers {
-                table.set_headers(h);
+                table.set_headers(h.clone());
+                if let TableData::Owned { num_cols, .. } = &mut table.data {
+                    *num_cols = h.len();
+                }
             }
             return table;
         }
@@ -289,7 +292,7 @@ impl Table {
         }
     }
 
-    fn set_headers(&mut self, headers: Vec<String>) {
+    pub fn set_headers(&mut self, headers: Vec<String>) {
         match &mut self.data {
             TableData::View { headers: h, .. } => *h = headers,
             TableData::Owned { headers: h, .. } => *h = headers,
@@ -458,6 +461,53 @@ impl Table {
         }
     }
 
+    /// Expected row width for `add_row`: `num_cols` if set, else `headers.len()` if non-empty.
+    pub fn expected_row_width(&self) -> Option<usize> {
+        match &self.data {
+            TableData::View { num_cols, headers, .. } | TableData::Owned { num_cols, headers, .. } => {
+                if *num_cols > 0 {
+                    Some(*num_cols)
+                } else if !headers.is_empty() {
+                    Some(headers.len())
+                } else {
+                    None
+                }
+            }
+        }
+    }
+
+    /// Append one row in-place (Owned only). Row length must match [`Self::expected_row_width`].
+    pub fn add_row(&mut self, row: Vec<Value>) -> Result<(), String> {
+        let expected = self
+            .expected_row_width()
+            .ok_or_else(|| "ValueError: cannot add_row to table without columns".to_string())?;
+        if row.len() != expected {
+            return Err(format!(
+                "ValueError: row length {} does not match table columns {}",
+                row.len(),
+                expected
+            ));
+        }
+        match &mut self.data {
+            TableData::Owned {
+                flat,
+                num_cols,
+                column_cache,
+                ..
+            } => {
+                if *num_cols == 0 {
+                    *num_cols = expected;
+                }
+                flat.extend(row);
+                column_cache.clear();
+                Ok(())
+            }
+            TableData::View { .. } => Err(
+                "ReadOnlyError: cannot add_row on table view; materialize first".to_string(),
+            ),
+        }
+    }
+
     /// Returns row by index (Owned only) as slice into flat storage.
     pub fn get_row(&self, index: usize) -> Option<&[Value]> {
         match &self.data {
@@ -479,6 +529,174 @@ impl Table {
                 }
             }
             TableData::View { .. } => None,
+        }
+    }
+
+    /// Convert View → Owned in place; no-op when already owned.
+    pub fn ensure_owned<F>(&mut self, load: F)
+    where
+        F: Fn(ValueId) -> Value,
+    {
+        if let TableData::View {
+            flat_cell_ids,
+            num_cols,
+            headers,
+        } = &self.data
+        {
+            let flat: Vec<Value> = flat_cell_ids.iter().map(|&id| load(id)).collect();
+            self.data = TableData::Owned {
+                flat,
+                num_cols: *num_cols,
+                headers: headers.clone(),
+                column_cache: HashMap::new(),
+            };
+        }
+    }
+
+    pub fn clear_column_cache(&mut self) {
+        if let TableData::Owned { column_cache, .. } = &mut self.data {
+            column_cache.clear();
+        }
+    }
+
+    /// Owned flat buffer (for bulk append fast paths).
+    pub fn owned_flat(&self) -> Option<&[Value]> {
+        match &self.data {
+            TableData::Owned { flat, .. } => Some(flat.as_slice()),
+            TableData::View { .. } => None,
+        }
+    }
+
+    pub fn owned_num_cols(&self) -> Option<usize> {
+        match &self.data {
+            TableData::Owned { num_cols, .. } => Some(*num_cols),
+            TableData::View { .. } => None,
+        }
+    }
+
+    /// Column values for an owned table (read-only, no cache mutation).
+    pub fn column_values_owned(&self, name: &str) -> Option<Vec<Value>> {
+        let col_idx = self.headers().iter().position(|h| h == name)?;
+        match &self.data {
+            TableData::Owned { flat, num_cols, .. } => {
+                let len = self.len();
+                let num_cols = *num_cols;
+                Some(
+                    (0..len)
+                        .map(|row| flat[row * num_cols + col_idx].clone())
+                        .collect(),
+                )
+            }
+            TableData::View { .. } => None,
+        }
+    }
+
+    /// Append new columns at the end; existing rows get `Null` in new columns.
+    pub fn extend_columns(&mut self, names: &[String]) -> Result<(), String> {
+        match &mut self.data {
+            TableData::Owned {
+                flat,
+                num_cols,
+                headers,
+                column_cache,
+            } => {
+                let new_names: Vec<String> = names
+                    .iter()
+                    .filter(|n| !headers.contains(n))
+                    .cloned()
+                    .collect();
+                if new_names.is_empty() {
+                    return Ok(());
+                }
+                let row_count = if *num_cols == 0 {
+                    0
+                } else {
+                    flat.len() / *num_cols
+                };
+                let old_num_cols = *num_cols;
+                let add = new_names.len();
+                let new_num_cols = old_num_cols + add;
+                if row_count > 0 {
+                    let mut new_flat = Vec::with_capacity(row_count * new_num_cols);
+                    for row_idx in 0..row_count {
+                        let start = row_idx * old_num_cols;
+                        let end = start + old_num_cols;
+                        new_flat.extend_from_slice(&flat[start..end]);
+                        new_flat.resize(new_flat.len() + add, Value::Null);
+                    }
+                    *flat = new_flat;
+                }
+                headers.extend(new_names);
+                *num_cols = new_num_cols;
+                column_cache.clear();
+                Ok(())
+            }
+            TableData::View { .. } => Err("table must be owned".to_string()),
+        }
+    }
+
+    /// Append a contiguous row-major chunk; length must be a multiple of `num_cols`.
+    pub fn append_flat_chunk(&mut self, chunk: &[Value]) -> Result<usize, String> {
+        match &mut self.data {
+            TableData::Owned {
+                flat,
+                num_cols,
+                column_cache,
+                ..
+            } => {
+                if chunk.is_empty() {
+                    return Ok(0);
+                }
+                if *num_cols == 0 {
+                    return Err("table has no columns".to_string());
+                }
+                if chunk.len() % *num_cols != 0 {
+                    return Err(format!(
+                        "invalid flat chunk length {} for {} columns",
+                        chunk.len(),
+                        num_cols
+                    ));
+                }
+                let rows = chunk.len() / *num_cols;
+                flat.extend_from_slice(chunk);
+                column_cache.clear();
+                Ok(rows)
+            }
+            TableData::View { .. } => Err("table must be owned".to_string()),
+        }
+    }
+
+    /// Append rows; each row length must equal `num_cols`.
+    pub fn append_rows(&mut self, rows: &[Vec<Value>]) -> Result<usize, String> {
+        match &mut self.data {
+            TableData::Owned {
+                flat,
+                num_cols,
+                column_cache,
+                ..
+            } => {
+                if rows.is_empty() {
+                    return Ok(0);
+                }
+                if *num_cols == 0 {
+                    return Err("table has no columns".to_string());
+                }
+                for row in rows {
+                    if row.len() != *num_cols {
+                        return Err(format!(
+                            "Invalid row length\nExpected {} columns\nGot {}",
+                            num_cols,
+                            row.len()
+                        ));
+                    }
+                }
+                for row in rows {
+                    flat.extend_from_slice(row);
+                }
+                column_cache.clear();
+                Ok(rows.len())
+            }
+            TableData::View { .. } => Err("table must be owned".to_string()),
         }
     }
 }

@@ -22,16 +22,26 @@ impl Default for SetMap {
 impl SetMap {
     pub fn new() -> Self {
         Self {
-            inner: ObjectMap::new(),
+            inner: ObjectMap::new_plain(),
             generation: 0,
         }
     }
 
     pub fn with_capacity(cap: usize) -> Self {
         Self {
-            inner: ObjectMap::with_capacity(cap),
+            inner: ObjectMap::with_capacity_plain(cap),
             generation: 0,
         }
+    }
+
+    #[inline]
+    pub fn is_plain(&self) -> bool {
+        self.inner.is_plain()
+    }
+
+    #[inline]
+    pub fn mark_plain(&mut self) {
+        self.inner.mark_plain();
     }
 
     fn bump_generation(&mut self) {
@@ -63,6 +73,11 @@ impl SetMap {
             self.inner.clear();
             self.bump_generation();
         }
+    }
+
+    /// Release retained hash capacity after [`Self::clear`].
+    pub fn shrink_to_fit(&mut self) {
+        self.inner.shrink_to_fit();
     }
 
     /// Insert whole-number key into [`ObjectMap::integral_index`] only (A* `closed_set` / `open_set` RAM).

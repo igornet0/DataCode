@@ -8,7 +8,8 @@ use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::global_slot::GlobalSlot;
 use crate::vm::interpreter::{
-    arithmetic, comparison, control_flow, element_ops, for_iterable, memory, object, stack_ops,
+    arithmetic, bitwise, comparison, control_flow, element_ops, for_iterable, grid_ops, memory,
+    object, special_init, stack_ops,
 };
 use crate::vm::module_system::import_handler;
 use crate::vm::runtime::call_engine;
@@ -69,12 +70,382 @@ pub(crate) fn execute_instruction(
     vm_ptr: *mut crate::vm::vm::Vm,
 ) -> Result<VMStatus, LangError> {
     #[cfg(feature = "profile")]
-    crate::vm::profile::record_opcode();
-    #[cfg(feature = "profile")]
     crate::vm::profile::set_current_opcode(&instruction);
 
     let frame = frames.last_mut().unwrap();
     let current_ip = frame.ip - 1; // IP уже инкрементирован в step()
+
+    // Hot-first dispatch for A* inner loops (`--features threaded_dispatch`).
+    #[cfg(feature = "threaded_dispatch")]
+    {
+        match instruction {
+            OpCode::LoadLocal(index) => {
+                return stack_ops::op_load_local(index, current_ip, stack, frames)
+            }
+            OpCode::StoreLocal(index) => {
+                return stack_ops::op_store_local(
+                    index,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::Less => {
+                return comparison::op_less(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::In => {
+                return comparison::op_in(
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::InIntegral => {
+                return comparison::op_in_integral(
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::NotInIntegral => {
+                return comparison::op_not_in_integral(
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::InGridBounds => {
+                return comparison::op_in_grid_bounds(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::InGridBoundsOut => {
+                return comparison::op_in_grid_bounds_out(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::FScoreStaleCheck => {
+                return comparison::op_f_score_stale_check(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::DictGetIntegralLt => {
+                return comparison::op_dict_get_integral_lt(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::DictIndexIntegralAddImm(addend) => {
+                return comparison::op_dict_index_integral_add_imm(
+                    addend,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::NotEqual => {
+                return comparison::op_not_equal(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::Equal => {
+                return comparison::op_equal(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::ObjectIndexIntegral => {
+                return element_ops::op_object_index_integral(
+                    line,
+                    stack,
+                    frames,
+                    globals,
+                    global_names,
+                    functions,
+                    natives,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                    vm_ptr,
+                )
+            }
+            OpCode::ObjectSetIntegral => {
+                return element_ops::op_object_set_integral(
+                    line,
+                    stack,
+                    frames,
+                    globals,
+                    global_names,
+                    functions,
+                    natives,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::GetArrayElement => {
+                return element_ops::op_get_array_element(
+                    line,
+                    stack,
+                    frames,
+                    globals,
+                    global_names,
+                    functions,
+                    natives,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                    vm_ptr,
+                )
+            }
+            OpCode::HeappopUnpack2(f_slot, n_slot) => {
+                return stack_ops::op_heappop_unpack2(
+                    f_slot,
+                    n_slot,
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::HeappushFlat => {
+                return stack_ops::op_heappush_flat(
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::DivmodUnpack2(q_slot, r_slot) => {
+                return stack_ops::op_divmod_unpack2(
+                    q_slot,
+                    r_slot,
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::ObjectGetIntegral => {
+                return stack_ops::op_object_get_integral(
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::HeappopFlat => {
+                return stack_ops::op_heappop_flat(
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::SetDiscardIntegral => {
+                return stack_ops::op_set_discard_integral(
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::SetAddIntegral => {
+                return stack_ops::op_set_add_integral(
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::ObjectClear => {
+                return stack_ops::op_object_clear(
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::AbsI32 => {
+                return arithmetic::op_abs_i32(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::GridGetI32(buf, idx) => {
+                return grid_ops::op_grid_get_i32(
+                    buf,
+                    idx,
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::GridSetI32(buf, idx, val) => {
+                return grid_ops::op_grid_set_i32(
+                    buf,
+                    idx,
+                    val,
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::GridGetU8(buf, idx) => {
+                return grid_ops::op_grid_get_u8(
+                    buf,
+                    idx,
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::GridSetU8(buf, idx, val) => {
+                return grid_ops::op_grid_set_u8(
+                    buf,
+                    idx,
+                    val,
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::GridTestBlocked(bitmap, idx) => {
+                return grid_ops::op_grid_test_blocked(
+                    bitmap,
+                    idx,
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::GridHeapPush(heap, node, f_buf) => {
+                return grid_ops::op_grid_heap_push(
+                    heap,
+                    node,
+                    f_buf,
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::GridHeapPopUnpack2(f_slot, n_slot, heap) => {
+                return grid_ops::op_grid_heap_pop_unpack2(
+                    f_slot,
+                    n_slot,
+                    heap,
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::GridHeapLen(heap) => {
+                return grid_ops::op_grid_heap_len(
+                    heap,
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            OpCode::InvokeSpecialInit(this_slot, param_count) => {
+                return special_init::op_invoke_special_init(
+                    this_slot,
+                    param_count,
+                    line,
+                    stack,
+                    frames,
+                    exception_handlers,
+                    value_store,
+                    heavy_store,
+                )
+            }
+            _ => {}
+        }
+    }
 
     // Логирование выполнения конструктора
     let is_constructor = frame.function.name.contains("::new_");
@@ -96,7 +467,7 @@ pub(crate) fn execute_instruction(
             let val_type = match &return_value {
                 Value::Object(obj_rc) => {
                     let map = obj_rc.borrow();
-                    let keys: Vec<String> = map.keys().cloned().collect();
+                    let keys: Vec<String> = map.str_key_pairs().into_iter().map(|(k, _)| k).collect();
                     format!("Object с ключами: {:?}", keys)
                 }
                 _ => format!("{:?}", return_value),
@@ -150,6 +521,239 @@ pub(crate) fn execute_instruction(
         }
 
         OpCode::Constant(index) => return stack_ops::op_constant(index, stack, frame),
+        OpCode::HeappopUnpack2(f_slot, n_slot) => {
+            return stack_ops::op_heappop_unpack2(
+                f_slot,
+                n_slot,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::HeappushFlat => {
+            return stack_ops::op_heappush_flat(
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::DivmodUnpack2(q_slot, r_slot) => {
+            return stack_ops::op_divmod_unpack2(
+                q_slot,
+                r_slot,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::ObjectGetIntegral => {
+            return stack_ops::op_object_get_integral(
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::HeappopFlat => {
+            return stack_ops::op_heappop_flat(
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::SetDiscardIntegral => {
+            return stack_ops::op_set_discard_integral(
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::ObjectIndexIntegral => {
+            return element_ops::op_object_index_integral(
+                line,
+                stack,
+                frames,
+                globals,
+                global_names,
+                functions,
+                natives,
+                exception_handlers,
+                value_store,
+                heavy_store,
+                vm_ptr,
+            )
+        }
+        OpCode::SetAddIntegral => {
+            return stack_ops::op_set_add_integral(
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::ObjectClear => {
+            return stack_ops::op_object_clear(
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::ObjectSetIntegral => {
+            return element_ops::op_object_set_integral(
+                line,
+                stack,
+                frames,
+                globals,
+                global_names,
+                functions,
+                natives,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::AbsI32 => {
+            return arithmetic::op_abs_i32(
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::GridGetI32(buf, idx) => {
+            return grid_ops::op_grid_get_i32(
+                buf,
+                idx,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::GridSetI32(buf, idx, val) => {
+            return grid_ops::op_grid_set_i32(
+                buf,
+                idx,
+                val,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::GridGetU8(buf, idx) => {
+            return grid_ops::op_grid_get_u8(
+                buf,
+                idx,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::GridSetU8(buf, idx, val) => {
+            return grid_ops::op_grid_set_u8(
+                buf,
+                idx,
+                val,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::GridTestBlocked(bitmap, idx) => {
+            return grid_ops::op_grid_test_blocked(
+                bitmap,
+                idx,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::GridHeapPush(heap, node, f_buf) => {
+            return grid_ops::op_grid_heap_push(
+                heap,
+                node,
+                f_buf,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::GridHeapPopUnpack2(f_slot, n_slot, heap) => {
+            return grid_ops::op_grid_heap_pop_unpack2(
+                f_slot,
+                n_slot,
+                heap,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::GridHeapLen(heap) => {
+            return grid_ops::op_grid_heap_len(
+                heap,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::InvokeSpecialInit(this_slot, param_count) => {
+            return special_init::op_invoke_special_init(
+                this_slot,
+                param_count,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
         OpCode::LoadLocal(index) => {
             return stack_ops::op_load_local(index, current_ip, stack, frames)
         }
@@ -188,6 +792,7 @@ pub(crate) fn execute_instruction(
                 frames,
                 globals,
                 global_names,
+                explicit_global_names,
                 exception_handlers,
                 value_store,
                 heavy_store,
@@ -299,6 +904,66 @@ pub(crate) fn execute_instruction(
                 heavy_store,
             )
         }
+        OpCode::BitAnd => {
+            return bitwise::op_bit_and(
+                current_ip,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::BitOr => {
+            return bitwise::op_bit_or(
+                current_ip,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::BitXor => {
+            return bitwise::op_bit_xor(
+                current_ip,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::ShiftLeft => {
+            return bitwise::op_shift_left(
+                current_ip,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::ShiftRight => {
+            return bitwise::op_shift_right(
+                current_ip,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::BitNot => {
+            return bitwise::op_bit_not(
+                current_ip,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
         OpCode::Not => {
             return arithmetic::op_not(stack, frames, exception_handlers, value_store, heavy_store)
         }
@@ -367,6 +1032,72 @@ pub(crate) fn execute_instruction(
                 heavy_store,
             )
         }
+        OpCode::InIntegral => {
+            return comparison::op_in_integral(
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::NotInIntegral => {
+            return comparison::op_not_in_integral(
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::InGridBounds => {
+            return comparison::op_in_grid_bounds(
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::InGridBoundsOut => {
+            return comparison::op_in_grid_bounds_out(
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::FScoreStaleCheck => {
+            return comparison::op_f_score_stale_check(
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::DictGetIntegralLt => {
+            return comparison::op_dict_get_integral_lt(
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::DictIndexIntegralAddImm(addend) => {
+            return comparison::op_dict_index_integral_add_imm(
+                addend,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
 
         OpCode::Jump8(offset) => return control_flow::op_jump8(offset, frames),
         OpCode::Jump16(offset) => return control_flow::op_jump16(offset, frames),
@@ -401,7 +1132,16 @@ pub(crate) fn execute_instruction(
                 heavy_store,
             )
         }
-        OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_) => {
+        OpCode::JumpIfLocalHeapArrayEmpty8(slot, offset) => {
+            return control_flow::op_jump_if_local_heap_array_empty8(slot, offset, frames, value_store)
+        }
+        OpCode::JumpIfLocalHeapArrayEmpty16(slot, offset) => {
+            return control_flow::op_jump_if_local_heap_array_empty16(slot, offset, frames, value_store)
+        }
+        OpCode::JumpIfLocalHeapArrayEmpty32(slot, offset) => {
+            return control_flow::op_jump_if_local_heap_array_empty32(slot, offset, frames, value_store)
+        }
+        OpCode::JumpLabel(_) | OpCode::JumpIfFalseLabel(_) | OpCode::JumpIfLocalHeapArrayEmptyLabel(_, _) => {
             return control_flow::op_jump_label(line)
         }
 
@@ -456,6 +1196,30 @@ pub(crate) fn execute_instruction(
                 vm_ptr,
             );
         }
+        OpCode::CallVariadic(packed) => {
+            return call_engine::execute_call_variadic(
+                packed,
+                line,
+                stack,
+                frames,
+                globals,
+                global_names,
+                explicit_global_names,
+                functions,
+                natives,
+                exception_handlers,
+                error_type_table,
+                explicit_relations,
+                explicit_primary_keys,
+                abi_natives,
+                value_store,
+                heavy_store,
+                native_args_buffer,
+                reusable_native_arg_ids,
+                reusable_all_popped,
+                vm_ptr,
+            );
+        }
         OpCode::Call(arity) => {
             return call_engine::execute_call(
                 arity,
@@ -492,17 +1256,29 @@ pub(crate) fn execute_instruction(
                 debug_println!("[DEBUG executor Return] constructor '{}' line {} Return (stack len {}, stack_start {})", frame.function.name, line, stack.len(), frame.stack_start);
             }
 
-            let return_value_id = if stack.len() > frame.stack_start {
-                let tv = stack.pop().unwrap_or(TaggedValue::null());
-                tagged_to_value_id(tv, value_store)
-            } else {
-                NULL_VALUE_ID
-            };
+            // Truncate at the returning frame's watermark (not the caller's): caller may keep
+            // expression temps in [caller.stack_start .. callee.stack_start).
+            let callee_stack_start = frame.stack_start;
+            let return_tv = stack::pop_return_value(stack, callee_stack_start);
+            let return_value_id = tagged_to_value_id(return_tv, value_store);
             if cfg!(debug_assertions) {
-                let ret_val = load_value(return_value_id, value_store, heavy_store);
-                if let Value::Object(obj_rc) = &ret_val {
-                    if frame.function.name.contains("::new_") {
-                        let key_count = obj_rc.borrow().len();
+                if frame.function.name.contains("::new_") && return_tv.is_heap() {
+                    let key_count = match value_store.get(return_tv.get_heap_id()) {
+                        Some(crate::common::value_store::ValueCell::Object(omap)) => {
+                            Some(omap.len())
+                        }
+                        Some(crate::common::value_store::ValueCell::Heavy(idx)) => {
+                            heavy_store.get(*idx).and_then(|v| {
+                                if let Value::Object(obj_rc) = v {
+                                    Some(obj_rc.borrow().len())
+                                } else {
+                                    None
+                                }
+                            })
+                        }
+                        _ => None,
+                    };
+                    if let Some(key_count) = key_count {
                         debug_println!(
                             "[DEBUG Return] constructor '{}' line {} returns Object ({} keys)",
                             frame.function.name,
@@ -534,9 +1310,39 @@ pub(crate) fn execute_instruction(
                     }
                 }
                 frames.pop();
-                stack::push_id(stack, return_value_id);
+                let return_value_id = value_store.leave_ephemeral(return_value_id);
+                let promoted_tv = if return_value_id == NULL_VALUE_ID {
+                    TaggedValue::null()
+                } else {
+                    TaggedValue::from_heap(return_value_id)
+                };
+                if let Some(sp) = stack::active_sp_for(stack) {
+                    let old_sp = *sp;
+                    let vm = unsafe { &mut *vm_ptr };
+                    crate::vm::stack_sweep_hook::maybe_sweep_dead_stack(
+                        vm,
+                        stack,
+                        old_sp,
+                        callee_stack_start,
+                    );
+                    stack::compact_caller_stack_after_return(
+                        stack,
+                        sp,
+                        callee_stack_start,
+                        promoted_tv,
+                    );
+                } else {
+                    stack.truncate(callee_stack_start);
+                    stack.push(promoted_tv);
+                }
                 return Ok(VMStatus::Continue);
             } else {
+                let return_value_id = value_store.leave_ephemeral(return_value_id);
+                if let Some(sp) = stack::active_sp_for(stack) {
+                    stack::truncate_to(stack, sp, 0);
+                } else {
+                    stack.clear();
+                }
                 return Ok(VMStatus::Return(return_value_id));
             }
         }
@@ -557,8 +1363,8 @@ pub(crate) fn execute_instruction(
                     line,
                 ));
             }
-            let yield_value_id = if stack.len() > frame.stack_start {
-                let tv = stack.pop().unwrap_or(TaggedValue::null());
+            let yield_value_id = if stack::available_in_frame(stack, frame.stack_start) > 0 {
+                let tv = stack::pop_direct(stack).unwrap_or(TaggedValue::null());
                 tagged_to_value_id(tv, value_store)
             } else {
                 NULL_VALUE_ID
@@ -573,8 +1379,8 @@ pub(crate) fn execute_instruction(
                     line,
                 ));
             }
-            let yield_value_id = if stack.len() > frame.stack_start {
-                let tv = stack.pop().unwrap_or(TaggedValue::null());
+            let yield_value_id = if stack::available_in_frame(stack, frame.stack_start) > 0 {
+                let tv = stack::pop_direct(stack).unwrap_or(TaggedValue::null());
                 tagged_to_value_id(tv, value_store)
             } else {
                 NULL_VALUE_ID
@@ -625,8 +1431,8 @@ pub(crate) fn execute_instruction(
                     line,
                 ));
             }
-            let final_value_id = if stack.len() > frame.stack_start {
-                let tv = stack.pop().unwrap_or(TaggedValue::null());
+            let final_value_id = if stack::available_in_frame(stack, frame.stack_start) > 0 {
+                let tv = stack::pop_direct(stack).unwrap_or(TaggedValue::null());
                 tagged_to_value_id(tv, value_store)
             } else {
                 NULL_VALUE_ID
@@ -690,6 +1496,27 @@ pub(crate) fn execute_instruction(
                 heavy_store,
             )
         }
+        OpCode::MakeSet(count) => {
+            return object::op_make_set(
+                count,
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
+        OpCode::MakeSetDynamic => {
+            return object::op_make_set_dynamic(
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+            )
+        }
         OpCode::MakeArrayDynamic => {
             return object::op_make_array_dynamic(
                 line,
@@ -713,6 +1540,18 @@ pub(crate) fn execute_instruction(
         }
         OpCode::TableFilter => {
             return object::op_table_filter(
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+                vm_ptr,
+            )
+        }
+        OpCode::TableFilterPred(pred_index) => {
+            return object::op_table_filter_pred(
+                pred_index,
                 line,
                 stack,
                 frames,

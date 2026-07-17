@@ -1,7 +1,9 @@
 // Разрешение переменных и подготовка к компиляции
 
 use crate::common::error::LangError;
-use crate::parser::ast::{Arg, Expr, IndexExpr, Param, Stmt, UnpackPattern};
+use crate::parser::ast::{
+    Arg, AssignTarget, Expr, IndexExpr, ListComprehensionClause, Param, Stmt, UnpackPattern,
+};
 use crate::semantic::scope::Scope;
 
 pub struct Resolver {
@@ -92,6 +94,7 @@ impl Resolver {
                 ..
             } => {
                 self.resolve_expr(condition)?;
+                // Same as Python: then/else bindings use the enclosing scope.
                 self.resolve_stmt_block(then_branch)?;
                 if let Some(else_branch) = else_branch {
                     self.resolve_stmt_block(else_branch)?;
@@ -139,19 +142,10 @@ impl Resolver {
                 body,
                 ..
             } => {
-                // Начинаем новую область видимости для цикла for
-                self.begin_scope();
-
-                // Объявляем переменные из паттерна распаковки
+                // Iterator and body bindings use the enclosing scope (Python for-loop semantics).
                 self.declare_unpack_pattern(pattern);
-
-                // Разрешаем итерируемое выражение
                 self.resolve_expr(iterable)?;
-
-                // Разрешаем тело цикла
                 self.resolve_stmt_block(body)?;
-
-                self.end_scope();
             }
             Stmt::Try {
                 try_block,
@@ -263,6 +257,20 @@ impl Resolver {
         Ok(())
     }
 
+    fn resolve_table_filter_pred(&mut self, pred: &crate::parser::ast::TableFilterPred) -> Result<(), LangError> {
+        match pred {
+            crate::parser::ast::TableFilterPred::Compare { value, .. }
+            | crate::parser::ast::TableFilterPred::Membership { container: value, .. }
+            | crate::parser::ast::TableFilterPred::StringMatch { pattern: value, .. } => {
+                self.resolve_expr(value)
+            }
+            crate::parser::ast::TableFilterPred::And(l, r) | crate::parser::ast::TableFilterPred::Or(l, r) => {
+                self.resolve_table_filter_pred(l)?;
+                self.resolve_table_filter_pred(r)
+            }
+        }
+    }
+
     fn resolve_expr(&mut self, expr: &Expr) -> Result<(), LangError> {
         match expr {
             Expr::Variable { name, .. } => {
@@ -292,7 +300,7 @@ impl Resolver {
                         Arg::Named { value, .. } => {
                             self.resolve_expr(value)?;
                         }
-                        Arg::UnpackObject(expr) => {
+                        Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                             self.resolve_expr(expr)?;
                         }
                     }
@@ -308,7 +316,7 @@ impl Resolver {
                         Arg::Named { value, .. } => {
                             self.resolve_expr(value)?;
                         }
-                        Arg::UnpackObject(expr) => {
+                        Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                             self.resolve_expr(expr)?;
                         }
                     }
@@ -342,21 +350,68 @@ impl Resolver {
                         crate::parser::ast::ObjectPair::KeyValue(_, value) => {
                             self.resolve_expr(value)?;
                         }
+                        crate::parser::ast::ObjectPair::KeyValueExpr(key, value) => {
+                            self.resolve_expr(key)?;
+                            self.resolve_expr(value)?;
+                        }
                         crate::parser::ast::ObjectPair::Spread(expr) => {
                             self.resolve_expr(expr)?;
                         }
                     }
                 }
             }
+            Expr::DictComprehension {
+                key_expr,
+                value_expr,
+                loop_var,
+                iterable,
+                condition,
+                ..
+            } => {
+                self.begin_scope();
+                self.declare(loop_var);
+                self.define(loop_var);
+                self.resolve_expr(iterable)?;
+                self.resolve_expr(key_expr)?;
+                self.resolve_expr(value_expr)?;
+                if let Some(c) = condition {
+                    self.resolve_expr(c)?;
+                }
+                self.end_scope();
+            }
+            Expr::ListComprehension { elt, clauses, .. } => {
+                self.begin_scope();
+                for clause in clauses {
+                    match clause {
+                        ListComprehensionClause::For { pattern, iterable } => {
+                            self.declare_unpack_pattern(pattern);
+                            self.resolve_expr(iterable)?;
+                        }
+                        ListComprehensionClause::If { condition } => {
+                            self.resolve_expr(condition)?;
+                        }
+                    }
+                }
+                self.resolve_expr(elt)?;
+                self.end_scope();
+            }
             Expr::TupleLiteral { elements, .. } => {
                 for element in elements {
                     self.resolve_expr(element)?;
                 }
             }
-            Expr::UnpackAssign { names, value, .. } => {
+            Expr::UnpackAssign { targets, value, .. } => {
                 self.resolve_expr(value)?;
-                for name in names {
-                    self.resolve_local(expr, name);
+                for target in targets {
+                    match target {
+                        AssignTarget::Name(name) => {
+                            self.resolve_local(expr, name);
+                        }
+                        AssignTarget::Index { array, index } => {
+                            self.resolve_expr(array)?;
+                            self.resolve_expr(index)?;
+                        }
+                    }
                 }
             }
             Expr::ArrayIndex { array, index, .. } => {
@@ -383,9 +438,9 @@ impl Resolver {
                 self.resolve_index_expr(index)?;
                 self.resolve_expr(value)?;
             }
-            Expr::TableFilter { table, value, .. } => {
+            Expr::TableFilter { table, predicate, .. } => {
                 self.resolve_expr(table)?;
-                self.resolve_expr(value)?;
+                self.resolve_table_filter_pred(predicate)?;
             }
             Expr::Property { object, .. } => {
                 self.resolve_expr(object)?;
@@ -400,7 +455,7 @@ impl Resolver {
                         Arg::Named { value, .. } => {
                             self.resolve_expr(value)?;
                         }
-                        Arg::UnpackObject(expr) => {
+                        Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                             self.resolve_expr(expr)?;
                         }
                     }
@@ -422,7 +477,7 @@ impl Resolver {
                         Arg::Named { value, .. } => {
                             self.resolve_expr(value)?;
                         }
-                        Arg::UnpackObject(expr) => {
+                        Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                             self.resolve_expr(expr)?;
                         }
                     }
@@ -437,7 +492,7 @@ impl Resolver {
                         Arg::Named { value, .. } => {
                             self.resolve_expr(value)?;
                         }
-                        Arg::UnpackObject(expr) => {
+                        Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                             self.resolve_expr(expr)?;
                         }
                     }
@@ -475,6 +530,26 @@ impl Resolver {
                 for seg in segments {
                     if let InterpolatedSegment::Expr { expr: e, .. } = seg {
                         self.resolve_expr(e)?;
+                    }
+                }
+            }
+            Expr::If {
+                condition,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.resolve_expr(condition)?;
+                match then_branch {
+                    crate::parser::ast::IfBranch::Expr(e) => self.resolve_expr(e)?,
+                    crate::parser::ast::IfBranch::Block(stmts) => {
+                        self.resolve_stmt_block(stmts)?;
+                    }
+                }
+                match else_branch {
+                    crate::parser::ast::IfBranch::Expr(e) => self.resolve_expr(e)?,
+                    crate::parser::ast::IfBranch::Block(stmts) => {
+                        self.resolve_stmt_block(stmts)?;
                     }
                 }
             }

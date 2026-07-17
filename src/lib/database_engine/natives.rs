@@ -1,6 +1,6 @@
 // Native functions for database module
 
-use crate::common::value::Value;
+use crate::common::value::{ObjectKind, Value};
 use crate::database_engine::cluster::DatabaseCluster;
 use crate::database_engine::engine::DatabaseEngine;
 use crate::database_engine::sqenum;
@@ -44,8 +44,21 @@ fn get_f64_opt(v: &Value) -> Option<f64> {
 fn extract_connect_args(v: &Value) -> HashMap<String, Value> {
     let mut map = HashMap::new();
     if let Value::Object(rc) = v {
-        for (k, val) in rc.borrow().iter() {
-            map.insert(k.clone(), val.clone());
+        let kind = rc.borrow();
+        match &*kind {
+            ObjectKind::Legacy(m) => {
+                for (k, val) in m.iter() {
+                    map.insert(k.clone(), val.clone());
+                }
+            }
+            ObjectKind::Inline(entries) => {
+                for (k, val) in entries.iter() {
+                    if let Value::String(sk) = k {
+                        map.insert(sk.clone(), val.clone());
+                    }
+                }
+            }
+            ObjectKind::Bucket(_) => {}
         }
     }
     map
@@ -233,13 +246,13 @@ pub fn native_metadata(args: &[Value]) -> Value {
         "naming_convention".to_string(),
         args.get(2)
             .cloned()
-            .unwrap_or(Value::Object(Rc::new(RefCell::new(HashMap::new())))),
+            .unwrap_or_else(|| Value::legacy_object(HashMap::new())),
     );
     meta.insert(
         "info".to_string(),
         args.get(3)
             .cloned()
-            .unwrap_or(Value::Object(Rc::new(RefCell::new(HashMap::new())))),
+            .unwrap_or_else(|| Value::legacy_object(HashMap::new())),
     );
     meta.insert(
         "tables".to_string(),
@@ -247,15 +260,15 @@ pub fn native_metadata(args: &[Value]) -> Value {
     );
     meta.insert(
         "classes".to_string(),
-        Value::Object(Rc::new(RefCell::new(HashMap::new()))),
+        Value::legacy_object(HashMap::new()),
     );
-    let meta_rc = Rc::new(RefCell::new(meta));
+    let meta_rc = Rc::new(RefCell::new(ObjectKind::Legacy(meta)));
     let mut create_all_obj = HashMap::new();
     create_all_obj.insert("__create_all".to_string(), Value::Bool(true));
     create_all_obj.insert("metadata".to_string(), Value::Object(Rc::clone(&meta_rc)));
-    meta_rc.borrow_mut().insert(
+    let _ = meta_rc.borrow_mut().str_key_insert(
         "create_all".to_string(),
-        Value::Object(Rc::new(RefCell::new(create_all_obj))),
+        Value::legacy_object(create_all_obj),
     );
     Value::Object(meta_rc)
 }
@@ -302,7 +315,7 @@ pub fn native_column(args: &[Value]) -> Value {
             Value::Array(Rc::new(RefCell::new(Vec::new())))
         }),
     );
-    Value::Object(Rc::new(RefCell::new(col)))
+    Value::legacy_object(col)
 }
 
 /// now_call() - returns current datetime for default/onupdate (ISO string for SQLite)
@@ -322,7 +335,7 @@ pub fn native_select(args: &[Value]) -> Value {
     let mut sel = HashMap::new();
     sel.insert("__select".to_string(), Value::Bool(true));
     sel.insert("model".to_string(), args[0].clone());
-    Value::Object(Rc::new(RefCell::new(sel)))
+    Value::legacy_object(sel)
 }
 
 /// run(engine, arg) - dispatches: create_all -> DDL, model instance -> INSERT, select(Model) -> SELECT
@@ -349,7 +362,7 @@ pub fn native_engine_run(args: &[Value]) -> Value {
     let arg_resolved = if let Value::Object(rc) = &arg {
         let obj = rc.borrow();
         let is_create_all = obj
-            .get("__create_all")
+            .str_key_get("__create_all")
             .and_then(|v| {
                 if let Value::Bool(b) = v {
                     Some(*b)
@@ -358,11 +371,11 @@ pub fn native_engine_run(args: &[Value]) -> Value {
                 }
             })
             .unwrap_or(false);
-        let has_class_name = obj.get("__class_name").is_some();
-        let meta_opt = obj.get("metadata").cloned();
+        let has_class_name = obj.str_key_get("__class_name").is_some();
+        let meta_opt = obj.str_key_get("metadata").cloned();
         let create_all_opt: Option<Value> = meta_opt.as_ref().and_then(|m| {
             if let Value::Object(mr) = m {
-                mr.borrow().get("create_all").cloned()
+                mr.borrow().str_key_get("create_all").cloned()
             } else {
                 None
             }
@@ -371,7 +384,7 @@ pub fn native_engine_run(args: &[Value]) -> Value {
             .as_ref()
             .and_then(|c| {
                 if let Value::Object(cr) = c {
-                    cr.borrow().get("__create_all").and_then(|v| {
+                    cr.borrow().str_key_get("__create_all").and_then(|v| {
                         if let Value::Bool(b) = v {
                             Some(*b)
                         } else {
@@ -399,7 +412,7 @@ pub fn native_engine_run(args: &[Value]) -> Value {
     if let Value::Object(rc) = &arg_resolved {
         let obj = rc.borrow();
         let is_create_all = obj
-            .get("__create_all")
+            .str_key_get("__create_all")
             .and_then(|v| {
                 if let Value::Bool(b) = v {
                     Some(*b)
@@ -408,7 +421,7 @@ pub fn native_engine_run(args: &[Value]) -> Value {
                 }
             })
             .unwrap_or(false);
-        let meta_opt = obj.get("metadata").cloned();
+        let meta_opt = obj.str_key_get("metadata").cloned();
         drop(obj);
         if is_create_all {
             if let Some(Value::Object(meta_rc)) = meta_opt {
@@ -425,7 +438,7 @@ pub fn native_engine_run(args: &[Value]) -> Value {
     if let Value::Object(rc) = &arg_resolved {
         let obj = rc.borrow();
         if obj
-            .get("__select")
+            .str_key_get("__select")
             .and_then(|v| {
                 if let Value::Bool(b) = v {
                     Some(*b)
@@ -435,18 +448,18 @@ pub fn native_engine_run(args: &[Value]) -> Value {
             })
             .unwrap_or(false)
         {
-            if let Some(Value::Object(model_class)) = obj.get("model") {
-                let classes = get_classes_from_class_chain(model_class);
+            if let Some(Value::Object(model_class)) = obj.str_key_get("model").cloned() {
+                let classes = get_classes_from_class_chain(&model_class);
                 let table_name = get_table_name_from_class(
-                    &Value::Object(Rc::clone(model_class)),
+                    &Value::Object(Rc::clone(&model_class)),
                     classes.as_ref(),
                 );
                 if let Some(name) = table_name {
                     let sql = format!("SELECT * FROM {}", name);
-                    let model_class = Rc::clone(model_class);
+                    let model_class = Rc::clone(&model_class);
                     let class_name = model_class
                         .borrow()
-                        .get("__class_name")
+                        .str_key_get("__class_name")
                         .and_then(get_string)
                         .unwrap_or_default();
                     let select_classes = get_classes_from_class_chain(&model_class);
@@ -510,7 +523,7 @@ pub fn native_engine_run(args: &[Value]) -> Value {
                                     "__state".to_string(),
                                     Value::String("loaded".to_string()),
                                 );
-                                data_list.push(Value::Object(Rc::new(RefCell::new(instance))));
+                                data_list.push(Value::legacy_object(instance));
                                 rows_list
                                     .push(Value::Array(Rc::new(RefCell::new(row_vals.clone()))));
                             }
@@ -529,7 +542,7 @@ pub fn native_engine_run(args: &[Value]) -> Value {
                                 "row_count".to_string(),
                                 Value::Number(data_rows.len() as f64),
                             );
-                            return Value::Object(Rc::new(RefCell::new(result)));
+                            return Value::legacy_object(result);
                         }
                         Err(e) => {
                             crate::websocket::set_native_error(format!("engine.run select: {}", e));
@@ -545,7 +558,7 @@ pub fn native_engine_run(args: &[Value]) -> Value {
     if let Value::Object(rc) = &arg_resolved {
         let table_name = get_table_name_from_class_object(&arg).or_else(|| {
             let obj = rc.borrow();
-            obj.get("__class_name").and_then(|v| get_string(v))
+            obj.str_key_get("__class_name").and_then(|v| get_string(v))
         });
         if let Some(table_name) = table_name {
             match build_insert_from_instance(&arg, &table_name) {
@@ -575,17 +588,17 @@ pub fn native_engine_run(args: &[Value]) -> Value {
 /// Uses build_class_chain to walk the full inheritance hierarchy; the chain yields
 /// [root, ..., parent, current], so we iterate in reverse to prefer the most specific override.
 fn find_tablename_method(
-    class_rc: &Rc<RefCell<HashMap<String, Value>>>,
+    class_rc: &Rc<RefCell<ObjectKind>>,
     classes: Option<&HashMap<String, Value>>,
 ) -> Option<Value> {
-    let chain: Vec<Rc<RefCell<HashMap<String, Value>>>> = if let Some(classes) = classes {
+    let chain: Vec<Rc<RefCell<ObjectKind>>> = if let Some(classes) = classes {
         build_class_chain(class_rc, classes)
     } else {
         vec![Rc::clone(class_rc)]
     };
     for ancestor_rc in chain.iter().rev() {
         let obj = ancestor_rc.borrow();
-        if let Some(m) = obj.get("__tablename__").cloned() {
+        if let Some(m) = obj.str_key_get("__tablename__").cloned() {
             if matches!(&m, Value::Function(_) | Value::ModuleFunction { .. }) {
                 return Some(m);
             }
@@ -632,7 +645,7 @@ fn get_table_name_from_class(
 
     // Fallback: use __class_name as-is when __tablename__ call fails
     let obj = class_rc.borrow();
-    obj.get("__class_name").and_then(|v| {
+    obj.str_key_get("__class_name").and_then(|v| {
         if let Value::String(s) = v {
             Some(s.clone())
         } else {
@@ -644,9 +657,9 @@ fn get_table_name_from_class(
 /// Walk __superclass chain via VM globals until we find a class with metadata; return metadata.classes.
 /// Used when insert/select don't have metadata (unlike create_all) so we can build the class chain for __tablename__.
 fn get_classes_from_class_chain(
-    class_rc: &Rc<RefCell<HashMap<String, Value>>>,
+    class_rc: &Rc<RefCell<ObjectKind>>,
 ) -> Option<HashMap<String, Value>> {
-    let mut current_name = class_rc.borrow().get("__superclass").and_then(|v| {
+    let mut current_name = class_rc.borrow().str_key_get("__superclass").and_then(|v| {
         if let Value::String(s) = v {
             Some(s.clone())
         } else {
@@ -660,13 +673,17 @@ fn get_classes_from_class_chain(
             return None;
         };
         let parent = parent_rc.borrow();
-        if let Some(Value::Object(meta_rc)) = parent.get("metadata") {
-            if let Some(Value::Object(classes_rc)) = meta_rc.borrow().get("classes") {
-                return Some(classes_rc.borrow().clone());
+        if let Some(Value::Object(meta_rc)) = parent.str_key_get("metadata").cloned() {
+            if let Some(Value::Object(classes_rc)) =
+                meta_rc.borrow().str_key_get("classes").cloned()
+            {
+                if let Some(m) = classes_rc.borrow().legacy_ref() {
+                    return Some(m.clone());
+                }
             }
         }
-        current_name = match parent.get("__superclass") {
-            Some(Value::String(s)) => s.clone(),
+        current_name = match parent.str_key_get("__superclass").cloned() {
+            Some(Value::String(s)) => s,
             _ => return None,
         };
     }
@@ -678,13 +695,13 @@ fn get_table_name_from_class_object(instance: &Value) -> Option<String> {
         return None;
     };
     let obj = rc.borrow();
-    let class_opt = obj.get("__class").cloned();
+    let class_opt = obj.str_key_get("__class").cloned();
     if let Some(Value::Object(class_rc)) = class_opt {
         drop(obj);
         let classes = get_classes_from_class_chain(&class_rc);
         return get_table_name_from_class(&Value::Object(class_rc), classes.as_ref());
     }
-    obj.get("__class_name").and_then(|v| {
+    obj.str_key_get("__class_name").and_then(|v| {
         if let Value::String(s) = v {
             Some(s.clone())
         } else {
@@ -732,12 +749,12 @@ fn build_insert_from_instance(
     let obj = rc.borrow();
     // Must use __class.__col_names: order and set of columns come from the model, not instance.keys().
     let (col_names, class_opt): (Vec<String>, _) = obj
-        .get("__class")
+        .str_key_get("__class")
         .and_then(|v| {
             if let Value::Object(class_rc) = v {
                 let names = class_rc
                     .borrow()
-                    .get("__col_names")
+                    .str_key_get("__col_names")
                     .and_then(|a| {
                         if let Value::Array(arr) = a {
                             Some(arr.borrow().iter().filter_map(|v| get_string(v)).collect())
@@ -757,7 +774,8 @@ fn build_insert_from_instance(
                     .into_iter()
                     .collect();
             let names: Vec<String> = obj
-                .iter()
+                .str_key_entries_cloned()
+                .into_iter()
                 .filter(|(k, _)| {
                     !k.starts_with("__")
                         && !k.starts_with("new_")
@@ -774,18 +792,18 @@ fn build_insert_from_instance(
     for k in &col_names {
         // Value from instance, else default from class __col_<name>, else Null.
         let val = obj
-            .get(k)
+            .str_key_get(k.as_str())
             .cloned()
             .or_else(|| {
                 class_opt.as_ref().and_then(|class_rc| {
                     let desc_key = format!("__col_{}", k);
-                    let desc_val = class_rc.borrow().get(&desc_key).cloned();
+                    let desc_val = class_rc.borrow().str_key_get(&desc_key).cloned();
                     // Ref dropped here; then we can borrow desc_rc
                     desc_val.and_then(|d| {
                         let Value::Object(desc_rc) = d else {
                             return None;
                         };
-                        let default_val = desc_rc.borrow().get("default").cloned();
+                        let default_val = desc_rc.borrow().str_key_get("default").cloned();
                         default_val
                     })
                 })
@@ -801,9 +819,9 @@ fn build_insert_from_instance(
                     let (transform, validators_field) = {
                         let desc = desc_cell.borrow();
                         (
-                            desc.get("transform").cloned(),
+                            desc.str_key_get("transform").cloned(),
                             desc
-                                .get("validators")
+                                .str_key_get("validators")
                                 .cloned()
                                 .unwrap_or(Value::Null),
                         )
@@ -845,14 +863,14 @@ fn build_insert_from_instance(
 
 /// Most-specific column descriptor for `col_name` along the model inheritance chain.
 fn column_descriptor_for_name(
-    model_class: &Rc<RefCell<HashMap<String, Value>>>,
+    model_class: &Rc<RefCell<ObjectKind>>,
     classes: &HashMap<String, Value>,
     col_name: &str,
 ) -> Option<Value> {
     let chain = build_class_chain(model_class, classes);
     for anc in chain.iter().rev() {
         let k = format!("__col_{}", col_name);
-        if let Some(v) = anc.borrow().get(&k).cloned() {
+        if let Some(v) = anc.borrow().str_key_get(&k).cloned() {
             return Some(v);
         }
     }
@@ -860,7 +878,7 @@ fn column_descriptor_for_name(
 }
 
 fn column_descriptor_for_name_or_local(
-    model_class: &Rc<RefCell<HashMap<String, Value>>>,
+    model_class: &Rc<RefCell<ObjectKind>>,
     classes: Option<&HashMap<String, Value>>,
     col_name: &str,
 ) -> Option<Value> {
@@ -868,16 +886,16 @@ fn column_descriptor_for_name_or_local(
         column_descriptor_for_name(model_class, cm, col_name)
     } else {
         let k = format!("__col_{}", col_name);
-        model_class.borrow().get(&k).cloned()
+        model_class.borrow().str_key_get(&k).cloned()
     }
 }
 
 /// If the column type is a finalized SQLEnum class, return its class object.
-fn sqenum_class_from_column_descriptor(desc: &Value) -> Option<Rc<RefCell<HashMap<String, Value>>>> {
+fn sqenum_class_from_column_descriptor(desc: &Value) -> Option<Rc<RefCell<ObjectKind>>> {
     let Value::Object(desc_rc) = desc else {
         return None;
     };
-    let typ = desc_rc.borrow().get("type").cloned()?;
+    let typ = desc_rc.borrow().str_key_get("type").cloned()?;
     if let Value::Object(enum_rc) = typ {
         if sqenum::is_sqenum_class_object(&Value::Object(Rc::clone(&enum_rc))) {
             return Some(enum_rc);
@@ -887,13 +905,13 @@ fn sqenum_class_from_column_descriptor(desc: &Value) -> Option<Rc<RefCell<HashMa
 }
 
 fn build_class_chain(
-    class_rc: &Rc<RefCell<HashMap<String, Value>>>,
+    class_rc: &Rc<RefCell<ObjectKind>>,
     classes: &HashMap<String, Value>,
-) -> Vec<Rc<RefCell<HashMap<String, Value>>>> {
+) -> Vec<Rc<RefCell<ObjectKind>>> {
     let mut chain = Vec::new();
-    let mut current: Option<Rc<RefCell<HashMap<String, Value>>>> = Some(Rc::clone(class_rc));
+    let mut current: Option<Rc<RefCell<ObjectKind>>> = Some(Rc::clone(class_rc));
     while let Some(rc) = current.take() {
-        let super_name = rc.borrow().get("__superclass").and_then(|v| {
+        let super_name = rc.borrow().str_key_get("__superclass").and_then(|v| {
             if let Value::String(s) = v {
                 Some(s.clone())
             } else {
@@ -916,11 +934,11 @@ fn build_class_chain(
 
 /// Collect (col_name, spec) for one class in declaration order if __col_names present, else arbitrary.
 fn collect_column_specs_for_class(
-    class_rc: &Rc<RefCell<HashMap<String, Value>>>,
+    class_rc: &Rc<RefCell<ObjectKind>>,
 ) -> Vec<(String, String)> {
     let class_obj = class_rc.borrow();
     let mut out = Vec::new();
-    let order_names: Option<Vec<String>> = class_obj.get("__col_names").and_then(|v| {
+    let order_names: Option<Vec<String>> = class_obj.str_key_get("__col_names").and_then(|v| {
         if let Value::Array(rc) = v {
             Some(rc.borrow().iter().filter_map(|v| get_string(v)).collect())
         } else {
@@ -930,11 +948,11 @@ fn collect_column_specs_for_class(
     if let Some(ref names) = order_names {
         for name in names {
             let col_key = format!("__col_{}", name);
-            if let Some(attr_val) = class_obj.get(&col_key) {
+            if let Some(attr_val) = class_obj.str_key_get(col_key.as_str()) {
                 if let Value::Object(col_rc) = attr_val {
                     let col = col_rc.borrow();
                     if !col
-                        .get("__column")
+                        .str_key_get("__column")
                         .and_then(|v| {
                             if let Value::Bool(b) = v {
                                 Some(*b)
@@ -947,7 +965,7 @@ fn collect_column_specs_for_class(
                         continue;
                     }
                     let pk = col
-                        .get("primary_key")
+                        .str_key_get("primary_key")
                         .and_then(|v| {
                             if let Value::Bool(b) = v {
                                 Some(*b)
@@ -957,7 +975,7 @@ fn collect_column_specs_for_class(
                         })
                         .unwrap_or(false);
                     let auto = col
-                        .get("autoincrement")
+                        .str_key_get("autoincrement")
                         .and_then(|v| {
                             if let Value::Bool(b) = v {
                                 Some(*b)
@@ -972,7 +990,7 @@ fn collect_column_specs_for_class(
                         column_type_to_sql(attr_val, Some(name.as_str()))
                     };
                     let uq = col
-                        .get("unique")
+                        .str_key_get("unique")
                         .and_then(|v| {
                             if let Value::Bool(b) = v {
                                 Some(*b)
@@ -982,7 +1000,7 @@ fn collect_column_specs_for_class(
                         })
                         .unwrap_or(false);
                     let null = col
-                        .get("nullable")
+                        .str_key_get("nullable")
                         .and_then(|v| {
                             if let Value::Bool(b) = v {
                                 Some(*b)
@@ -991,7 +1009,7 @@ fn collect_column_specs_for_class(
                             }
                         })
                         .unwrap_or(false);
-                    let default_val = col.get("default").cloned();
+                    let default_val = col.str_key_get("default").cloned();
                     let mut spec = format!("{} {}", name, sql_type);
                     if pk {
                         spec.push_str(" PRIMARY KEY");
@@ -1016,11 +1034,11 @@ fn collect_column_specs_for_class(
             }
         }
     } else {
-        for (attr_name, attr_val) in class_obj.iter() {
+        for (attr_name, attr_val) in class_obj.str_key_pairs() {
             let col_name = if attr_name.starts_with("__col_") {
                 attr_name
                     .strip_prefix("__col_")
-                    .unwrap_or(attr_name)
+                    .unwrap_or(attr_name.as_str())
                     .to_string()
             } else if attr_name.starts_with("__") {
                 continue;
@@ -1030,7 +1048,7 @@ fn collect_column_specs_for_class(
             if let Value::Object(col_rc) = attr_val {
                 let col = col_rc.borrow();
                 if !col
-                    .get("__column")
+                    .str_key_get("__column")
                     .and_then(|v| {
                         if let Value::Bool(b) = v {
                             Some(*b)
@@ -1043,7 +1061,7 @@ fn collect_column_specs_for_class(
                     continue;
                 }
                 let pk = col
-                    .get("primary_key")
+                    .str_key_get("primary_key")
                     .and_then(|v| {
                         if let Value::Bool(b) = v {
                             Some(*b)
@@ -1053,7 +1071,7 @@ fn collect_column_specs_for_class(
                     })
                     .unwrap_or(false);
                 let auto = col
-                    .get("autoincrement")
+                    .str_key_get("autoincrement")
                     .and_then(|v| {
                         if let Value::Bool(b) = v {
                             Some(*b)
@@ -1068,7 +1086,7 @@ fn collect_column_specs_for_class(
                     column_type_to_sql(attr_val, Some(col_name.as_str()))
                 };
                 let uq = col
-                    .get("unique")
+                    .str_key_get("unique")
                     .and_then(|v| {
                         if let Value::Bool(b) = v {
                             Some(*b)
@@ -1078,7 +1096,7 @@ fn collect_column_specs_for_class(
                     })
                     .unwrap_or(false);
                 let null = col
-                    .get("nullable")
+                    .str_key_get("nullable")
                     .and_then(|v| {
                         if let Value::Bool(b) = v {
                             Some(*b)
@@ -1087,7 +1105,7 @@ fn collect_column_specs_for_class(
                         }
                     })
                     .unwrap_or(false);
-                let default_val = col.get("default").cloned();
+                let default_val = col.str_key_get("default").cloned();
                 let mut spec = format!("{} {}", col_name, sql_type);
                 if pk {
                     spec.push_str(" PRIMARY KEY");
@@ -1115,16 +1133,20 @@ fn collect_column_specs_for_class(
 }
 
 fn run_create_all(
-    meta_rc: &Rc<RefCell<HashMap<String, Value>>>,
+    meta_rc: &Rc<RefCell<ObjectKind>>,
     engine: &mut std::cell::RefMut<'_, DatabaseEngine>,
 ) -> Result<(), String> {
     let meta = meta_rc.borrow();
-    let tables = match meta.get("tables") {
+    let tables = match meta.str_key_get("tables") {
         Some(Value::Array(rc)) => rc.borrow().clone(),
         _ => vec![],
     };
-    let classes = match meta.get("classes") {
-        Some(Value::Object(rc)) => rc.borrow().clone(),
+    let classes: HashMap<String, Value> = match meta.str_key_get("classes") {
+        Some(Value::Object(rc)) => rc
+            .borrow()
+            .legacy_ref()
+            .cloned()
+            .unwrap_or_default(),
         _ => HashMap::new(),
     };
     drop(meta);
@@ -1137,23 +1159,23 @@ fn run_create_all(
     };
     model_classes.sort_by(|a, b| {
         let an = match a {
-            Value::Object(r) => r.borrow().get("__class_name").and_then(get_string),
+            Value::Object(r) => r.borrow().str_key_get("__class_name").and_then(get_string),
             _ => None,
         };
         let bn = match b {
-            Value::Object(r) => r.borrow().get("__class_name").and_then(get_string),
+            Value::Object(r) => r.borrow().str_key_get("__class_name").and_then(get_string),
             _ => None,
         };
         an.as_deref().unwrap_or("").cmp(bn.as_deref().unwrap_or(""))
     });
     // Resolve all table names first (before any engine.execute) to avoid VM re-entrancy issues
-    let mut to_create: Vec<(Rc<RefCell<HashMap<String, Value>>>, String)> = Vec::new();
+    let mut to_create: Vec<(Rc<RefCell<ObjectKind>>, String)> = Vec::new();
     for model_class in model_classes {
         if let Value::Object(class_rc) = model_class {
             let is_abstract = {
                 let class_map = class_rc.borrow();
                 class_map
-                    .get("__abstract")
+                    .str_key_get("__abstract")
                     .and_then(|v| {
                         if let Value::Bool(b) = v {
                             Some(*b)
@@ -1163,7 +1185,7 @@ fn run_create_all(
                     })
                     .unwrap_or(false)
                     || class_map
-                        .get("is_abstract")
+                        .str_key_get("is_abstract")
                         .and_then(|v| {
                             if let Value::Bool(b) = v {
                                 Some(*b)
@@ -1228,7 +1250,7 @@ fn default_value_to_sql(v: &Value) -> Option<String> {
         Value::Object(om) => {
             let member_val = Value::Object(Rc::clone(om));
             if sqenum::is_enum_member_value(&member_val) {
-                if let Some(stored) = om.borrow().get(sqenum::KEY_ENUM_VALUE).cloned() {
+                if let Some(stored) = om.borrow().str_key_get(sqenum::KEY_ENUM_VALUE).cloned() {
                     return default_value_to_sql(&stored);
                 }
             }
@@ -1243,14 +1265,14 @@ fn column_type_to_sql(col_val: &Value, sqlite_column_name: Option<&str>) -> Stri
         return "TEXT".to_string();
     };
     let col = rc.borrow();
-    let type_val = col.get("type").cloned().unwrap_or(Value::Null);
+    let type_val = col.str_key_get("type").cloned().unwrap_or(Value::Null);
     drop(col);
 
     if let Value::Object(enum_rc) = &type_val {
         if sqenum::is_sqenum_class_object(&Value::Object(Rc::clone(enum_rc))) {
             let affinity = enum_rc
                 .borrow()
-                .get("__sqenum_sqlite_affinity")
+                .str_key_get("__sqenum_sqlite_affinity")
                 .and_then(get_string)
                 .unwrap_or_else(|| "TEXT".to_string());
             if let Some(col_sql_name) = sqlite_column_name {
@@ -1263,7 +1285,7 @@ fn column_type_to_sql(col_val: &Value, sqlite_column_name: Option<&str>) -> Stri
     }
     if let Value::Object(type_rc) = &type_val {
         let t = type_rc.borrow();
-        if t.get("__type").and_then(|v| {
+        if t.str_key_get("__type").and_then(|v| {
             if let Value::String(s) = v {
                 Some(s.as_str())
             } else {
@@ -1272,7 +1294,7 @@ fn column_type_to_sql(col_val: &Value, sqlite_column_name: Option<&str>) -> Stri
         }) == Some("str")
         {
             let len = t
-                .get("__length")
+                .str_key_get("__length")
                 .and_then(|v| {
                     if let Value::Number(n) = v {
                         Some(*n as i64)

@@ -4,6 +4,123 @@ use crate::compiler::natives;
 /// Разрешение аргументов функций: именованные -> позиционные, применение значений по умолчанию
 use crate::parser::ast::Arg;
 use crate::parser::ast::Expr;
+use crate::vm::variadic_bind::function_accepts_variadic;
+
+fn clone_call_args(args: &[Arg]) -> Vec<Arg> {
+    args.iter().cloned().collect()
+}
+
+fn has_runtime_spread(args: &[Arg]) -> bool {
+    args.iter()
+        .any(|a| matches!(a, Arg::UnpackArray(_) | Arg::UnpackObject(_)))
+}
+
+/// Compile-time binding for natives with trailing `**kwargs` (no `*` / `**` spread at call site).
+fn resolve_native_varkw_compile(
+    function_name: &str,
+    args: &[Arg],
+    line: usize,
+    file: Option<&str>,
+) -> Result<Vec<Arg>, LangError> {
+    use crate::parser::ast::{Expr, ObjectLiteralKey, ObjectPair};
+    let file_owned = file.map(String::from);
+    let param_names = natives::get_native_function_params(function_name).ok_or_else(|| {
+        LangError::ParseError {
+            message: format!("Unknown native function '{}'", function_name),
+            line,
+            file: file_owned.clone(),
+        }
+    })?;
+
+    let mut positional_exprs: Vec<Expr> = Vec::new();
+    let mut named: std::collections::HashMap<String, Expr> = std::collections::HashMap::new();
+
+    for arg in args {
+        match arg {
+            Arg::Positional(expr) => positional_exprs.push(expr.clone()),
+            Arg::Named { name, value } => {
+                if named.contains_key(name) {
+                    return Err(LangError::ParseError {
+                        message: format!(
+                            "Function '{}' got multiple values for argument '{}'",
+                            function_name, name
+                        ),
+                        line,
+                        file: file_owned.clone(),
+                    });
+                }
+                named.insert(name.clone(), value.clone());
+            }
+            Arg::UnpackArray(_) | Arg::UnpackObject(_) => {
+                return Err(LangError::ParseError {
+                    message: "internal error: spread in native varkw compile resolver".to_string(),
+                    line,
+                    file: file_owned.clone(),
+                });
+            }
+        }
+    }
+
+    let mut resolved: Vec<Option<Expr>> = vec![None; param_names.len()];
+    let mut pos_i = 0usize;
+
+    for (i, pname) in param_names.iter().enumerate() {
+        if let Some(expr) = named.remove(pname) {
+            resolved[i] = Some(expr);
+        } else if pos_i < positional_exprs.len() {
+            resolved[i] = Some(positional_exprs[pos_i].clone());
+            pos_i += 1;
+        }
+    }
+
+    if pos_i < positional_exprs.len() {
+        return Err(LangError::ParseError {
+            message: format!(
+                "Function '{}' takes at most {} positional arguments but {} were provided",
+                function_name,
+                param_names.len(),
+                positional_exprs.len()
+            ),
+            line,
+            file: file_owned.clone(),
+        });
+    }
+
+    let mut kwargs_pairs: Vec<ObjectPair> = named
+        .into_iter()
+        .map(|(k, v)| ObjectPair::KeyValue(ObjectLiteralKey::String(k), v))
+        .collect();
+    kwargs_pairs.sort_by(|a, b| {
+        let key_str = |p: &ObjectPair| -> String {
+            match p {
+                ObjectPair::KeyValue(k, _) => match k {
+                    ObjectLiteralKey::String(s) | ObjectLiteralKey::Ident(s) => s.clone(),
+                    ObjectLiteralKey::Number(n) => n.to_string(),
+                },
+                ObjectPair::KeyValueExpr(_, _) => String::new(),
+                ObjectPair::Spread(_) => String::new(),
+            }
+        };
+        key_str(a).cmp(&key_str(b))
+    });
+
+    let kwargs_expr = Expr::ObjectLiteral {
+        pairs: kwargs_pairs,
+        line,
+    };
+
+    let mut final_args = Vec::with_capacity(param_names.len() + 1);
+    for slot in resolved {
+        final_args.push(Arg::Positional(
+            slot.unwrap_or(Expr::Literal {
+                value: Value::Null,
+                line,
+            }),
+        ));
+    }
+    final_args.push(Arg::Positional(kwargs_expr));
+    Ok(final_args)
+}
 
 /// Разрешает аргументы функции: именованные -> позиционные, применяет значения по умолчанию
 pub fn resolve_function_args(
@@ -24,9 +141,15 @@ pub fn resolve_function_args(
         // Проверяем, есть ли именованные аргументы
         let has_named = args
             .iter()
-            .any(|a| matches!(a, Arg::Named { .. } | Arg::UnpackObject(_)));
+            .any(|a| matches!(a, Arg::Named { .. } | Arg::UnpackObject(_) | Arg::UnpackArray(_)));
 
         if has_named {
+            if let Some(_) = natives::get_native_varkw_param(function_name) {
+                if has_runtime_spread(args) {
+                    return Ok(clone_call_args(args));
+                }
+                return resolve_native_varkw_compile(function_name, args, line, file);
+            }
             // Проверяем, поддерживает ли эта нативная функция именованные аргументы
             let param_names_opt: Option<Vec<String>> =
                 if let Some(override_names) = override_native_param_names {
@@ -59,7 +182,7 @@ pub fn resolve_function_args(
                             resolved[target_position] = Some(Arg::Positional(expr.clone()));
                             positional_count += 1;
                         }
-                        Arg::UnpackObject(expr) => {
+                        Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                             let target_position = start_position + positional_count;
                             if target_position >= param_names.len() {
                                 return Err(LangError::ParseError {
@@ -114,7 +237,7 @@ pub fn resolve_function_args(
                         Some(arg) => match arg {
                             Arg::Positional(expr) => final_args.push(Arg::Positional(expr)),
                             Arg::Named { value, .. } => final_args.push(Arg::Positional(value)),
-                            Arg::UnpackObject(_) => unreachable!(),
+                            Arg::UnpackObject(_) | Arg::UnpackArray(_) => unreachable!(),
                         },
                         None => {
                             final_args.push(Arg::Positional(Expr::Literal {
@@ -181,13 +304,20 @@ pub fn resolve_function_args(
                 .map(|a| match a {
                     Arg::Positional(e) => Arg::Positional(e.clone()),
                     Arg::Named { .. } => unreachable!(),
-                    Arg::UnpackObject(e) => Arg::Positional(e.clone()),
+                    Arg::UnpackObject(e) | Arg::UnpackArray(e) => Arg::Positional(e.clone()),
                 })
                 .collect());
         }
     }
 
     let (_, function) = function_info.unwrap();
+
+    // Variadic definitions and * / ** spread at call site bind at runtime (CallVariadic).
+    // Named args on fixed-arity functions are resolved here (constructors use `Call`, not `CallVariadic`).
+    if function_accepts_variadic(function) || has_runtime_spread(args) {
+        return Ok(clone_call_args(args));
+    }
+
     let param_names = &function.param_names;
     let default_values = &function.default_values;
 
@@ -219,7 +349,7 @@ pub fn resolve_function_args(
                 resolved[positional_count] = Some(Arg::Positional(expr.clone()));
                 positional_count += 1;
             }
-            Arg::UnpackObject(expr) => {
+            Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                 if positional_count >= param_names.len() {
                     return Err(LangError::ParseError {
                         message: format!(
@@ -277,7 +407,7 @@ pub fn resolve_function_args(
                 Arg::Named { value, .. } => {
                     final_args.push(Arg::Positional(value));
                 }
-                Arg::UnpackObject(_) => unreachable!(),
+                Arg::UnpackObject(_) | Arg::UnpackArray(_) => unreachable!(),
             }
         } else {
             // Аргумент не был предоставлен - используем значение по умолчанию

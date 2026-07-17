@@ -103,7 +103,7 @@ pub fn compile_super_method_call(
             match arg {
                 Arg::Positional(arg_expr) => expr::compile_expr(ctx, arg_expr)?,
                 Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                Arg::UnpackObject(expr) => expr::compile_expr(ctx, expr)?,
+                Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => expr::compile_expr(ctx, expr)?,
             }
         }
 

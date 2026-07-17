@@ -1,11 +1,13 @@
 // Recursive Descent Parser
 
 use crate::common::error::LangError;
-use crate::common::value::Value;
+use crate::common::numeric::FloatValue;
+use crate::common::value::{ObjectKind, Value};
 use crate::lexer::{Token, TokenKind};
 use crate::parser::ast::{
-    Arg, BinaryOpKind, ClassVariable, Expr, ImportItem, ImportStmt, IndexExpr, InterpolatedSegment,
-    ObjectPair, Param, Stmt, TypePart, UnpackPattern,
+    Arg, AssignTarget, BinaryOpKind, ClassVariable, Expr, IfBranch, ImportItem, ImportStmt,
+    IndexExpr, InterpolatedSegment, ListComprehensionClause, ObjectLiteralKey, ObjectPair, Param,
+    ParamKind, Stmt, TypePart, UnpackPattern,
 };
 use crate::vm::operator_registry::{
     binding_power, token_kind_to_symbol, OperatorRegistry, SharedOperatorRegistry,
@@ -18,6 +20,8 @@ pub struct Parser {
     tokens: Vec<Token>,
     current: usize,
     source_name: Option<String>,
+    /// Lazily loaded from [`Self::source_name`] for Python `:` indented blocks.
+    source_lines: Option<Vec<String>>,
     operator_registry: SharedOperatorRegistry,
 }
 
@@ -43,8 +47,50 @@ impl Parser {
             tokens,
             current: 0,
             source_name: source_name.map(String::from),
+            source_lines: None,
             operator_registry,
         }
+    }
+
+    fn ensure_source_lines(&mut self) {
+        if self.source_lines.is_some() {
+            return;
+        }
+        if let Some(path) = &self.source_name {
+            if let Ok(text) = std::fs::read_to_string(path) {
+                self.source_lines = Some(text.lines().map(|s| s.to_string()).collect());
+            }
+        }
+    }
+
+    fn source_line_indent(&mut self, line: usize) -> usize {
+        self.ensure_source_lines();
+        self.source_lines
+            .as_ref()
+            .and_then(|lines| lines.get(line.saturating_sub(1)))
+            .map(|l| l.chars().take_while(|c| *c == ' ' || *c == '\t').count())
+            .unwrap_or(0)
+    }
+
+    /// Body after `if`/`while` `:` when the next statement is on a later line (Python-style indent).
+    fn parse_colon_indented_block(&mut self, header_line: usize) -> Result<Vec<Stmt>, LangError> {
+        let header_indent = self.source_line_indent(header_line);
+        let mut body = Vec::new();
+        while !self.is_at_end() && !self.check(TokenKind::RBrace) {
+            let next_indent = self.source_line_indent(self.peek().line);
+            if next_indent <= header_indent {
+                break;
+            }
+            body.push(self.statement()?);
+        }
+        if body.is_empty() {
+            return Err(LangError::ParseError {
+                message: "Expect indented block after ':'".to_string(),
+                line: self.peek().line,
+                file: self.source_name.clone(),
+            });
+        }
+        Ok(body)
     }
 
     pub fn parse(&mut self) -> Result<Vec<Stmt>, LangError> {
@@ -92,9 +138,9 @@ impl Parser {
                 self.consume(TokenKind::Cls, "Expect 'cls' after @Abstract")?;
                 self.class_declaration(true)
             } else {
-                let (is_cached, route) = self.parse_function_decorators_after_at()?;
+                let (is_cached, route, ws_route) = self.parse_function_decorators_after_at()?;
                 self.consume(TokenKind::Fn, "Expect 'fn' after decorators")?;
-                self.function_declaration_body(is_cached, route)
+                self.function_declaration_body(is_cached, route, ws_route)
             }
         } else if self.match_token(TokenKind::Cls) {
             self.class_declaration(false)
@@ -252,7 +298,7 @@ impl Parser {
                 }
             }
             self.consume(TokenKind::Equal, "Expect '=' after variable list")?;
-            let value = self.expression()?;
+            let value = self.parse_unpack_rhs()?;
             // Для let statements с распаковкой создаем UnpackAssign выражение
             // Но нам нужно сохранить это как Stmt::Let с особым значением
             // Пока что создадим временное решение - используем первую переменную как имя
@@ -260,7 +306,7 @@ impl Parser {
             return Ok(Stmt::Let {
                 name: names[0].clone(),
                 value: Expr::UnpackAssign {
-                    names,
+                    targets: names.into_iter().map(AssignTarget::Name).collect(),
                     value: Box::new(value),
                     line: let_line,
                 },
@@ -282,11 +328,12 @@ impl Parser {
     /// Parse function decorators when we have already consumed '@' and current token is the first decorator name.
     fn parse_function_decorators_after_at(
         &mut self,
-    ) -> Result<(bool, Option<(String, String)>), LangError> {
+    ) -> Result<(bool, Option<(String, String)>, Option<String>), LangError> {
         let mut is_cached = false;
         let mut route: Option<(String, String)> = None;
+        let mut ws_route: Option<String> = None;
         loop {
-            if self.match_token(TokenKind::Cache) {
+            if self.match_decorator_cache() {
                 is_cached = true;
             } else if self.check(TokenKind::Identifier) && self.peek().lexeme == "route" {
                 self.advance(); // consume "route"
@@ -310,6 +357,8 @@ impl Parser {
                     })?;
                 self.consume(TokenKind::RParen, "Expect ')' after @route(...)")?;
                 route = Some((method, path));
+            } else if self.check(TokenKind::Identifier) && self.peek().lexeme == "ws_route" {
+                ws_route = Some(self.parse_ws_route_type_arg()?);
             } else {
                 let got = if self.check(TokenKind::Identifier) {
                     self.peek().lexeme.clone()
@@ -317,7 +366,10 @@ impl Parser {
                     "non-identifier".to_string()
                 };
                 return Err(LangError::ParseError {
-                    message: format!("Expect 'cache' or 'route(...)' after '@', got '{}'", got),
+                    message: format!(
+                        "Expect 'cache', 'route(...)' or 'ws_route(...)' after '@', got '{}'",
+                        got
+                    ),
                     line: self.peek().line,
                     file: self.source_name.clone(),
                 });
@@ -326,15 +378,31 @@ impl Parser {
                 break;
             }
         }
-        Ok((is_cached, route))
+        Ok((is_cached, route, ws_route))
+    }
+
+    fn parse_ws_route_type_arg(&mut self) -> Result<String, LangError> {
+        self.advance(); // consume "ws_route"
+        self.consume(TokenKind::LParen, "Expect '(' after @ws_route")?;
+        let type_expr = self.expression()?;
+        let msg_type =
+            Self::expr_to_string(&type_expr).ok_or_else(|| LangError::ParseError {
+                message: "@ws_route argument must be a string literal (e.g. \"execute\")"
+                    .to_string(),
+                line: self.previous().line,
+                file: self.source_name.clone(),
+            })?;
+        self.consume(TokenKind::RParen, "Expect ')' after @ws_route(...)")?;
+        Ok(msg_type)
     }
 
     fn function_declaration(&mut self) -> Result<Stmt, LangError> {
-        // Parse decorators: @cache and/or @route("METHOD", "/path")
+        // Parse decorators: @cache and/or @route("METHOD", "/path") and/or @ws_route("type")
         let mut is_cached = false;
         let mut route: Option<(String, String)> = None;
+        let mut ws_route: Option<String> = None;
         while self.match_token(TokenKind::At) {
-            if self.match_token(TokenKind::Cache) {
+            if self.match_decorator_cache() {
                 is_cached = true;
             } else if self.check(TokenKind::Identifier) && self.peek().lexeme == "route" {
                 self.advance();
@@ -358,6 +426,8 @@ impl Parser {
                     })?;
                 self.consume(TokenKind::RParen, "Expect ')' after @route(...)")?;
                 route = Some((method, path));
+            } else if self.check(TokenKind::Identifier) && self.peek().lexeme == "ws_route" {
+                ws_route = Some(self.parse_ws_route_type_arg()?);
             } else {
                 let dec_name = if self.check(TokenKind::Identifier) {
                     self.peek().lexeme.clone()
@@ -366,7 +436,7 @@ impl Parser {
                 };
                 return Err(LangError::ParseError {
                     message: format!(
-                        "Expect 'cache' or 'route(...)' after '@', got '{}'",
+                        "Expect 'cache', 'route(...)' or 'ws_route(...)' after '@', got '{}'",
                         dec_name
                     ),
                     line: self.peek().line,
@@ -376,15 +446,16 @@ impl Parser {
         }
 
         self.consume(TokenKind::Fn, "Expect 'fn'")?;
-        self.function_declaration_body(is_cached, route)
+        self.function_declaration_body(is_cached, route, ws_route)
     }
 
     /// `stream fn` с теми же декораторами `@cache` / `@route`, что и обычная функция.
     fn stream_function_declaration(&mut self) -> Result<Stmt, LangError> {
         let mut is_cached = false;
         let mut route: Option<(String, String)> = None;
+        let mut ws_route: Option<String> = None;
         while self.match_token(TokenKind::At) {
-            if self.match_token(TokenKind::Cache) {
+            if self.match_decorator_cache() {
                 is_cached = true;
             } else if self.check(TokenKind::Identifier) && self.peek().lexeme == "route" {
                 self.advance();
@@ -408,6 +479,8 @@ impl Parser {
                     })?;
                 self.consume(TokenKind::RParen, "Expect ')' after @route(...)")?;
                 route = Some((method, path));
+            } else if self.check(TokenKind::Identifier) && self.peek().lexeme == "ws_route" {
+                ws_route = Some(self.parse_ws_route_type_arg()?);
             } else {
                 let dec_name = if self.check(TokenKind::Identifier) {
                     self.peek().lexeme.clone()
@@ -416,7 +489,7 @@ impl Parser {
                 };
                 return Err(LangError::ParseError {
                     message: format!(
-                        "Expect 'cache' or 'route(...)' after '@', got '{}'",
+                        "Expect 'cache', 'route(...)' or 'ws_route(...)' after '@', got '{}'",
                         dec_name
                     ),
                     line: self.peek().line,
@@ -427,7 +500,7 @@ impl Parser {
 
         self.consume(TokenKind::Stream, "Expect 'stream'")?;
         self.consume(TokenKind::Fn, "Expect 'fn' after 'stream'")?;
-        self.stream_function_declaration_body(is_cached, route)
+        self.stream_function_declaration_body(is_cached, route, ws_route)
     }
 
     /// Parse stream function name, params, return type and body. Caller must have consumed `stream` and `fn`.
@@ -435,6 +508,7 @@ impl Parser {
         &mut self,
         is_cached: bool,
         route: Option<(String, String)>,
+        ws_route: Option<String>,
     ) -> Result<Stmt, LangError> {
         let fn_line = self.previous().line;
         let name = self
@@ -461,6 +535,7 @@ impl Parser {
             body,
             is_cached,
             route,
+            ws_route,
             line: fn_line,
         })
     }
@@ -470,6 +545,7 @@ impl Parser {
         &mut self,
         is_cached: bool,
         route: Option<(String, String)>,
+        ws_route: Option<String>,
     ) -> Result<Stmt, LangError> {
         let fn_line = self.previous().line;
         let name = self
@@ -497,6 +573,7 @@ impl Parser {
             body,
             is_cached,
             route,
+            ws_route,
             line: fn_line,
         })
     }
@@ -505,6 +582,8 @@ impl Parser {
     fn parse_parameter_list_until_rparen(&mut self) -> Result<Vec<Param>, LangError> {
         let mut params = Vec::new();
         let mut has_default = false;
+        let mut has_var_pos = false;
+        let mut has_var_kw = false;
         if !self.check(TokenKind::RParen) {
             loop {
                 if params.len() >= 255 {
@@ -515,11 +594,70 @@ impl Parser {
                     });
                 }
 
-                let param_name = self
-                    .consume(TokenKind::Identifier, "Expect parameter name")?
-                    .lexeme
-                    .clone();
-                let param_line = self.previous().line;
+                let param_line = self.peek().line;
+
+                // *args или **kwargs
+                let (param_name, kind) = if self.check(TokenKind::StarStar) {
+                    self.advance();
+                    if has_var_kw {
+                        return Err(LangError::ParseError {
+                            message: "Only one **kwargs parameter allowed".to_string(),
+                            line: param_line,
+                            file: self.source_name.clone(),
+                        });
+                    }
+                    if !params.is_empty() && self.check(TokenKind::Comma) {
+                        return Err(LangError::ParseError {
+                            message: "**kwargs must be the last parameter".to_string(),
+                            line: param_line,
+                            file: self.source_name.clone(),
+                        });
+                    }
+                    let name = self
+                        .consume(TokenKind::Identifier, "Expect parameter name after **")?
+                        .lexeme
+                        .clone();
+                    has_var_kw = true;
+                    (name, ParamKind::VariadicKeyword)
+                } else if self.check(TokenKind::Star)
+                    && self.current + 1 < self.tokens.len()
+                    && self.tokens[self.current + 1].kind != TokenKind::Star
+                {
+                    self.advance();
+                    if has_var_pos {
+                        return Err(LangError::ParseError {
+                            message: "Only one *args parameter allowed".to_string(),
+                            line: param_line,
+                            file: self.source_name.clone(),
+                        });
+                    }
+                    if has_var_kw {
+                        return Err(LangError::ParseError {
+                            message: "*args must appear before **kwargs".to_string(),
+                            line: param_line,
+                            file: self.source_name.clone(),
+                        });
+                    }
+                    let name = self
+                        .consume(TokenKind::Identifier, "Expect parameter name after *")?
+                        .lexeme
+                        .clone();
+                    has_var_pos = true;
+                    (name, ParamKind::VariadicPositional)
+                } else {
+                    let name = self
+                        .consume(TokenKind::Identifier, "Expect parameter name")?
+                        .lexeme
+                        .clone();
+                    if has_var_pos || has_var_kw {
+                        return Err(LangError::ParseError {
+                            message: "Regular parameters cannot follow *args or **kwargs".to_string(),
+                            line: param_line,
+                            file: self.source_name.clone(),
+                        });
+                    }
+                    (name, ParamKind::Regular)
+                };
 
                 let type_annotation = if self.match_token(TokenKind::Colon) {
                     Some(self.parse_type_name()?)
@@ -527,13 +665,20 @@ impl Parser {
                     None
                 };
 
-                let default_value = if self.match_token(TokenKind::Equal) {
+                let default_value = if kind == ParamKind::Regular && self.match_token(TokenKind::Equal) {
                     has_default = true;
                     Some(self.expression()?)
                 } else {
-                    if has_default {
+                    if has_default && kind == ParamKind::Regular {
                         return Err(LangError::ParseError {
                             message: "Non-default argument follows default argument".to_string(),
+                            line: param_line,
+                            file: self.source_name.clone(),
+                        });
+                    }
+                    if kind != ParamKind::Regular && self.check(TokenKind::Equal) {
+                        return Err(LangError::ParseError {
+                            message: "*args and **kwargs cannot have default values".to_string(),
                             line: param_line,
                             file: self.source_name.clone(),
                         });
@@ -541,14 +686,30 @@ impl Parser {
                     None
                 };
 
+                if has_default && (kind == ParamKind::VariadicPositional || kind == ParamKind::VariadicKeyword) {
+                    return Err(LangError::ParseError {
+                        message: "Non-default argument follows default argument".to_string(),
+                        line: param_line,
+                        file: self.source_name.clone(),
+                    });
+                }
+
                 params.push(Param {
                     name: param_name,
+                    kind,
                     type_annotation,
                     default_value,
                 });
 
                 if !self.match_token(TokenKind::Comma) {
                     break;
+                }
+                if has_var_kw {
+                    return Err(LangError::ParseError {
+                        message: "**kwargs must be the last parameter".to_string(),
+                        line: self.peek().line,
+                        file: self.source_name.clone(),
+                    });
                 }
             }
         }
@@ -613,7 +774,7 @@ impl Parser {
         let mut protected_variables = Vec::new();
         let mut public_variables = Vec::new();
         let mut constructors = Vec::new();
-        let mut methods = Vec::new();
+        let mut methods: Vec<crate::parser::ast::Method> = Vec::new();
         // Some(true) = public (default), None = private, Some(false) = protected
         let mut current_section_public: Option<bool> = Some(true);
 
@@ -751,6 +912,13 @@ impl Parser {
                 constructors.push(constructor);
             } else if self.check(TokenKind::Fn) {
                 let method = self.parse_method(current_section_public)?;
+                if methods.iter().any(|m| m.name == method.name) {
+                    return Err(LangError::ParseError {
+                        message: format!("Duplicate method `{}` in class", method.name),
+                        line: method.line,
+                        file: self.source_name.clone(),
+                    });
+                }
                 methods.push(method);
             } else {
                 return Err(LangError::ParseError {
@@ -898,6 +1066,7 @@ impl Parser {
 
                 params.push(crate::parser::ast::Param {
                     name: param_name,
+                    kind: ParamKind::Regular,
                     type_annotation,
                     default_value,
                 });
@@ -931,11 +1100,8 @@ impl Parser {
             }
             self.consume(TokenKind::RParen, "Expect ')' after delegate arguments")?;
             self.consume(TokenKind::LBrace, "Expect '{' after delegating constructor")?;
-            self.consume(
-                TokenKind::RBrace,
-                "Expect '}' after delegating constructor body",
-            )?;
-            (Vec::new(), Some(delegate_args))
+            let body = self.block()?;
+            (body, Some(delegate_args))
         } else {
             // Обычный конструктор
             self.consume(TokenKind::LBrace, "Expect '{' before constructor body")?;
@@ -957,10 +1123,23 @@ impl Parser {
         // Парсим: fn methodName(...) -> type? { ... }
         self.consume(TokenKind::Fn, "Expect 'fn'")?;
         let method_line = self.previous().line;
-        let name = self
-            .consume(TokenKind::Identifier, "Expect method name")?
-            .lexeme
-            .clone();
+        let (name, is_special) = if self.match_token(TokenKind::At) {
+            let id = self
+                .consume(TokenKind::Identifier, "Expect special method name after '@'")?;
+            let base = id.lexeme.as_str();
+            if !crate::compiler::special_methods::is_reserved_special_base(base) {
+                return Err(LangError::ParseError {
+                    message: format!("Unknown special method '@{}'", base),
+                    line: id.line,
+                    file: self.source_name.clone(),
+                });
+            }
+            (format!("@{base}"), true)
+        } else {
+            let id = self
+                .consume(TokenKind::Identifier, "Expect method name")?;
+            (id.lexeme.clone(), false)
+        };
         self.consume(TokenKind::LParen, "Expect '(' after method name")?;
 
         let mut params = Vec::new();
@@ -1025,6 +1204,7 @@ impl Parser {
 
                 params.push(crate::parser::ast::Param {
                     name: param_name,
+                    kind: ParamKind::Regular,
                     type_annotation,
                     default_value,
                 });
@@ -1053,6 +1233,7 @@ impl Parser {
             body,
             line: method_line,
             visibility,
+            is_special,
         })
     }
 
@@ -1091,7 +1272,34 @@ impl Parser {
         if self.match_token(TokenKind::RParen) {
             // Были скобки, пропустили закрывающую
         }
-        self.consume(TokenKind::LBrace, "Expect '{' after condition")?;
+
+        // `if <condition>: <statement>` or Python indented block after `:`
+        if self.match_token(TokenKind::Colon) {
+            if self.is_at_end()
+                || self.check(TokenKind::RBrace)
+                || self.check(TokenKind::Semicolon)
+            {
+                return Err(LangError::ParseError {
+                    message: "Expect statement after ':' in if".to_string(),
+                    line: self.peek().line,
+                    file: self.source_name.clone(),
+                });
+            }
+            let colon_line = self.previous().line;
+            let then_branch = if self.peek().line > colon_line {
+                self.parse_colon_indented_block(if_line)?
+            } else {
+                vec![self.statement()?]
+            };
+            return Ok(Stmt::If {
+                condition,
+                then_branch,
+                else_branch: None,
+                line: if_line,
+            });
+        }
+
+        self.consume(TokenKind::LBrace, "Expect '{' or ':' after condition")?;
         let then_branch = self.block()?;
 
         let else_branch = if self.match_token(TokenKind::Else) {
@@ -1125,7 +1333,33 @@ impl Parser {
         if self.match_token(TokenKind::RParen) {
             // Были скобки, пропустили закрывающую
         }
-        self.consume(TokenKind::LBrace, "Expect '{' after condition")?;
+
+        // `while <condition>: <statement>` or Python indented block after `:`
+        if self.match_token(TokenKind::Colon) {
+            if self.is_at_end()
+                || self.check(TokenKind::RBrace)
+                || self.check(TokenKind::Semicolon)
+            {
+                return Err(LangError::ParseError {
+                    message: "Expect statement after ':' in while".to_string(),
+                    line: self.peek().line,
+                    file: self.source_name.clone(),
+                });
+            }
+            let colon_line = self.previous().line;
+            let body = if self.peek().line > colon_line {
+                self.parse_colon_indented_block(while_line)?
+            } else {
+                vec![self.statement()?]
+            };
+            return Ok(Stmt::While {
+                condition,
+                body,
+                line: while_line,
+            });
+        }
+
+        self.consume(TokenKind::LBrace, "Expect '{' or ':' after condition")?;
         let body = self.block()?;
         Ok(Stmt::While {
             condition,
@@ -1142,7 +1376,29 @@ impl Parser {
         let pattern = self.parse_unpack_pattern()?;
         self.consume(TokenKind::In, "Expect 'in' after unpack pattern")?;
         let iterable = self.expression()?;
-        self.consume(TokenKind::LBrace, "Expect '{' before loop body")?;
+
+        // Single-line for: `for <target> in <iterable>: <statement>`
+        if self.match_token(TokenKind::Colon) {
+            if self.is_at_end()
+                || self.check(TokenKind::RBrace)
+                || self.check(TokenKind::Semicolon)
+            {
+                return Err(LangError::ParseError {
+                    message: "Expect statement after ':' in for".to_string(),
+                    line: self.peek().line,
+                    file: self.source_name.clone(),
+                });
+            }
+            let body = vec![self.statement()?];
+            return Ok(Stmt::For {
+                pattern,
+                iterable,
+                body,
+                line: for_line,
+            });
+        }
+
+        self.consume(TokenKind::LBrace, "Expect '{' or ':' before loop body")?;
         let body = self.block()?;
 
         Ok(Stmt::For {
@@ -1169,6 +1425,92 @@ impl Parser {
             // for x, y, z in или for x in (обратная совместимость)
             self.parse_unpack_pattern_list()
         }
+    }
+
+    /// Левая часть распаковки: имя или `arr[i]` (без среза).
+    fn expr_to_assign_target(&self, expr: &Expr) -> Result<AssignTarget, LangError> {
+        match expr {
+            Expr::Variable { name, .. } => Ok(AssignTarget::Name(name.clone())),
+            Expr::ArrayIndex { array, index, line } => {
+                let IndexExpr::Scalar(index_expr) = index else {
+                    return Err(LangError::ParseError {
+                        message: "Slice targets are not supported in unpack assignment".to_string(),
+                        line: *line,
+                        file: self.source_name.clone(),
+                    });
+                };
+                Ok(AssignTarget::Index {
+                    array: array.clone(),
+                    index: index_expr.clone(),
+                })
+            }
+            _ => Err(LangError::ParseError {
+                message: "Invalid unpack assignment target".to_string(),
+                line: expr.line(),
+                file: self.source_name.clone(),
+            }),
+        }
+    }
+
+    /// После первого выражения: `target, target, ... = rhs` (не внутри `(...)`).
+    fn try_parse_unpack_assign_after_first(
+        &mut self,
+        first_expr: &Expr,
+    ) -> Result<Option<Expr>, LangError> {
+        if self.is_inside_parentheses_at(self.current) || !self.check(TokenKind::Comma) {
+            return Ok(None);
+        }
+        let first_target = match self.expr_to_assign_target(first_expr) {
+            Ok(t) => t,
+            Err(_) => return Ok(None),
+        };
+        let saved_position = self.current;
+        self.advance(); // consume comma
+        let mut targets = vec![first_target];
+        loop {
+            let next_expr = self.conditional()?;
+            match self.expr_to_assign_target(&next_expr) {
+                Ok(t) => targets.push(t),
+                Err(_) => {
+                    self.current = saved_position;
+                    return Ok(None);
+                }
+            }
+            if !self.match_token(TokenKind::Comma) {
+                break;
+            }
+        }
+        if !self.check(TokenKind::Equal) {
+            self.current = saved_position;
+            return Ok(None);
+        }
+        let line = first_expr.line();
+        self.consume(TokenKind::Equal, "Expect '=' after unpack target list")?;
+        let value = self.parse_unpack_rhs()?;
+        Ok(Some(Expr::UnpackAssign {
+            targets,
+            value: Box::new(value),
+            line,
+        }))
+    }
+
+    /// RHS of unpack assign: `a, b = 1, 2` → `(1, 2)`; `a, b = f(1, 2)` stays a single call.
+    /// Uses `conditional()` (not `assignment()`) so indexed elements like `a[i], a[j]` are not
+    /// mistaken for nested unpack assignment on the LHS.
+    fn parse_unpack_rhs(&mut self) -> Result<Expr, LangError> {
+        let line = self.peek().line;
+        let first = self.conditional()?;
+        if !self.match_token(TokenKind::Comma) {
+            return Ok(first);
+        }
+        let mut elements = vec![first];
+        loop {
+            elements.push(self.conditional()?);
+            if !self.match_token(TokenKind::Comma) {
+                break;
+            }
+        }
+        Ok(Expr::TupleLiteral { elements, line })
     }
 
     fn parse_unpack_pattern_list(&mut self) -> Result<Vec<UnpackPattern>, LangError> {
@@ -1287,7 +1629,12 @@ impl Parser {
 
     fn return_statement(&mut self) -> Result<Stmt, LangError> {
         let return_line = self.previous().line;
-        let value = if !self.check(TokenKind::Semicolon) && !self.check(TokenKind::RBrace) {
+        // Bare `return` at EOL must not consume the next statement as a return value
+        // (e.g. `if x: return` followed by `y = 1` on the next line).
+        let value = if !self.check(TokenKind::Semicolon)
+            && !self.check(TokenKind::RBrace)
+            && self.peek().line <= return_line
+        {
             // Парсим первое выражение
             let first_expr = self.expression()?;
 
@@ -1326,7 +1673,10 @@ impl Parser {
 
     fn ereturn_statement(&mut self) -> Result<Stmt, LangError> {
         let line = self.previous().line;
-        let value = if !self.check(TokenKind::Semicolon) && !self.check(TokenKind::RBrace) {
+        let value = if !self.check(TokenKind::Semicolon)
+            && !self.check(TokenKind::RBrace)
+            && self.peek().line <= line
+        {
             Some(self.expression()?)
         } else {
             None
@@ -1505,13 +1855,31 @@ impl Parser {
 
     /// Split interpolation content into expression part, optional "=" suffix, and optional ":format" suffix.
     /// E.g. "n=:.0f" → ("n", true, Some(".0f")); "a+b:.2f" → ("a+b", false, Some(".2f")).
+    /// Colons inside `[...]` (slices/subscripts) are not format separators: "path[:5]" stays one expression.
     fn split_interpolation_suffix(content: &str) -> (String, bool, Option<String>) {
         let content = content.trim();
-        let (middle, format_spec) = match content.rfind(':') {
-            Some(colon_pos) => (
-                content[..colon_pos].trim_end(),
-                Some(content[colon_pos + 1..].to_string()),
-            ),
+        let mut bracket_depth: i32 = 0;
+        let mut format_colon: Option<usize> = None;
+        for (i, c) in content.char_indices() {
+            match c {
+                '[' => bracket_depth += 1,
+                ']' if bracket_depth > 0 => bracket_depth -= 1,
+                ':' if bracket_depth == 0 => format_colon = Some(i),
+                _ => {}
+            }
+        }
+        let (middle, format_spec) = match format_colon {
+            Some(colon_pos) => {
+                let spec = content[colon_pos + 1..].trim();
+                if Self::looks_like_format_spec(spec) {
+                    (
+                        content[..colon_pos].trim_end(),
+                        Some(content[colon_pos + 1..].to_string()),
+                    )
+                } else {
+                    (content, None)
+                }
+            }
             None => (content, None),
         };
         let (expr_content, include_name) = if middle.ends_with('=') {
@@ -1520,6 +1888,18 @@ impl Parser {
             (middle.to_string(), false)
         };
         (expr_content, include_name, format_spec)
+    }
+
+    /// True when text after a top-level `:` looks like a printf-style format, not slice syntax.
+    fn looks_like_format_spec(spec: &str) -> bool {
+        let s = spec.trim();
+        if s.is_empty() || s.ends_with(']') {
+            return false;
+        }
+        let first = s.chars().next().unwrap();
+        matches!(first, '.' | ',' | '+' | '#' | '0')
+            || first.is_ascii_digit()
+            || "fdeFgGeExXos%".contains(first)
     }
 
     /// Unescape literal segments: lexer \$ pushes placeholder \u{E000}; we replace it with "$" (the "{" is already in the string)
@@ -1614,93 +1994,130 @@ impl Parser {
         Ok(segments)
     }
 
+    /// If tokens at `start` match `ident (',' ident)+ '='`, returns index of `=`.
+    fn scan_unpack_assign_equal_index(&self, start: usize) -> Option<usize> {
+        if start >= self.tokens.len() || self.tokens[start].kind != TokenKind::Identifier {
+            return None;
+        }
+        let mut i = start + 1;
+        let mut saw_comma = false;
+        while i < self.tokens.len() && self.tokens[i].kind == TokenKind::Comma {
+            saw_comma = true;
+            i += 1;
+            if i >= self.tokens.len() || self.tokens[i].kind != TokenKind::Identifier {
+                return None;
+            }
+            i += 1;
+        }
+        if !saw_comma {
+            return None;
+        }
+        if i >= self.tokens.len() || self.tokens[i].kind != TokenKind::Equal {
+            return None;
+        }
+        Some(i)
+    }
+
+    /// True when `pos` is inside `(...)` of a call or grouping, not at block/statement level
+    /// where bare `a, b = rhs` is unpack assignment.
+    fn is_inside_parentheses_at(&self, pos: usize) -> bool {
+        if pos == 0 {
+            return false;
+        }
+        if !self.tokens[..pos]
+            .iter()
+            .any(|t| matches!(t.kind, TokenKind::LParen | TokenKind::RParen))
+        {
+            return false;
+        }
+
+        let mut paren_count = 0;
+        for i in (0..pos).rev() {
+            match self.tokens[i].kind {
+                TokenKind::Semicolon | TokenKind::LBrace | TokenKind::RBrace | TokenKind::Fn => {
+                    if paren_count == 0 {
+                        break;
+                    }
+                }
+                TokenKind::RParen => paren_count += 1,
+                TokenKind::LParen => {
+                    if paren_count == 0 {
+                        return true;
+                    }
+                    if paren_count > 0 {
+                        paren_count -= 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    /// Build dotted path for property assignment targets (`a.b.c = ...`).
+    fn property_assignment_path(
+        &self,
+        object: &Expr,
+        field: &str,
+        line: usize,
+    ) -> Result<String, LangError> {
+        match object {
+            Expr::Variable { name, .. } => Ok(format!("{}.{}", name, field)),
+            Expr::This { .. } => Ok(format!("this.{}", field)),
+            Expr::Property {
+                object: inner,
+                name: prop,
+                ..
+            } => {
+                let prefix = self.property_assignment_path(inner, prop, line)?;
+                Ok(format!("{}.{}", prefix, field))
+            }
+            _ => Err(LangError::ParseError {
+                message: "Invalid assignment target".to_string(),
+                line,
+                file: self.source_name.clone(),
+            }),
+        }
+    }
+
     fn assignment(&mut self) -> Result<Expr, LangError> {
-        // Проверяем, не является ли это распаковкой кортежа БЕЗ let: x, y = ...
+        // Проверяем, не является ли это распаковкой кортежа БЕЗ let: x, y = ... / x, y, z = ...
         // Это нужно проверить ДО вызова pratt_parse(), чтобы избежать ошибки при парсинге запятой
-        // Используем peek() чтобы не потреблять токен
         if !self.is_at_end() {
             let token0 = self.peek();
             if token0.kind == TokenKind::Identifier {
                 let saved_position = self.current;
-                if saved_position + 3 < self.tokens.len() {
-                    if self.tokens[saved_position + 1].kind == TokenKind::Comma
-                        && self.tokens[saved_position + 2].kind == TokenKind::Identifier
-                        && self.tokens[saved_position + 3].kind == TokenKind::Equal
-                    {
-                        // Проверяем, не находимся ли мы внутри вызова функции (внутри скобок).
-                        // Быстрый путь: без '(' / ')' слева от текущего токена распаковка возможна — полный обратный скан не нужен.
-                        let found_lparen = if saved_position == 0 {
-                            false
-                        } else if !self.tokens[..saved_position]
-                            .iter()
-                            .any(|t| matches!(t.kind, TokenKind::LParen | TokenKind::RParen))
-                        {
-                            false
-                        } else {
-                            let mut paren_count = 0;
-                            let mut found = false;
-                            for i in (0..saved_position).rev() {
-                                match self.tokens[i].kind {
-                                    TokenKind::RParen => paren_count += 1,
-                                    TokenKind::LParen => {
-                                        if paren_count == 0 {
-                                            found = true;
-                                            break;
-                                        }
-                                        if paren_count > 0 {
-                                            paren_count -= 1;
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                            found
-                        };
+                if self.scan_unpack_assign_equal_index(saved_position).is_some() {
+                    if !self.is_inside_parentheses_at(saved_position) {
+                        let line = token0.line;
+                        let mut targets = Vec::new();
 
-                        // Если мы внутри скобок, не проверяем распаковку
-                        if !found_lparen {
-                            // Проверяем, не является ли это именованным аргументом функции
-                            // Именованный аргумент: identifier, identifier = identifier
-                            let is_named_arg = saved_position + 4 < self.tokens.len()
-                                && self.tokens[saved_position + 4].kind == TokenKind::Identifier;
+                        loop {
+                            let name = self
+                                .consume(TokenKind::Identifier, "Expect variable name")?
+                                .lexeme
+                                .clone();
+                            targets.push(AssignTarget::Name(name));
 
-                            if !is_named_arg {
-                                // Это распаковка - обрабатываем ее напрямую
-                                let line = token0.line;
-                                let mut names = Vec::new();
-
-                                // Собираем список переменных
-                                loop {
-                                    let name = self
-                                        .consume(TokenKind::Identifier, "Expect variable name")?
-                                        .lexeme
-                                        .clone();
-                                    names.push(name);
-
-                                    if !self.match_token(TokenKind::Comma) {
-                                        break;
-                                    }
-                                }
-
-                                // Потребляем =
-                                self.consume(TokenKind::Equal, "Expect '=' after variable list")?;
-
-                                // Парсим правую часть
-                                let value = self.assignment()?;
-
-                                return Ok(Expr::UnpackAssign {
-                                    names,
-                                    value: Box::new(value),
-                                    line,
-                                });
+                            if !self.match_token(TokenKind::Comma) {
+                                break;
                             }
                         }
+
+                        self.consume(TokenKind::Equal, "Expect '=' after variable list")?;
+                        let value = self.parse_unpack_rhs()?;
+
+                        return Ok(Expr::UnpackAssign {
+                            targets,
+                            value: Box::new(value),
+                            line,
+                        });
                     }
                 }
             }
         }
 
-        let expr = self.pratt_parse(0)?;
+        let expr = self.conditional()?;
 
         // Проверяем операторы присваивания (+=, -=, *=, /=, //=, %=, **=)
         if self.match_token(TokenKind::PlusEqual)
@@ -1785,152 +2202,9 @@ impl Parser {
             });
         }
 
-        // Проверяем, является ли это распаковкой: a, b, c = ...
-        // Это должно быть обработано ДО проверки на =
-        if let Expr::Variable { name, .. } = &expr {
-            if self.check(TokenKind::Comma) {
-                // Сохраняем позицию для возможного отката
-                let saved_position = self.current;
-
-                // Проверяем, не находимся ли мы внутри вызова функции (внутри скобок)
-                // Если мы внутри скобок, то это не распаковка, а часть списка аргументов
-                // Ищем открывающую скобку перед текущей позицией
-                let mut paren_count = 0;
-                let mut found_lparen = false;
-                for i in (0..saved_position).rev() {
-                    match self.tokens[i].kind {
-                        TokenKind::RParen => {
-                            paren_count += 1;
-                        }
-                        TokenKind::LParen => {
-                            if paren_count == 0 {
-                                // Нашли открывающую скобку - мы внутри скобок
-                                found_lparen = true;
-                                break;
-                            }
-                            if paren_count > 0 {
-                                paren_count -= 1;
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-
-                // Если мы внутри скобок, не проверяем распаковку
-                // Это часть списка аргументов функции или группировки выражений
-                if found_lparen {
-                    return Ok(expr);
-                }
-
-                // Если мы уже проверили, что мы внутри скобок, то дальше проверять не нужно
-                // Но если мы не внутри скобок, проверяем, не является ли это именованным аргументом функции
-                // Паттерн: identifier, identifier = identifier (где после = идет не вызов функции)
-                // Это именованные аргументы функции, а не распаковка
-                // Именованный аргумент: func(x=1, y=2) - после = идет значение (число, строка, идентификатор без скобок)
-                // Распаковка: x, y = swap(x, y) - после = идет вызов функции (идентификатор со скобками)
-                if saved_position + 3 < self.tokens.len() {
-                    let has_identifier_after_comma =
-                        self.tokens[saved_position + 1].kind == TokenKind::Identifier;
-                    let has_equal = self.tokens[saved_position + 2].kind == TokenKind::Equal;
-
-                    if has_identifier_after_comma && has_equal {
-                        // Если после запятой идет идентификатор и =, это может быть именованный аргумент или распаковка
-                        // Проверяем, является ли это именованным аргументом (после = идет значение, не вызов функции)
-                        // Именованный аргумент: после = идет значение без скобок
-                        // Распаковка: после = идет вызов функции (идентификатор со скобками)
-                        if saved_position + 3 < self.tokens.len() {
-                            let after_equal = &self.tokens[saved_position + 3];
-                            // Именованный аргумент внутри вызова: `f(a, b=c)` — здесь `found_lparen` уже true и мы
-                            // вышли выше. На верхнем уровне `a, b = rhs` после `=` не должно путаться с `b=c`:
-                            // если после `=` идёт `ident` и сразу `.`, это начало `obj.method(...)` (распаковка).
-                            let is_named_arg = match after_equal.kind {
-                                TokenKind::Identifier if saved_position + 4 < self.tokens.len() => {
-                                    let next = &self.tokens[saved_position + 4].kind;
-                                    if *next == TokenKind::Dot {
-                                        false
-                                    } else {
-                                        *next != TokenKind::LParen
-                                    }
-                                }
-                                _ => {
-                                    after_equal.kind != TokenKind::Identifier
-                                        || (saved_position + 4 >= self.tokens.len()
-                                            || self.tokens[saved_position + 4].kind
-                                                != TokenKind::LParen)
-                                }
-                            };
-
-                            if is_named_arg {
-                                // Это именованный аргумент функции, не распаковка - просто возвращаем выражение
-                                return Ok(expr);
-                            }
-                        }
-                    }
-                }
-
-                // Это потенциальная распаковка: a, b, c = ...
-                // Упрощенная проверка: если после запятой идет идентификатор, а затем =, то это распаковка
-                // НО только если после = идёт вызов `foo(` или цепочка `obj.method(` (ident затем `(` или `.`).
-                if saved_position + 2 < self.tokens.len() {
-                    let has_identifier_after_comma =
-                        self.tokens[saved_position + 1].kind == TokenKind::Identifier;
-                    let has_equal_after_identifier =
-                        self.tokens[saved_position + 2].kind == TokenKind::Equal;
-
-                    if has_identifier_after_comma && has_equal_after_identifier {
-                        // Проверяем, что после = идет вызов функции (идентификатор со скобками)
-                        // Это отличает распаковку от именованного аргумента
-                        if saved_position + 3 < self.tokens.len() {
-                            let after_equal = &self.tokens[saved_position + 3];
-                            if after_equal.kind == TokenKind::Identifier {
-                                // RHS: вызов `foo(...)` или цепочка `obj.method(...)` (после первого ident — `(` или `.`)
-                                if saved_position + 4 < self.tokens.len() {
-                                    let next_after_lhs = &self.tokens[saved_position + 4].kind;
-                                    if *next_after_lhs == TokenKind::LParen
-                                        || *next_after_lhs == TokenKind::Dot
-                                    {
-                                        // Это распаковка - обрабатываем ее
-                                        let mut names = vec![name.clone()];
-                                        self.advance(); // consume comma
-
-                                        // Собираем список переменных
-                                        loop {
-                                            if self.match_token(TokenKind::Identifier) {
-                                                names.push(self.previous().lexeme.clone());
-                                            } else {
-                                                // Это не распаковка - восстанавливаем позицию
-                                                self.current = saved_position;
-                                                break;
-                                            }
-                                            if !self.match_token(TokenKind::Comma) {
-                                                break;
-                                            }
-                                        }
-
-                                        // Проверяем, что после списка переменных идет =
-                                        if self.check(TokenKind::Equal) {
-                                            // Это действительно распаковка
-                                            self.consume(
-                                                TokenKind::Equal,
-                                                "Expect '=' after variable list",
-                                            )?;
-                                            let value = self.assignment()?;
-                                            return Ok(Expr::UnpackAssign {
-                                                names,
-                                                value: Box::new(value),
-                                                line: expr.line(),
-                                            });
-                                        } else {
-                                            // Это не распаковка - восстанавливаем позицию и возвращаем исходное выражение
-                                            self.current = saved_position;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+        // Распаковка: `a, b = ...` или `a[i], a[j] = ...`
+        if let Some(unpack) = self.try_parse_unpack_assign_after_first(&expr)? {
+            return Ok(unpack);
         }
 
         // Обычное присваивание (=)
@@ -1945,40 +2219,9 @@ impl Parser {
                     line: equal_line,
                 });
             } else if let Expr::Property { object, name, .. } = expr {
-                // Присваивание к свойству объекта: obj.field = value или this.field = value
+                // Присваивание к свойству: obj.field = value, node.prev.next = value, ...
                 let value = self.assignment()?;
-                // Для присваивания к свойству создаем специальное выражение
-                // Используем формат "object.field" для имени, где object может быть "this" или именем переменной
-                let property_path = match &*object {
-                    Expr::Variable { name: var_name, .. } => format!("{}.{}", var_name, name),
-                    Expr::This { .. } => format!("this.{}", name),
-                    Expr::Property {
-                        object,
-                        name: prop_name,
-                        ..
-                    } => {
-                        // Рекурсивно строим путь к свойству
-                        let base = match &**object {
-                            Expr::Variable { name, .. } => name.clone(),
-                            Expr::This { .. } => "this".to_string(),
-                            _ => {
-                                return Err(LangError::ParseError {
-                                    message: "Invalid assignment target".to_string(),
-                                    line: equal_line,
-                                    file: self.source_name.clone(),
-                                })
-                            }
-                        };
-                        format!("{}.{}.{}", base, prop_name, name)
-                    }
-                    _ => {
-                        return Err(LangError::ParseError {
-                            message: "Invalid assignment target".to_string(),
-                            line: equal_line,
-                            file: self.source_name.clone(),
-                        })
-                    }
-                };
+                let property_path = self.property_assignment_path(&*object, &name, equal_line)?;
                 return Ok(Expr::Assign {
                     name: property_path,
                     value: Box::new(value),
@@ -2003,10 +2246,219 @@ impl Parser {
         Ok(expr)
     }
 
+    /// Whether the next tokens are Python `is` / `is not` (identity → `==` / `!=`) with precedence allowed by `min_bp`.
+    fn peek_python_is(&self, min_bp: u8) -> bool {
+        if !(self.check(TokenKind::Identifier) && self.peek().lexeme == "is") {
+            return false;
+        }
+        self.operator_registry
+            .get("==")
+            .map(|info| binding_power(info).0 >= min_bp)
+            .unwrap_or(false)
+    }
+
+    /// Python `x is y` / `x is not y` → `x == y` / `!(x == y)`.
+    fn parse_python_is(&mut self, lhs: Expr) -> Result<Expr, LangError> {
+        let info = self
+            .operator_registry
+            .get("==")
+            .expect("peek_python_is");
+        let (_, r_bp) = binding_power(info);
+        let op_line = self.peek().line;
+        self.advance(); // is
+        let is_not = self.check(TokenKind::Identifier) && self.peek().lexeme == "not";
+        if is_not {
+            self.advance(); // not
+        }
+        let rhs = self.pratt_parse(r_bp)?;
+        let eq = Expr::Binary {
+            left: Box::new(lhs),
+            op: BinaryOpKind::Builtin(TokenKind::EqualEqual),
+            right: Box::new(rhs),
+            line: op_line,
+        };
+        if is_not {
+            Ok(Expr::Unary {
+                op: TokenKind::Bang,
+                right: Box::new(eq),
+                line: op_line,
+            })
+        } else {
+            Ok(eq)
+        }
+    }
+
+    /// True when `not` starts an expression but is not `not in`, a call `not(...)`, or a bare variable `not`.
+    fn looks_like_python_not_keyword(&self) -> bool {
+        if !(self.check(TokenKind::Identifier) && self.peek().lexeme == "not") {
+            return false;
+        }
+        if self.current + 1 >= self.tokens.len() {
+            return false;
+        }
+        let next = &self.tokens[self.current + 1].kind;
+        !matches!(
+            next,
+            TokenKind::In
+                | TokenKind::LParen
+                | TokenKind::LBrace
+                | TokenKind::Colon
+                | TokenKind::RParen
+                | TokenKind::Semicolon
+                | TokenKind::RBrace
+                | TokenKind::Comma
+                | TokenKind::Eof
+        )
+    }
+
+    /// Whether the next tokens are Python `not in` with precedence allowed by `min_bp`.
+    fn peek_python_not_in(&self, min_bp: u8) -> bool {
+        if !(self.check(TokenKind::Identifier) && self.peek().lexeme == "not")
+            || self.current + 1 >= self.tokens.len()
+            || self.tokens[self.current + 1].kind != TokenKind::In
+        {
+            return false;
+        }
+        self.operator_registry
+            .get("in")
+            .map(|info| binding_power(info).0 >= min_bp)
+            .unwrap_or(false)
+    }
+
+    /// Python `x not in y` → `!(x in y)`; caller must have verified [`Self::peek_python_not_in`].
+    fn parse_python_not_in(&mut self, lhs: Expr) -> Result<Expr, LangError> {
+        let info = self
+            .operator_registry
+            .get("in")
+            .expect("peek_python_not_in");
+        let (_, r_bp) = binding_power(info);
+        let op_line = self.peek().line;
+        self.advance(); // not
+        self.advance(); // in
+        let rhs = self.pratt_parse(r_bp)?;
+        Ok(Expr::Unary {
+            op: TokenKind::Bang,
+            right: Box::new(Expr::Binary {
+                left: Box::new(lhs),
+                op: BinaryOpKind::Builtin(TokenKind::In),
+                right: Box::new(rhs),
+                line: op_line,
+            }),
+            line: op_line,
+        })
+    }
+
+    fn is_comparison_binary_op(op: &BinaryOpKind) -> bool {
+        matches!(
+            op,
+            BinaryOpKind::Builtin(
+                TokenKind::Equal
+                    | TokenKind::EqualEqual
+                    | TokenKind::BangEqual
+                    | TokenKind::Less
+                    | TokenKind::Greater
+                    | TokenKind::LessEqual
+                    | TokenKind::GreaterEqual
+            )
+        )
+    }
+
+    /// Python `a < b < c` → `(a < b) and (b < c)`.
+    fn fold_chained_comparisons(
+        parts: Vec<Expr>,
+        ops: Vec<BinaryOpKind>,
+        line: usize,
+    ) -> Expr {
+        let mut acc = Expr::Binary {
+            left: Box::new(parts[0].clone()),
+            op: ops[0].clone(),
+            right: Box::new(parts[1].clone()),
+            line,
+        };
+        for i in 1..ops.len() {
+            let next_cmp = Expr::Binary {
+                left: Box::new(parts[i].clone()),
+                op: ops[i].clone(),
+                right: Box::new(parts[i + 1].clone()),
+                line,
+            };
+            acc = Expr::Binary {
+                left: Box::new(acc),
+                op: BinaryOpKind::Builtin(TokenKind::And),
+                right: Box::new(next_cmp),
+                line,
+            };
+        }
+        acc
+    }
+
+    /// Python-style ternary: `a if cond else b` (right-associative, low precedence).
+    /// C-style ternary: `cond ? a : b` (same precedence, right-associative).
+    /// The `if` in Python form must appear on the same line as the end of `then_expr`.
+    fn conditional(&mut self) -> Result<Expr, LangError> {
+        let mut expr = self.pratt_parse(0)?;
+        if self.match_token(TokenKind::Question) {
+            let line = self.previous().line;
+            let then_branch = self.conditional()?;
+            self.consume(
+                TokenKind::Colon,
+                "Expect ':' after '?' in conditional expression",
+            )?;
+            let else_branch = self.conditional()?;
+            expr = Expr::If {
+                condition: Box::new(expr),
+                then_branch: IfBranch::Expr(Box::new(then_branch)),
+                else_branch: IfBranch::Expr(Box::new(else_branch)),
+                line,
+            };
+        } else if self.check(TokenKind::If) && self.peek().line == self.previous().line {
+            self.advance();
+            let line = self.previous().line;
+            let condition = self.conditional()?;
+            self.consume(
+                TokenKind::Else,
+                "Expect 'else' in conditional expression",
+            )?;
+            let else_branch = self.conditional()?;
+            expr = Expr::If {
+                condition: Box::new(condition),
+                then_branch: IfBranch::Expr(Box::new(expr)),
+                else_branch: IfBranch::Expr(Box::new(else_branch)),
+                line,
+            };
+        }
+        Ok(expr)
+    }
+
+    /// Block if-expression: `if cond { ... } else { ... }` in expression position.
+    fn parse_if_expression(&mut self) -> Result<Expr, LangError> {
+        let line = self.previous().line;
+        let condition = self.conditional()?;
+        self.consume(TokenKind::LBrace, "Expect '{' after condition in if expression")?;
+        let then_branch = self.block()?;
+        self.consume(TokenKind::Else, "Expect 'else' in if expression")?;
+        self.consume(TokenKind::LBrace, "Expect '{' after 'else' in if expression")?;
+        let else_branch = self.block()?;
+        Ok(Expr::If {
+            condition: Box::new(condition),
+            then_branch: IfBranch::Block(then_branch),
+            else_branch: IfBranch::Block(else_branch),
+            line,
+        })
+    }
+
     /// Pratt / precedence climbing using [`OperatorRegistry`] (built-ins + preloaded plugin ops).
     fn pratt_parse(&mut self, min_bp: u8) -> Result<Expr, LangError> {
         let mut lhs = self.unary()?;
         loop {
+            if self.peek_python_is(min_bp) {
+                lhs = self.parse_python_is(lhs)?;
+                continue;
+            }
+            if self.peek_python_not_in(min_bp) {
+                lhs = self.parse_python_not_in(lhs)?;
+                continue;
+            }
             let Some((op_line, op_kind, l_bp, r_bp)) = self.peek_infix_binary_op()? else {
                 break;
             };
@@ -2015,12 +2467,39 @@ impl Parser {
             }
             self.advance();
             let rhs = self.pratt_parse(r_bp)?;
-            lhs = Expr::Binary {
-                left: Box::new(lhs),
-                op: op_kind,
-                right: Box::new(rhs),
-                line: op_line,
-            };
+            if Self::is_comparison_binary_op(&op_kind) {
+                let mut parts = vec![lhs, rhs];
+                let mut ops = vec![op_kind];
+                let mut line = op_line;
+                while let Some((next_line, next_op, next_l_bp, next_r_bp)) =
+                    self.peek_infix_binary_op()?
+                {
+                    if !Self::is_comparison_binary_op(&next_op) || next_l_bp < min_bp {
+                        break;
+                    }
+                    self.advance();
+                    parts.push(self.pratt_parse(next_r_bp)?);
+                    ops.push(next_op);
+                    line = next_line;
+                }
+                lhs = if ops.len() == 1 {
+                    Expr::Binary {
+                        left: Box::new(parts.remove(0)),
+                        op: ops.remove(0),
+                        right: Box::new(parts.remove(0)),
+                        line,
+                    }
+                } else {
+                    Self::fold_chained_comparisons(parts, ops, line)
+                };
+            } else {
+                lhs = Expr::Binary {
+                    left: Box::new(lhs),
+                    op: op_kind,
+                    right: Box::new(rhs),
+                    line: op_line,
+                };
+            }
         }
         Ok(lhs)
     }
@@ -2041,14 +2520,19 @@ impl Parser {
                 let t1 = &self.tokens[self.current + 1];
                 let t2 = &self.tokens[self.current + 2];
                 if (t1.kind == TokenKind::Abstract && t2.kind == TokenKind::Cls)
-                    || (t1.kind == TokenKind::Cache && t2.kind == TokenKind::Fn)
+                    || (t1.kind == TokenKind::Identifier
+                        && t1.lexeme == "cache"
+                        && t2.kind == TokenKind::Fn)
+                    || (t1.kind == TokenKind::Identifier
+                        && t1.lexeme == "ws_route"
+                        && t2.kind == TokenKind::LParen)
                 {
                     return Ok(None);
                 }
             }
             if self.current + 1 < self.tokens.len() {
                 let t1 = &self.tokens[self.current + 1];
-                if t1.kind == TokenKind::Identifier && t1.lexeme == "route" {
+                if t1.kind == TokenKind::Identifier && (t1.lexeme == "route" || t1.lexeme == "ws_route") {
                     return Ok(None);
                 }
             }
@@ -2083,7 +2567,37 @@ impl Parser {
     }
 
     fn unary(&mut self) -> Result<Expr, LangError> {
-        if self.match_token(TokenKind::Bang) || self.match_token(TokenKind::Minus) {
+        if self.looks_like_python_not_keyword() {
+            return Err(LangError::ParseError {
+                message: "Use `!` for logical negation instead of `not` (only `is not` and `not in` support `not`)"
+                    .to_string(),
+                line: self.peek().line,
+                file: self.source_name.clone(),
+            });
+        }
+        // `!` binds looser than `in` so `!x in arr` parses as `!(x in arr)`.
+        // `min_bp` 41 stops before `&&` / `||` (tier 20) but still consumes `in` (tier 40).
+        if self.match_token(TokenKind::Bang) {
+            let op_line = self.previous().line;
+            let op_kind = self.previous().kind.clone();
+            let right = self.pratt_parse(41)?;
+            return Ok(Expr::Unary {
+                op: op_kind,
+                right: Box::new(right),
+                line: op_line,
+            });
+        }
+        if self.match_token(TokenKind::Minus) {
+            let op_line = self.previous().line;
+            let op_kind = self.previous().kind.clone();
+            let right = self.unary()?;
+            return Ok(Expr::Unary {
+                op: op_kind,
+                right: Box::new(right),
+                line: op_line,
+            });
+        }
+        if self.match_token(TokenKind::Tilde) {
             let op_line = self.previous().line;
             let op_kind = self.previous().kind.clone();
             let right = self.unary()?;
@@ -2134,10 +2648,18 @@ impl Parser {
 
             // Обрабатываем доступ к свойствам (точка)
             if self.match_token(TokenKind::Dot) {
-                let name = self
-                    .consume(TokenKind::Identifier, "Expect property name after '.'")?
-                    .lexeme
-                    .clone();
+                let name = if self.match_token(TokenKind::At) {
+                    let ident = self
+                        .consume(TokenKind::Identifier, "Expect special method name after '@'")?
+                        .lexeme
+                        .clone();
+                    format!("@{ident}")
+                } else {
+                    self
+                        .consume(TokenKind::Identifier, "Expect property name after '.'")?
+                        .lexeme
+                        .clone()
+                };
                 let line = self.previous().line;
                 expr = Expr::Property {
                     object: Box::new(expr),
@@ -2157,6 +2679,7 @@ impl Parser {
         let call_line = self.previous().line; // Номер строки открывающей скобки (LParen)
         let mut args = Vec::new();
         let mut has_named = false;
+        let mut has_star_unpack = false;
         if !self.check(TokenKind::RParen) {
             loop {
                 if args.len() >= 255 {
@@ -2167,7 +2690,7 @@ impl Parser {
                     });
                 }
 
-                // Распаковка объекта **expr (kwargs); ** может быть одним токеном или двумя * через пробел/новую строку
+                // Распаковка **expr (kwargs) или *expr (args)
                 let arg = if self.check(TokenKind::StarStar) {
                     self.advance();
                     has_named = true;
@@ -2180,6 +2703,17 @@ impl Parser {
                     self.advance();
                     has_named = true;
                     Arg::UnpackObject(self.expression()?)
+                } else if self.check(TokenKind::Star) {
+                    self.advance();
+                    if has_named {
+                        return Err(LangError::ParseError {
+                            message: "* unpacking must appear before named arguments".to_string(),
+                            line: self.peek().line,
+                            file: self.source_name.clone(),
+                        });
+                    }
+                    has_star_unpack = true;
+                    Arg::UnpackArray(self.expression()?)
                 } else if self.check(TokenKind::Identifier) {
                     // Проверяем, является ли следующий токен '='
                     // Сохраняем текущую позицию
@@ -2212,14 +2746,28 @@ impl Parser {
                                 file: self.source_name.clone(),
                             });
                         }
+                        if has_star_unpack {
+                            return Err(LangError::ParseError {
+                                message: "Positional argument follows * unpacking".to_string(),
+                                line: self.peek().line,
+                                file: self.source_name.clone(),
+                            });
+                        }
                         let expr = self.expression()?;
                         Arg::Positional(expr)
                     }
                 } else {
-                    // Позиционный аргумент (не идентификатор, не **)
+                    // Позиционный аргумент (не идентификатор, не * / **)
                     if has_named {
                         return Err(LangError::ParseError {
                             message: "Positional argument follows named argument".to_string(),
+                            line: self.peek().line,
+                            file: self.source_name.clone(),
+                        });
+                    }
+                    if has_star_unpack {
+                        return Err(LangError::ParseError {
+                            message: "Positional argument follows * unpacking".to_string(),
                             line: self.peek().line,
                             file: self.source_name.clone(),
                         });
@@ -2390,45 +2938,14 @@ impl Parser {
         let index_line = self.previous().line; // Номер строки открывающей скобки (LBracket)
         let index = self.parse_bracket_index_or_slice()?;
 
-        // Распознаём table["col" op value] как TableFilter (только строковый литерал слева)
+        // Распознаём table["col" op value] и составные and/or как TableFilter
         if let IndexExpr::Scalar(inner) = &index {
-            if let Expr::Binary {
-                left,
-                op,
-                right,
-                line,
-            } = inner.as_ref()
-            {
-                let is_comparison = match op {
-                    BinaryOpKind::Builtin(tk) => matches!(
-                        tk,
-                        TokenKind::Equal
-                            | TokenKind::EqualEqual
-                            | TokenKind::BangEqual
-                            | TokenKind::Less
-                            | TokenKind::Greater
-                            | TokenKind::LessEqual
-                            | TokenKind::GreaterEqual
-                    ),
-                    BinaryOpKind::Plugin { .. } => false,
-                };
-                if is_comparison {
-                    if let Expr::Literal {
-                        value: Value::String(column),
-                        ..
-                    } = left.as_ref()
-                    {
-                        if let BinaryOpKind::Builtin(op_tk) = op {
-                            return Ok(Expr::TableFilter {
-                                table: Box::new(array),
-                                column: column.clone(),
-                                op: op_tk.clone(),
-                                value: right.clone(),
-                                line: *line,
-                            });
-                        }
-                    }
-                }
+            if let Some(predicate) = crate::parser::table_filter::try_extract_table_filter_pred(inner) {
+                return Ok(Expr::TableFilter {
+                    table: Box::new(array),
+                    predicate,
+                    line: index_line,
+                });
             }
         }
 
@@ -2440,6 +2957,9 @@ impl Parser {
     }
 
     fn primary(&mut self) -> Result<Expr, LangError> {
+        if self.match_token(TokenKind::If) {
+            return self.parse_if_expression();
+        }
         if self.match_token(TokenKind::False) {
             let line = self.previous().line;
             return Ok(Expr::Literal {
@@ -2458,6 +2978,20 @@ impl Parser {
             let line = self.previous().line;
             return Ok(Expr::Literal {
                 value: Value::Null,
+                line,
+            });
+        }
+        if self.match_token(TokenKind::Inf) {
+            let line = self.previous().line;
+            return Ok(Expr::Literal {
+                value: Value::Float(FloatValue::PosInfinity),
+                line,
+            });
+        }
+        if self.match_token(TokenKind::Nan) {
+            let line = self.previous().line;
+            return Ok(Expr::Literal {
+                value: Value::Float(FloatValue::NaN),
                 line,
             });
         }
@@ -2509,13 +3043,20 @@ impl Parser {
         if self.match_token(TokenKind::Number) {
             let line = self.previous().line;
             let lexeme = self.previous().lexeme.clone();
-            let value = lexeme.parse::<f64>().map_err(|_| LangError::ParseError {
-                message: "Invalid number".to_string(),
-                line,
-                file: self.source_name.clone(),
+            let value = crate::common::numeric::parse_number_lexeme(&lexeme).map_err(|_| {
+                LangError::ParseError {
+                    message: "Invalid number".to_string(),
+                    line,
+                    file: self.source_name.clone(),
+                }
             })?;
+            let lit = if lexeme.contains('.') {
+                Value::Float(FloatValue::Finite(value))
+            } else {
+                Value::Number(value)
+            };
             return Ok(Expr::Literal {
-                value: Value::Number(value),
+                value: lit,
                 line,
             });
         }
@@ -2646,6 +3187,16 @@ impl Parser {
         }
     }
 
+    /// `@cache`: after `@` the word `cache` is lexed as a normal identifier.
+    fn match_decorator_cache(&mut self) -> bool {
+        if self.check(TokenKind::Identifier) && self.peek().lexeme == "cache" {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
     fn check(&self, kind: TokenKind) -> bool {
         if self.is_at_end() {
             false
@@ -2681,17 +3232,89 @@ impl Parser {
         &self.tokens[self.current - 1]
     }
 
+    /// Expression in comprehension `in` / `if` clauses — no Python `a if b else c` ternary.
+    fn parse_comprehension_clause_expr(&mut self) -> Result<Expr, LangError> {
+        self.pratt_parse(0)
+    }
+
+    /// `for` already consumed; parses `pat in iter (for ... | if ...)*`.
+    fn parse_for_in_comprehension_clauses(
+        &mut self,
+        end_kind: TokenKind,
+        end_msg: &str,
+        mid_err: &str,
+    ) -> Result<Vec<ListComprehensionClause>, LangError> {
+        let mut clauses: Vec<ListComprehensionClause> = Vec::new();
+        let pattern = self.parse_unpack_pattern()?;
+        self.consume(
+            TokenKind::In,
+            "Expect 'in' after 'for' pattern in comprehension",
+        )?;
+        let iterable = Box::new(self.parse_comprehension_clause_expr()?);
+        clauses.push(ListComprehensionClause::For { pattern, iterable });
+
+        loop {
+            if self.peek().kind == end_kind {
+                break;
+            }
+            if self.match_token(TokenKind::For) {
+                let pattern = self.parse_unpack_pattern()?;
+                self.consume(
+                    TokenKind::In,
+                    "Expect 'in' after 'for' pattern in comprehension",
+                )?;
+                let iterable = Box::new(self.parse_comprehension_clause_expr()?);
+                clauses.push(ListComprehensionClause::For { pattern, iterable });
+            } else if self.match_token(TokenKind::If) {
+                clauses.push(ListComprehensionClause::If {
+                    condition: Box::new(self.parse_comprehension_clause_expr()?),
+                });
+            } else {
+                let file = self.source_name.clone();
+                return Err(LangError::ParseError {
+                    message: mid_err.to_string(),
+                    line: self.peek().line,
+                    file,
+                });
+            }
+        }
+
+        self.consume(end_kind, end_msg)?;
+        Ok(clauses)
+    }
+
     fn array_literal(&mut self) -> Result<Expr, LangError> {
         let line = self.previous().line;
-        let mut elements = Vec::new();
 
-        if !self.check(TokenKind::RBracket) {
-            loop {
-                elements.push(self.expression()?);
-                if !self.match_token(TokenKind::Comma) {
-                    break;
-                }
+        if self.check(TokenKind::RBracket) {
+            self.consume(TokenKind::RBracket, "Expect ']' after '['")?;
+            return Ok(Expr::ArrayLiteral {
+                elements: Vec::new(),
+                line,
+            });
+        }
+
+        let first = self.expression()?;
+
+        if self.match_token(TokenKind::For) {
+            let clauses = self.parse_for_in_comprehension_clauses(
+                TokenKind::RBracket,
+                "Expect ']' after list comprehension",
+                "Expect ']', 'for', or 'if' in list comprehension",
+            )?;
+            return Ok(Expr::ListComprehension {
+                elt: Box::new(first),
+                clauses,
+                line,
+            });
+        }
+
+        let mut elements = vec![first];
+        while self.match_token(TokenKind::Comma) {
+            if self.check(TokenKind::RBracket) {
+                break;
             }
+            elements.push(self.expression()?);
         }
 
         self.consume(TokenKind::RBracket, "Expect ']' after array elements")?;
@@ -2699,6 +3322,31 @@ impl Parser {
         // Arrays are mutable (push, etc.). Do not fold to Expr::Literal(Value::Array): chunk constant
         // deduplication would reuse one heap id for every `[]` / `[1,2]` site, breaking distinct locals.
         Ok(Expr::ArrayLiteral { elements, line })
+    }
+
+    fn object_pair_from_exprs(
+        key_expr: Expr,
+        value_expr: Expr,
+    ) -> Result<ObjectPair, LangError> {
+        use crate::common::value::Value;
+        match key_expr {
+            Expr::Variable { .. } => Ok(ObjectPair::KeyValueExpr(
+                Box::new(key_expr),
+                Box::new(value_expr),
+            )),
+            Expr::Literal {
+                value: Value::Number(n),
+                ..
+            } => Ok(ObjectPair::KeyValue(ObjectLiteralKey::Number(n), value_expr)),
+            Expr::Literal {
+                value: Value::String(s),
+                ..
+            } => Ok(ObjectPair::KeyValue(ObjectLiteralKey::String(s), value_expr)),
+            other => Ok(ObjectPair::KeyValueExpr(
+                Box::new(other),
+                Box::new(value_expr),
+            )),
+        }
     }
 
     fn object_literal(&mut self) -> Result<Expr, LangError> {
@@ -2719,23 +3367,114 @@ impl Parser {
                     self.advance();
                     let value = self.expression()?;
                     pairs.push(ObjectPair::Spread(value));
-                } else if self.check(TokenKind::Identifier)
-                    && self.current + 1 < self.tokens.len()
-                    && (self.check_next(TokenKind::Colon) || self.check_next(TokenKind::Equal))
-                {
-                    let key = self.advance().lexeme.clone();
-                    self.advance(); // consume ':' or '='
-                    let value = self.expression()?;
-                    pairs.push(ObjectPair::KeyValue(key, value));
                 } else {
-                    let key_token =
-                        self.consume(TokenKind::String, "Expect string key in object literal")?;
-                    let key = Self::string_lexeme_inner(&key_token.lexeme);
-                    self.consume(TokenKind::Colon, "Expect ':' after key in object literal")?;
-                    let value = self.expression()?;
-                    pairs.push(ObjectPair::KeyValue(key, value));
+                    let key_expr = self.expression()?;
+                    // Python set literal: `{ a }` or `{ a, b, ... }` (no `:` / `=` before `,` or `}`).
+                    if self.check(TokenKind::Comma) || self.check(TokenKind::RBrace) {
+                        if !pairs.is_empty() {
+                            let file = self.source_name.clone();
+                            return Err(LangError::ParseError {
+                                message: "Set literal must be the only content of `{ }` (cannot mix with spreads or other keys)".to_string(),
+                                line,
+                                file,
+                            });
+                        }
+                        let mut elements = vec![key_expr];
+                        while self.match_token(TokenKind::Comma) {
+                            if self.check(TokenKind::RBrace) {
+                                break;
+                            }
+                            elements.push(self.expression()?);
+                        }
+                        self.consume(TokenKind::RBrace, "Expect '}' after set literal")?;
+                        return Ok(Expr::Call {
+                            name: "set".to_string(),
+                            args: vec![Arg::Positional(Expr::ArrayLiteral { elements, line })],
+                            line,
+                        });
+                    }
+                    // Python set comprehension: `{ elt for pat in iter }` (no `:` before `for`).
+                    if self.match_token(TokenKind::For) {
+                        if !pairs.is_empty() {
+                            let file = self.source_name.clone();
+                            return Err(LangError::ParseError {
+                                message: "Set comprehension must be the only content of `{ }` (cannot mix with spreads or other keys)".to_string(),
+                                line,
+                                file,
+                            });
+                        }
+                        let clauses = self.parse_for_in_comprehension_clauses(
+                            TokenKind::RBrace,
+                            "Expect '}' after set comprehension",
+                            "Expect '}', 'for', or 'if' in set comprehension",
+                        )?;
+                        return Ok(Expr::Call {
+                            name: "set".to_string(),
+                            args: vec![Arg::Positional(Expr::ListComprehension {
+                                elt: Box::new(key_expr),
+                                clauses,
+                                line,
+                            })],
+                            line,
+                        });
+                    }
+                    let used_eq = if self.match_token(TokenKind::Equal) {
+                        true
+                    } else {
+                        self.consume(
+                            TokenKind::Colon,
+                            "Expect ':' in dict comprehension or after object key (use ':' before 'for')",
+                        )?;
+                        false
+                    };
+                    let value_expr = self.expression()?;
+
+                    if !used_eq && self.match_token(TokenKind::For) {
+                        if !pairs.is_empty() {
+                            let file = self.source_name.clone();
+                            return Err(LangError::ParseError {
+                                message: "Dict comprehension must be the only content of `{ }` (cannot mix with spreads or other keys)".to_string(),
+                                line,
+                                file,
+                            });
+                        }
+                        let loop_var = self
+                            .consume(
+                                TokenKind::Identifier,
+                                "Expect identifier after 'for' in dict comprehension",
+                            )?
+                            .lexeme
+                            .clone();
+                        self.consume(
+                            TokenKind::In,
+                            "Expect 'in' after loop variable in dict comprehension",
+                        )?;
+                        let iterable = Box::new(self.parse_comprehension_clause_expr()?);
+                        let condition = if self.match_token(TokenKind::If) {
+                            Some(Box::new(self.parse_comprehension_clause_expr()?))
+                        } else {
+                            None
+                        };
+                        self.consume(
+                            TokenKind::RBrace,
+                            "Expect '}' after dict comprehension",
+                        )?;
+                        return Ok(Expr::DictComprehension {
+                            key_expr: Box::new(key_expr),
+                            value_expr: Box::new(value_expr),
+                            loop_var,
+                            iterable,
+                            condition,
+                            line,
+                        });
+                    }
+
+                    pairs.push(Self::object_pair_from_exprs(key_expr, value_expr)?);
                 }
                 if !self.match_token(TokenKind::Comma) {
+                    break;
+                }
+                if self.check(TokenKind::RBrace) {
                     break;
                 }
             }
@@ -2748,24 +3487,39 @@ impl Parser {
             return Ok(Expr::ObjectLiteral { pairs, line });
         }
         let mut all_literals = true;
-        let mut object_map = std::collections::HashMap::new();
+        let mut all_string_keys = true;
         for p in &pairs {
             match p {
-                ObjectPair::KeyValue(key, expr) => match expr {
-                    Expr::Literal { value, .. } => {
-                        object_map.insert(key.clone(), value.clone());
+                ObjectPair::KeyValue(key, expr) => {
+                    if matches!(key, ObjectLiteralKey::Number(_)) {
+                        all_string_keys = false;
                     }
-                    _ => {
+                    if !matches!(expr, Expr::Literal { .. }) {
                         all_literals = false;
                         break;
                     }
-                },
+                }
+                ObjectPair::KeyValueExpr(_, _) => {
+                    all_literals = false;
+                    all_string_keys = false;
+                    break;
+                }
                 ObjectPair::Spread(_) => {}
             }
         }
-        if all_literals {
+        if all_literals && all_string_keys {
+            let mut object_map = std::collections::HashMap::new();
+            for p in &pairs {
+                if let ObjectPair::KeyValue(key, Expr::Literal { value, .. }) = p {
+                    let sk = match key {
+                        ObjectLiteralKey::Ident(s) | ObjectLiteralKey::String(s) => s.clone(),
+                        ObjectLiteralKey::Number(_) => unreachable!(),
+                    };
+                    object_map.insert(sk, value.clone());
+                }
+            }
             Ok(Expr::Literal {
-                value: Value::Object(Rc::new(RefCell::new(object_map))),
+                value: Value::Object(Rc::new(RefCell::new(ObjectKind::Legacy(object_map)))),
                 line,
             })
         } else {
@@ -2773,73 +3527,82 @@ impl Parser {
         }
     }
 
-    /// Форматирует компоненты типа в строку для подстрочного аргумента (str | dev -> "str | dev").
-    fn format_type_parts_for_subscript(parts: &[TypePart]) -> String {
-        parts
-            .iter()
-            .map(|p| match p {
-                TypePart::TypeName(s) => s.clone(),
-                TypePart::LiteralStr(s) => s.clone(),
-            })
-            .collect::<Vec<_>>()
-            .join(" | ")
+    /// Одна альтернатива типа после `|` в аннотации (null, литерал, скобочная группа, либо `ident` с опциональным `[...]`).
+    fn parse_type_atom_union_branch(&mut self) -> Result<TypePart, LangError> {
+        if self.match_token(TokenKind::LParen) {
+            return self.parse_type_paren_union();
+        }
+        self.parse_type_leaf_plain()
     }
 
-    /// Парсит один тип - идентификатор, null, строковый литерал, или с подстрочным аргументом (Column[date], str[50])
-    fn parse_single_type(&mut self) -> Result<TypePart, LangError> {
+    /// `(a | b | c)` внутри аннотации — возвращает `Union` если альтернатив больше одной.
+    fn parse_type_paren_union(&mut self) -> Result<TypePart, LangError> {
+        let mut parts = Vec::new();
+        parts.push(self.parse_type_atom_union_branch()?);
+        while self.match_token(TokenKind::Pipe) {
+            parts.push(self.parse_type_atom_union_branch()?);
+        }
+        self.consume(TokenKind::RParen, "Expect ')' after type group")?;
+        Ok(if parts.len() == 1 {
+            parts.pop().expect("one element")
+        } else {
+            TypePart::Union(parts)
+        })
+    }
+
+    /// null, строковый литерал типа или `identifier` без ведущей `(`; для `[` — число (`str[N]`) либо generic-аргументы.
+    fn parse_type_leaf_plain(&mut self) -> Result<TypePart, LangError> {
         if self.check(TokenKind::Null) {
             self.advance();
-            Ok(TypePart::TypeName("null".to_string()))
-        } else if self.check(TokenKind::String) {
+            return Ok(TypePart::TypeName("null".to_string()));
+        }
+        if self.check(TokenKind::String) {
             let tok = self.advance();
             let inner = Self::string_lexeme_inner(&tok.lexeme);
-            Ok(TypePart::LiteralStr(inner))
-        } else if self.check(TokenKind::Identifier) {
-            let base = self
-                .consume(TokenKind::Identifier, "Expect type name")?
-                .lexeme
-                .clone();
-            if self.match_token(TokenKind::LBracket) {
-                let inner = if self.check(TokenKind::Number) {
-                    self.consume(TokenKind::Number, "Expect number in type subscript")?
-                        .lexeme
-                        .clone()
-                } else {
-                    let inner_types = self.parse_type_name()?;
-                    Self::format_type_parts_for_subscript(&inner_types)
-                };
-                self.consume(TokenKind::RBracket, "Expect ']' after type parameter")?;
-                Ok(TypePart::TypeName(format!("{}[{}]", base, inner)))
-            } else {
-                Ok(TypePart::TypeName(base))
-            }
-        } else {
-            Err(LangError::ParseError {
-                message: "Expect type name (identifier, 'null', or string literal)".to_string(),
-                line: self.peek().line,
-                file: self.source_name.clone(),
-            })
+            return Ok(TypePart::LiteralStr(inner));
         }
+        let base = self
+            .consume(TokenKind::Identifier, "Expect type name")?
+            .lexeme
+            .clone();
+        if self.match_token(TokenKind::LBracket) {
+            if self.check(TokenKind::Number) {
+                let len = self
+                    .consume(TokenKind::Number, "Expect number in type subscript")?
+                    .lexeme
+                    .clone();
+                self.consume(TokenKind::RBracket, "Expect ']' after type parameter")?;
+                return Ok(TypePart::TypeName(format!("{}[{}]", base, len)));
+            }
+            let mut args = Vec::new();
+            args.push(self.parse_type_atom_union_branch()?);
+            while self.match_token(TokenKind::Comma) {
+                args.push(self.parse_type_atom_union_branch()?);
+            }
+            self.consume(TokenKind::RBracket, "Expect ']' after type arguments")?;
+            return Ok(TypePart::Generic { base, args });
+        }
+        Ok(TypePart::TypeName(base))
     }
 
-    /// Парсит union типы - может быть один тип или несколько через |
-    /// Опционально: скобки ( ... ) для группировки; массив [ "a", "b" ] — union литералов через запятую.
+    /// Парсит union типы для параметров/полей/`->`; верхний уровень: `alt | alt`; литералы `["a","b"]`; скобочная группировка `(a | b)`.
     fn parse_type_name(&mut self) -> Result<Vec<TypePart>, LangError> {
         // Массив литералов: ["dev", "prod"] — union перечисленных значений
         if self.match_token(TokenKind::LBracket) {
             let mut types = Vec::new();
-            types.push(self.parse_single_type()?);
+            types.push(self.parse_type_leaf_plain()?);
             while self.match_token(TokenKind::Comma) {
-                types.push(self.parse_single_type()?);
+                types.push(self.parse_type_leaf_plain()?);
             }
             self.consume(TokenKind::RBracket, "Expect ']' after array type")?;
             return Ok(types);
         }
+
         let had_paren = self.match_token(TokenKind::LParen);
         let mut types = Vec::new();
-        types.push(self.parse_single_type()?);
+        types.push(self.parse_type_atom_union_branch()?);
         while self.match_token(TokenKind::Pipe) {
-            types.push(self.parse_single_type()?);
+            types.push(self.parse_type_atom_union_branch()?);
         }
         if had_paren {
             self.consume(TokenKind::RParen, "Expect ')' after type")?;

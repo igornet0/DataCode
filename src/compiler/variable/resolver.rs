@@ -6,6 +6,40 @@ use crate::compiler::context::CompilationContext;
 pub struct VariableResolver;
 
 impl VariableResolver {
+    /// True when `name` was declared with `global` at module/script top level.
+    pub fn is_explicit_global(ctx: &CompilationContext, name: &str) -> bool {
+        ctx.scope.explicit_globals.contains(name)
+    }
+
+    /// Emit `StoreGlobal` for a module-level explicit global from inside a function body.
+    /// When `reload` is true, also leaves the stored value on the stack (`Assign` semantics).
+    pub fn try_store_explicit_global(
+        ctx: &mut CompilationContext,
+        name: &str,
+        line: usize,
+        reload: bool,
+    ) -> bool {
+        if !Self::is_explicit_global(ctx, name) {
+            return false;
+        }
+        let Some(&global_index) = ctx.scope.globals.get(name) else {
+            return false;
+        };
+        ctx.chunk
+            .global_names
+            .insert(global_index, name.to_string());
+        ctx.chunk
+            .explicit_global_names
+            .insert(global_index, name.to_string());
+        ctx.chunk
+            .write_with_line(OpCode::StoreGlobal(global_index), line);
+        if reload {
+            ctx.chunk
+                .write_with_line(OpCode::LoadGlobal(global_index), line);
+        }
+        true
+    }
+
     /// Разрешает переменную для присваивания и сохраняет значение
     pub fn resolve_and_store(
         ctx: &mut CompilationContext,
@@ -28,6 +62,7 @@ impl VariableResolver {
             ctx.chunk
                 .explicit_global_names
                 .insert(global_index, name.to_string());
+            ctx.scope.explicit_globals.insert(name.to_string());
             ctx.chunk
                 .write_with_line(OpCode::StoreGlobal(global_index), line);
         } else {
@@ -35,9 +70,13 @@ impl VariableResolver {
             if let Some(local_index) = ctx.scope.resolve_local(name) {
                 ctx.chunk
                     .write_with_line(OpCode::StoreLocal(local_index), line);
+            } else if ctx.current_function.is_some()
+                && Self::try_store_explicit_global(ctx, name, line, false)
+            {
+                // module-level `global` binding updated from a function
             } else if ctx.current_function.is_some() {
                 // Мы находимся внутри функции - объявляем новую локальную переменную
-                let index = ctx.scope.declare_local(name);
+                let index = ctx.declare_local_for_binding(name);
                 ctx.chunk.write_with_line(OpCode::StoreLocal(index), line);
             } else {
                 // Переменная не найдена локально - проверяем, является ли она глобальной
@@ -74,6 +113,11 @@ impl VariableResolver {
             ctx.chunk
                 .global_names
                 .insert(global_index, name.to_string());
+            if Self::is_explicit_global(ctx, name) {
+                ctx.chunk
+                    .explicit_global_names
+                    .insert(global_index, name.to_string());
+            }
             ctx.chunk
                 .write_with_line(OpCode::LoadGlobal(global_index), line);
         } else {
@@ -102,8 +146,18 @@ impl VariableResolver {
                 .write_with_line(OpCode::LoadLocal(local_index), line);
             Ok(true)
         } else if ctx.current_function.is_some() {
+            if Self::is_explicit_global(ctx, name) {
+                if let Some(&global_index) = ctx.scope.globals.get(name) {
+                    ctx.chunk
+                        .global_names
+                        .insert(global_index, name.to_string());
+                    ctx.chunk
+                        .write_with_line(OpCode::LoadGlobal(global_index), line);
+                    return Ok(false);
+                }
+            }
             // Мы находимся внутри функции - создаем локальную переменную
-            let index = ctx.scope.declare_local(name);
+            let index = ctx.declare_local_for_binding(name);
             // Загружаем 0 как начальное значение
             let zero_index = ctx
                 .chunk

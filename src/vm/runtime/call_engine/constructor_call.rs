@@ -45,7 +45,7 @@ pub(crate) fn set_constructing_class_for_call(
                 let v = load_value(id, value_store, heavy_store);
                 if let Value::Object(rc) = &v {
                     let o = rc.borrow();
-                    if let Some(Value::String(s)) = o.get("__superclass") {
+                    if let Some(Value::String(s)) = o.str_key_get("__superclass") {
                         return Some(s.clone());
                     }
                 }
@@ -75,7 +75,7 @@ pub(crate) fn set_constructing_class_for_call(
                 let v = load_value(id, value_store, heavy_store);
                 if let Value::Object(rc) = &v {
                     let o = rc.borrow();
-                    if matches!(o.get("__class_name"), Some(Value::String(s)) if s.as_str() == class_name) {
+                    if matches!(o.str_key_get("__class_name"), Some(Value::String(s)) if s.as_str() == class_name) {
                         return Some(v.clone());
                     }
                 }
@@ -87,7 +87,7 @@ pub(crate) fn set_constructing_class_for_call(
                 let v = load_value(id, value_store, heavy_store);
                 if let Value::Object(rc) = &v {
                     let o = rc.borrow();
-                    if matches!(o.get("__class_name"), Some(Value::String(s)) if s.as_str() == class_name) {
+                    if matches!(o.str_key_get("__class_name"), Some(Value::String(s)) if s.as_str() == class_name) {
                         return Some(v.clone());
                     }
                 }
@@ -99,8 +99,8 @@ pub(crate) fn set_constructing_class_for_call(
                 if let Some(v) = rc.borrow().get_export(class_name) {
                     if let Value::Object(obj_rc) = &v {
                         let o = obj_rc.borrow();
-                        let name_ok = matches!(o.get("__class_name"), Some(Value::String(s)) if s.as_str() == class_name)
-                            || o.contains_key("new_0") || o.contains_key("new_1");
+                        let name_ok = matches!(o.str_key_get("__class_name"), Some(Value::String(s)) if s.as_str() == class_name)
+                            || o.str_key_contains("new_0") || o.str_key_contains("new_1");
                         if name_ok {
                             return Some(v.clone());
                         }
@@ -140,9 +140,9 @@ pub(crate) fn set_constructing_class_for_call(
             let v = load_value(id, value_store, heavy_store);
             if let Value::Object(rc) = &v {
                 let o = rc.borrow();
-                if o.contains_key("new_0")
-                    || o.contains_key("new_1")
-                    || o.get("__class_name").is_some()
+                if o.str_key_contains("new_0")
+                    || o.str_key_contains("new_1")
+                    || o.str_key_get("__class_name").is_some()
                 {
                     return Some(v.clone());
                 }

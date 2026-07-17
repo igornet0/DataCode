@@ -67,6 +67,8 @@ const BUILTIN_END: usize = crate::vm::globals::BUILTIN_GLOBAL_COUNT;
 pub struct Vm {
     /// Stack of TaggedValues (immediates + heap refs; no store lookup for numbers in hot path)
     stack: Vec<TaggedValue>,
+    /// Logical stack top (watermark); slots in `stack[stack_sp..]` are dead until truncate.
+    pub(crate) stack_sp: usize,
     frames: Vec<CallFrame>,
     /// Builtin globals (indices 0..BUILTIN_END). Shared by all modules.
     builtins: Vec<GlobalSlot>,
@@ -147,6 +149,8 @@ pub struct Vm {
     pub(crate) yield_await_resume_value: Option<Value>,
     /// Перед `Explicit`: RHS yield-await — возвращается из `send()`, сам следующий `Yield` идёт в `pending_deferred_yield`.
     pub(crate) pending_send_rhs_return: Option<Value>,
+    /// CPU/GPU compute runtime (`system.process` device selection and numeric kernels).
+    compute: crate::compute::runtime::ComputeRuntime,
 }
 
 /// Preallocated capacities for hot-path Vecs to reduce resize in loop-heavy runs.
@@ -184,6 +188,7 @@ impl Vm {
     pub fn new() -> Self {
         let mut vm = Self {
             stack: Vec::with_capacity(DEFAULT_STACK_CAPACITY),
+            stack_sp: 0,
             frames: Vec::with_capacity(DEFAULT_FRAMES_CAPACITY),
             builtins: Vec::with_capacity(BUILTIN_END),
             globals: Vec::with_capacity(DEFAULT_GLOBALS_CAPACITY),
@@ -230,6 +235,7 @@ impl Vm {
             pending_generator_send: None,
             yield_await_resume_value: None,
             pending_send_rhs_return: None,
+            compute: crate::compute::runtime::ComputeRuntime::new(),
         };
         vm.register_natives();
         vm
@@ -240,6 +246,7 @@ impl Vm {
     pub(crate) fn new_child(parent: &Self) -> Self {
         let mut vm = Self {
             stack: Vec::with_capacity(DEFAULT_STACK_CAPACITY),
+            stack_sp: 0,
             frames: Vec::with_capacity(DEFAULT_FRAMES_CAPACITY),
             builtins: Vec::with_capacity(BUILTIN_END),
             globals: Vec::with_capacity(DEFAULT_GLOBALS_CAPACITY),
@@ -286,12 +293,21 @@ impl Vm {
             pending_generator_send: None,
             yield_await_resume_value: None,
             pending_send_rhs_return: None,
+            compute: crate::compute::runtime::ComputeRuntime::new(),
         };
         vm.register_natives();
         vm
     }
 
-    /// Stores the operator registry used for parsing this run (enables `debug.operators()`).
+    pub fn compute(&self) -> &crate::compute::runtime::ComputeRuntime {
+        &self.compute
+    }
+
+    pub fn compute_mut(&mut self) -> &mut crate::compute::runtime::ComputeRuntime {
+        &mut self.compute
+    }
+
+    /// Creates a child VM that shares module_cache
     pub fn set_operator_registry_snapshot(
         &mut self,
         snapshot: Option<Arc<crate::vm::operator_registry::OperatorRegistry>>,
@@ -471,8 +487,35 @@ impl Vm {
         }
     }
 
+    /// Recycle heap-pair ids from dead stack slots (`deferred_stack_gc` feature only).
+    pub(crate) fn sweep_dead_stack(&mut self, stack: &[TaggedValue], old_sp: usize, new_sp: usize) {
+        crate::vm::memory::sweep_before_truncate(
+            stack,
+            old_sp,
+            new_sp,
+            &self.frames,
+            &mut self.value_store,
+        );
+    }
+
+    /// Clear stack storage and watermark before a new script run.
+    pub(crate) fn reset_execution_stack(&mut self) {
+        self.stack.clear();
+        self.stack_sp = 0;
+        self.frames.clear();
+        self.exception_handlers.clear();
+    }
+
     pub(crate) fn stack_len(&self) -> usize {
-        self.stack.len()
+        self.stack_sp
+    }
+
+    pub(crate) fn stack_sp(&self) -> usize {
+        self.stack_sp
+    }
+
+    pub(crate) fn stack_sp_mut(&mut self) -> &mut usize {
+        &mut self.stack_sp
     }
 
     /// Снять верхний фрейм после yield в stream fn (состояние копируется в [`GeneratorState`]).
@@ -481,10 +524,14 @@ impl Vm {
     }
 
     pub(crate) fn stack_is_empty(&self) -> bool {
-        self.stack.is_empty()
+        self.stack_sp == 0
     }
     pub(crate) fn stack_pop(&mut self) -> Option<TaggedValue> {
-        self.stack.pop()
+        if self.stack_sp == 0 {
+            return None;
+        }
+        self.stack_sp -= 1;
+        Some(self.stack[self.stack_sp])
     }
 
     /// Mutable borrow of the runtime module cache (canonical path -> CachedModule). Used by file_import.
@@ -758,6 +805,38 @@ impl Vm {
             &mut self.value_store,
             &mut self.heavy_store,
         )?;
+        modules::register_module(
+            "heapq",
+            &mut self.natives,
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+            &mut self.heavy_store,
+        )?;
+        modules::register_module(
+            "pathfind",
+            &mut self.natives,
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+            &mut self.heavy_store,
+        )?;
+        modules::register_module(
+            "grid",
+            &mut self.natives,
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+            &mut self.heavy_store,
+        )?;
+        modules::register_module(
+            "websocket",
+            &mut self.natives,
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+            &mut self.heavy_store,
+        )?;
         // So `import plot` / `ensure_module_loaded` does not call register_module again and shift natives.len(),
         // which would desync ml native indices (builtin_count) from abi_natives indexing.
         for name in modules::BUILTIN_MODULE_NAMES {
@@ -868,6 +947,12 @@ impl Vm {
     }
 
     /// ValueStore and HeavyStore for materializing Value from ValueId (e.g. at native boundaries)
+    /// Number of allocated cells in the main store + arenas (diagnostics / regression tests).
+    #[inline]
+    pub fn value_store_len(&self) -> usize {
+        self.value_store.len()
+    }
+
     pub fn value_store(&self) -> &ValueStore {
         &self.value_store
     }
@@ -880,6 +965,20 @@ impl Vm {
     pub fn heavy_store_mut(&mut self) -> &mut HeavyStore {
         &mut self.heavy_store
     }
+
+    /// `[class_name, parent, …]` for a class instance (used by isinstance and param type checks).
+    pub(crate) fn superclass_chain_for_instance_value(&mut self, value: &Value) -> Option<Vec<String>> {
+        let cn = crate::vm::type_compat::instance_class_name(value)?;
+        let global_names = self.global_names.clone();
+        Some(crate::vm::global_utils::get_superclass_chain(
+            &mut self.globals,
+            &global_names,
+            &cn,
+            &mut self.value_store,
+            &self.heavy_store,
+        ))
+    }
+
     /// Call a function with both stores mutably (avoids double mutable borrow).
     pub fn with_stores_mut<F, R>(&mut self, f: F) -> R
     where
@@ -898,6 +997,66 @@ impl Vm {
     /// Take pending primary keys pushed by primary_key() native (VM-owned storage; replaces thread-local take_primary_keys).
     pub fn take_pending_primary_keys(&mut self) -> Vec<(Rc<RefCell<Table>>, String)> {
         std::mem::take(&mut self.pending_primary_keys)
+    }
+
+    /// Переносит `relate()` / `primary_key()` из pending в explicit_relations / explicit_primary_keys.
+    pub fn flush_pending_schema_metadata(&mut self) {
+        use crate::vm::store_convert::load_value;
+        let relations = self.take_pending_relations();
+        let names = if self.explicit_global_names.is_empty() {
+            self.global_names.clone()
+        } else {
+            self.explicit_global_names.clone()
+        };
+        for (table1_rc, col1_name, table2_rc, col2_name) in relations {
+            let mut found_table1_name = None;
+            let mut found_table2_name = None;
+            for (index, slot) in self.globals.iter_mut().enumerate() {
+                let value_id = slot.resolve_to_value_id(&mut self.value_store);
+                let value = load_value(value_id, &mut self.value_store, &self.heavy_store);
+                if let Value::Table(table) = &value {
+                    if Rc::ptr_eq(table, &table1_rc) {
+                        if let Some(var_name) = names.get(&index) {
+                            found_table1_name = Some(var_name.clone());
+                        }
+                    }
+                    if Rc::ptr_eq(table, &table2_rc) {
+                        if let Some(var_name) = names.get(&index) {
+                            found_table2_name = Some(var_name.clone());
+                        }
+                    }
+                }
+            }
+            if let (Some(table1_name), Some(table2_name)) = (found_table1_name, found_table2_name) {
+                self.explicit_relations.push(ExplicitRelation {
+                    source_table_name: table2_name,
+                    source_column_name: col2_name,
+                    target_table_name: table1_name,
+                    target_column_name: col1_name,
+                });
+            }
+        }
+        let primary_keys = self.take_pending_primary_keys();
+        for (table_rc, col_name) in primary_keys {
+            let mut found_table_name = None;
+            for (index, slot) in self.globals.iter_mut().enumerate() {
+                let value_id = slot.resolve_to_value_id(&mut self.value_store);
+                let value = load_value(value_id, &mut self.value_store, &self.heavy_store);
+                if let Value::Table(table) = &value {
+                    if Rc::ptr_eq(table, &table_rc) {
+                        if let Some(var_name) = names.get(&index) {
+                            found_table_name = Some(var_name.clone());
+                        }
+                    }
+                }
+            }
+            if let Some(table_name) = found_table_name {
+                self.explicit_primary_keys.push(ExplicitPrimaryKey {
+                    table_name,
+                    column_name: col_name,
+                });
+            }
+        }
     }
 
     /// Reset value_store and heavy_store and re-establish only function references in globals.
@@ -1111,12 +1270,14 @@ impl Vm {
             &mut self.error_type_table,
             &mut self.value_store,
             &mut self.heavy_store,
+            &mut self.globals,
+            &self.global_names,
         )? {
             return Ok(cached_result);
         }
 
         // Execute the function using step()
-        let initial_stack_size = self.stack.len();
+        let initial_stack_size = self.stack_sp;
         let initial_frames_count = self.frames.len();
 
         loop {
@@ -1144,8 +1305,9 @@ impl Vm {
         }
 
         if let Some(frame) = self.frames.last() {
-            if self.stack.len() > frame.stack_start {
-                let tv = self.stack.pop().unwrap_or(TaggedValue::null());
+            if self.stack_sp > frame.stack_start {
+                let tv = crate::vm::stack::pop_direct(&mut self.stack)
+                    .unwrap_or(TaggedValue::null());
                 let id = tagged_to_value_id(tv, &mut self.value_store);
                 Ok(load_value(id, &self.value_store, &self.heavy_store))
             } else {
@@ -1156,8 +1318,9 @@ impl Vm {
                 ))
             }
         } else {
-            if self.stack.len() > initial_stack_size {
-                let tv = self.stack.pop().unwrap_or(TaggedValue::null());
+            if self.stack_sp > initial_stack_size {
+                let tv = crate::vm::stack::pop_direct(&mut self.stack)
+                    .unwrap_or(TaggedValue::null());
                 let id = tagged_to_value_id(tv, &mut self.value_store);
                 Ok(load_value(id, &self.value_store, &self.heavy_store))
             } else {
@@ -1167,6 +1330,81 @@ impl Vm {
                     &self.heavy_store,
                 ))
             }
+        }
+    }
+
+    /// Like [`call_function_by_index`], but binds canonical [`ValueId`] arguments (special-method `this`).
+    pub fn call_function_by_index_with_arg_ids(
+        &mut self,
+        function_index: usize,
+        arg_ids: &[crate::common::value_store::ValueId],
+    ) -> Result<Value, LangError> {
+        if let Some(cached_result) = calls::setup_function_call_with_arg_ids(
+            function_index,
+            arg_ids,
+            &self.functions,
+            &mut self.stack,
+            &mut self.frames,
+            &mut self.error_type_table,
+            &mut self.value_store,
+            &mut self.heavy_store,
+            &mut self.globals,
+            &self.global_names,
+        )? {
+            return Ok(cached_result);
+        }
+
+        let initial_stack_size = self.stack_sp;
+        let initial_frames_count = self.frames.len();
+
+        loop {
+            if self.frames.len() < initial_frames_count {
+                break;
+            }
+
+            match self.step()? {
+                VMStatus::Continue => {}
+                VMStatus::Return(id) => {
+                    return Ok(load_value(id, &self.value_store, &self.heavy_store));
+                }
+                VMStatus::FrameEnded => {
+                    break;
+                }
+                VMStatus::GeneratorYield(_)
+                | VMStatus::GeneratorYieldAwait(_, _)
+                | VMStatus::GeneratorDone(_) => {
+                    return Err(LangError::runtime_error(
+                        "internal: generator opcode in call_function_by_index_with_arg_ids"
+                            .to_string(),
+                        0,
+                    ));
+                }
+            }
+        }
+
+        if let Some(frame) = self.frames.last() {
+            if self.stack_sp > frame.stack_start {
+                let tv = crate::vm::stack::pop_direct(&mut self.stack)
+                    .unwrap_or(TaggedValue::null());
+                let id = tagged_to_value_id(tv, &mut self.value_store);
+                Ok(load_value(id, &self.value_store, &self.heavy_store))
+            } else {
+                Ok(load_value(
+                    NULL_VALUE_ID,
+                    &self.value_store,
+                    &self.heavy_store,
+                ))
+            }
+        } else if self.stack_sp > initial_stack_size {
+            let tv = crate::vm::stack::pop_direct(&mut self.stack).unwrap_or(TaggedValue::null());
+            let id = tagged_to_value_id(tv, &mut self.value_store);
+            Ok(load_value(id, &self.value_store, &self.heavy_store))
+        } else {
+            Ok(load_value(
+                NULL_VALUE_ID,
+                &self.value_store,
+                &self.heavy_store,
+            ))
         }
     }
 }

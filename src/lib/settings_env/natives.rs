@@ -1,6 +1,6 @@
 // Native functions for settings_env module
 
-use crate::common::value::Value;
+use crate::common::value::{ObjectKind, Value};
 use regex::Regex;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -87,8 +87,8 @@ fn resolve_env_path(path_str: &str) -> std::path::PathBuf {
 }
 
 /// Helper: get string from model_config Object, or default.
-fn get_config_str(map: &HashMap<String, Value>, key: &str, default: &str) -> String {
-    map.get(key)
+fn get_config_str(map: &ObjectKind, key: &str, default: &str) -> String {
+    map.str_key_get(key)
         .and_then(|v| {
             if let Value::String(s) = v {
                 Some(s.clone())
@@ -100,8 +100,8 @@ fn get_config_str(map: &HashMap<String, Value>, key: &str, default: &str) -> Str
 }
 
 /// Helper: get bool from model_config Object, or default.
-fn get_config_bool(map: &HashMap<String, Value>, key: &str, default: bool) -> bool {
-    map.get(key)
+fn get_config_bool(map: &ObjectKind, key: &str, default: bool) -> bool {
+    map.str_key_get(key)
         .and_then(|v| {
             if let Value::Bool(b) = v {
                 Some(*b)
@@ -110,6 +110,96 @@ fn get_config_bool(map: &HashMap<String, Value>, key: &str, default: bool) -> bo
             }
         })
         .unwrap_or(default)
+}
+
+/// Extended load_env args beyond `(path, required_keys?, model_config?)`:
+/// `(path, rk, mc, nested_specs?, parent_field_name?)`.
+///
+/// Prefer **5** args so `nested_specs` (array) always occupies `[3]` and parent field name `[4]` (optional string).
+/// **4-arg** legacy: `[3]` is either `nested_specs` (Array, no parent prefix) **or**
+/// **`parent_field_name` (String)** with no specs — compilers used to confuse these.
+fn nested_specs_rc_and_parent_field(args: &[Value]) -> (Rc<RefCell<Vec<Value>>>, Option<String>) {
+    match args.len() {
+        n if n >= 5 => {
+            let specs = match args.get(3) {
+                Some(Value::Array(a)) => a.clone(),
+                _ => Rc::new(RefCell::new(Vec::new())),
+            };
+            let parent = args.get(4).and_then(|v| {
+                if let Value::String(s) = v {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            });
+            (specs, parent)
+        }
+        4 => match args.get(3) {
+            Some(Value::Array(a)) => (a.clone(), None),
+            Some(Value::String(s)) => (Rc::new(RefCell::new(Vec::new())), Some(s.clone())),
+            _ => (Rc::new(RefCell::new(Vec::new())), None),
+        },
+        _ => (Rc::new(RefCell::new(Vec::new())), None),
+    }
+}
+
+/// Flatten `nested_specs` into `map`: nested env prefixes become merged keys or `Null` placeholders for `default_factory`.
+fn merge_nested_settings_specs_into_map(
+    _args: &[Value],
+    map: &mut HashMap<String, Value>,
+    nested_specs_rc: &Rc<RefCell<Vec<Value>>>,
+) {
+    let specs = nested_specs_rc.borrow();
+    for spec_val in specs.iter() {
+        if let Value::Object(spec_rc) = spec_val {
+            let spec = spec_rc.borrow();
+            let field_name = get_config_str(&spec, "field", "");
+            let nested_prefix = get_config_str(&spec, "env_prefix", "");
+            let class_name = get_config_str(&spec, "class_name", "");
+            if field_name.is_empty() || class_name.is_empty() {
+                continue;
+            }
+            let prefix_lower = nested_prefix.to_lowercase();
+            let mut nested_map = HashMap::new();
+            let keys_to_remove: Vec<String> = map
+                .keys()
+                .filter(|k| !prefix_lower.is_empty() && k.starts_with(&prefix_lower))
+                .cloned()
+                .collect();
+            for k in &keys_to_remove {
+                if let Some(v) = map.get(k) {
+                    let inner_key = if prefix_lower.is_empty() {
+                        k.clone()
+                    } else {
+                        k[prefix_lower.len()..].to_lowercase()
+                    };
+                    nested_map.insert(inner_key, v.clone());
+                }
+            }
+            for k in keys_to_remove {
+                map.remove(&k);
+            }
+            nested_map.insert(
+                "__class_name".to_string(),
+                Value::String(class_name.clone()),
+            );
+            let nested_value = if nested_map.len() == 1 {
+                Value::Null
+            } else {
+                if let Some(priv_f) = spec.str_key_get("private_fields") {
+                    nested_map.insert("__private_fields".to_string(), priv_f.clone());
+                }
+                if let Some(priv_def) = spec.str_key_get("private_field_defining_class") {
+                    nested_map.insert(
+                        "__private_field_defining_class".to_string(),
+                        priv_def.clone(),
+                    );
+                }
+                Value::legacy_object(nested_map)
+            };
+            map.insert(field_name.to_string(), nested_value);
+        }
+    }
 }
 
 /// load_env(path: str [, required_keys: array [, model_config: Object]]) -> Object
@@ -121,18 +211,7 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Null;
     }
-    // Optional last arg: parent_field_name (string) for nested Settings; used in error message as prefix (e.g. "secret__code").
-    let parent_field_name: Option<String> = if args.len() >= 4 {
-        args.last().and_then(|v| {
-            if let Value::String(s) = v {
-                Some(s.clone())
-            } else {
-                None
-            }
-        })
-    } else {
-        None
-    };
+    let (nested_specs_rc, parent_field_name) = nested_specs_rc_and_parent_field(args);
     let path_str = match &args[0] {
         Value::String(s) => s.clone(),
         Value::Path(p) => p.to_string_lossy().to_string(),
@@ -142,7 +221,7 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
     // Prefer model_config.env_file when present (String or Path); otherwise use path argument.
     let env_file_from_config = if args.len() >= 3 {
         if let Value::Object(config_rc) = &args[2] {
-            config_rc.borrow().get("env_file").and_then(|v| match v {
+            config_rc.borrow().str_key_get("env_file").and_then(|v| match v {
                 Value::String(s) => Some(s.clone()),
                 Value::Path(p) => Some(p.to_string_lossy().to_string()),
                 _ => None,
@@ -174,9 +253,9 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
     let (env_prefix, case_sensitive, _extra) = if args.len() >= 3 {
         if let Value::Object(config_rc) = &args[2] {
             let config = config_rc.borrow();
-            let prefix = get_config_str(&config, "env_prefix", "");
-            let case_sens = get_config_bool(&config, "case_sensitive", false);
-            let ext = get_config_str(&config, "extra", "ignore");
+            let prefix = get_config_str(&*config, "env_prefix", "");
+            let case_sens = get_config_bool(&*config, "case_sensitive", false);
+            let ext = get_config_str(&*config, "extra", "ignore");
             (prefix, case_sens, ext)
         } else {
             (String::new(), false, "ignore".to_string())
@@ -211,7 +290,7 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
             // Prefer model_config.env_file when present (handles Path which env_file_from_config may miss).
             let env_file_from_model: Option<String> = if args.len() >= 3 {
                 if let Value::Object(config_rc) = &args[2] {
-                    config_rc.borrow().get("env_file").and_then(|v| match v {
+                    config_rc.borrow().str_key_get("env_file").and_then(|v| match v {
                         Value::String(s) if !s.is_empty() => Some(s.clone()),
                         Value::Path(p) => Some(p.to_string_lossy().to_string()),
                         _ => None,
@@ -247,10 +326,11 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
             });
         }
     }
+
     if effective_path.is_empty() {
         if crate::common::debug::verbose_constructor_debug() && args.len() >= 3 {
             if let Value::Object(config_rc) = &args[2] {
-                let has_env_file = config_rc.borrow().contains_key("env_file");
+                let has_env_file = config_rc.borrow().str_key_contains("env_file");
                 if !has_env_file {
                     eprintln!("[settings_env load_env] model_config has no env_file; path_str is empty; returning empty env");
                 }
@@ -289,7 +369,9 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
                 return Value::Null;
             }
         }
-        return Value::Object(Rc::new(RefCell::new(HashMap::new())));
+        let mut map = HashMap::new();
+        merge_nested_settings_specs_into_map(args, &mut map, &nested_specs_rc);
+        return Value::legacy_object(map);
     }
 
     // Relative path with no base path set (e.g. thread-local not set in this thread) would
@@ -406,81 +488,9 @@ pub fn native_settings_env_load_env(args: &[Value]) -> Value {
         }
     }
 
-    // Optional 4th argument: nested_specs — build nested Settings objects from prefixed keys and remove them from top-level.
-    // Each spec: Object with "field" (str), "env_prefix" (str), "class_name" (str). Uses env_nested_delimiter from model_config.
-    // Treat Null (e.g. parent class has no __nested_specs) as empty array.
-    if args.len() >= 4 {
-        let specs_rc = match &args[3] {
-            Value::Array(a) => a.clone(),
-            _ => Rc::new(RefCell::new(Vec::new())),
-        };
-        {
-            let specs = specs_rc.borrow();
-            let _delimiter = if args.len() >= 3 {
-                if let Value::Object(cfg_rc) = &args[2] {
-                    get_config_str(&cfg_rc.borrow(), "env_nested_delimiter", "__")
-                } else {
-                    "__".to_string()
-                }
-            } else {
-                "__".to_string()
-            };
-            for spec_val in specs.iter() {
-                if let Value::Object(spec_rc) = spec_val {
-                    let spec = spec_rc.borrow();
-                    let field_name = get_config_str(&spec, "field", "");
-                    let nested_prefix = get_config_str(&spec, "env_prefix", "");
-                    let class_name = get_config_str(&spec, "class_name", "");
-                    if field_name.is_empty() || class_name.is_empty() {
-                        continue;
-                    }
-                    let prefix_lower = nested_prefix.to_lowercase();
-                    let mut nested_map = HashMap::new();
-                    let keys_to_remove: Vec<String> = map
-                        .keys()
-                        .filter(|k| !prefix_lower.is_empty() && k.starts_with(&prefix_lower))
-                        .cloned()
-                        .collect();
-                    for k in &keys_to_remove {
-                        if let Some(v) = map.get(k) {
-                            let inner_key = if prefix_lower.is_empty() {
-                                k.clone()
-                            } else {
-                                k[prefix_lower.len()..].to_lowercase()
-                            };
-                            nested_map.insert(inner_key, v.clone());
-                        }
-                    }
-                    for k in keys_to_remove {
-                        map.remove(&k);
-                    }
-                    nested_map.insert(
-                        "__class_name".to_string(),
-                        Value::String(class_name.clone()),
-                    );
-                    // If no env keys had the nested prefix, nested_map only has __class_name. Insert Null so the parent constructor's default_factory runs and builds the nested Settings (e.g. Config.db = DatabaseConfig(path, ...)) with __constructing_class__ set.
-                    let nested_value = if nested_map.len() == 1 {
-                        Value::Null
-                    } else {
-                        // So VM can enforce private field access, copy private metadata from spec when present.
-                        if let Some(priv_f) = spec.get("private_fields") {
-                            nested_map.insert("__private_fields".to_string(), priv_f.clone());
-                        }
-                        if let Some(priv_def) = spec.get("private_field_defining_class") {
-                            nested_map.insert(
-                                "__private_field_defining_class".to_string(),
-                                priv_def.clone(),
-                            );
-                        }
-                        Value::Object(Rc::new(RefCell::new(nested_map)))
-                    };
-                    map.insert(field_name.to_string(), nested_value);
-                }
-            }
-        }
-    }
+    merge_nested_settings_specs_into_map(args, &mut map, &nested_specs_rc);
 
-    Value::Object(Rc::new(RefCell::new(map)))
+    Value::legacy_object(map)
 }
 
 /// config(env_prefix?, extra?, env_file?, env_file_encoding?, case_sensitive?, env_nested_delimiter?) -> Object (SettingsConfigDict)
@@ -493,29 +503,32 @@ pub fn native_settings_env_config(args: &[Value]) -> Value {
         let mut map = HashMap::new();
         map.insert(
             "env_prefix".to_string(),
-            Value::String(get_config_str(&config, "env_prefix", "")),
+            Value::String(get_config_str(&*config, "env_prefix", "")),
         );
         map.insert(
             "extra".to_string(),
-            Value::String(get_config_str(&config, "extra", "ignore")),
+            Value::String(get_config_str(&*config, "extra", "ignore")),
         );
         map.insert(
             "env_file".to_string(),
-            config.get("env_file").cloned().unwrap_or(Value::Null),
+            config
+                .str_key_get("env_file")
+                .cloned()
+                .unwrap_or(Value::Null),
         );
         map.insert(
             "env_file_encoding".to_string(),
-            Value::String(get_config_str(&config, "env_file_encoding", "utf-8")),
+            Value::String(get_config_str(&*config, "env_file_encoding", "utf-8")),
         );
         map.insert(
             "case_sensitive".to_string(),
-            Value::Bool(get_config_bool(&config, "case_sensitive", false)),
+            Value::Bool(get_config_bool(&*config, "case_sensitive", false)),
         );
         map.insert(
             "env_nested_delimiter".to_string(),
-            Value::String(get_config_str(&config, "env_nested_delimiter", "__")),
+            Value::String(get_config_str(&*config, "env_nested_delimiter", "__")),
         );
-        return Value::Object(Rc::new(RefCell::new(map)));
+        return Value::legacy_object(map);
     }
     let env_prefix = args
         .get(0)
@@ -583,7 +596,7 @@ pub fn native_settings_env_config(args: &[Value]) -> Value {
         "env_nested_delimiter".to_string(),
         Value::String(env_nested_delimiter),
     );
-    Value::Object(Rc::new(RefCell::new(map)))
+    Value::legacy_object(map)
 }
 
 /// Settings() -> Object (file from model_config) or Settings(path: str) -> Object (use path as env file).
@@ -591,19 +604,19 @@ pub fn native_settings_env_config(args: &[Value]) -> Value {
 /// One arg str — path to .env; one arg Object (model_config) — use env_file from it.
 pub fn native_settings_env_settings(args: &[Value]) -> Value {
     if args.is_empty() {
-        return Value::Object(Rc::new(RefCell::new(HashMap::new())));
+        return Value::legacy_object(HashMap::new());
     }
     if args.len() == 1 {
         if matches!(&args[0], Value::Null) {
-            return Value::Object(Rc::new(RefCell::new(HashMap::new())));
+            return Value::legacy_object(HashMap::new());
         }
         if let Value::Object(config_rc) = &args[0] {
             let config = config_rc.borrow();
-            if config.contains_key("env_file")
-                || config.contains_key("env_prefix")
-                || config.contains_key("extra")
+            if config.str_key_contains("env_file")
+                || config.str_key_contains("env_prefix")
+                || config.str_key_contains("extra")
             {
-                let path = get_config_str(&config, "env_file", "");
+                let path = get_config_str(&*config, "env_file", "");
                 let required = Value::Array(Rc::new(RefCell::new(vec![])));
                 return native_settings_env_load_env(&[
                     Value::String(path),
@@ -656,32 +669,33 @@ pub fn native_settings_env_field(args: &[Value]) -> Value {
         match &args[0] {
             Value::Ellipsis => {
                 map.insert("required".to_string(), Value::Bool(true));
-                return Value::Object(Rc::new(RefCell::new(map)));
+                return Value::legacy_object(map);
             }
             Value::Object(map_rc) => {
                 let obj = map_rc.borrow();
                 // If it looks like a descriptor (has known keys), use as full descriptor
-                let has_descriptor_keys =
-                    obj.keys().any(|k| FIELD_PARAM_NAMES.contains(&k.as_str()));
+                let has_descriptor_keys = obj.str_key_pairs().iter().any(|(k, _)| {
+                    FIELD_PARAM_NAMES.contains(&k.as_str())
+                });
                 if has_descriptor_keys {
-                    for (k, v) in obj.iter() {
+                    for (k, v) in obj.str_key_entries_cloned() {
                         if !matches!(v, Value::Null) {
-                            map.insert(k.clone(), v.clone());
+                            map.insert(k, v);
                         }
                     }
-                    return Value::Object(Rc::new(RefCell::new(map)));
+                    return Value::legacy_object(map);
                 }
                 // Else treat as legacy: object with "default" key -> return just default value for old compat?
                 // Plan says: "Field(default=...)" — keep compat. So object with only "default" -> descriptor with default.
-                if let Some(v) = obj.get("default") {
+                if let Some(v) = obj.str_key_get("default") {
                     map.insert("default".to_string(), v.clone());
                 }
-                return Value::Object(Rc::new(RefCell::new(map)));
+                return Value::legacy_object(map);
             }
             other => {
                 // Single non-Object: treat as default (backward compat)
                 map.insert("default".to_string(), other.clone());
-                return Value::Object(Rc::new(RefCell::new(map)));
+                return Value::legacy_object(map);
             }
         }
     }
@@ -699,7 +713,7 @@ pub fn native_settings_env_field(args: &[Value]) -> Value {
         map.insert("required".to_string(), Value::Bool(true));
     }
 
-    Value::Object(Rc::new(RefCell::new(map)))
+    Value::legacy_object(map)
 }
 
 /// Helper: get optional Number from descriptor map.

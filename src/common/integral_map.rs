@@ -135,14 +135,37 @@ impl IntegralMap {
         None
     }
 
+    /// All occupied canonical keys (order unspecified).
+    pub fn iter_canonicals(&self) -> impl Iterator<Item = i64> + '_ {
+        self.keys
+            .iter()
+            .filter(|&&k| k != EMPTY_KEY)
+            .copied()
+    }
+
+    /// Drop occupied entries. When the table grew large, release backing storage (A* reuse + `.clear()`).
     pub fn clear(&mut self) {
         if self.keys.is_empty() {
             return;
         }
-        for k in self.keys.iter_mut() {
-            *k = EMPTY_KEY;
+        const SHRINK_THRESHOLD: usize = 4096;
+        if self.keys.len() > SHRINK_THRESHOLD {
+            self.keys = Vec::new();
+            self.slots = Vec::new();
+        } else {
+            for k in self.keys.iter_mut() {
+                *k = EMPTY_KEY;
+            }
         }
         self.len = 0;
+    }
+
+    /// Release unused capacity after [`Self::clear`] (optional explicit shrink).
+    pub fn shrink_to_fit(&mut self) {
+        if self.len == 0 && !self.keys.is_empty() {
+            self.keys = Vec::new();
+            self.slots = Vec::new();
+        }
     }
 
     #[inline]

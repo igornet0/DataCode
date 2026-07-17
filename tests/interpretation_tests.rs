@@ -1755,14 +1755,7 @@ test()
         }
         fibonacci(10)
         "#;
-        let result = run(source);
-        match result {
-            Ok(Value::Number(n)) => {
-                assert_eq!(n, 55.0, "fibonacci(10) should be 55");
-            }
-            Ok(v) => panic!("Expected Number(55), got {:?}", v),
-            Err(e) => panic!("Error: {:?}", e),
-        }
+        assert_number_result(source, 55.0);
     }
 
     #[test]
@@ -1777,14 +1770,7 @@ test()
         result2 = add(1, 2)
         result2
         "#;
-        let result = run(source);
-        match result {
-            Ok(Value::Number(n)) => {
-                assert_eq!(n, 3.0, "add(1, 2) should be 3");
-            }
-            Ok(v) => panic!("Expected Number(3), got {:?}", v),
-            Err(e) => panic!("Error: {:?}", e),
-        }
+        assert_number_result(source, 3.0);
     }
 
     #[test]
@@ -1819,14 +1805,7 @@ test()
         }
         add(1, 2)
         "#;
-        let result = run(source);
-        match result {
-            Ok(Value::Number(n)) => {
-                assert_eq!(n, 3.0, "add(1, 2) should be 3");
-            }
-            Ok(v) => panic!("Expected Number(3), got {:?}", v),
-            Err(e) => panic!("Error: {:?}", e),
-        }
+        assert_number_result(source, 3.0);
     }
 
     #[test]
@@ -1842,14 +1821,7 @@ test()
         }
         factorial(5)
         "#;
-        let result = run(source);
-        match result {
-            Ok(Value::Number(n)) => {
-                assert_eq!(n, 120.0, "factorial(5) should be 120");
-            }
-            Ok(v) => panic!("Expected Number(120), got {:?}", v),
-            Err(e) => panic!("Error: {:?}", e),
-        }
+        assert_number_result(source, 120.0);
     }
 
     // ========== Тесты для независимости массивов после присваивания ==========

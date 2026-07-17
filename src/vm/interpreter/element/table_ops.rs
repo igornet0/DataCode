@@ -28,7 +28,207 @@ pub fn get_table(
 ) -> Result<VMStatus, LangError> {
     match index_value {
         Value::String(property) => {
-            if property == "rows" {
+            if property == "add_row" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_ADD_ROW),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "push" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_PUSH),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "drop_nulls" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_DROP_NULLS),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "replace_nulls" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(
+                            crate::vm::native_indices::builtin::TABLE_REPLACE_NULLS,
+                        ),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "row_number" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(
+                            crate::vm::native_indices::builtin::TABLE_ROW_NUMBER,
+                        ),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "distinct" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_DISTINCT),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "select" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_SELECT),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "rename" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_RENAME),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "drop_column" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_DROP_COLUMN),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "add_column" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_ADD_COLUMN),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "map" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_MAP),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "value_map" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_VALUE_MAP),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "aggregate" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_AGGREGATE),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "aggregate_group" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(
+                            crate::vm::native_indices::builtin::TABLE_AGGREGATE_GROUP,
+                        ),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "sort" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_SORT),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "split_column" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(
+                            crate::vm::native_indices::builtin::TABLE_SPLIT_COLUMN,
+                        ),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "join_columns" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(
+                            crate::vm::native_indices::builtin::TABLE_JOIN_COLUMNS,
+                        ),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "save_csv" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_SAVE_CSV),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "save_sqlite" {
+                stack::push_id(
+                    stack,
+                    store_value(
+                        Value::NativeFunction(crate::vm::native_indices::builtin::TABLE_SAVE_SQLITE),
+                        value_store,
+                        heavy_store,
+                    ),
+                );
+                return Ok(VMStatus::Continue);
+            } else if property == "rows" {
                 let t = table.borrow();
                 let rows: Vec<Value> = if t.is_view() {
                     (0..t.len())
@@ -165,7 +365,7 @@ pub fn get_table(
                 stack::push_id(
                     stack,
                     store_value(
-                        Value::Object(Rc::new(RefCell::new(row_dict))),
+                        Value::legacy_object(row_dict),
                         value_store,
                         heavy_store,
                     ),

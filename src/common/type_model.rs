@@ -62,6 +62,9 @@ pub fn is_mutable_value(v: &Value) -> bool {
         | Value::Axis(_)
         | Value::DatabaseEngine(_)
         | Value::DatabaseCluster(_)
+        | Value::Archive(_)
+        | Value::DataSource(_)
+        | Value::DataSourceResponse(_)
         | Value::Enumerate { .. }
         | Value::Iterable(_)
         | Value::Generator(_)

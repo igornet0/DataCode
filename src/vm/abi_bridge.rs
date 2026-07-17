@@ -5,13 +5,13 @@
 //! во внешних ABI-модулях не экспонируются.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::ffi::{c_void, CStr, CString};
 use std::rc::Rc;
 
 use crate::abi::AbiValue;
+use crate::common::numeric::{FloatValue, IntValue};
 use crate::common::table::TableData;
-use crate::common::value::{ByteBuffer, Value};
+use crate::common::value::{ByteBuffer, ObjectKind, Value};
 use crate::common::value_store::ValueStore;
 use crate::vm::array_view::materialize_array_view;
 use crate::vm::heavy_store::HeavyStore;
@@ -74,7 +74,7 @@ pub enum BridgeError {
 pub struct AbiBridgeContext {
     cstrings: Vec<CString>,
     array_buffers: Vec<Vec<AbiValue>>,
-    object_refs: Vec<Rc<RefCell<HashMap<String, Value>>>>,
+    object_refs: Vec<Rc<RefCell<ObjectKind>>>,
     /// Keeps header + cell buffers alive for `AbiValue::Table` for the duration of the call.
     table_buffers: Vec<(Vec<AbiValue>, Vec<AbiValue>)>,
     /// Keeps `Rc<Vec<u8>>` alive for `AbiValue::Bytes` pointers into `ByteBuffer` storage.
@@ -103,6 +103,19 @@ impl AbiBridgeContext {
                     Ok(AbiValue::Float(*n))
                 }
             }
+            Value::Int(IntValue::Finite(n)) => Ok(AbiValue::Int(*n)),
+            Value::Int(IntValue::PosInfinity) => Ok(AbiValue::Float(f64::INFINITY)),
+            Value::Int(IntValue::NegInfinity) => Ok(AbiValue::Float(f64::NEG_INFINITY)),
+            Value::Float(FloatValue::Finite(n)) => {
+                if n.fract() == 0.0 && *n >= (i64::MIN as f64) && *n <= (i64::MAX as f64) {
+                    Ok(AbiValue::Int(*n as i64))
+                } else {
+                    Ok(AbiValue::Float(*n))
+                }
+            }
+            Value::Float(FloatValue::NaN) => Ok(AbiValue::Float(f64::NAN)),
+            Value::Float(FloatValue::PosInfinity) => Ok(AbiValue::Float(f64::INFINITY)),
+            Value::Float(FloatValue::NegInfinity) => Ok(AbiValue::Float(f64::NEG_INFINITY)),
             Value::Bool(b) => Ok(AbiValue::Bool(*b)),
             Value::String(s) => {
                 let cstr = CString::new(s.as_str()).map_err(|_| BridgeError::InvalidUtf8)?;
@@ -140,6 +153,15 @@ impl AbiBridgeContext {
             Value::PluginOpaque { tag, id } => Ok(AbiValue::PluginOpaque {
                 tag: *tag,
                 id: *id,
+            }),
+            Value::Date(d) => Ok(AbiValue::Date {
+                secs: d.timestamp(),
+                nanos: d.timestamp_subsec_nanos(),
+                offset_secs: d.offset().local_minus_utc(),
+            }),
+            Value::Duration(d) => Ok(AbiValue::Duration {
+                secs: d.num_seconds(),
+                nanos: d.subsec_nanos() as i32,
             }),
             Value::Path(p) => {
                 let s = p.to_string_lossy();
@@ -197,8 +219,8 @@ impl AbiBridgeContext {
     /// Handle Object должен был быть получен из value_to_abi в том же контексте.
     pub fn abi_to_value(&self, a: AbiValue) -> Result<Value, BridgeError> {
         match a {
-            AbiValue::Int(i) => Ok(Value::Number(i as f64)),
-            AbiValue::Float(f) => Ok(Value::Number(f)),
+            AbiValue::Int(i) => Ok(Value::Int(IntValue::Finite(i))),
+            AbiValue::Float(f) => Ok(Value::Float(FloatValue::classify_f64(f))),
             AbiValue::Bool(b) => Ok(Value::Bool(b)),
             AbiValue::Str(p) => {
                 if p.is_null() {
@@ -251,6 +273,26 @@ impl AbiBridgeContext {
             AbiValue::Table { .. } => Err(BridgeError::Unrepresentable(
                 "Table return values are not supported on VM←module ABI path yet",
             )),
+            AbiValue::Date {
+                secs,
+                nanos,
+                offset_secs,
+            } => {
+                use chrono::{DateTime, FixedOffset};
+                let offset = FixedOffset::east_opt(offset_secs)
+                    .unwrap_or_else(|| FixedOffset::east_opt(0).expect("offset"));
+                DateTime::from_timestamp(secs, nanos)
+                    .map(|utc| Value::Date(utc.with_timezone(&offset)))
+                    .ok_or(BridgeError::Unrepresentable("invalid Date ABI timestamp"))
+            }
+            AbiValue::Duration { secs, nanos } => {
+                use chrono::Duration as ChronoDuration;
+                Ok(Value::Duration(
+                    ChronoDuration::seconds(secs)
+                        .checked_add(&ChronoDuration::nanoseconds(nanos as i64))
+                        .unwrap_or_else(ChronoDuration::zero),
+                ))
+            }
         }
     }
 }
@@ -308,8 +350,16 @@ mod tests {
     }
 
     #[test]
-    fn bridge_number_bool_null() {
+    fn bridge_int_float_bool_null() {
         let mut ctx = AbiBridgeContext::new();
+        assert!(matches!(
+            ctx.value_to_abi(&Value::Int(IntValue::Finite(42))),
+            Ok(AbiValue::Int(42))
+        ));
+        assert!(matches!(
+            ctx.value_to_abi(&Value::Float(FloatValue::Finite(3.14))),
+            Ok(AbiValue::Float(_))
+        ));
         assert!(matches!(
             ctx.value_to_abi(&Value::Number(42.0)),
             Ok(AbiValue::Int(42))
@@ -342,10 +392,10 @@ mod tests {
     #[test]
     fn bridge_roundtrip() {
         let mut ctx = AbiBridgeContext::new();
-        let v = Value::Number(1.0);
+        let v = Value::Int(IntValue::Finite(1));
         let a = ctx.value_to_abi(&v).unwrap();
         let v2 = ctx.abi_to_value(a).unwrap();
-        assert!(matches!((&v, &v2), (Value::Number(x), Value::Number(y)) if x == y));
+        assert!(matches!((&v, &v2), (Value::Int(a), Value::Int(b)) if a == b));
     }
 
     #[test]
@@ -374,7 +424,9 @@ mod tests {
     #[test]
     fn bridge_object_handle() {
         let mut ctx = AbiBridgeContext::new();
-        let obj = Value::Object(Rc::new(RefCell::new(HashMap::new())));
+        let obj = Value::Object(Rc::new(RefCell::new(ObjectKind::Legacy(
+            HashMap::new(),
+        ))));
         let a = ctx.value_to_abi(&obj).unwrap();
         match a {
             AbiValue::Object(h) => {

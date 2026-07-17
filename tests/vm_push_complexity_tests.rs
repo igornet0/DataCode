@@ -1,5 +1,5 @@
 //! Regression: `push` on a growing array must stay ~linear (not O(n²) via full load/store per call).
-//! See `tests/performance_tests/LARGE_DATASET_10K_LOG.md` and `docs/vm_mutating_natives_audit.md`.
+//! See `tests/performance_tests/LARGE_DATASET_10K_LOG.md` and `docs/en/200-developers/vm_mutating_natives_audit.md`.
 
 use data_code::{run, Value};
 use std::time::Instant;

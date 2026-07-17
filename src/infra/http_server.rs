@@ -70,7 +70,7 @@ fn build_request_value(
         .collect();
     req.insert(
         "headers".to_string(),
-        Value::Object(Rc::new(RefCell::new(headers_map))),
+        Value::legacy_object(headers_map),
     );
     req.insert("body".to_string(), Value::String(body_str));
     let params_map: HashMap<String, Value> = params
@@ -79,9 +79,9 @@ fn build_request_value(
         .collect();
     req.insert(
         "params".to_string(),
-        Value::Object(Rc::new(RefCell::new(params_map))),
+        Value::legacy_object(params_map),
     );
-    Value::Object(Rc::new(RefCell::new(req)))
+    Value::legacy_object(req)
 }
 
 /// Convert handler return Value to HTTP (status, headers, body).
@@ -89,26 +89,27 @@ fn value_to_http_response(v: Value) -> ResponsePayload {
     match &v {
         Value::String(s) => (200, vec![], s.as_bytes().to_vec()),
         Value::Object(rc) => {
-            let status = {
-                let map = rc.borrow();
-                map.get("status")
-                    .and_then(|n| {
-                        if let Value::Number(x) = n {
-                            Some(*x as u16)
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(200)
-            };
-            let headers: Vec<(String, String)> = {
-                let map = rc.borrow();
-                map.get("headers")
+                let status = {
+                    let map = rc.borrow();
+                    map.str_key_get("status")
+                        .and_then(|n| {
+                            if let Value::Number(x) = n {
+                                Some(*x as u16)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(200)
+                };
+                let headers: Vec<(String, String)> = {
+                    let map = rc.borrow();
+                    map.str_key_get("headers")
                     .and_then(|h| {
                         if let Value::Object(hrc) = h {
                             let hm = hrc.borrow();
                             Some(
-                                hm.iter()
+                                hm.str_key_pairs()
+                                    .into_iter()
                                     .filter_map(|(k, v)| {
                                         if let Value::String(s) = v {
                                             Some((k.clone(), s.clone()))
@@ -127,7 +128,7 @@ fn value_to_http_response(v: Value) -> ResponsePayload {
             let body = {
                 let body_opt = {
                     let map = rc.borrow();
-                    map.get("body").and_then(|b| {
+                    map.str_key_get("body").and_then(|b| {
                         if let Value::String(s) = b {
                             Some(s.as_bytes().to_vec())
                         } else {
@@ -167,7 +168,8 @@ fn value_to_serde_json(v: &Value) -> Result<serde_json::Value, ()> {
         Value::Object(rc) => {
             let map = rc.borrow();
             let out: Result<HashMap<String, _>, _> = map
-                .iter()
+                .str_key_pairs()
+                .into_iter()
                 .map(|(k, v)| value_to_serde_json(v).map(|j| (k.clone(), j)))
                 .collect();
             json!(out?)

@@ -2,9 +2,7 @@
 //! Legacy VM-global merge lives in [`super::legacy_merge`].
 //! Extracted from vm.rs for Phase 7 (VM Facade).
 
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 use crate::common::value::Value;
 use crate::common::value_store::{ValueCell, ValueStore};
@@ -28,6 +26,14 @@ pub fn ensure_globals_from_chunk(
         .iter()
         .filter(|(idx, _)| **idx != UNDEFINED_GLOBAL_SENTINEL)
         .filter(|(_, name)| name.as_str() != "argv")
+        .filter(|(_, name)| {
+            if let Some(builtin_idx) = globals::builtin_global_index(name) {
+                if builtin_idx < globals::BUILTIN_GLOBAL_COUNT {
+                    return false;
+                }
+            }
+            true
+        })
         .filter(|(_, name)| !global_names.values().any(|n| n == name.as_str()))
         .map(|(idx, name)| (*idx, name.clone()))
         .collect();
@@ -771,21 +777,21 @@ pub fn remap_module_export_value(value: &Value, start_fn: usize) -> Value {
         Value::Object(obj_rc) => {
             let obj = obj_rc.borrow();
             let mut new_obj = HashMap::new();
-            for (k, v) in obj.iter() {
+            for (k, v) in obj.str_key_entries_cloned() {
                 let inner = match v {
                     Value::Function(i) => Value::Function(start_fn + i),
                     Value::ModuleFunction {
                         module_uid,
                         local_index,
                     } => Value::ModuleFunction {
-                        module_uid: *module_uid,
-                        local_index: *local_index,
+                        module_uid,
+                        local_index,
                     },
-                    _ => v.clone(),
+                    other => other,
                 };
-                new_obj.insert(k.clone(), inner);
+                new_obj.insert(k, inner);
             }
-            Value::Object(Rc::new(RefCell::new(new_obj)))
+            Value::legacy_object(new_obj)
         }
         _ => value.clone(),
     }
@@ -804,13 +810,17 @@ pub fn merge_module_exports_into_globals_into(
         Value::Object(rc) => rc.borrow(),
         _ => return,
     };
-    let mut names_sorted: Vec<String> = obj.keys().cloned().collect();
+    let mut names_sorted: Vec<String> = obj
+        .str_key_pairs()
+        .into_iter()
+        .map(|(k, _)| k)
+        .collect();
     names_sorted.sort();
     for name in names_sorted {
         if name == "__start_function_index" || name == "argv" {
             continue;
         }
-        let value = match obj.get(&name) {
+        let value = match obj.str_key_get(name.as_str()) {
             Some(v) => v.clone(),
             None => continue,
         };
@@ -847,7 +857,7 @@ pub fn merge_module_exports_into_globals_into(
                 }
             }
             let start_fn = obj
-                .get("__start_function_index")
+                .str_key_get("__start_function_index")
                 .and_then(|v| {
                     if let Value::Number(s) = v {
                         Some(*s as usize)
@@ -868,7 +878,7 @@ pub fn merge_module_exports_into_globals_into(
             }
         } else {
             let start_fn = obj
-                .get("__start_function_index")
+                .str_key_get("__start_function_index")
                 .and_then(|v| {
                     if let Value::Number(s) = v {
                         Some(*s as usize)

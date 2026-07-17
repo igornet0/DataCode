@@ -3,12 +3,15 @@
 use crate::common::error::LangError;
 use crate::common::table::TableData;
 use crate::common::value::{CallableSlot, ChunkSource, IterableInner, Value};
-use crate::common::value_store::ValueStore;
+use std::collections::HashMap;
+use crate::common::value_store::{ValueId, ValueStore};
 use crate::vm::array_view::{materialize_array_view, subview, view_get_element};
 use crate::vm::generator::run_generator_next;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::natives::utils::call_user_function;
-use crate::vm::vm::Vm;
+use crate::vm::store_convert::{load_value, store_value};
+use crate::vm::set_ops::set_member_key_ids;
+use crate::vm::vm::{current_vm_ptr, Vm};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -21,12 +24,40 @@ fn runtime(line: usize, msg: impl Into<String>) -> LangError {
 pub fn prepare_for_in_iterable(v: Value) -> Result<Value, LangError> {
     match v {
         Value::Iterable(rc) => Ok(Value::Iterable(Rc::clone(&rc))),
-        _ => coerce_to_iterable_value(v),
+        _ => coerce_to_iterable_value_from_id(None, v),
     }
+}
+
+/// Like [`prepare_for_in_iterable`], but preserves the canonical instance [`ValueId`] for `@iter`/`@next`.
+pub fn prepare_for_in_iterable_from_id(source_id: ValueId, v: Value) -> Result<Value, LangError> {
+    match v {
+        Value::Iterable(rc) => Ok(Value::Iterable(Rc::clone(&rc))),
+        _ => coerce_to_iterable_value_from_id(Some(source_id), v),
+    }
+}
+
+fn build_special_instance_iterable(
+    receiver_id: ValueId,
+    instance: &Value,
+) -> Result<Value, LangError> {
+    if crate::vm::special_methods::class_has_special(instance, "@iter") {
+        crate::vm::special_methods::dispatch_special_by_id(receiver_id, "@iter", &[])?;
+    }
+    Ok(Value::Iterable(Rc::new(RefCell::new(
+        IterableInner::SpecialInstance { receiver_id },
+    ))))
 }
 
 /// Wrap `Value` as [`Value::Iterable`] with iterator state at the start (for `for`-`in` and `reduce`).
 pub fn coerce_to_iterable_value(v: Value) -> Result<Value, LangError> {
+    coerce_to_iterable_value_from_id(None, v)
+}
+
+/// Wrap `Value` as [`Value::Iterable`]; when `source_id` is known, class `@next` mutates the canonical instance.
+pub fn coerce_to_iterable_value_from_id(
+    source_id: Option<ValueId>,
+    v: Value,
+) -> Result<Value, LangError> {
     match v {
         Value::Iterable(rc) => Ok(Value::Iterable(Rc::new(RefCell::new(rc.borrow().clone())))),
         Value::Array(a) => Ok(Value::Iterable(Rc::new(RefCell::new(IterableInner::Array {
@@ -53,9 +84,57 @@ pub fn coerce_to_iterable_value(v: Value) -> Result<Value, LangError> {
                 state: Rc::clone(&g),
             },
         )))),
-        _ => Err(runtime(
+        Value::Table(t) => Ok(Value::Iterable(Rc::new(RefCell::new(
+            IterableInner::TableRows { table: t, index: 0 },
+        )))),
+        Value::ObjectFieldList { element_ids, .. } => Ok(Value::Iterable(Rc::new(RefCell::new(
+            IterableInner::ObjectFieldList {
+                element_ids: Rc::clone(&element_ids),
+                index: 0,
+            },
+        )))),
+        Value::Set(rc) => {
+            let map = rc.borrow();
+            let Some(vm_ptr) = current_vm_ptr() else {
+                return Err(runtime(0, "internal: VM unavailable for set iteration"));
+            };
+            let ids = unsafe {
+                (*vm_ptr).with_stores_mut(|store, _heap| set_member_key_ids(&map, store))
+            };
+            let gen = map.generation();
+            Ok(Value::Iterable(Rc::new(RefCell::new(IterableInner::Set {
+                set: Rc::clone(&rc),
+                element_ids: Rc::new(ids),
+                index: 0,
+                start_generation: gen,
+            }))))
+        }
+        Value::String(s) => Ok(Value::Iterable(Rc::new(RefCell::new(IterableInner::String {
+            text: s,
+            index: 0,
+        })))),
+        other if crate::vm::special_methods::is_class_instance(&other)
+            && crate::vm::special_methods::class_has_special(&other, "@iter")
+            && crate::vm::special_methods::class_has_special(&other, "@next") =>
+        {
+            let receiver_id = if let Some(id) = source_id {
+                id
+            } else {
+                let Some(vm_ptr) = current_vm_ptr() else {
+                    return Err(runtime(0, "internal: VM unavailable for class instance iteration"));
+                };
+                unsafe {
+                    (*vm_ptr).with_stores_mut(|store, heap| store_value(other.clone(), store, heap))
+                }
+            };
+            build_special_instance_iterable(receiver_id, &other)
+        }
+        other => Err(runtime(
             0,
-            "for-in / iterable: expected array, array view, tuple, enumerate, iterable, or generator",
+            format!(
+                "for-in / iterable: expected array, array view, tuple, set, string, enumerate, iterable, or generator, got {}",
+                crate::vm::calls::get_type_name_value(&other)
+            ),
         )),
     }
 }
@@ -65,6 +144,43 @@ pub fn iterable_from_value(coll: &Value) -> Result<Rc<RefCell<IterableInner>>, L
     match coerce_to_iterable_value(coll.clone())? {
         Value::Iterable(rc) => Ok(rc),
         _ => Err(runtime(0, "internal: coerce did not produce iterable")),
+    }
+}
+
+/// Membership `needle in rhs` when [`coerce_to_iterable_value`] accepts `rhs` (arrays, iterable views, etc.).
+///
+/// Returns [`Ok(Some(true/false))`] when iteration finishes (finite source or match found early).
+/// Returns [`Ok(None)]` when `rhs` cannot be wrapped as iterable — callers report `TypeError`.
+/// Returns [`Err`] if advancing the iterator fails (user callbacks in lazy `map` / `filter`, etc.).
+///
+/// Uses a fresh coerced iterator (see [`coerce_to_iterable_value`]) so the user's standalone
+/// iterable handle is not advanced. Non‑terminating iterators never return [`Some(false)`].
+pub fn membership_via_iterable(
+    vm: &mut Vm,
+    rhs: Value,
+    needle: &Value,
+) -> Result<Option<bool>, LangError> {
+    let coerced = match coerce_to_iterable_value(rhs) {
+        Ok(v) => v,
+        Err(_) => return Ok(None),
+    };
+    let Value::Iterable(rc) = coerced else {
+        return Err(runtime(
+            0,
+            "internal: membership_via_iterable expected Iterable after coerce",
+        ));
+    };
+
+    loop {
+        let next = {
+            let mut inner = rc.borrow_mut();
+            iterable_next(&mut *inner, vm)?
+        };
+        match next {
+            None => return Ok(Some(false)),
+            Some(el) if el == *needle => return Ok(Some(true)),
+            Some(_) => {}
+        }
     }
 }
 
@@ -87,7 +203,8 @@ pub fn value_to_callable_slot(f: &Value, vm: &Vm) -> Result<(CallableSlot, u8), 
     }
 }
 
-fn dispatch_slot(slot: &CallableSlot, args: &[Value], vm: &mut Vm) -> Result<Value, LangError> {
+/// Invoke a callable slot (user/native) from VM-native code (`map`-style callbacks).
+pub(crate) fn dispatch_callable(slot: &CallableSlot, args: &[Value], vm: &mut Vm) -> Result<Value, LangError> {
     match slot {
         CallableSlot::UserFunction(fn_idx) => call_user_function(*fn_idx, args),
         CallableSlot::NativeFunction(nidx) => {
@@ -108,10 +225,23 @@ pub fn iterable_materialize_capacity_hint(inner: &IterableInner) -> Option<usize
         IterableInner::Map { source, .. } => iterable_materialize_capacity_hint(&source.borrow()),
         IterableInner::Filter { .. } => None,
         IterableInner::Enumerate { data, .. } => Some(data.borrow().len()),
+        IterableInner::TableRows { table, .. } => Some(table.borrow().len()),
+        IterableInner::ObjectFieldList { element_ids, .. } => Some(element_ids.len()),
+        IterableInner::EnumerateIter { source, .. } => {
+            iterable_materialize_capacity_hint(&source.borrow())
+        }
         IterableInner::Chunks {
             source, chunk_size, ..
         } => Some(chunk_source_count(source, *chunk_size)),
         IterableInner::StreamGenerator { .. } => None,
+        IterableInner::Set { element_ids, .. } => Some(element_ids.len()),
+        IterableInner::String { text, .. } => Some(text.chars().count()),
+        IterableInner::Range {
+            current,
+            end,
+            step,
+        } => Some(crate::common::range_args::range_len(*current, *end, *step)),
+        IterableInner::SpecialInstance { .. } => None,
     }
 }
 
@@ -220,9 +350,9 @@ pub fn iterable_next(inner: &mut IterableInner, vm: &mut Vm) -> Result<Option<Va
             let i = *index;
             *index += 1;
             let mapped = if *fn_arity == 2 {
-                dispatch_slot(func, &[val, Value::Number(i as f64)], vm)?
+                dispatch_callable(func, &[val, Value::Number(i as f64)], vm)?
             } else {
-                dispatch_slot(func, &[val], vm)?
+                dispatch_callable(func, &[val], vm)?
             };
             Ok(Some(mapped))
         }
@@ -242,9 +372,9 @@ pub fn iterable_next(inner: &mut IterableInner, vm: &mut Vm) -> Result<Option<Va
             let i = *index;
             *index += 1;
             let keep = if *fn_arity == 2 {
-                dispatch_slot(pred, &[val.clone(), Value::Number(i as f64)], vm)?.is_truthy()
+                dispatch_callable(pred, &[val.clone(), Value::Number(i as f64)], vm)?.is_truthy()
             } else {
-                dispatch_slot(pred, std::slice::from_ref(&val), vm)?.is_truthy()
+                dispatch_callable(pred, std::slice::from_ref(&val), vm)?.is_truthy()
             };
             if keep {
                 return Ok(Some(val));
@@ -290,7 +420,114 @@ pub fn iterable_next(inner: &mut IterableInner, vm: &mut Vm) -> Result<Option<Va
             *chunk_index += 1;
             Ok(Some(v))
         }
+        IterableInner::TableRows { table, index } => {
+            let t = table.borrow();
+            let len = t.len();
+            if *index >= len {
+                return Ok(None);
+            }
+            let row = if t.is_view() {
+                crate::vm::table_ops::get_row(&*t, *index, vm.value_store(), vm.heavy_store())
+            } else {
+                t.get_row(*index).map(|r| r.to_vec())
+            };
+            drop(t);
+            let Some(row) = row else {
+                return Err(runtime(0, "internal: table row missing"));
+            };
+            let t = table.borrow();
+            let mut row_dict = HashMap::new();
+            for (i, header) in t.headers().iter().enumerate() {
+                if i < row.len() {
+                    row_dict.insert(header.clone(), row[i].clone());
+                }
+            }
+            drop(t);
+            *index += 1;
+            Ok(Some(Value::legacy_object(row_dict)))
+        }
+        IterableInner::EnumerateIter {
+            source,
+            start,
+            next_index,
+        } => {
+            let next = {
+                let mut src = source.borrow_mut();
+                iterable_next(&mut *src, vm)?
+            };
+            let Some(val) = next else {
+                return Ok(None);
+            };
+            let i = *next_index;
+            *next_index += 1;
+            let pair = Value::Tuple(Rc::new(RefCell::new(vec![
+                Value::Number((*start + i as i64) as f64),
+                val,
+            ])));
+            Ok(Some(pair))
+        }
         IterableInner::StreamGenerator { state } => run_generator_next(vm, &mut state.borrow_mut()),
+        IterableInner::ObjectFieldList { element_ids, index } => {
+            if *index >= element_ids.len() {
+                return Ok(None);
+            }
+            let id = element_ids[*index];
+            *index += 1;
+            let store = vm.value_store();
+            let heap = vm.heavy_store();
+            Ok(Some(load_value(id, store, heap)))
+        }
+        IterableInner::Set {
+            set,
+            element_ids,
+            index,
+            start_generation,
+        } => {
+            if set.borrow().generation() != *start_generation {
+                return Err(runtime(0, "RuntimeError: set modified during iteration"));
+            }
+            if *index >= element_ids.len() {
+                return Ok(None);
+            }
+            let id = element_ids[*index];
+            *index += 1;
+            let store = vm.value_store();
+            let heap = vm.heavy_store();
+            Ok(Some(load_value(id, store, heap)))
+        }
+        IterableInner::String { text, index } => {
+            if let Some(ch) = text.chars().nth(*index) {
+                *index += 1;
+                Ok(Some(Value::String(ch.to_string())))
+            } else {
+                Ok(None)
+            }
+        }
+        IterableInner::Range {
+            current,
+            end,
+            step,
+        } => {
+            let done = if *step > 0 {
+                *current >= *end
+            } else {
+                *current <= *end
+            };
+            if done {
+                return Ok(None);
+            }
+            let v = Value::Number(*current as f64);
+            *current += *step;
+            Ok(Some(v))
+        }
+        IterableInner::SpecialInstance { receiver_id } => {
+            match crate::vm::special_methods::dispatch_special_by_id(*receiver_id, "@next", &[]) {
+                Ok(Some(v)) if matches!(v, Value::Null) => Ok(None),
+                Ok(Some(v)) => Ok(Some(v)),
+                Ok(None) => Err(runtime(0, "missing `@next` during iteration")),
+                Err(e) => Err(e),
+            }
+        }
     }
 }
 
@@ -310,6 +547,7 @@ pub fn materialize_iterables_in_value(
             }));
             materialize_iterables_in_value(vm, &Value::Iterable(rc), store, heap)
         }
+        Value::ObjectFieldList { .. } => Ok(v.clone()),
         Value::Iterable(rc) => {
             let mut inner = rc.borrow().clone();
             let mut out: Vec<Value> = Vec::new();
@@ -354,5 +592,25 @@ pub fn materialize_iterables_in_value(
             Ok(Value::Table(Rc::new(RefCell::new(table))))
         }
         _ => Ok(v.clone()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::table::Table;
+
+    #[test]
+    fn coerce_accepts_table() {
+        let t = Table::new();
+        let v = Value::Table(Rc::new(RefCell::new(t)));
+        let out = coerce_to_iterable_value(v).expect("coerce");
+        match out {
+            Value::Iterable(rc) => assert!(matches!(
+                *rc.borrow(),
+                IterableInner::TableRows { .. }
+            )),
+            _ => panic!("expected iterable"),
+        }
     }
 }

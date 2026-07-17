@@ -79,6 +79,25 @@ impl OperatorRegistry {
         ] {
             let _ = r.register(builtin_op(sym, name, prec, Associativity::Left));
         }
+        for sym in ["|", "^", "&"] {
+            let name = match sym {
+                "|" => "bor",
+                "^" => "bxor",
+                "&" => "band",
+                _ => "band",
+            };
+            let prec = match sym {
+                "|" => 42,
+                "^" => 43,
+                "&" => 44,
+                _ => 44,
+            };
+            let _ = r.register(builtin_op(sym, name, prec, Associativity::Left));
+        }
+        for sym in ["<<", ">>"] {
+            let name = if sym == "<<" { "shl" } else { "shr" };
+            let _ = r.register(builtin_op(sym, name, 45, Associativity::Left));
+        }
         for sym in ["+", "-"] {
             let _ = r.register(builtin_op(
                 sym,
@@ -262,6 +281,11 @@ pub fn token_kind_to_symbol(kind: &TokenKind) -> Option<String> {
         TokenKind::Slash => "/".to_string(),
         TokenKind::SlashSlash => "//".to_string(),
         TokenKind::Percent => "%".to_string(),
+        TokenKind::LessLess => "<<".to_string(),
+        TokenKind::GreaterGreater => ">>".to_string(),
+        TokenKind::Amp => "&".to_string(),
+        TokenKind::Pipe => "|".to_string(),
+        TokenKind::Caret => "^".to_string(),
         TokenKind::At => "@".to_string(),
         _ => return None,
     })

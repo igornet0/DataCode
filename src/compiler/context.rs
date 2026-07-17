@@ -75,9 +75,43 @@ pub struct CompilationContext<'a> {
     /// Parse-time native export param names (from `native_call_descriptor` preload), e.g. `native_dataset_split`.
     pub native_call_param_registry:
         Option<&'a crate::vm::native_call_registry::NativeCallParamRegistry>,
+    /// Best-effort compile-time knowledge: variables assigned from `set()` in the current compilation unit.
+    /// Used to safely emit `SetAddIntegral` / `SetDiscardIntegral` without miscompiling class methods named `add`.
+    pub known_set_vars: &'a mut std::collections::HashSet<String>,
+    /// Best-effort tracking: variables assigned from constructor-like calls (UpperCamelCase(...)).
+    /// Used to avoid miscompiling `obj.add(x)` into set opcodes when `obj` is likely a class instance.
+    pub known_class_instance_vars: &'a mut std::collections::HashSet<String>,
+    /// Variables assigned from a compile-time constant tuple of 2-tuples, e.g. `neighbors_delta = ((-1,0), ...)`.
+    pub known_const_pair_tuples: &'a mut std::collections::HashMap<String, Vec<(i64, i64)>>,
+    /// Names assigned or declared in the current compilation unit (locals, params, for-vars, script globals).
+    /// Used for scope-aware object literal keys: bound identifier → computed key, unbound → string key.
+    pub known_bound_names: &'a mut std::collections::HashSet<String>,
+    /// Nesting depth of active `for` pattern scopes (for declaring body locals in function scope).
+    pub for_loop_scope_depth: &'a mut usize,
+    /// Module-level names known to hold compile-time constants (for default parameter values).
+    pub compile_time_bindings: &'a mut std::collections::HashMap<String, crate::common::value::Value>,
+    /// Per-compile pass counter for duplicate function names (nested fns with the same name).
+    pub function_compile_pass: &'a mut std::collections::HashMap<String, usize>,
+    /// Local slot index -> user function index (nested fn bindings and self-recursion).
+    pub local_fn_by_slot: &'a mut std::collections::HashMap<usize, usize>,
 }
 
 impl<'a> CompilationContext<'a> {
+    #[inline]
+    pub fn record_bound_name(&mut self, name: &str) {
+        self.known_bound_names.insert(name.to_string());
+    }
+
+    /// Declare a user binding; inside `for` loop body, new names go to function scope, not pattern scope.
+    pub fn declare_local_for_binding(&mut self, name: &str) -> usize {
+        if *self.for_loop_scope_depth > 0 {
+            self.scope
+                .declare_local_outside_for_loops(*self.for_loop_scope_depth, name)
+        } else {
+            self.scope.declare_local(name)
+        }
+    }
+
     /// Local slot for `this` when emitting member access (`this.field`, `'this'` expr).
     /// In constructors, parameters occupy `0 .. params.len()-1` and `this` is at
     /// [`Self::constructor_this_slot`] (= `params.len()`). In methods, `this` is the first declared

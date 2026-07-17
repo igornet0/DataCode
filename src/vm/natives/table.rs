@@ -11,6 +11,58 @@ use std::rc::Rc;
 // Import resolve_path_in_session and format_path_for_error from file module
 use super::file::{format_path_for_error, resolve_path_in_session};
 
+pub use super::date_format::try_parse_date;
+
+pub fn native_table_add_row(args: &[Value]) -> Value {
+    use crate::vm::store_convert::load_value;
+    use crate::vm::vm::with_current_stores;
+
+    if args.len() < 2 {
+        crate::websocket::set_native_error(
+            "TypeError: add_row() expects (table, array)".to_string(),
+        );
+        return Value::Null;
+    }
+
+    let table_rc = match &args[0] {
+        Value::Table(t) => Rc::clone(t),
+        _ => {
+            crate::websocket::set_native_error(
+                "TypeError: add_row() expects (table, array)".to_string(),
+            );
+            return Value::Null;
+        }
+    };
+
+    let row = match &args[1] {
+        Value::Array(arr) => arr.borrow().clone(),
+        _ => {
+            crate::websocket::set_native_error(
+                "TypeError: add_row() expects (table, array)".to_string(),
+            );
+            return Value::Null;
+        }
+    };
+
+    if table_rc.borrow().is_view() {
+        let materialized = with_current_stores(|store, heap| {
+            table_rc
+                .borrow()
+                .materialize_with(|id| load_value(id, store, heap))
+        });
+        *table_rc.borrow_mut() = materialized;
+    }
+
+    let result = table_rc.borrow_mut().add_row(row);
+    match result {
+        Ok(()) => Value::Table(table_rc),
+        Err(msg) => {
+            crate::websocket::set_native_error(msg);
+            Value::Null
+        }
+    }
+}
+
 pub fn native_table(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Null;
@@ -83,6 +135,8 @@ fn read_csv_file(path: &PathBuf) -> Result<Table, io::Error> {
                     Value::Bool(false)
                 } else if field.is_empty() {
                     Value::Null
+                } else if let Some(d) = try_parse_date(field) {
+                    Value::Date(d)
                 } else {
                     Value::String(field.to_string())
                 }
@@ -126,9 +180,15 @@ fn read_xlsx_file(
                 calamine::Data::Float(n) => Value::Number(*n),
                 calamine::Data::String(s) => Value::String(s.clone()),
                 calamine::Data::Bool(b) => Value::Bool(*b),
-                calamine::Data::DateTime(dt) => Value::String(dt.to_string()),
-                calamine::Data::DateTimeIso(s) => Value::String(s.clone()),
-                calamine::Data::DurationIso(s) => Value::String(s.clone()),
+                calamine::Data::DateTime(dt) => try_parse_date(&dt.to_string())
+                    .map(Value::Date)
+                    .unwrap_or_else(|| Value::String(dt.to_string())),
+                calamine::Data::DateTimeIso(s) => try_parse_date(s)
+                    .map(Value::Date)
+                    .unwrap_or_else(|| Value::String(s.clone())),
+                calamine::Data::DurationIso(s) => try_parse_date(s)
+                    .map(Value::Date)
+                    .unwrap_or_else(|| Value::String(s.clone())),
                 calamine::Data::Error(_) => Value::Null,
                 calamine::Data::Empty => Value::Null,
             })
@@ -155,107 +215,6 @@ fn read_xlsx_file(
     }
 
     Ok(Table::from_data(rows, Some(headers)))
-}
-
-/// Применяет фильтр header к таблице
-/// Если header - массив, фильтрует колонки (оставляет только указанные)
-/// Если header - словарь, переименовывает колонки
-fn apply_header_filter(table: Table, header_arg: Option<&Value>) -> Table {
-    let header_arg = match header_arg {
-        Some(v) => v,
-        None => return table,
-    };
-
-    match header_arg {
-        Value::Array(cols_arr) => {
-            // Фильтруем колонки: оставляем только указанные в массиве
-            let cols_arr_ref = cols_arr.borrow();
-            let mut selected_cols = Vec::new();
-
-            // Извлекаем имена колонок из массива
-            for col_val in cols_arr_ref.iter() {
-                match col_val {
-                    Value::String(s) => selected_cols.push(s.clone()),
-                    _ => {
-                        // Игнорируем не-строковые значения
-                        continue;
-                    }
-                }
-            }
-
-            if selected_cols.is_empty() {
-                return table;
-            }
-
-            // Создаем индексы колонок для выборки
-            let mut col_indices = Vec::new();
-            let mut new_headers = Vec::new();
-
-            for col_name in &selected_cols {
-                if let Some(idx) = table.headers().iter().position(|h| h == col_name) {
-                    col_indices.push(idx);
-                    new_headers.push(col_name.clone());
-                }
-                // Игнорируем несуществующие колонки
-            }
-
-            if col_indices.is_empty() {
-                return table;
-            }
-
-            // Создаем новые строки только с выбранными колонками
-            let mut new_rows = Vec::new();
-            let rr = table.rows_ref().unwrap();
-            for row in rr.iter() {
-                let mut new_row = Vec::new();
-                for &idx in &col_indices {
-                    if idx < row.len() {
-                        new_row.push(row[idx].clone());
-                    } else {
-                        new_row.push(Value::Null);
-                    }
-                }
-                new_rows.push(new_row);
-            }
-
-            Table::from_data(new_rows, Some(new_headers))
-        }
-        Value::Object(rename_map_rc) => {
-            // Переименовываем колонки согласно словарю
-            let rename_map = rename_map_rc.borrow();
-            let mut new_headers = Vec::new();
-
-            for old_header in table.headers() {
-                if let Some(new_name_val) = rename_map.get(old_header) {
-                    match new_name_val {
-                        Value::String(new_name) => {
-                            // Переименовываем
-                            new_headers.push(new_name.clone());
-                        }
-                        Value::Null => {
-                            // Оставляем оригинальное имя
-                            new_headers.push(old_header.clone());
-                        }
-                        _ => {
-                            // Игнорируем некорректные значения, оставляем оригинальное имя
-                            new_headers.push(old_header.clone());
-                        }
-                    }
-                } else {
-                    // Колонка не указана в словаре - оставляем как есть
-                    new_headers.push(old_header.clone());
-                }
-            }
-
-            // Создаем новую таблицу с переименованными заголовками
-            // Данные остаются теми же, меняются только заголовки
-            Table::from_data(table.rows_ref().unwrap().to_vec(), Some(new_headers))
-        }
-        _ => {
-            // Некорректный тип - возвращаем таблицу без изменений
-            table
-        }
-    }
 }
 
 /// Извлекает аргументы для read_file, определяя их по типу, а не только по позиции
@@ -318,6 +277,17 @@ fn extract_read_file_args(args: &[Value]) -> (usize, Option<String>, Option<&Val
 }
 
 pub fn native_read_file(args: &[Value]) -> Value {
+    match crate::file_io::read_value(args) {
+        Ok(v) => v,
+        Err(msg) => {
+            crate::websocket::set_native_error(msg);
+            Value::Null
+        }
+    }
+}
+
+#[allow(dead_code)]
+fn native_read_file_legacy(args: &[Value]) -> Value {
     if args.is_empty() {
         return Value::Null;
     }
@@ -336,27 +306,27 @@ pub fn native_read_file(args: &[Value]) -> Value {
 
     // Проверяем, является ли это SMB путем (lib://)
     if file_path_str.starts_with("lib://") {
-        // Извлекаем имя шары и путь к файлу
-        let path_without_prefix = &file_path_str[6..]; // Убираем "lib://"
-        let parts: Vec<&str> = path_without_prefix.splitn(2, '/').collect();
-
-        if parts.is_empty() {
-            return Value::Null;
-        }
-
-        let share_name = parts[0];
-        let file_path_on_share = if parts.len() > 1 { parts[1] } else { "" };
+        let (share_name, file_path_on_share) = match crate::file_io::parse_lib_smb_path(
+            &file_path_str,
+        ) {
+            Ok(parts) => parts,
+            Err(err_msg) => {
+                use crate::websocket::set_native_error;
+                set_native_error(err_msg);
+                return Value::Null;
+            }
+        };
 
         // Получаем SmbManager из thread-local storage; hold lock only for read_file, then release before processing content.
         if let Some(smb_manager) = crate::vm::file_ops::get_smb_manager() {
             let read_result = {
                 let guard = smb_manager.lock().unwrap();
-                guard.read_file(share_name, file_path_on_share)
+                guard.read_file(&share_name, &file_path_on_share)
             };
             match read_result {
                 Ok(content) => {
                     // Определяем тип файла по расширению
-                    let extension = std::path::Path::new(file_path_on_share)
+                    let extension = std::path::Path::new(&file_path_on_share)
                         .extension()
                         .and_then(|ext| ext.to_str())
                         .unwrap_or("")
@@ -374,7 +344,7 @@ pub fn native_read_file(args: &[Value]) -> Value {
                                         Ok(table) => {
                                             let _ = fs::remove_file(&temp_file);
                                             let filtered_table =
-                                                apply_header_filter(table, header_arg);
+                                                crate::file_io::apply_header_filter(table, header_arg);
                                             return Value::Table(Rc::new(RefCell::new(
                                                 filtered_table,
                                             )));
@@ -402,7 +372,7 @@ pub fn native_read_file(args: &[Value]) -> Value {
                                         Ok(table) => {
                                             let _ = fs::remove_file(&temp_file);
                                             let filtered_table =
-                                                apply_header_filter(table, header_arg);
+                                                crate::file_io::apply_header_filter(table, header_arg);
                                             return Value::Table(Rc::new(RefCell::new(
                                                 filtered_table,
                                             )));
@@ -477,7 +447,8 @@ pub fn native_read_file(args: &[Value]) -> Value {
                 // Читаем CSV файл
                 match read_csv_file(&resolved_path) {
                     Ok(table) => {
-                        let filtered_table = apply_header_filter(table, header_arg);
+                        let filtered_table =
+                            crate::file_io::apply_header_filter(table, header_arg);
                         Value::Table(Rc::new(RefCell::new(filtered_table)))
                     }
                     Err(e) => {
@@ -491,7 +462,8 @@ pub fn native_read_file(args: &[Value]) -> Value {
                 // Читаем XLSX файл
                 match read_xlsx_file(&resolved_path, header_row, sheet_name.as_deref()) {
                     Ok(table) => {
-                        let filtered_table = apply_header_filter(table, header_arg);
+                        let filtered_table =
+                            crate::file_io::apply_header_filter(table, header_arg);
                         Value::Table(Rc::new(RefCell::new(filtered_table)))
                     }
                     Err(e) => {
@@ -528,16 +500,9 @@ pub fn native_read_file(args: &[Value]) -> Value {
 }
 
 pub fn compare_values(a: &Value, b: &Value) -> std::cmp::Ordering {
-    match (a, b) {
-        (Value::Number(n1), Value::Number(n2)) => {
-            n1.partial_cmp(n2).unwrap_or(std::cmp::Ordering::Equal)
-        }
-        (Value::String(s1), Value::String(s2)) => s1.cmp(s2),
-        (Value::Bool(b1), Value::Bool(b2)) => b1.cmp(b2),
-        (Value::Null, Value::Null) => std::cmp::Ordering::Equal,
-        (Value::Null, _) => std::cmp::Ordering::Less,
-        (_, Value::Null) => std::cmp::Ordering::Greater,
-        _ => a.to_string().cmp(&b.to_string()),
+    match crate::common::value_ord::value_partial_cmp(a, b) {
+        Ok(o) => o,
+        Err(_) => a.to_string().cmp(&b.to_string()),
     }
 }
 
@@ -546,6 +511,8 @@ fn col_type_from_value(v: &Value) -> &'static str {
         Value::Number(_) => "number",
         Value::String(_) => "string",
         Value::Bool(_) => "bool",
+        Value::Date(_) => "date",
+        Value::Duration(_) => "duration",
         Value::Array(_) => "array",
         _ => "mixed",
     }
@@ -713,6 +680,569 @@ pub fn native_table_tail(args: &[Value]) -> Value {
     }
 }
 
+fn table_col_error(msg: impl Into<String>) -> Value {
+    crate::websocket::set_native_error(msg.into());
+    Value::Null
+}
+
+fn materialize_table_rows(table: &Table) -> Vec<Vec<Value>> {
+    let n_rows = table.len();
+    if table.is_view() {
+        crate::vm::vm::with_current_stores(|store, heap| {
+            (0..n_rows)
+                .filter_map(|i| crate::vm::table_ops::get_row(table, i, store, heap))
+                .collect()
+        })
+    } else {
+        table
+            .rows_ref()
+            .map(|rr| rr.iter().map(|r| r.to_vec()).collect())
+            .unwrap_or_default()
+    }
+}
+
+fn parse_column_name_list(arg: &Value, headers: &[String]) -> Result<Vec<String>, Value> {
+    let names: Vec<String> = match arg {
+        Value::String(s) => vec![s.clone()],
+        Value::Array(arr) => arr
+            .borrow()
+            .iter()
+            .filter_map(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => {
+            return Err(table_col_error(
+                "TypeError: column must be a string or array of strings",
+            ));
+        }
+    };
+    if names.is_empty() {
+        return Err(table_col_error(
+            "TypeError: column must be a non-empty string or array of strings",
+        ));
+    }
+    for name in &names {
+        if !headers.iter().any(|h| h == name) {
+            return Err(table_col_error(format!(
+                "KeyError: column '{}' not found in table",
+                name
+            )));
+        }
+    }
+    Ok(names)
+}
+
+/// Select columns by name; returns `KeyError` if any column is missing.
+pub fn table_select_impl(table: &Table, columns: Vec<String>) -> Result<Table, Value> {
+    let headers = table.headers();
+    let mut col_indices = Vec::with_capacity(columns.len());
+    for col_name in &columns {
+        let Some(idx) = headers.iter().position(|h| h == col_name) else {
+            return Err(table_col_error(format!(
+                "KeyError: column '{}' not found in table",
+                col_name
+            )));
+        };
+        col_indices.push(idx);
+    }
+
+    let new_rows: Vec<Vec<Value>> = if table.is_view() {
+        crate::vm::vm::with_current_stores(|store, heap| {
+            let n_rows = table.len();
+            let mut rows = Vec::with_capacity(n_rows);
+            for i in 0..n_rows {
+                if let Some(row) = crate::vm::table_ops::get_row(table, i, store, heap) {
+                    let mut new_row = Vec::with_capacity(col_indices.len());
+                    for &idx in &col_indices {
+                        new_row.push(row.get(idx).cloned().unwrap_or(Value::Null));
+                    }
+                    rows.push(new_row);
+                }
+            }
+            rows
+        })
+    } else {
+        let mut new_rows = Vec::new();
+        if let Some(rr) = table.rows_ref() {
+            for row in rr.iter() {
+                let mut new_row = Vec::with_capacity(col_indices.len());
+                for &idx in &col_indices {
+                    new_row.push(row.get(idx).cloned().unwrap_or(Value::Null));
+                }
+                new_rows.push(new_row);
+            }
+        }
+        new_rows
+    };
+
+    Ok(Table::from_data(new_rows, Some(columns)))
+}
+
+/// Rename columns via object map or single old/new pair.
+pub fn table_rename_impl(table: &Table, rename_arg: &Value, new_name: Option<&str>) -> Result<Table, Value> {
+    let headers = table.headers().clone();
+    let rows = materialize_table_rows(table);
+
+    if let Some(new) = new_name {
+        let old = match rename_arg {
+            Value::String(s) => s.as_str(),
+            _ => {
+                return Err(table_col_error(
+                    "TypeError: table_rename() expects column names as strings",
+                ));
+            }
+        };
+        if !headers.iter().any(|h| h == old) {
+            return Err(table_col_error(format!(
+                "KeyError: column '{}' not found in table",
+                old
+            )));
+        }
+        let new_headers: Vec<String> = headers
+            .iter()
+            .map(|h| if h == old { new.to_string() } else { h.clone() })
+            .collect();
+        return Ok(Table::from_data(rows, Some(new_headers)));
+    }
+
+    match rename_arg {
+        Value::Object(_) => {
+            let owned = Table::from_data(rows, Some(headers));
+            Ok(crate::file_io::apply_header_filter(
+                owned,
+                Some(rename_arg),
+            ))
+        }
+        _ => Err(table_col_error(
+            "TypeError: table_rename() expects an object map or two string column names",
+        )),
+    }
+}
+
+/// Drop one or more columns by name.
+pub fn table_drop_column_impl(table: &Table, drop_arg: &Value) -> Result<Table, Value> {
+    let headers = table.headers();
+    let to_drop = parse_column_name_list(drop_arg, headers)?;
+    let remaining: Vec<String> = headers
+        .iter()
+        .filter(|h| !to_drop.iter().any(|d| d == *h))
+        .cloned()
+        .collect();
+    if remaining.is_empty() {
+        return Err(table_col_error(
+            "ValueError: cannot drop all columns from table",
+        ));
+    }
+    table_select_impl(table, remaining)
+}
+
+/// Append a column with a scalar value or per-row array.
+pub fn table_add_column_impl(
+    table: &Table,
+    name: &str,
+    values_arg: Option<&Value>,
+) -> Result<Table, Value> {
+    let headers = table.headers();
+    if headers.iter().any(|h| h == name) {
+        return Err(table_col_error(format!(
+            "ValueError: column '{}' already exists",
+            name
+        )));
+    }
+
+    let n_rows = table.len();
+    let column_values: Vec<Value> = match values_arg {
+        None => vec![Value::Null; n_rows],
+        Some(Value::Array(arr)) => {
+            let vals: Vec<Value> = arr.borrow().iter().cloned().collect();
+            if vals.len() != n_rows {
+                return Err(table_col_error(format!(
+                    "ValueError: array length {} does not match table row count {}",
+                    vals.len(),
+                    n_rows
+                )));
+            }
+            vals
+        }
+        Some(scalar) => vec![scalar.clone(); n_rows],
+    };
+
+    let rows = materialize_table_rows(table);
+    let mut new_headers = headers.to_vec();
+    new_headers.push(name.to_string());
+    let new_rows: Vec<Vec<Value>> = rows
+        .into_iter()
+        .zip(column_values)
+        .map(|(mut row, val)| {
+            row.push(val);
+            row
+        })
+        .collect();
+
+    Ok(Table::from_data(new_rows, Some(new_headers)))
+}
+
+fn validate_map_callback(func: &Value) -> Result<(), Value> {
+    match func {
+        Value::NativeFunction(_) => Ok(()),
+        Value::Function(fn_idx) => {
+            let Some(vm_ptr) = crate::vm::vm::current_vm_ptr() else {
+                return Err(table_col_error("map: VM context not available"));
+            };
+            unsafe {
+                let vm = &*vm_ptr;
+                let arity = vm
+                    .get_functions()
+                    .get(*fn_idx)
+                    .map(|fun| fun.arity)
+                    .unwrap_or(0);
+                if arity != 1 {
+                    return Err(table_col_error(format!(
+                        "TypeError: map callback must have arity 1, got {}",
+                        arity
+                    )));
+                }
+            }
+            Ok(())
+        }
+        Value::ModuleFunction { .. } => Ok(()),
+        _ => Err(table_col_error(
+            "TypeError: table_map() third argument must be a callable",
+        )),
+    }
+}
+
+fn parse_value_map_rules(mappings: &Value) -> Result<Vec<(Value, Value)>, Value> {
+    match mappings {
+        Value::Object(obj) => {
+            let obj_ref = obj.borrow();
+            let entries = obj_ref.str_key_entries_cloned();
+            if entries.is_empty() {
+                return Err(table_col_error(
+                    "TypeError: table_value_map() mappings object must not be empty",
+                ));
+            }
+            Ok(entries
+                .into_iter()
+                .map(|(k, v)| (Value::String(k), v))
+                .collect())
+        }
+        Value::Array(arr) => {
+            let arr_ref = arr.borrow();
+            if arr_ref.is_empty() {
+                return Err(table_col_error(
+                    "TypeError: table_value_map() mappings array must not be empty",
+                ));
+            }
+            let mut rules = Vec::with_capacity(arr_ref.len());
+            for item in arr_ref.iter() {
+                let Value::Object(obj) = item else {
+                    return Err(table_col_error(
+                        "TypeError: table_value_map() mappings array must contain objects",
+                    ));
+                };
+                let obj_ref = obj.borrow();
+                let from = obj_ref
+                    .str_key_get("from")
+                    .or_else(|| obj_ref.str_key_get("old"))
+                    .cloned();
+                let to = obj_ref
+                    .str_key_get("to")
+                    .or_else(|| obj_ref.str_key_get("new"))
+                    .cloned();
+                match (from, to) {
+                    (Some(f), Some(t)) => rules.push((f, t)),
+                    _ => {
+                        return Err(table_col_error(
+                            "TypeError: mapping object must contain from/to or old/new",
+                        ));
+                    }
+                }
+            }
+            Ok(rules)
+        }
+        _ => Err(table_col_error(
+            "TypeError: table_value_map() mappings must be an object or array of mapping objects",
+        )),
+    }
+}
+
+pub fn table_value_map_impl(table: &Table, column: &str, mappings: &Value) -> Result<Table, Value> {
+    let headers = table.headers();
+    let Some(col_idx) = headers.iter().position(|h| h == column) else {
+        return Err(table_col_error(format!(
+            "KeyError: column '{}' not found in table",
+            column
+        )));
+    };
+    let rules = parse_value_map_rules(mappings)?;
+    let rows = materialize_table_rows(table);
+    let mapped_rows: Vec<Vec<Value>> = rows
+        .into_iter()
+        .map(|mut row| {
+            let current = row.get(col_idx).cloned().unwrap_or(Value::Null);
+            let mapped = rules
+                .iter()
+                .find_map(|(from, to)| (current == *from).then(|| to.clone()))
+                .unwrap_or(current);
+            row[col_idx] = mapped;
+            row
+        })
+        .collect();
+    Ok(Table::from_data(mapped_rows, Some(headers.to_vec())))
+}
+
+/// Apply `func` to each cell in `column`; returns a new table with that column replaced.
+pub fn table_map_impl(table: &Table, column: &str, func: &Value) -> Result<Table, Value> {
+    use super::utils::invoke_value_callable;
+    use crate::common::error::LangError;
+    use crate::vm::vm::{current_vm_ptr, VmExecutionContext, VM_CALL_CONTEXT};
+
+    let headers = table.headers();
+    let Some(col_idx) = headers.iter().position(|h| h == column) else {
+        return Err(table_col_error(format!(
+            "KeyError: column '{}' not found in table",
+            column
+        )));
+    };
+
+    validate_map_callback(func)?;
+
+    let rows = materialize_table_rows(table);
+    let vm_ptr = current_vm_ptr();
+    let mut mapped_rows = Vec::with_capacity(rows.len());
+
+    for mut row in rows {
+        let cell = row[col_idx].clone();
+        if let Some(vm_ptr) = vm_ptr {
+            VM_CALL_CONTEXT.with(|ctx| {
+                *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+            });
+        }
+        let new_val = match invoke_value_callable(func, &[cell]) {
+            Ok(v) => v,
+            Err(e) => {
+                let message = match e {
+                    LangError::LexError { message, .. }
+                    | LangError::ParseError { message, .. }
+                    | LangError::SemanticError { message, .. }
+                    | LangError::RuntimeError { message, .. } => message,
+                };
+                return Err(table_col_error(message));
+            }
+        };
+        row[col_idx] = new_val;
+        mapped_rows.push(row);
+    }
+
+    Ok(Table::from_data(mapped_rows, Some(headers.to_vec())))
+}
+
+/// Split one column by delimiter string (no VM callback).
+pub fn table_split_column_delim_impl(
+    table: &Table,
+    column: &str,
+    delimiter: &str,
+    new_names: &[String],
+) -> Result<Table, Value> {
+    if new_names.is_empty() {
+        return Err(table_col_error("ValueError: new_columns must not be empty"));
+    }
+
+    let headers = table.headers();
+    let Some(col_idx) = headers.iter().position(|h| h == column) else {
+        return Err(table_col_error(format!(
+            "KeyError: column '{}' not found in table",
+            column
+        )));
+    };
+
+    let mut seen_new = std::collections::HashSet::new();
+    for name in new_names {
+        if headers.iter().any(|h| h == name) {
+            return Err(table_col_error(format!(
+                "ValueError: column '{}' already exists",
+                name
+            )));
+        }
+        if !seen_new.insert(name.as_str()) {
+            return Err(table_col_error(format!(
+                "ValueError: duplicate new column name '{}'",
+                name
+            )));
+        }
+    }
+
+    let rows = materialize_table_rows(table);
+    let n_cols = new_names.len();
+    let mut column_values: Vec<Vec<Value>> = vec![Vec::with_capacity(rows.len()); n_cols];
+
+    for row in &rows {
+        let owned;
+        let text: &str = match &row[col_idx] {
+            Value::String(s) => s,
+            other => {
+                owned = other.to_string();
+                &owned
+            }
+        };
+        let parts: Vec<&str> = text.split(delimiter).collect();
+        for (j, col) in column_values.iter_mut().enumerate() {
+            col.push(
+                parts
+                    .get(j)
+                    .map(|p| Value::String(p.to_string()))
+                    .unwrap_or_else(|| Value::String(String::new())),
+            );
+        }
+    }
+
+    let mut result = Table::from_data(rows, Some(headers.to_vec()));
+    for (name, vals) in new_names.iter().zip(column_values) {
+        let arr = Value::Array(Rc::new(RefCell::new(vals)));
+        result = table_add_column_impl(&result, name, Some(&arr))?;
+    }
+    Ok(result)
+}
+
+/// Split one column into several new columns via `iter_fn(cell) -> array`.
+pub fn table_split_column_impl(
+    table: &Table,
+    column: &str,
+    iter_fn: &Value,
+    new_names: &[String],
+) -> Result<Table, Value> {
+    use super::utils::invoke_value_callable;
+    use crate::common::error::LangError;
+    use crate::vm::vm::{current_vm_ptr, VmExecutionContext, VM_CALL_CONTEXT};
+
+    if new_names.is_empty() {
+        return Err(table_col_error("ValueError: new_columns must not be empty"));
+    }
+
+    let headers = table.headers();
+    let Some(col_idx) = headers.iter().position(|h| h == column) else {
+        return Err(table_col_error(format!(
+            "KeyError: column '{}' not found in table",
+            column
+        )));
+    };
+
+    let mut seen_new = std::collections::HashSet::new();
+    for name in new_names {
+        if headers.iter().any(|h| h == name) {
+            return Err(table_col_error(format!(
+                "ValueError: column '{}' already exists",
+                name
+            )));
+        }
+        if !seen_new.insert(name.as_str()) {
+            return Err(table_col_error(format!(
+                "ValueError: duplicate new column name '{}'",
+                name
+            )));
+        }
+    }
+
+    validate_map_callback(iter_fn)?;
+
+    let rows = materialize_table_rows(table);
+    let n_cols = new_names.len();
+    let mut column_values: Vec<Vec<Value>> = vec![Vec::with_capacity(rows.len()); n_cols];
+    let vm_ptr = current_vm_ptr();
+
+    for row in &rows {
+        let cell = row[col_idx].clone();
+        if let Some(vm_ptr) = vm_ptr {
+            VM_CALL_CONTEXT.with(|ctx| {
+                *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+            });
+        }
+        let parts_val = match invoke_value_callable(iter_fn, &[cell]) {
+            Ok(v) => v,
+            Err(e) => {
+                let message = match e {
+                    LangError::LexError { message, .. }
+                    | LangError::ParseError { message, .. }
+                    | LangError::SemanticError { message, .. }
+                    | LangError::RuntimeError { message, .. } => message,
+                };
+                return Err(table_col_error(message));
+            }
+        };
+        let Value::Array(parts_arr) = parts_val else {
+            return Err(table_col_error(
+                "TypeError: split_column callback must return an array",
+            ));
+        };
+        let parts_ref = parts_arr.borrow();
+        for (j, col) in column_values.iter_mut().enumerate() {
+            col.push(
+                parts_ref
+                    .get(j)
+                    .cloned()
+                    .unwrap_or_else(|| Value::String(String::new())),
+            );
+        }
+    }
+
+    let mut result = Table::from_data(rows, Some(headers.to_vec()));
+    for (name, vals) in new_names.iter().zip(column_values) {
+        let arr = Value::Array(Rc::new(RefCell::new(vals)));
+        result = table_add_column_impl(&result, name, Some(&arr))?;
+    }
+    Ok(result)
+}
+
+/// Join several columns into one new column with `delimiter`.
+pub fn table_join_columns_impl(
+    table: &Table,
+    source_columns: &[String],
+    new_name: &str,
+    delimiter: &str,
+) -> Result<Table, Value> {
+    let headers = table.headers();
+    if source_columns.is_empty() {
+        return Err(table_col_error(
+            "ValueError: source_columns must not be empty",
+        ));
+    }
+    if headers.iter().any(|h| h == new_name) {
+        return Err(table_col_error(format!(
+            "ValueError: column '{}' already exists",
+            new_name
+        )));
+    }
+
+    let mut col_indices = Vec::with_capacity(source_columns.len());
+    for col_name in source_columns {
+        let Some(idx) = headers.iter().position(|h| h == col_name) else {
+            return Err(table_col_error(format!(
+                "KeyError: column '{}' not found in table",
+                col_name
+            )));
+        };
+        col_indices.push(idx);
+    }
+
+    let rows = materialize_table_rows(table);
+    let merged: Vec<Value> = rows
+        .iter()
+        .map(|row| {
+            let parts: Vec<String> = col_indices
+                .iter()
+                .map(|&i| row[i].to_string())
+                .collect();
+            Value::String(parts.join(delimiter))
+        })
+        .collect();
+
+    let arr = Value::Array(Rc::new(RefCell::new(merged)));
+    table_add_column_impl(table, new_name, Some(&arr))
+}
+
 pub fn native_table_select(args: &[Value]) -> Value {
     if args.len() < 2 {
         return Value::Null;
@@ -733,56 +1263,222 @@ pub fn native_table_select(args: &[Value]) -> Value {
         _ => return Value::Null,
     };
 
-    match &args[0] {
-        Value::Table(table) => {
-            let table_ref = table.borrow();
-            let mut col_indices = Vec::new();
-            for col_name in &columns_to_select {
-                if let Some(idx) = table_ref.headers().iter().position(|h| h == col_name) {
-                    col_indices.push(idx);
-                } else {
-                    return Value::Null; // Колонка не найдена
+    let Value::Table(table) = &args[0] else {
+        return Value::Null;
+    };
+
+    let table_ref = table.borrow();
+    for col_name in &columns_to_select {
+        if !table_ref.headers().iter().any(|h| h == col_name) {
+            return Value::Null;
+        }
+    }
+
+    match table_select_impl(&table_ref, columns_to_select) {
+        Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
+        Err(v) => v,
+    }
+}
+
+pub fn native_table_rename(args: &[Value]) -> Value {
+    if args.len() < 2 {
+        return table_col_error("TypeError: table_rename() expects at least 2 arguments");
+    }
+    let Value::Table(table) = &args[0] else {
+        return table_col_error("TypeError: table_rename() expects a table as the first argument");
+    };
+    let table_ref = table.borrow();
+    let new_name = if args.len() >= 3 {
+        match &args[2] {
+            Value::String(s) => Some(s.as_str()),
+            _ => {
+                return table_col_error(
+                    "TypeError: table_rename() new column name must be a string",
+                );
+            }
+        }
+    } else {
+        None
+    };
+    match table_rename_impl(&table_ref, &args[1], new_name) {
+        Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
+        Err(v) => v,
+    }
+}
+
+pub fn native_table_drop_column(args: &[Value]) -> Value {
+    if args.len() < 2 {
+        return table_col_error("TypeError: table_drop_column() expects at least 2 arguments");
+    }
+    let Value::Table(table) = &args[0] else {
+        return table_col_error(
+            "TypeError: table_drop_column() expects a table as the first argument",
+        );
+    };
+    match table_drop_column_impl(&table.borrow(), &args[1]) {
+        Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
+        Err(v) => v,
+    }
+}
+
+pub fn native_table_add_column(args: &[Value]) -> Value {
+    if args.len() < 2 {
+        return table_col_error("TypeError: table_add_column() expects at least 2 arguments");
+    }
+    let Value::Table(table) = &args[0] else {
+        return table_col_error(
+            "TypeError: table_add_column() expects a table as the first argument",
+        );
+    };
+    let Value::String(name) = &args[1] else {
+        return table_col_error("TypeError: table_add_column() column name must be a string");
+    };
+    let values_arg = args.get(2);
+    match table_add_column_impl(&table.borrow(), name, values_arg) {
+        Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
+        Err(v) => v,
+    }
+}
+
+pub fn native_table_map(args: &[Value]) -> Value {
+    if args.len() < 3 {
+        return table_col_error(
+            "TypeError: table_map() expects 3 arguments (table, column, function)",
+        );
+    }
+    let Value::Table(table) = &args[0] else {
+        return table_col_error("TypeError: table_map() expects a table as the first argument");
+    };
+    let Value::String(column) = &args[1] else {
+        return table_col_error("TypeError: table_map() column name must be a string");
+    };
+    match table_map_impl(&table.borrow(), column, &args[2]) {
+        Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
+        Err(v) => v,
+    }
+}
+
+/// `table_value_map(table, column, mappings)` / `table.value_map(column, mappings)`
+pub fn native_table_value_map(args: &[Value]) -> Value {
+    if args.len() != 3 {
+        return table_col_error(
+            "TypeError: table_value_map() expects 3 arguments (table, column, mappings)",
+        );
+    }
+    let Value::Table(table) = &args[0] else {
+        return table_col_error("TypeError: table_value_map() expects a table as the first argument");
+    };
+    let Value::String(column) = &args[1] else {
+        return table_col_error("TypeError: table_value_map() column name must be a string");
+    };
+    match table_value_map_impl(&table.borrow(), column, &args[2]) {
+        Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
+        Err(v) => v,
+    }
+}
+
+pub fn native_table_split_column(args: &[Value]) -> Value {
+    if args.len() < 4 {
+        return table_col_error(
+            "TypeError: table_split_column() expects 4 arguments (table, column, iter_fn, new_columns)",
+        );
+    }
+    let Value::Table(table) = &args[0] else {
+        return table_col_error(
+            "TypeError: table_split_column() expects a table as the first argument",
+        );
+    };
+    let Value::String(column) = &args[1] else {
+        return table_col_error("TypeError: table_split_column() column name must be a string");
+    };
+    if let Value::String(delim) = &args[2] {
+        let new_names = match &args[3] {
+            Value::Array(arr) => {
+                let arr_ref = arr.borrow();
+                if arr_ref.is_empty() {
+                    return table_col_error("ValueError: new_columns must not be empty");
+                }
+                let mut names = Vec::with_capacity(arr_ref.len());
+                for val in arr_ref.iter() {
+                    match val {
+                        Value::String(s) => names.push(s.clone()),
+                        _ => {
+                            return table_col_error(
+                                "TypeError: new_columns must be an array of strings",
+                            );
+                        }
+                    }
+                }
+                names
+            }
+            _ => {
+                return table_col_error("TypeError: new_columns must be an array of strings");
+            }
+        };
+        return match table_split_column_delim_impl(&table.borrow(), column, delim, &new_names) {
+            Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
+            Err(v) => v,
+        };
+    }
+    let new_names = match &args[3] {
+        Value::Array(arr) => {
+            let arr_ref = arr.borrow();
+            if arr_ref.is_empty() {
+                return table_col_error("ValueError: new_columns must not be empty");
+            }
+            let mut names = Vec::with_capacity(arr_ref.len());
+            for val in arr_ref.iter() {
+                match val {
+                    Value::String(s) => names.push(s.clone()),
+                    _ => {
+                        return table_col_error(
+                            "TypeError: new_columns must be an array of strings",
+                        );
+                    }
                 }
             }
-
-            let new_rows: Vec<Vec<Value>> = if table_ref.is_view() {
-                crate::vm::vm::with_current_stores(|store, heap| {
-                    let n_rows = table_ref.len();
-                    let mut rows = Vec::with_capacity(n_rows);
-                    for i in 0..n_rows {
-                        if let Some(row) =
-                            crate::vm::table_ops::get_row(&*table_ref, i, store, heap)
-                        {
-                            let mut new_row = Vec::new();
-                            for &idx in &col_indices {
-                                new_row.push(row.get(idx).cloned().unwrap_or(Value::Null));
-                            }
-                            rows.push(new_row);
-                        }
-                    }
-                    rows
-                })
-            } else {
-                let mut new_rows = Vec::new();
-                let rr = table_ref.rows_ref().unwrap();
-                for row in rr.iter() {
-                    let mut new_row = Vec::new();
-                    for &idx in &col_indices {
-                        if idx < row.len() {
-                            new_row.push(row[idx].clone());
-                        } else {
-                            new_row.push(Value::Null);
-                        }
-                    }
-                    new_rows.push(new_row);
-                }
-                new_rows
-            };
-
-            let new_table = Table::from_data(new_rows, Some(columns_to_select));
-            Value::Table(Rc::new(RefCell::new(new_table)))
+            names
         }
-        _ => Value::Null,
+        _ => {
+            return table_col_error("TypeError: new_columns must be an array of strings");
+        }
+    };
+    match table_split_column_impl(&table.borrow(), column, &args[2], &new_names) {
+        Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
+        Err(v) => v,
+    }
+}
+
+pub fn native_table_join_columns(args: &[Value]) -> Value {
+    if args.len() < 4 {
+        return table_col_error(
+            "TypeError: table_join_columns() expects 4 arguments (table, source_columns, new_column, delimiter)",
+        );
+    }
+    let Value::Table(table) = &args[0] else {
+        return table_col_error(
+            "TypeError: table_join_columns() expects a table as the first argument",
+        );
+    };
+    let headers = table.borrow().headers().to_vec();
+    let source_columns = match parse_column_name_list(&args[1], &headers) {
+        Ok(cols) => cols,
+        Err(v) => return v,
+    };
+    let Value::String(new_name) = &args[2] else {
+        return table_col_error("TypeError: table_join_columns() new_column must be a string");
+    };
+    let Value::String(delimiter) = &args[3] else {
+        return table_col_error("TypeError: table_join_columns() delimiter must be a string");
+    };
+    match table_join_columns_impl(
+        &table.borrow(),
+        &source_columns,
+        new_name,
+        delimiter,
+    ) {
+        Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
+        Err(v) => v,
     }
 }
 
@@ -925,6 +1621,946 @@ pub fn table_where_impl(
 
     let new_table = Table::from_data(new_rows, Some(headers));
     Value::Table(Rc::new(RefCell::new(new_table)))
+}
+
+fn drop_nulls_error(msg: impl Into<String>) -> Value {
+    crate::websocket::set_native_error(msg.into());
+    Value::Null
+}
+
+fn replace_nulls_error(msg: impl Into<String>) -> Value {
+    crate::websocket::set_native_error(msg.into());
+    Value::Null
+}
+
+fn aggregate_error(msg: impl Into<String>) -> Value {
+    crate::websocket::set_native_error(msg.into());
+    Value::Null
+}
+
+#[derive(Clone)]
+struct AggregateSpecItem {
+    output: String,
+    op: String,
+    column: Option<String>,
+    p: Option<f64>,
+    where_fn: Option<Value>,
+}
+
+fn validate_agg_op(op: &str) -> bool {
+    matches!(
+        op,
+        "count"
+            | "count_distinct"
+            | "sum"
+            | "avg"
+            | "min"
+            | "max"
+            | "first"
+            | "last"
+            | "median"
+            | "mode"
+            | "stddev"
+            | "variance"
+            | "percentile"
+            | "list"
+            | "any"
+    )
+}
+
+fn parse_agg_spec_entries(
+    entries: Vec<(String, Value)>,
+    empty_error: &str,
+) -> Result<Vec<AggregateSpecItem>, Value> {
+    if entries.is_empty() {
+        return Err(aggregate_error(empty_error));
+    }
+
+    let mut out = Vec::with_capacity(entries.len());
+    for (output, item) in entries {
+        match item {
+            Value::String(op) => {
+                if !validate_agg_op(&op) {
+                    return Err(aggregate_error(format!(
+                        "TypeError: unsupported aggregate op '{}'",
+                        op
+                    )));
+                }
+                if op != "count" {
+                    return Err(aggregate_error(format!(
+                        "TypeError: string aggregate spec supports only 'count' (got '{}')",
+                        op
+                    )));
+                }
+                out.push(AggregateSpecItem {
+                    output,
+                    op,
+                    column: None,
+                    p: None,
+                    where_fn: None,
+                });
+            }
+            Value::Object(obj) => {
+                let obj_ref = obj.borrow();
+                let op = match obj_ref.str_key_get("op") {
+                    Some(Value::String(s)) => s.clone(),
+                    _ => {
+                        return Err(aggregate_error(
+                            "TypeError: aggregate spec object must contain string field 'op'",
+                        ));
+                    }
+                };
+                if !validate_agg_op(&op) {
+                    return Err(aggregate_error(format!(
+                        "TypeError: unsupported aggregate op '{}'",
+                        op
+                    )));
+                }
+
+                let column = match obj_ref.str_key_get("column") {
+                    Some(Value::String(s)) => Some(s.clone()),
+                    Some(_) => {
+                        return Err(aggregate_error(
+                            "TypeError: aggregate spec field 'column' must be a string",
+                        ));
+                    }
+                    None => None,
+                };
+
+                if op != "count" && column.is_none() {
+                    return Err(aggregate_error(format!(
+                        "TypeError: aggregate op '{}' requires string field 'column'",
+                        op
+                    )));
+                }
+
+                let p = match obj_ref.str_key_get("p") {
+                    Some(v) => {
+                        if let Some(n) = v.as_ieee_f64() {
+                            Some(n)
+                        } else {
+                            return Err(aggregate_error(
+                                "TypeError: aggregate spec field 'p' must be a number",
+                            ));
+                        }
+                    }
+                    None => None,
+                };
+
+                let where_fn = obj_ref.str_key_get("where").cloned();
+                if op == "percentile" && p.is_none() {
+                    return Err(aggregate_error(
+                        "TypeError: aggregate op 'percentile' requires numeric field 'p'",
+                    ));
+                }
+                if op == "any" {
+                    let Some(pred) = where_fn.clone() else {
+                        return Err(aggregate_error(
+                            "TypeError: aggregate op 'any' requires field 'where'",
+                        ));
+                    };
+                    if !matches!(
+                        pred,
+                        Value::NativeFunction(_)
+                            | Value::Function(_)
+                            | Value::ModuleFunction { .. }
+                    ) {
+                        return Err(aggregate_error(
+                            "TypeError: aggregate spec field 'where' must be callable",
+                        ));
+                    }
+                }
+
+                out.push(AggregateSpecItem {
+                    output,
+                    op,
+                    column,
+                    p,
+                    where_fn,
+                });
+            }
+            _ => {
+                return Err(aggregate_error(
+                    "TypeError: each aggregate spec value must be a string or object",
+                ));
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+fn parse_agg_spec(spec: &Value) -> Result<Vec<AggregateSpecItem>, Value> {
+    let Value::Object(spec_obj) = spec else {
+        return Err(aggregate_error("TypeError: table.aggregate() spec must be an object"));
+    };
+    parse_agg_spec_entries(
+        spec_obj.borrow().str_key_entries_cloned(),
+        "TypeError: table.aggregate() spec must not be empty",
+    )
+}
+
+fn parse_group_columns(group_arg: &Value) -> Result<Vec<String>, Value> {
+    match group_arg {
+        Value::String(s) => Ok(vec![s.clone()]),
+        Value::Array(arr) => {
+            let arr_ref = arr.borrow();
+            if arr_ref.is_empty() {
+                return Err(aggregate_error(
+                    "TypeError: aggregate_group field 'group' must be a non-empty string or array of strings",
+                ));
+            }
+            let mut names = Vec::with_capacity(arr_ref.len());
+            for item in arr_ref.iter() {
+                match item {
+                    Value::String(s) => names.push(s.clone()),
+                    _ => {
+                        return Err(aggregate_error(
+                            "TypeError: aggregate_group field 'group' must be a string or array of strings",
+                        ));
+                    }
+                }
+            }
+            Ok(names)
+        }
+        _ => Err(aggregate_error(
+            "TypeError: aggregate_group field 'group' must be a string or array of strings",
+        )),
+    }
+}
+
+fn parse_aggregate_group_spec(
+    spec: &Value,
+    headers: &[String],
+) -> Result<(Vec<String>, Vec<AggregateSpecItem>), Value> {
+    let Value::Object(spec_obj) = spec else {
+        return Err(aggregate_error(
+            "TypeError: table.aggregate_group() spec must be an object",
+        ));
+    };
+    let entries = spec_obj.borrow().str_key_entries_cloned();
+    if entries.is_empty() {
+        return Err(aggregate_error(
+            "TypeError: table.aggregate_group() spec must not be empty",
+        ));
+    }
+
+    let Some((_, group_arg)) = entries.iter().find(|(k, _)| k == "group") else {
+        return Err(aggregate_error(
+            "TypeError: table.aggregate_group() spec must contain field 'group'",
+        ));
+    };
+    let group_columns = parse_group_columns(group_arg)?;
+    for name in &group_columns {
+        if !headers.iter().any(|h| h == name) {
+            return Err(aggregate_error(format!(
+                "KeyError: column '{}' not found in table",
+                name
+            )));
+        }
+    }
+
+    let agg_entries: Vec<(String, Value)> = entries
+        .into_iter()
+        .filter(|(k, _)| k != "group")
+        .collect();
+    let agg_items = parse_agg_spec_entries(
+        agg_entries,
+        "TypeError: table.aggregate_group() spec must contain at least one aggregation",
+    )?;
+    Ok((group_columns, agg_items))
+}
+
+fn numbers_from_values(values: &[Value]) -> Vec<f64> {
+    values.iter().filter_map(|v| v.as_ieee_f64()).collect()
+}
+
+fn aggregate_median(values: &[Value]) -> Value {
+    let mut nums = numbers_from_values(values);
+    if nums.is_empty() {
+        return Value::Null;
+    }
+    nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = nums.len() / 2;
+    if nums.len() % 2 == 1 {
+        Value::Number(nums[mid])
+    } else {
+        Value::Number((nums[mid - 1] + nums[mid]) / 2.0)
+    }
+}
+
+fn aggregate_mode(values: &[Value]) -> Value {
+    if values.is_empty() {
+        return Value::Null;
+    }
+    let mut counts: std::collections::HashMap<String, (usize, Value)> = std::collections::HashMap::new();
+    for v in values {
+        let key = v.to_string();
+        counts
+            .entry(key)
+            .and_modify(|(c, _)| *c += 1)
+            .or_insert((1, v.clone()));
+    }
+    counts
+        .into_iter()
+        .max_by_key(|(_, (count, _))| *count)
+        .map(|(_, (_, v))| v)
+        .unwrap_or(Value::Null)
+}
+
+fn aggregate_variance(values: &[Value]) -> Value {
+    let nums = numbers_from_values(values);
+    if nums.is_empty() {
+        return Value::Null;
+    }
+    let mean = nums.iter().sum::<f64>() / nums.len() as f64;
+    let var = nums.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / nums.len() as f64;
+    Value::Number(var)
+}
+
+fn aggregate_stddev(values: &[Value]) -> Value {
+    match aggregate_variance(values) {
+        Value::Number(v) => Value::Number(v.sqrt()),
+        _ => Value::Null,
+    }
+}
+
+fn aggregate_percentile(values: &[Value], p: f64) -> Result<Value, Value> {
+    if !(0.0..=1.0).contains(&p) {
+        return Err(aggregate_error("TypeError: percentile 'p' must be between 0 and 1"));
+    }
+    let mut nums = numbers_from_values(values);
+    if nums.is_empty() {
+        return Ok(Value::Null);
+    }
+    nums.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let rank = p * (nums.len().saturating_sub(1) as f64);
+    let lo = rank.floor() as usize;
+    let hi = rank.ceil() as usize;
+    if lo == hi {
+        return Ok(Value::Number(nums[lo]));
+    }
+    let w = rank - lo as f64;
+    Ok(Value::Number(nums[lo] + (nums[hi] - nums[lo]) * w))
+}
+
+fn aggregate_column_values(
+    headers: &[String],
+    rows: &[Vec<Value>],
+    column: &str,
+) -> Result<Vec<Value>, Value> {
+    let Some(col_idx) = headers.iter().position(|h| h == column) else {
+        return Err(aggregate_error(format!(
+            "KeyError: column '{}' not found in table",
+            column
+        )));
+    };
+    Ok(rows
+        .iter()
+        .map(|r| r.get(col_idx).cloned().unwrap_or(Value::Null))
+        .collect())
+}
+
+fn apply_aggregate_op(
+    item: &AggregateSpecItem,
+    headers: &[String],
+    rows: &[Vec<Value>],
+    vm_ptr: Option<*mut crate::vm::vm::Vm>,
+) -> Result<Value, Value> {
+    use super::utils::invoke_value_callable;
+    use crate::common::error::LangError;
+    use crate::vm::vm::{VmExecutionContext, VM_CALL_CONTEXT};
+
+    let col_values = if let Some(col) = item.column.as_deref() {
+        aggregate_column_values(headers, rows, col)?
+    } else {
+        Vec::new()
+    };
+
+    match item.op.as_str() {
+        "count" => Ok(Value::Number(rows.len() as f64)),
+        "count_distinct" => {
+            let mut set = std::collections::HashSet::new();
+            for v in &col_values {
+                set.insert(v.to_string());
+            }
+            Ok(Value::Number(set.len() as f64))
+        }
+        "sum" => Ok(Value::Number(
+            numbers_from_values(&col_values).iter().sum::<f64>(),
+        )),
+        "avg" => {
+            let nums = numbers_from_values(&col_values);
+            if nums.is_empty() {
+                Ok(Value::Number(0.0))
+            } else {
+                Ok(Value::Number(nums.iter().sum::<f64>() / nums.len() as f64))
+            }
+        }
+        "min" => Ok(col_values
+            .iter()
+            .cloned()
+            .min_by(compare_values)
+            .unwrap_or(Value::Null)),
+        "max" => Ok(col_values
+            .iter()
+            .cloned()
+            .max_by(compare_values)
+            .unwrap_or(Value::Null)),
+        "first" => Ok(col_values.first().cloned().unwrap_or(Value::Null)),
+        "last" => Ok(col_values.last().cloned().unwrap_or(Value::Null)),
+        "median" => Ok(aggregate_median(&col_values)),
+        "mode" => Ok(aggregate_mode(&col_values)),
+        "stddev" => Ok(aggregate_stddev(&col_values)),
+        "variance" => Ok(aggregate_variance(&col_values)),
+        "percentile" => aggregate_percentile(&col_values, item.p.unwrap_or(0.5)),
+        "list" => Ok(Value::Array(Rc::new(RefCell::new(col_values)))),
+        "any" => {
+            let where_fn = item.where_fn.as_ref().ok_or_else(|| {
+                aggregate_error("TypeError: aggregate op 'any' requires field 'where'")
+            })?;
+            let mut ok = false;
+            for v in &col_values {
+                if let Some(vm_ptr) = vm_ptr {
+                    VM_CALL_CONTEXT.with(|ctx| {
+                        *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+                    });
+                }
+                let pred_res = invoke_value_callable(where_fn, std::slice::from_ref(v)).map_err(|e| {
+                    let message = match e {
+                        LangError::LexError { message, .. }
+                        | LangError::ParseError { message, .. }
+                        | LangError::SemanticError { message, .. }
+                        | LangError::RuntimeError { message, .. } => message,
+                    };
+                    aggregate_error(format!(
+                        "TypeError: aggregate any(where) callback failed: {}",
+                        message
+                    ))
+                })?;
+                if pred_res.is_truthy() {
+                    ok = true;
+                    break;
+                }
+            }
+            Ok(Value::Bool(ok))
+        }
+        _ => Err(aggregate_error(format!(
+            "TypeError: unsupported aggregate op '{}'",
+            item.op
+        ))),
+    }
+}
+
+pub fn table_aggregate_impl(table: &Table, spec: &Value) -> Result<Table, Value> {
+    use crate::vm::vm::current_vm_ptr;
+
+    let parsed = parse_agg_spec(spec)?;
+    let headers = table.headers().to_vec();
+    let rows = materialize_table_rows(table);
+    let vm_ptr = current_vm_ptr();
+
+    let mut out_headers: Vec<String> = Vec::with_capacity(parsed.len());
+    let mut out_row: Vec<Value> = Vec::with_capacity(parsed.len());
+
+    for item in parsed {
+        out_headers.push(item.output.clone());
+        out_row.push(apply_aggregate_op(&item, &headers, &rows, vm_ptr)?);
+    }
+
+    Ok(Table::from_data(vec![out_row], Some(out_headers)))
+}
+
+pub fn table_aggregate_group_impl(table: &Table, spec: &Value) -> Result<Table, Value> {
+    use crate::vm::vm::current_vm_ptr;
+    use std::collections::HashMap;
+
+    let headers = table.headers().to_vec();
+    let (group_columns, agg_items) = parse_aggregate_group_spec(spec, &headers)?;
+    let rows = materialize_table_rows(table);
+    let vm_ptr = current_vm_ptr();
+
+    let group_indices: Vec<usize> = group_columns
+        .iter()
+        .map(|name| {
+            headers
+                .iter()
+                .position(|h| h == name)
+                .expect("group column validated")
+        })
+        .collect();
+
+    let mut buckets: Vec<(Vec<Value>, Vec<usize>)> = Vec::new();
+    let mut bucket_index: HashMap<String, usize> = HashMap::new();
+    for (row_idx, row) in rows.iter().enumerate() {
+        let key_values: Vec<Value> = group_indices
+            .iter()
+            .map(|&idx| row.get(idx).cloned().unwrap_or(Value::Null))
+            .collect();
+        let key = key_values
+            .iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join("\x1f");
+        if let Some(&bucket_idx) = bucket_index.get(&key) {
+            buckets[bucket_idx].1.push(row_idx);
+        } else {
+            let bucket_idx = buckets.len();
+            bucket_index.insert(key, bucket_idx);
+            buckets.push((key_values, vec![row_idx]));
+        }
+    }
+
+    let mut out_headers = group_columns.clone();
+    out_headers.extend(agg_items.iter().map(|item| item.output.clone()));
+    let mut out_rows: Vec<Vec<Value>> = Vec::with_capacity(buckets.len());
+
+    for (key_values, row_indices) in buckets {
+        let group_rows: Vec<Vec<Value>> = row_indices
+            .iter()
+            .map(|&idx| rows[idx].clone())
+            .collect();
+        let mut out_row = key_values;
+        for item in &agg_items {
+            out_row.push(apply_aggregate_op(item, &headers, &group_rows, vm_ptr)?);
+        }
+        out_rows.push(out_row);
+    }
+
+    Ok(Table::from_data(out_rows, Some(out_headers)))
+}
+
+/// `table_aggregate(table, spec)` / `table.aggregate(spec)`
+pub fn native_table_aggregate(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return aggregate_error("TypeError: table_aggregate() expects 2 arguments (table, spec)");
+    }
+    let Value::Table(table) = &args[0] else {
+        return aggregate_error("TypeError: table_aggregate() expects a table as the first argument");
+    };
+
+    match table_aggregate_impl(&table.borrow(), &args[1]) {
+        Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
+        Err(v) => v,
+    }
+}
+
+/// `table_aggregate_group(table, spec)` / `table.aggregate_group(spec)`
+pub fn native_table_aggregate_group(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return aggregate_error(
+            "TypeError: table_aggregate_group() expects 2 arguments (table, spec)",
+        );
+    }
+    let Value::Table(table) = &args[0] else {
+        return aggregate_error(
+            "TypeError: table_aggregate_group() expects a table as the first argument",
+        );
+    };
+
+    match table_aggregate_group_impl(&table.borrow(), &args[1]) {
+        Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
+        Err(v) => v,
+    }
+}
+
+/// Resolve optional column argument to header indices. `None` = check all columns.
+fn parse_drop_nulls_columns(
+    arg: Option<&Value>,
+    headers: &[String],
+) -> Result<Option<Vec<usize>>, Value> {
+    let Some(arg) = arg else {
+        return Ok(None);
+    };
+    let names: Vec<String> = match arg {
+        Value::String(s) => vec![s.clone()],
+        Value::Array(arr) => arr
+            .borrow()
+            .iter()
+            .filter_map(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => {
+            return Err(drop_nulls_error(
+                "TypeError: column must be a string or array of strings",
+            ));
+        }
+    };
+    if names.is_empty() {
+        return Err(drop_nulls_error(
+            "TypeError: column must be a non-empty string or array of strings",
+        ));
+    }
+    let mut indices = Vec::with_capacity(names.len());
+    for name in names {
+        let Some(idx) = headers.iter().position(|h| h == &name) else {
+            return Err(drop_nulls_error(format!(
+                "KeyError: column '{}' not found in table",
+                name
+            )));
+        };
+        indices.push(idx);
+    }
+    Ok(Some(indices))
+}
+
+/// Resolve optional column argument to header indices. `None` = all columns.
+fn parse_replace_nulls_columns(
+    arg: Option<&Value>,
+    headers: &[String],
+) -> Result<Option<Vec<usize>>, Value> {
+    let Some(arg) = arg else {
+        return Ok(None);
+    };
+    let names: Vec<String> = match arg {
+        Value::String(s) => vec![s.clone()],
+        Value::Array(arr) => arr
+            .borrow()
+            .iter()
+            .filter_map(|v| match v {
+                Value::String(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => {
+            return Err(replace_nulls_error(
+                "TypeError: column must be a string or array of strings",
+            ));
+        }
+    };
+    if names.is_empty() {
+        return Err(replace_nulls_error(
+            "TypeError: column must be a non-empty string or array of strings",
+        ));
+    }
+    let mut indices = Vec::with_capacity(names.len());
+    for name in names {
+        let Some(idx) = headers.iter().position(|h| h == &name) else {
+            return Err(replace_nulls_error(format!(
+                "KeyError: column '{}' not found in table",
+                name
+            )));
+        };
+        indices.push(idx);
+    }
+    Ok(Some(indices))
+}
+
+fn validate_replace_nulls_callback(func: &Value) -> Result<(), Value> {
+    match func {
+        Value::NativeFunction(_) => Ok(()),
+        Value::Function(fn_idx) => {
+            let Some(vm_ptr) = crate::vm::vm::current_vm_ptr() else {
+                return Err(replace_nulls_error("replace_nulls: VM context not available"));
+            };
+            unsafe {
+                let vm = &*vm_ptr;
+                let arity = vm
+                    .get_functions()
+                    .get(*fn_idx)
+                    .map(|fun| fun.arity)
+                    .unwrap_or(0);
+                if arity != 1 {
+                    return Err(replace_nulls_error(format!(
+                        "TypeError: replace_nulls callback must have arity 1, got {}",
+                        arity
+                    )));
+                }
+            }
+            Ok(())
+        }
+        Value::ModuleFunction { .. } => Ok(()),
+        _ => Err(replace_nulls_error(
+            "TypeError: replacement must be a value or callback function",
+        )),
+    }
+}
+
+fn row_has_null_in_columns(row: &[Value], col_indices: Option<&[usize]>) -> bool {
+    match col_indices {
+        None => row.iter().any(|v| matches!(v, Value::Null)),
+        Some(idxs) => idxs
+            .iter()
+            .any(|&i| row.get(i).is_some_and(|v| matches!(v, Value::Null))),
+    }
+}
+
+/// Drop rows with `null` in `columns` (or any column when `columns` is `None`).
+pub fn table_drop_nulls_impl(
+    table: &Rc<RefCell<Table>>,
+    columns: Option<Vec<usize>>,
+) -> Value {
+    let headers = table.borrow().headers().clone();
+    let n_rows = table.borrow().len();
+    let is_view = table.borrow().is_view();
+
+    let matching_indices: Vec<usize> = if is_view {
+        crate::vm::vm::with_current_stores(|store, heap| {
+            let t = table.borrow();
+            (0..n_rows)
+                .filter(|&i| {
+                    crate::vm::table_ops::get_row(&*t, i, store, heap)
+                        .is_some_and(|row| !row_has_null_in_columns(&row, columns.as_deref()))
+                })
+                .collect()
+        })
+    } else {
+        let table_ref = table.borrow();
+        (0..n_rows)
+            .filter(|&i| {
+                table_ref
+                    .get_row(i)
+                    .is_some_and(|row| !row_has_null_in_columns(row, columns.as_deref()))
+            })
+            .collect()
+    };
+
+    let new_rows: Vec<Vec<Value>> = if is_view {
+        crate::vm::vm::with_current_stores(|store, heap| {
+            let t = table.borrow();
+            matching_indices
+                .iter()
+                .filter_map(|&idx| crate::vm::table_ops::get_row(&*t, idx, store, heap))
+                .collect()
+        })
+    } else {
+        let table_ref = table.borrow();
+        matching_indices
+            .iter()
+            .filter_map(|&idx| table_ref.get_row(idx).map(|r| r.to_vec()))
+            .collect()
+    };
+
+    let new_table = Table::from_data(new_rows, Some(headers));
+    Value::Table(Rc::new(RefCell::new(new_table)))
+}
+
+/// `table_drop_nulls(table [, column])` / `table.drop_nulls([column])`
+pub fn native_table_drop_nulls(args: &[Value]) -> Value {
+    if args.is_empty() {
+        return drop_nulls_error("TypeError: table_drop_nulls() expects at least 1 argument");
+    }
+
+    let table = match &args[0] {
+        Value::Table(t) => t,
+        _ => {
+            return drop_nulls_error(
+                "TypeError: table_drop_nulls() expects a table as the first argument",
+            );
+        }
+    };
+
+    let headers = table.borrow().headers().clone();
+    let columns = match parse_drop_nulls_columns(args.get(1), &headers) {
+        Ok(c) => c,
+        Err(v) => return v,
+    };
+
+    table_drop_nulls_impl(table, columns)
+}
+
+/// Replace `null` values in selected columns (or all columns when `columns` is `None`).
+/// `replacement` can be a scalar value or callback `fn(row)`.
+pub fn table_replace_nulls_impl(
+    table: &Rc<RefCell<Table>>,
+    columns: Option<Vec<usize>>,
+    replacement: &Value,
+) -> Value {
+    use super::utils::invoke_value_callable;
+    use crate::common::error::LangError;
+    use crate::vm::vm::{current_vm_ptr, VmExecutionContext, VM_CALL_CONTEXT};
+    use std::collections::HashMap;
+
+    let headers = table.borrow().headers().clone();
+    let rows = {
+        let table_ref = table.borrow();
+        materialize_table_rows(&table_ref)
+    };
+    let target_columns: Vec<usize> = columns.unwrap_or_else(|| (0..headers.len()).collect());
+    let callback_mode = matches!(
+        replacement,
+        Value::NativeFunction(_) | Value::Function(_) | Value::ModuleFunction { .. }
+    );
+    if callback_mode {
+        if let Err(v) = validate_replace_nulls_callback(replacement) {
+            return v;
+        }
+    }
+
+    let vm_ptr = current_vm_ptr();
+    let mut out_rows = Vec::with_capacity(rows.len());
+    for mut row in rows {
+        let mut row_object = HashMap::with_capacity(headers.len());
+        for (idx, header) in headers.iter().enumerate() {
+            row_object.insert(
+                header.clone(),
+                row.get(idx).cloned().unwrap_or_else(|| Value::Null),
+            );
+        }
+        let row_value = Value::legacy_object(row_object);
+        for &col_idx in &target_columns {
+            if row.get(col_idx).is_some_and(|v| matches!(v, Value::Null)) {
+                let new_value = if callback_mode {
+                    if let Some(vm_ptr) = vm_ptr {
+                        VM_CALL_CONTEXT.with(|ctx| {
+                            *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+                        });
+                    }
+                    match invoke_value_callable(replacement, std::slice::from_ref(&row_value)) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            let message = match e {
+                                LangError::LexError { message, .. }
+                                | LangError::ParseError { message, .. }
+                                | LangError::SemanticError { message, .. }
+                                | LangError::RuntimeError { message, .. } => message,
+                            };
+                            return replace_nulls_error(message);
+                        }
+                    }
+                } else {
+                    replacement.clone()
+                };
+                if let Some(cell) = row.get_mut(col_idx) {
+                    *cell = new_value;
+                }
+            }
+        }
+        out_rows.push(row);
+    }
+
+    let new_table = Table::from_data(out_rows, Some(headers));
+    Value::Table(Rc::new(RefCell::new(new_table)))
+}
+
+/// `table_replace_nulls(table, replacement)` /
+/// `table_replace_nulls(table, column, replacement)` /
+/// `table.replace_nulls(...)`
+pub fn native_table_replace_nulls(args: &[Value]) -> Value {
+    if args.len() < 2 || args.len() > 3 {
+        return replace_nulls_error(
+            "TypeError: table_replace_nulls() expects 2 or 3 arguments",
+        );
+    }
+
+    let table = match &args[0] {
+        Value::Table(t) => t,
+        _ => {
+            return replace_nulls_error(
+                "TypeError: table_replace_nulls() expects a table as the first argument",
+            );
+        }
+    };
+
+    let headers = table.borrow().headers().clone();
+    let (columns, replacement) = if args.len() == 2 {
+        (None, &args[1])
+    } else {
+        let columns = match parse_replace_nulls_columns(args.get(1), &headers) {
+            Ok(c) => c,
+            Err(v) => return v,
+        };
+        (columns, &args[2])
+    };
+
+    table_replace_nulls_impl(table, columns, replacement)
+}
+
+/// `table_row_number(table [, column_name [, start_from]])` /
+/// `table.row_number([column_name [, start_from]])`
+pub fn native_table_row_number(args: &[Value]) -> Value {
+    if args.is_empty() || args.len() > 3 {
+        return table_col_error(
+            "TypeError: table_row_number() expects 1 to 3 arguments",
+        );
+    }
+    let Value::Table(table) = &args[0] else {
+        return table_col_error("TypeError: table_row_number() expects a table as the first argument");
+    };
+
+    let column_name = if args.len() > 1 {
+        match &args[1] {
+            Value::String(s) => s.as_str(),
+            _ => {
+                return table_col_error(
+                    "TypeError: table_row_number() column name must be a string",
+                );
+            }
+        }
+    } else {
+        "RowNumber"
+    };
+    let start_from = if args.len() > 2 {
+        match &args[2] {
+            Value::Number(n) => *n,
+            _ => {
+                return table_col_error(
+                    "TypeError: table_row_number() start_from must be a number",
+                );
+            }
+        }
+    } else {
+        1.0
+    };
+
+    let n_rows = table.borrow().len();
+    let numbers: Vec<Value> = (0..n_rows)
+        .map(|i| Value::Number(start_from + i as f64))
+        .collect();
+    let values = Value::Array(Rc::new(RefCell::new(numbers)));
+    match table_add_column_impl(&table.borrow(), column_name, Some(&values)) {
+        Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
+        Err(v) => v,
+    }
+}
+
+/// `table_distinct(table [, columns])` / `table.distinct([columns])`
+pub fn native_table_distinct(args: &[Value]) -> Value {
+    use std::collections::HashSet;
+
+    if args.is_empty() || args.len() > 2 {
+        return table_col_error("TypeError: table_distinct() expects 1 or 2 arguments");
+    }
+    let Value::Table(table) = &args[0] else {
+        return table_col_error("TypeError: table_distinct() expects a table as the first argument");
+    };
+
+    let table_ref = table.borrow();
+    let headers = table_ref.headers().to_vec();
+    let rows = materialize_table_rows(&table_ref);
+    let selected_indices: Option<Vec<usize>> = if let Some(columns_arg) = args.get(1) {
+        let names = match parse_column_name_list(columns_arg, &headers) {
+            Ok(n) => n,
+            Err(v) => return v,
+        };
+        let mut indices = Vec::with_capacity(names.len());
+        for name in names {
+            if let Some(idx) = headers.iter().position(|h| h == &name) {
+                indices.push(idx);
+            }
+        }
+        Some(indices)
+    } else {
+        None
+    };
+
+    let mut seen: HashSet<Vec<String>> = HashSet::new();
+    let mut out_rows: Vec<Vec<Value>> = Vec::with_capacity(rows.len());
+    for row in rows {
+        let key: Vec<String> = match &selected_indices {
+            Some(indices) => indices
+                .iter()
+                .map(|&i| row.get(i).cloned().unwrap_or(Value::Null).to_string())
+                .collect(),
+            None => row.iter().map(|v| v.to_string()).collect(),
+        };
+        if seen.insert(key) {
+            out_rows.push(row);
+        }
+    }
+    Value::Table(Rc::new(RefCell::new(Table::from_data(out_rows, Some(headers)))))
 }
 
 pub fn native_table_where(args: &[Value]) -> Value {

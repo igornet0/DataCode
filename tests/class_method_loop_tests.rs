@@ -6,7 +6,7 @@ use std::path::Path;
 
 fn deque_example_path(filename: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("examples/ru/04-продвинутые/структуры данных/")
+        .join("examples/ru/09-продвинутые/структуры данных/")
         .join(filename)
 }
 

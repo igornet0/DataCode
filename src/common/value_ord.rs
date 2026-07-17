@@ -19,9 +19,10 @@ pub fn value_ord_type_name(v: &Value) -> &'static str {
         Value::Bool(_) => "bool",
         Value::String(_) => "string",
         Value::Tuple(_) => "tuple",
-        Value::Array(_) | Value::ArrayView(_) | Value::ByteBuffer(_) | Value::ObjectFieldList { .. } => {
+        Value::Array(_) | Value::ArrayView(_) | Value::ObjectFieldList { .. } => {
             "array"
         }
+        Value::ByteBuffer(_) => "bytes",
         Value::Date(_) => "date",
         Value::Duration(_) => "duration",
         Value::Null => "null",
@@ -43,6 +44,9 @@ pub fn value_ord_type_name(v: &Value) -> &'static str {
         Value::Axis(_) => "axis",
         Value::DatabaseEngine(_) => "database_engine",
         Value::DatabaseCluster(_) => "database_cluster",
+        Value::Archive(_) => "archive",
+        Value::DataSource(_) => "datasource",
+        Value::DataSourceResponse(_) => "response",
         Value::Ellipsis => "ellipsis",
     }
 }

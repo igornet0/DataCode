@@ -4,6 +4,13 @@
 mod tests {
     use data_code::{get_main_entry_params, run_with_vm_with_args, Value};
 
+    fn assert_number(value: Value, expected: f64) {
+        match value.as_ieee_f64() {
+            Some(n) => assert_eq!(n, expected),
+            None => panic!("expected numeric({}), got {:?}", expected, value),
+        }
+    }
+
     // ========== get_main_entry_params ==========
 
     #[test]
@@ -136,10 +143,7 @@ mod tests {
         "#;
         let result = run_with_vm_with_args(source, None);
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 100.0),
-            v => panic!("expected Number(100), got {:?}", v),
-        }
+        assert_number(value, 100.0);
     }
 
     #[test]
@@ -172,10 +176,7 @@ mod tests {
         "#;
         let result = run_with_vm_with_args(source, Some(vec!["a".into(), "b".into(), "c".into()]));
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 3.0, "len(argv) = 3"),
-            v => panic!("expected Number(3), got {:?}", v),
-        }
+        assert_number(value, 3.0);
     }
 
     #[test]
@@ -187,10 +188,7 @@ mod tests {
         "#;
         let result = run_with_vm_with_args(source, Some(vec![]));
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 0.0),
-            v => panic!("expected Number(0), got {:?}", v),
-        }
+        assert_number(value, 0.0);
     }
 
     #[test]
@@ -267,10 +265,7 @@ mod tests {
         "#;
         let result = run_with_vm_with_args(source, Some(vec!["21".into()]));
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 42.0),
-            v => panic!("expected Number(42), got {:?}", v),
-        }
+        assert_number(value, 42.0);
     }
 
     #[test]
@@ -283,10 +278,7 @@ mod tests {
         let result =
             run_with_vm_with_args(source, Some(vec!["10".into(), "20".into(), "12".into()]));
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 42.0),
-            v => panic!("expected Number(42), got {:?}", v),
-        }
+        assert_number(value, 42.0);
     }
 
     // ========== Рекурсия и циклы ==========
@@ -304,10 +296,7 @@ mod tests {
         "#;
         let result = run_with_vm_with_args(source, Some(vec!["5".into()]));
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 120.0),
-            v => panic!("expected Number(120), got {:?}", v),
-        }
+        assert_number(value, 120.0);
     }
 
     #[test]
@@ -323,10 +312,7 @@ mod tests {
         "#;
         let result = run_with_vm_with_args(source, Some(vec!["1".into(), "2".into(), "3".into()]));
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 6.0),
-            v => panic!("expected Number(6), got {:?}", v),
-        }
+        assert_number(value, 6.0);
     }
 
     #[test]
@@ -344,10 +330,7 @@ mod tests {
         "#;
         let result = run_with_vm_with_args(source, Some(vec!["4".into()]));
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 10.0), // 4+3+2+1
-            v => panic!("expected Number(10), got {:?}", v),
-        }
+        assert_number(value, 10.0); // 4+3+2+1
     }
 
     // ========== try/catch ==========
@@ -365,10 +348,7 @@ mod tests {
         "#;
         let result = run_with_vm_with_args(source, Some(vec!["10".into(), "32".into()]));
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 42.0),
-            v => panic!("expected Number(42), got {:?}", v),
-        }
+        assert_number(value, 42.0);
     }
 
     #[test]
@@ -384,10 +364,7 @@ mod tests {
         "#;
         let result = run_with_vm_with_args(source, Some(vec!["10".into(), "0".into()]));
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 999.0, "division by zero caught"),
-            v => panic!("expected Number(999), got {:?}", v),
-        }
+        assert_number(value, 999.0);
     }
 
     // ========== Возврат массивов и объектов ==========
@@ -425,7 +402,7 @@ mod tests {
             Value::Object(rc) => {
                 let o = rc.borrow();
                 assert_eq!(o.str_key_get("env"), Some(&Value::String("prod".into())));
-                assert_eq!(o.str_key_get("count"), Some(&Value::Number(42.0)));
+                assert_eq!(o.str_key_get("count").and_then(|v| v.as_ieee_f64()), Some(42.0));
             }
             v => panic!("expected Object, got {:?}", v),
         }
@@ -467,10 +444,7 @@ mod tests {
         "#;
         let result = run_with_vm_with_args(source, Some(vec!["5".into()]));
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 15.0), // 1+2+3+4+5
-            v => panic!("expected Number(15), got {:?}", v),
-        }
+        assert_number(value, 15.0); // 1+2+3+4+5
     }
 
     #[test]
@@ -487,10 +461,7 @@ mod tests {
         "#;
         let result = run_with_vm_with_args(source, None);
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 25.0), // 1+3+5+7+9
-            v => panic!("expected Number(25), got {:?}", v),
-        }
+        assert_number(value, 25.0); // 1+3+5+7+9
     }
 
     // ========== Логика and/or ==========
@@ -507,16 +478,10 @@ mod tests {
         "#;
         let result = run_with_vm_with_args(source, Some(vec!["1".into(), "2".into()]));
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 1.0),
-            v => panic!("expected Number(1), got {:?}", v),
-        }
+        assert_number(value, 1.0);
         let result2 = run_with_vm_with_args(source, Some(vec!["0".into(), "2".into()]));
         let (v2, _) = result2.expect("run should succeed");
-        match v2 {
-            Value::Number(n) => assert_eq!(n, 0.0),
-            v => panic!("expected Number(0), got {:?}", v),
-        }
+        assert_number(v2, 0.0);
     }
 
     #[test]
@@ -531,10 +496,7 @@ mod tests {
         "#;
         let result = run_with_vm_with_args(source, Some(vec!["prod".into()]));
         let (value, _vm) = result.expect("run should succeed");
-        match value {
-            Value::Number(n) => assert_eq!(n, 1.0),
-            v => panic!("expected Number(1), got {:?}", v),
-        }
+        assert_number(value, 1.0);
     }
 
     // ========== Ошибка в __main__ ==========

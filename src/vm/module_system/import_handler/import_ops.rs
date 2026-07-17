@@ -19,6 +19,48 @@ use crate::vm::types::VMStatus;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+/// Typed ctor `Class::new_1_int` → arity-only name `Class::new_1` for compile-time placeholder slots.
+fn constructor_base_global_name(class_name: &str, ctor_key: &str) -> Option<String> {
+    let prefix = format!("{}::new_", class_name);
+    let rest = ctor_key.strip_prefix(&prefix)?;
+    let digit_len = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digit_len == 0 || rest.len() == digit_len {
+        return None;
+    }
+    Some(format!("{}::new_{}", class_name, &rest[..digit_len]))
+}
+
+/// Fill a pre-reserved `Class::new_N` global slot when the module exports `Class::new_N_<types>`.
+fn alias_typed_constructor_to_base_slot(
+    class_name: &str,
+    ctor_key: &str,
+    updated_id: ValueId,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &std::collections::BTreeMap<usize, String>,
+    value_store: &mut ValueStore,
+    heavy_store: &HeavyStore,
+    argv_slot: Option<usize>,
+) {
+    let Some(base_name) = constructor_base_global_name(class_name, ctor_key) else {
+        return;
+    };
+    let base_idx = match global_index_by_name(global_names, &base_name) {
+        Some(idx) => idx,
+        None => return,
+    };
+    if Some(base_idx) == argv_slot || base_idx >= globals.len() {
+        return;
+    }
+    let rid = globals[base_idx].resolve_to_value_id(value_store);
+    if !matches!(
+        load_value(rid, value_store, heavy_store),
+        Value::Null
+    ) {
+        return;
+    }
+    globals[base_idx] = GlobalSlot::Heap(updated_id);
+}
+
 /// `from ml.layer import ...` — не файловый модуль, а объект `globals["ml"]["layer"]` после `import ml`
 /// (нативный модуль с `nest_dotted_module_exports`, например `layer.linear` → `ml.layer.linear`).
 /// Install a heap `ValueId` for a module at the global slot named `module_name`.
@@ -73,7 +115,7 @@ fn resolve_dotted_namespace_from_loaded_parent(
     for seg in &parts[1..] {
         match cur {
             Value::Object(rc) => {
-                let v = rc.borrow().get(*seg)?.clone();
+                let v = rc.borrow().str_key_get(*seg)?.clone();
                 cur = v;
             }
             _ => return None,
@@ -129,13 +171,15 @@ fn ensure_module_loaded(
                     };
                     if let Value::Object(module_obj_rc) = &module_object {
                         let mut module_obj = module_obj_rc.borrow_mut();
-                        module_obj.insert(
+                        let _ = module_obj.str_key_insert(
                             "__start_function_index".to_string(),
                             Value::Number(start_function_index as f64),
                         );
-                        for (_, v) in module_obj.iter_mut() {
-                            if let Value::Function(i) = v {
-                                *v = Value::Function(start_function_index + *i);
+                        if let Some(m) = module_obj.legacy_mut() {
+                            for (_, v) in m.iter_mut() {
+                                if let Value::Function(i) = v {
+                                    *v = Value::Function(start_function_index + *i);
+                                }
                             }
                         }
                     }
@@ -177,7 +221,7 @@ fn ensure_module_loaded(
             );
             (*vm_ptr).merge_abi_export_param_meta(sidecar.export_param_meta);
         }
-        let module_value = Value::Object(Rc::new(RefCell::new(module_object)));
+        let module_value = Value::legacy_object(module_object);
         let id = store_value(module_value, value_store, heavy_store);
         if let Some(idx) = global_index_by_name(global_names, module_name) {
             if idx < globals.len() {
@@ -446,13 +490,17 @@ pub(crate) fn handle_import_from(
                                 let submodule_keys: std::collections::HashSet<String> =
                                     module_vm.get_modules().keys().cloned().collect();
                                 if let Value::Object(module_obj_rc) = &module_object {
-                                    let mut module_obj = module_obj_rc.borrow_mut();
-                                    crate::replace_function_with_module_function_in_exports(
-                                        &mut *module_obj,
-                                        &full_module_name,
-                                        &submodule_keys,
-                                        Some(module_obj_rc),
-                                    );
+                                    {
+                                        let mut borrowed = module_obj_rc.borrow_mut();
+                                        if let Some(map) = borrowed.legacy_mut() {
+                                            crate::replace_function_with_module_function_in_exports(
+                                                map,
+                                                &full_module_name,
+                                                &submodule_keys,
+                                                Some(module_obj_rc),
+                                            );
+                                        }
+                                    }
                                 }
                                 // Extend caller's natives with module's natives and remap NativeFunction in module object
                                 // (fixes "Native function index 194 out of bounds" when merged code uses Config etc.).
@@ -465,12 +513,16 @@ pub(crate) fn handle_import_from(
                                         .extend_from_slice(&other_natives[BUILTIN_NATIVE_COUNT..]);
                                 }
                                 if let Value::Object(module_obj_rc) = &module_object {
-                                    let mut module_obj = module_obj_rc.borrow_mut();
-                                    crate::remap_native_indices_in_exports(
-                                        &mut *module_obj,
-                                        native_start,
-                                        Some(module_obj_rc),
-                                    );
+                                    {
+                                        let mut borrowed = module_obj_rc.borrow_mut();
+                                        if let Some(map) = borrowed.legacy_mut() {
+                                            crate::remap_native_indices_in_exports(
+                                                map,
+                                                native_start,
+                                                Some(module_obj_rc),
+                                            );
+                                        }
+                                    }
                                 }
                                 // Merge submodules into caller so __constructing_class__ lookup finds classes from them.
                                 // Do not overwrite existing modules: caller may have runtime state (e.g. core.config.settings from load_settings).
@@ -508,7 +560,7 @@ pub(crate) fn handle_import_from(
                                 {
                                     let value_for_name = |name: &str| -> Option<Value> {
                                         if let Value::Object(ref module_obj_rc) = &module_object {
-                                            if let Some(v) = module_obj_rc.borrow().get(name) {
+                                            if let Some(v) = module_obj_rc.borrow().str_key_get(name) {
                                                 return Some(v.clone());
                                             }
                                         }
@@ -583,36 +635,20 @@ pub(crate) fn handle_import_from(
                                 }
                                 // Ensure all names from main + function chunks are in global_names
                                 // so update_chunk_indices_from_names finds them (no "no match").
-                                // Module isolation: skip only internal plain vars (e.g. "settings" = Null).
+                                // Never skip Null module bindings (e.g. `global settings = null`):
+                                // they must remap or StoreGlobal/LoadGlobal keep stale module indices.
                                 const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
-                                let is_internal_module_var = |name: &str| -> bool {
-                                    if imported_names.contains(name) || imported_names.contains("*")
-                                    {
-                                        return false;
-                                    }
-                                    let v_opt = if let Value::Object(ref rc) = &module_object {
-                                        rc.borrow().get(name).cloned()
-                                    } else {
-                                        None
-                                    };
-                                    v_opt.as_ref().map_or(false, |v| matches!(v, Value::Null))
-                                };
                                 let chunks_to_feed: Vec<_> = frames
                                     .first()
                                     .map(|f| &f.function.chunk)
                                     .into_iter()
                                     .chain(functions.iter().map(|f| &f.chunk))
                                     .collect();
-                                for (chunk_index, chunk) in chunks_to_feed.iter().enumerate() {
-                                    let is_merged_module_chunk =
-                                        chunk_index >= 1 && (chunk_index - 1) >= start_idx;
+                                for chunk in &chunks_to_feed {
                                     for (idx, name) in &chunk.global_names {
                                         if *idx == UNDEFINED_GLOBAL_SENTINEL
                                             || name.as_str() == "argv"
                                         {
-                                            continue;
-                                        }
-                                        if is_merged_module_chunk && is_internal_module_var(name) {
                                             continue;
                                         }
                                         if !global_names.values().any(|n| n == name) {
@@ -698,7 +734,7 @@ pub(crate) fn handle_import_from(
                                     let argv_slot_feed = unsafe { (*vm_ptr).get_argv_slot_index() };
                                     let value_for_name = |name: &str| -> Option<Value> {
                                         if let Value::Object(ref module_obj_rc) = &module_object {
-                                            if let Some(v) = module_obj_rc.borrow().get(name) {
+                                            if let Some(v) = module_obj_rc.borrow().str_key_get(name) {
                                                 return Some(v.clone());
                                             }
                                         }
@@ -939,7 +975,7 @@ pub(crate) fn handle_import_from(
                                             .merge_abi_export_param_meta(sidecar.export_param_meta);
                                     }
                                     let module_value =
-                                        Value::Object(Rc::new(RefCell::new(module_object)));
+                                        Value::legacy_object(module_object);
                                     let id = store_value(module_value, value_store, heavy_store);
                                     if let Some(idx) =
                                         global_index_by_name(global_names, &module_name)
@@ -1107,11 +1143,12 @@ pub(crate) fn handle_import_from(
 
     for item_value in &items_array {
         if let Value::String(ref item_str) = item_value {
-            if item_str != "*" && !item_str.contains(':') && !module_object.contains_key(item_str) {
+            if item_str != "*" && !item_str.contains(':') && !module_object.str_key_contains(item_str) {
                 let mut avail: Vec<_> = module_object
-                    .keys()
+                    .str_key_pairs()
+                    .into_iter()
+                    .map(|(k, _)| k)
                     .filter(|k| !k.starts_with("__"))
-                    .cloned()
                     .collect();
                 avail.sort();
                 let list = if avail.is_empty() {
@@ -1149,7 +1186,7 @@ pub(crate) fn handle_import_from(
     for item_value in &items_array {
         if let Value::String(ref item_str) = item_value {
             if item_str != "*" && !item_str.contains(':') {
-                if let Some(value) = module_object.get(item_str) {
+                if let Some(value) = module_object.str_key_get(item_str).cloned() {
                     named_imports.push((item_str.clone(), value.clone()));
                 }
             }
@@ -1166,13 +1203,20 @@ pub(crate) fn handle_import_from(
                     let mut indices_to_set: Vec<(usize, String, ValueId)> = Vec::new();
                     let mut max_index_needed = globals.len();
                     let mut new_indices = Vec::new();
-                    let mut star_keys: Vec<_> = module_object.keys().cloned().collect();
+                    let mut star_keys: Vec<_> = module_object
+                        .str_key_pairs()
+                        .into_iter()
+                        .map(|(k, _)| k)
+                        .collect();
                     star_keys.sort();
                     for key in star_keys {
                         if key.starts_with("__") {
                             continue;
                         }
-                        let value = module_object.get(&key).unwrap();
+                        let value = module_object
+                            .str_key_get(key.as_str())
+                            .expect("star key iteration")
+                            .clone();
                         let global_index = global_index_by_name(global_names, &key);
                         let global_index = match global_index {
                             Some(idx) => idx,
@@ -1205,7 +1249,7 @@ pub(crate) fn handle_import_from(
                         let name = parts[0];
                         let alias = parts[1];
 
-                        if let Some(value) = module_object.get(name) {
+                        if let Some(value) = module_object.str_key_get(name).cloned() {
                             let id = store_value(value.clone(), value_store, heavy_store);
                             let global_index =
                                 if let Some(idx) = global_index_by_name(global_names, alias) {
@@ -1276,7 +1320,7 @@ pub(crate) fn handle_import_from(
         );
         debug_println!(
             "[DEBUG ImportFrom] Доступные ключи в модуле: {:?}",
-            module_object.keys().collect::<Vec<_>>()
+            module_object.str_key_pairs().into_iter().map(|(k, _)| k).collect::<Vec<_>>()
         );
 
         debug_println!(
@@ -1293,7 +1337,9 @@ pub(crate) fn handle_import_from(
         let value_to_store = match value {
             Value::ModuleFunction { .. } => value.clone(),
             Value::Function(fn_idx) => {
-                if let Some(Value::Number(start)) = module_object.get("__start_function_index") {
+                if let Some(Value::Number(start)) =
+                    module_object.str_key_get("__start_function_index")
+                {
                     let start_u = *start as usize;
                     if fn_idx >= start_u {
                         value.clone()
@@ -1316,7 +1362,7 @@ pub(crate) fn handle_import_from(
         } else {
             indices
         };
-        let has_merge = module_object.contains_key("__start_function_index");
+        let has_merge = module_object.str_key_contains("__start_function_index");
         let id = store_value(value_to_store, value_store, heavy_store);
         for &global_index in &indices_to_update {
             // When we just merged (__start_function_index present), per-item is source of truth for
@@ -1380,7 +1426,7 @@ pub(crate) fn handle_import_from(
                 item_str
             );
             // Проверяем, что это класс (имеет метаданные __class_name)
-            if class_obj.contains_key("__class_name") {
+            if class_obj.str_key_contains("__class_name") {
                 debug_println!(
                     "[DEBUG ImportFrom] '{}' является классом! Импортируем конструкторы...",
                     item_str
@@ -1394,7 +1440,7 @@ pub(crate) fn handle_import_from(
                         if let Value::Object(module_obj_rc) = &mod_val {
                             let module_obj = module_obj_rc.borrow();
                             if let Some(Value::Number(idx)) =
-                                module_obj.get("__start_function_index")
+                                module_obj.str_key_get("__start_function_index")
                             {
                                 debug_println!("[DEBUG ImportFrom] Найден start_function_index={} для модуля '{}'", *idx, module_name);
                                 *idx as usize
@@ -1428,7 +1474,7 @@ pub(crate) fn handle_import_from(
                     constructor_prefix
                 );
                 let mut found_constructors = 0;
-                for (key, val) in module_object.iter() {
+                for (key, val) in module_object.str_key_entries_cloned() {
                     if key.starts_with(&constructor_prefix) {
                         found_constructors += 1;
                         debug_println!("[DEBUG ImportFrom] Найден конструктор: {}", key);
@@ -1436,7 +1482,7 @@ pub(crate) fn handle_import_from(
                         let (updated_val, new_function_index) = match val {
                             Value::ModuleFunction { .. } => (val.clone(), 0),
                             Value::Function(function_index) => {
-                                let new_index = start_function_index + *function_index;
+                                let new_index = start_function_index + function_index;
                                 debug_println!(
                                     "[DEBUG ImportFrom] Обновляем индекс функции: {} -> {}",
                                     function_index,
@@ -1452,7 +1498,7 @@ pub(crate) fn handle_import_from(
 
                         let updated_id = store_value(updated_val.clone(), value_store, heavy_store);
                         let constructor_global_index = if let Some(idx) =
-                            global_index_by_name(global_names, key)
+                            global_index_by_name(global_names, &key)
                         {
                             debug_println!("[DEBUG ImportFrom] Конструктор '{}' уже существует в globals с индексом {}, обновляем индекс функции", key, idx);
                             if Some(idx) != argv_slot_import {
@@ -1484,6 +1530,16 @@ pub(crate) fn handle_import_from(
                             globals[constructor_global_index] = GlobalSlot::Heap(updated_id);
                         }
                         debug_println!("[DEBUG ImportFrom] Конструктор '{}' установлен в globals[{}] с индексом функции {}", key, constructor_global_index, new_function_index);
+                        alias_typed_constructor_to_base_slot(
+                            &item_str,
+                            &key,
+                            updated_id,
+                            globals,
+                            global_names,
+                            value_store,
+                            heavy_store,
+                            argv_slot_import,
+                        );
                     }
                 }
                 debug_println!(
@@ -1508,7 +1564,8 @@ pub(crate) fn handle_import_from(
     );
     // Ensure all names from main + function chunks are in global_names before update_chunk_indices,
     // so we don't get "no match" and LoadGlobal/StoreGlobal get correct remapping.
-    // Module isolation: skip only internal plain vars (e.g. "settings" = Null).
+    // Always include Null bindings such as `global settings = null` — skipping them left module
+    // functions on unmapped indices and broke load_settings/get_settings.
     const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
     let chunks_to_feed: Vec<_> = frames
         .first()
@@ -1516,25 +1573,9 @@ pub(crate) fn handle_import_from(
         .into_iter()
         .chain(functions.iter().map(|f| &f.chunk))
         .collect();
-    let is_internal_module_var = |name: &str| -> bool {
-        if imported_names.contains(name) || imported_names.contains("*") {
-            return false;
-        }
-        module_object
-            .get(name)
-            .map_or(false, |v| matches!(v, Value::Null))
-    };
-    for (chunk_index, chunk) in chunks_to_feed.iter().enumerate() {
-        let is_merged_module_chunk = chunk_index >= 1
-            && functions
-                .get(chunk_index - 1)
-                .and_then(|f| f.module_name.as_deref())
-                == Some(module_name.as_str());
+    for chunk in &chunks_to_feed {
         for (idx, name) in &chunk.global_names {
             if *idx == UNDEFINED_GLOBAL_SENTINEL || name.as_str() == "argv" {
-                continue;
-            }
-            if is_merged_module_chunk && is_internal_module_var(name) {
                 continue;
             }
             if !global_names.values().any(|n| n == name) {

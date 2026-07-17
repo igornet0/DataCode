@@ -14,10 +14,10 @@ mod tests {
     fn assert_number_result(source: &str, expected: f64) {
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => {
-                assert_eq!(n, expected, "Expected {}, got {}", expected, n);
+            Ok(v) => {
+                let n = v.as_ieee_f64().unwrap_or(f64::NAN);
+                assert!((n - expected).abs() < 1e-9, "Expected {}, got {:?}", expected, v);
             }
-            Ok(v) => panic!("Expected Number({}), got {:?}", expected, v),
             Err(e) => panic!("Error: {:?}", e),
         }
     }
@@ -106,10 +106,10 @@ mod tests {
         // Должна быть строка с описанием ошибки
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => {
-                assert!(n > 0.0, "Expected error message length > 0, got {}", n);
+            Ok(v) => {
+                let n = v.as_ieee_f64().unwrap_or(f64::NAN);
+                assert!(n > 0.0, "Expected error message length > 0, got {:?}", v);
             }
-            Ok(v) => panic!("Expected Number, got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
     }
@@ -982,10 +982,10 @@ mod tests {
         // Должна быть строка с описанием ошибки
         let result = run_and_get_result(source);
         match result {
-            Ok(Value::Number(n)) => {
-                assert!(n > 0.0, "Expected error message length > 0, got {}", n);
+            Ok(v) => {
+                let n = v.as_ieee_f64().unwrap_or(f64::NAN);
+                assert!(n > 0.0, "Expected error message length > 0, got {:?}", v);
             }
-            Ok(v) => panic!("Expected Number, got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
     }

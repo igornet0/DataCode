@@ -27,6 +27,8 @@ pub struct ObjectMap {
     integral_index: IntegralMap,
     /// When true: mutation APIs return errors at VM boundary.
     pub frozen: bool,
+    /// User `{}` / `dict()` literals and plain stress-test maps — skip class visibility scans.
+    plain: bool,
 }
 
 impl Default for ObjectMap {
@@ -41,6 +43,7 @@ impl ObjectMap {
             buckets: HashMap::new(),
             integral_index: IntegralMap::new(),
             frozen: false,
+            plain: false,
         }
     }
 
@@ -49,7 +52,37 @@ impl ObjectMap {
             buckets: HashMap::with_capacity(cap),
             integral_index: IntegralMap::with_capacity(cap),
             frozen: false,
+            plain: false,
         }
+    }
+
+    /// Plain dict literal / `{}` / reused A* score maps (no class visibility metadata).
+    pub fn new_plain() -> Self {
+        Self {
+            buckets: HashMap::new(),
+            integral_index: IntegralMap::new(),
+            frozen: false,
+            plain: true,
+        }
+    }
+
+    pub fn with_capacity_plain(cap: usize) -> Self {
+        Self {
+            buckets: HashMap::with_capacity(cap),
+            integral_index: IntegralMap::with_capacity(cap),
+            frozen: false,
+            plain: true,
+        }
+    }
+
+    #[inline]
+    pub fn is_plain(&self) -> bool {
+        self.plain
+    }
+
+    #[inline]
+    pub fn mark_plain(&mut self) {
+        self.plain = true;
     }
 
     #[inline]
@@ -75,7 +108,16 @@ impl ObjectMap {
 
     pub fn clear(&mut self) {
         self.buckets.clear();
+        if self.buckets.capacity() > 4096 {
+            self.buckets.shrink_to_fit();
+        }
         self.integral_index.clear();
+    }
+
+    /// Release bucket / integral side-table capacity (stress-test reuse between A* runs).
+    pub fn shrink_to_fit(&mut self) {
+        self.buckets.shrink_to_fit();
+        self.integral_index.shrink_to_fit();
     }
 
     /// O(1) lookup by canonical integral key.
@@ -93,6 +135,18 @@ impl ObjectMap {
     #[inline]
     pub fn first_integral_canonical(&self) -> Option<i64> {
         self.integral_index.first_canonical()
+    }
+
+    /// True when the integral side table is populated (authoritative for [`Self::len`]).
+    #[inline]
+    pub fn integral_in_use(&self) -> bool {
+        !self.integral_index.is_empty()
+    }
+
+    /// All canonical integral keys in the side table (order unspecified).
+    #[inline]
+    pub fn iter_integral_canonicals(&self) -> impl Iterator<Item = i64> + '_ {
+        self.integral_index.iter_canonicals()
     }
 
     /// Legacy: heap [`ValueId`] only (immediate slots → [`NULL_VALUE_ID`] sentinel for set compat).
@@ -169,6 +223,29 @@ impl ObjectMap {
                 .iter()
                 .map(move |e| (h, e.key_id, e.value_id))
         })
+    }
+
+    /// Rewrite every stored [`ValueId`] (bucket entries and integral heap slots).
+    /// Used when promoting a call-arena object so nested field values survive `leave_ephemeral`.
+    pub fn remap_stored_ids<F>(&mut self, mut f: F)
+    where
+        F: FnMut(ValueId) -> ValueId,
+    {
+        for bucket in self.buckets.values_mut() {
+            for e in bucket.iter_mut() {
+                e.key_id = f(e.key_id);
+                e.value_id = f(e.value_id);
+            }
+        }
+        let canonicals: Vec<i64> = self.iter_integral_canonicals().collect();
+        for c in canonicals {
+            if let Some(IntegralSlot::Heap(id)) = self.integral_index.get(c) {
+                let new_id = f(id);
+                if new_id != id {
+                    self.integral_index.insert_heap(c, new_id);
+                }
+            }
+        }
     }
 
     /// Lookup by hash + equality predicate on key ids.
@@ -284,6 +361,17 @@ mod tests {
             m.find_integral_slot(7),
             Some(IntegralSlot::Immediate(TaggedValue::from_i32(99)))
         );
+    }
+
+    #[test]
+    fn integral_only_side_table_lookup_without_buckets() {
+        let mut m = ObjectMap::new();
+        m.upsert_integral(0, 1, 100);
+        m.upsert_integral(1, 2, 200);
+        m.upsert_integral(2, 3, 300);
+        assert!(m.iter_entries().next().is_none());
+        assert!(m.find_integral_slot(1).is_some());
+        assert_eq!(m.find_integral(1), Some(200));
     }
 
     /// Sparse high cell ids (grid 1000×5000 style) must stay on open-addressing map, not a 5M-slot `Vec`.

@@ -1,6 +1,6 @@
 //! SQLEnum: declarative enum types for ORM columns (values + DDL helpers).
 
-use crate::common::value::Value;
+use crate::common::value::{ObjectKind, Value};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -33,7 +33,7 @@ pub fn is_sqenum_class_object(v: &Value) -> bool {
         return false;
     };
     rc.borrow()
-        .get(KEY_SQENUM)
+        .str_key_get(KEY_SQENUM)
         .and_then(|x| {
             if let Value::Bool(b) = x {
                 Some(*b)
@@ -50,7 +50,7 @@ pub fn is_sqenum_marker_object(v: &Value) -> bool {
         return false;
     };
     rc.borrow()
-        .get(KEY_BUILTIN_SQENUM)
+        .str_key_get(KEY_BUILTIN_SQENUM)
         .and_then(|x| {
             if let Value::Bool(b) = x {
                 Some(*b)
@@ -66,7 +66,7 @@ pub fn is_enum_member_value(v: &Value) -> bool {
         return false;
     };
     rc.borrow()
-        .get(KEY_ENUM_MEMBER)
+        .str_key_get(KEY_ENUM_MEMBER)
         .and_then(|x| {
             if let Value::Bool(b) = x {
                 Some(*b)
@@ -82,15 +82,15 @@ pub fn enum_member_stored_value(member: &Value) -> Option<Value> {
     let Value::Object(rc) = member else {
         return None;
     };
-    rc.borrow().get(KEY_ENUM_VALUE).cloned()
+    rc.borrow().str_key_get(KEY_ENUM_VALUE).cloned()
 }
 
-pub fn enum_class_of_member(member: &Value) -> Option<Rc<RefCell<HashMap<String, Value>>>> {
+pub fn enum_class_of_member(member: &Value) -> Option<Rc<RefCell<ObjectKind>>> {
     let Value::Object(rc) = member else {
         return None;
     };
     let b = rc.borrow();
-    b.get(KEY_ENUM_CLASS).and_then(|v| {
+    b.str_key_get(KEY_ENUM_CLASS).and_then(|v| {
         if let Value::Object(c) = v {
             Some(Rc::clone(c))
         } else {
@@ -117,7 +117,7 @@ pub fn native_sqenum_add_member(args: &[Value]) -> Value {
     };
     if class_rc
         .borrow()
-        .get(KEY_SQENUM)
+        .str_key_get(KEY_SQENUM)
         .and_then(|v| {
             if let Value::Bool(b) = v {
                 Some(*b)
@@ -131,7 +131,7 @@ pub fn native_sqenum_add_member(args: &[Value]) -> Value {
             "SQLEnum.add_member: class '{}' is already finalized",
             class_rc
                 .borrow()
-                .get("__class_name")
+                .str_key_get("__class_name")
                 .and_then(|v| get_string(v))
                 .unwrap_or_default()
         ));
@@ -157,7 +157,13 @@ pub fn native_sqenum_add_member(args: &[Value]) -> Value {
         }
     };
 
-    let mut class_mut = class_rc.borrow_mut();
+    let mut enum_class = class_rc.borrow_mut();
+    let Some(class_mut) = enum_class.legacy_mut() else {
+        crate::websocket::set_native_error(
+            "SQLEnum.add_member: class object must use legacy string-map layout".to_string(),
+        );
+        return Value::Null;
+    };
     let kind_slot = "__sqenum_value_kind";
     let kind = class_mut.get(kind_slot).and_then(|v| get_string(v));
     let new_kind = match &stored {
@@ -171,7 +177,7 @@ pub fn native_sqenum_add_member(args: &[Value]) -> Value {
         }
         Some(k) if k == new_kind => {}
         Some(_) => {
-            drop(class_mut);
+            drop(enum_class);
             crate::websocket::set_native_error(
                 "SQLEnum.add_member: cannot mix string and integer values in one enum".to_string(),
             );
@@ -181,20 +187,27 @@ pub fn native_sqenum_add_member(args: &[Value]) -> Value {
 
     let seen_key = "__sqenum_seen_values";
     let seen_val = class_mut.entry(seen_key.to_string()).or_insert_with(|| {
-        Value::Object(Rc::new(RefCell::new(HashMap::new())))
+        Value::legacy_object(HashMap::new())
     });
     let seen_rc = if let Value::Object(r) = seen_val {
         Rc::clone(r)
     } else {
-        let r = Rc::new(RefCell::new(HashMap::new()));
+        let r = Rc::new(RefCell::new(ObjectKind::Legacy(HashMap::new())));
         *seen_val = Value::Object(Rc::clone(&r));
         r
     };
     let dedupe_key = value_dedupe_key(&stored);
     {
-        let mut seen = seen_rc.borrow_mut();
+        let mut seen_wrapped = seen_rc.borrow_mut();
+        let Some(seen) = seen_wrapped.legacy_mut() else {
+            drop(enum_class);
+            crate::websocket::set_native_error(
+                "SQLEnum.add_member: internal seen-values map corrupted".to_string(),
+            );
+            return Value::Null;
+        };
         if seen.contains_key(&dedupe_key) {
-            drop(class_mut);
+            drop(enum_class);
             crate::websocket::set_native_error(format!(
                 "SQLEnum.add_member: duplicate enum value {:?}",
                 stored
@@ -213,7 +226,7 @@ pub fn native_sqenum_add_member(args: &[Value]) -> Value {
         m.insert(KEY_ENUM_NAME.to_string(), Value::String(name.clone()));
         m.insert(KEY_ENUM_VALUE.to_string(), stored.clone());
         m.insert(KEY_ENUM_CLASS.to_string(), Value::Object(Rc::clone(class_rc)));
-        Value::Object(Rc::new(RefCell::new(m)))
+        Value::legacy_object(m)
     };
 
     class_mut.insert(name.clone(), member.clone());
@@ -261,13 +274,13 @@ pub fn native_sqenum_finalize(args: &[Value]) -> Value {
     };
     let class_name = class_rc
         .borrow()
-        .get("__class_name")
+        .str_key_get("__class_name")
         .and_then(|v| get_string(v))
         .unwrap_or_else(|| "enum".to_string());
 
     let members: Vec<Value> = {
         let b = class_rc.borrow();
-        b.get(KEY_ENUM_MEMBERS)
+        b.str_key_get(KEY_ENUM_MEMBERS)
             .and_then(|v| {
                 if let Value::Array(a) = v {
                     Some(a.borrow().clone())
@@ -290,7 +303,7 @@ pub fn native_sqenum_finalize(args: &[Value]) -> Value {
     let mut sqlite_literals: Vec<String> = Vec::new();
     let kind = class_rc
         .borrow()
-        .get("__sqenum_value_kind")
+        .str_key_get("__sqenum_value_kind")
         .and_then(|v| get_string(v))
         .unwrap_or_else(|| "str".to_string());
 
@@ -310,11 +323,18 @@ pub fn native_sqenum_finalize(args: &[Value]) -> Value {
 
     let pg_name = snake_case_type_name(&class_name);
 
-    let mut class_mut = class_rc.borrow_mut();
     let aff = if kind == "int" {
         "INTEGER"
     } else {
         "TEXT"
+    };
+
+    let mut enum_class_mut = class_rc.borrow_mut();
+    let Some(class_mut) = enum_class_mut.legacy_mut() else {
+        crate::websocket::set_native_error(
+            "SQLEnum.finalize: invalid class object layout".to_string(),
+        );
+        return Value::Null;
     };
     class_mut.insert(
         "__sqenum_sqlite_affinity".to_string(),
@@ -327,7 +347,7 @@ pub fn native_sqenum_finalize(args: &[Value]) -> Value {
     );
     class_mut.insert(
         KEY_ENUM_BY_VALUE.to_string(),
-        Value::Object(Rc::new(RefCell::new(by_val_map))),
+        Value::legacy_object(by_val_map),
     );
     class_mut.insert(
         "__sqenum_sqlite_in_list".to_string(),
@@ -353,18 +373,18 @@ fn sqenum_sqlite_in_literal(v: &Value, kind: &str) -> String {
 
 /// SQLite fragment: `CHECK (col IN (...))` using precomputed list on class.
 pub fn sqlite_check_in_clause_for_column(
-    class_rc: &Rc<RefCell<HashMap<String, Value>>>,
+    class_rc: &Rc<RefCell<ObjectKind>>,
     col_name: &str,
 ) -> Option<String> {
     let b = class_rc.borrow();
-    let list = b.get("__sqenum_sqlite_in_list")?.clone();
+    let list = b.str_key_get("__sqenum_sqlite_in_list")?.clone();
     let list_s = get_string(&list)?;
     Some(format!("CHECK ({} IN ({}))", col_name, list_s))
 }
 
 /// Normalize assignable value to SQL bind parameter for a SQLEnum column.
 pub fn normalize_sqenum_column_value(
-    enum_class: &Rc<RefCell<HashMap<String, Value>>>,
+    enum_class: &Rc<RefCell<ObjectKind>>,
     raw: &Value,
     col_name: &str,
 ) -> Result<Value, String> {
@@ -387,7 +407,7 @@ pub fn normalize_sqenum_column_value(
         });
     }
     let b = enum_class.borrow();
-    let by = b.get(KEY_ENUM_BY_VALUE).ok_or_else(|| {
+    let by = b.str_key_get(KEY_ENUM_BY_VALUE).ok_or_else(|| {
         format!(
             "column '{}': enum class is not finalized (__enum_by_value missing)",
             col_name
@@ -411,7 +431,7 @@ pub fn normalize_sqenum_column_value(
         }
     };
     let map = by_rc.borrow();
-    map.get(&key)
+    map.str_key_get(key.as_str())
         .and_then(|m| enum_member_stored_value(m))
         .ok_or_else(|| {
             format!(
@@ -423,14 +443,14 @@ pub fn normalize_sqenum_column_value(
 
 /// Map a DB cell to enum member (strict).
 pub fn hydrate_sqenum_cell(
-    enum_class: &Rc<RefCell<HashMap<String, Value>>>,
+    enum_class: &Rc<RefCell<ObjectKind>>,
     cell: &Value,
 ) -> Result<Value, String> {
     if matches!(cell, Value::Null) {
         return Ok(Value::Null);
     }
     let b = enum_class.borrow();
-    let by = b.get(KEY_ENUM_BY_VALUE).ok_or_else(|| {
+    let by = b.str_key_get(KEY_ENUM_BY_VALUE).ok_or_else(|| {
         "enum class is not finalized (__enum_by_value missing)".to_string()
     })?;
     let Value::Object(by_rc) = by else {
@@ -448,17 +468,17 @@ pub fn hydrate_sqenum_cell(
         }
     };
     let map = by_rc.borrow();
-    map.get(&key)
+    map.str_key_get(key.as_str())
         .cloned()
         .ok_or_else(|| format!("DB value {:?} is not in enum set", cell))
 }
 
 /// Collect ordered stored values for Postgres `CREATE TYPE ... AS ENUM`.
 pub fn pg_enum_values_from_class(
-    class_rc: &Rc<RefCell<HashMap<String, Value>>>,
+    class_rc: &Rc<RefCell<ObjectKind>>,
 ) -> Option<Vec<String>> {
     let b = class_rc.borrow();
-    let members = b.get(KEY_ENUM_MEMBERS)?;
+    let members = b.str_key_get(KEY_ENUM_MEMBERS)?;
     let Value::Array(arr) = members else {
         return None;
     };

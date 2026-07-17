@@ -15,7 +15,23 @@ use std::sync::Arc;
 pub const DCB_MAGIC: [u8; 4] = [0x44, 0x43, 0x42, 0x01]; // "DCB" + format version 1
 pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Bump when compiler/bytecode semantics change so old .dcb are rejected (e.g. constructor names in chunk.global_names for merge; class object now includes methods for GetArrayElement fallback).
-pub const DCB_FORMAT_VERSION: &str = "15";
+/// v16: added MakeSet / MakeSetDynamic opcodes (SerOpCode layout change).
+/// v17: added HeappopUnpack2 (A* heappop + tuple unpack peephole).
+/// v18: added HeappushFlat (A* flat heappush without native call).
+/// v19: added DivmodUnpack2 (A* divmod unpack without tuple alloc).
+/// v20: added ObjectGetIntegral, HeappopFlat (A* dict.get / heappop without Call).
+/// v21: added SetDiscardIntegral, SetAddIntegral (A* set.discard/add without Call).
+/// v22: added ObjectIndexIntegral (plain dict/array `obj[int]` without GetArrayElement overhead).
+/// v23: HeappopUnpack2/HeappopFlat/HeappushFlat are stack-based (heap popped from stack, not local slot).
+/// v24: added ObjectClear (plain dict `.clear()` without Call).
+/// v25: added GridGet/SetI32/U8, GridTestBlocked, GridHeapPush/PopUnpack2/Len opcodes.
+/// v26: ObjectSetIntegral, InIntegral, AbsI32; HeappushFlat stack `[heap,a,b]` (no MakeTuple).
+/// v27: InGridBounds (A* neighbor bounds without chained compare).
+/// v28: InGridBoundsOut, FScoreStaleCheck, DictGetIntegralLt (A* peephole fusion).
+/// v29: DictIndexIntegralAddImm; flat-heap migrate skip when already flat.
+/// v30: JumpIfLocalHeapArrayEmpty*, NotInIntegral; ObjectSetIntegral single get_mut.
+/// v31: BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight, BitNot opcodes.
+pub const DCB_FORMAT_VERSION: &str = "32";
 
 /// Metadata stored at the start of a .dcb file for freshness checks.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -93,6 +109,12 @@ pub enum SerOpCode {
     Mod,
     Pow,
     Negate,
+    BitAnd,
+    BitOr,
+    BitXor,
+    ShiftLeft,
+    ShiftRight,
+    BitNot,
     Not,
     Or,
     And,
@@ -105,6 +127,7 @@ pub enum SerOpCode {
     In,
     JumpLabel(usize),
     JumpIfFalseLabel(usize),
+    JumpIfLocalHeapArrayEmptyLabel(usize, usize),
     ForRange(usize, usize, usize, usize, i32),
     ForRangeNext(i32),
     PopForRange,
@@ -116,8 +139,12 @@ pub enum SerOpCode {
     JumpIfFalse8(i8),
     JumpIfFalse16(i16),
     JumpIfFalse32(i32),
+    JumpIfLocalHeapArrayEmpty8(usize, i8),
+    JumpIfLocalHeapArrayEmpty16(usize, i16),
+    JumpIfLocalHeapArrayEmpty32(usize, i32),
     Call(usize),
     CallWithUnpack(usize),
+    CallVariadic(u32),
     Return,
     MakeArray(usize),
     MakeArrayDynamic,
@@ -127,11 +154,14 @@ pub enum SerOpCode {
     SetArrayElement,
     SetArraySlice,
     TableFilter,
+    TableFilterPred(usize),
     Clone,
     MakeTuple(usize),
     MakeObject(usize),
     UnpackObject(usize),
     MakeObjectDynamic,
+    MakeSet(usize),
+    MakeSetDynamic,
     BeginTry(usize),
     EndTry,
     Catch(Option<usize>),
@@ -148,6 +178,33 @@ pub enum SerOpCode {
     YieldAwaitInput(i32, usize),
     GeneratorDone,
     GeneratorDoneWithFinal,
+    HeappopUnpack2(usize, usize),
+    HeappushFlat,
+    DivmodUnpack2(usize, usize),
+    ObjectGetIntegral,
+    HeappopFlat,
+    SetDiscardIntegral,
+    SetAddIntegral,
+    ObjectIndexIntegral,
+    ObjectClear,
+    ObjectSetIntegral,
+    InIntegral,
+    NotInIntegral,
+    AbsI32,
+    InGridBounds,
+    InGridBoundsOut,
+    FScoreStaleCheck,
+    DictGetIntegralLt,
+    DictIndexIntegralAddImm(i8),
+    GridGetI32(usize, usize),
+    GridSetI32(usize, usize, usize),
+    GridGetU8(usize, usize),
+    GridSetU8(usize, usize, usize),
+    GridTestBlocked(usize, usize),
+    GridHeapPush(usize, usize, usize),
+    GridHeapPopUnpack2(usize, usize, usize),
+    GridHeapLen(usize),
+    InvokeSpecialInit(usize, usize),
 }
 
 impl From<&OpCode> for SerOpCode {
@@ -168,6 +225,12 @@ impl From<&OpCode> for SerOpCode {
             OpCode::Mod => SerOpCode::Mod,
             OpCode::Pow => SerOpCode::Pow,
             OpCode::Negate => SerOpCode::Negate,
+            OpCode::BitAnd => SerOpCode::BitAnd,
+            OpCode::BitOr => SerOpCode::BitOr,
+            OpCode::BitXor => SerOpCode::BitXor,
+            OpCode::ShiftLeft => SerOpCode::ShiftLeft,
+            OpCode::ShiftRight => SerOpCode::ShiftRight,
+            OpCode::BitNot => SerOpCode::BitNot,
             OpCode::Not => SerOpCode::Not,
             OpCode::Or => SerOpCode::Or,
             OpCode::And => SerOpCode::And,
@@ -180,6 +243,9 @@ impl From<&OpCode> for SerOpCode {
             OpCode::In => SerOpCode::In,
             OpCode::JumpLabel(a) => SerOpCode::JumpLabel(*a),
             OpCode::JumpIfFalseLabel(a) => SerOpCode::JumpIfFalseLabel(*a),
+            OpCode::JumpIfLocalHeapArrayEmptyLabel(a, b) => {
+                SerOpCode::JumpIfLocalHeapArrayEmptyLabel(*a, *b)
+            }
             OpCode::ForRange(a, b, c, d, e) => SerOpCode::ForRange(*a, *b, *c, *d, *e),
             OpCode::ForRangeNext(a) => SerOpCode::ForRangeNext(*a),
             OpCode::PopForRange => SerOpCode::PopForRange,
@@ -191,8 +257,18 @@ impl From<&OpCode> for SerOpCode {
             OpCode::JumpIfFalse8(a) => SerOpCode::JumpIfFalse8(*a),
             OpCode::JumpIfFalse16(a) => SerOpCode::JumpIfFalse16(*a),
             OpCode::JumpIfFalse32(a) => SerOpCode::JumpIfFalse32(*a),
+            OpCode::JumpIfLocalHeapArrayEmpty8(a, b) => {
+                SerOpCode::JumpIfLocalHeapArrayEmpty8(*a, *b)
+            }
+            OpCode::JumpIfLocalHeapArrayEmpty16(a, b) => {
+                SerOpCode::JumpIfLocalHeapArrayEmpty16(*a, *b)
+            }
+            OpCode::JumpIfLocalHeapArrayEmpty32(a, b) => {
+                SerOpCode::JumpIfLocalHeapArrayEmpty32(*a, *b)
+            }
             OpCode::Call(a) => SerOpCode::Call(*a),
             OpCode::CallWithUnpack(a) => SerOpCode::CallWithUnpack(*a),
+            OpCode::CallVariadic(a) => SerOpCode::CallVariadic(*a),
             OpCode::Return => SerOpCode::Return,
             OpCode::MakeArray(a) => SerOpCode::MakeArray(*a),
             OpCode::MakeArrayDynamic => SerOpCode::MakeArrayDynamic,
@@ -202,11 +278,14 @@ impl From<&OpCode> for SerOpCode {
             OpCode::SetArrayElement => SerOpCode::SetArrayElement,
             OpCode::SetArraySlice => SerOpCode::SetArraySlice,
             OpCode::TableFilter => SerOpCode::TableFilter,
+            OpCode::TableFilterPred(a) => SerOpCode::TableFilterPred(*a),
             OpCode::Clone => SerOpCode::Clone,
             OpCode::MakeTuple(a) => SerOpCode::MakeTuple(*a),
             OpCode::MakeObject(a) => SerOpCode::MakeObject(*a),
             OpCode::UnpackObject(a) => SerOpCode::UnpackObject(*a),
             OpCode::MakeObjectDynamic => SerOpCode::MakeObjectDynamic,
+            OpCode::MakeSet(a) => SerOpCode::MakeSet(*a),
+            OpCode::MakeSetDynamic => SerOpCode::MakeSetDynamic,
             OpCode::BeginTry(a) => SerOpCode::BeginTry(*a),
             OpCode::EndTry => SerOpCode::EndTry,
             OpCode::Catch(a) => SerOpCode::Catch(*a),
@@ -223,6 +302,33 @@ impl From<&OpCode> for SerOpCode {
             OpCode::YieldAwaitInput(a, b) => SerOpCode::YieldAwaitInput(*a, *b),
             OpCode::GeneratorDone => SerOpCode::GeneratorDone,
             OpCode::GeneratorDoneWithFinal => SerOpCode::GeneratorDoneWithFinal,
+            OpCode::HeappopUnpack2(a, b) => SerOpCode::HeappopUnpack2(*a, *b),
+            OpCode::HeappushFlat => SerOpCode::HeappushFlat,
+            OpCode::DivmodUnpack2(a, b) => SerOpCode::DivmodUnpack2(*a, *b),
+            OpCode::ObjectGetIntegral => SerOpCode::ObjectGetIntegral,
+            OpCode::HeappopFlat => SerOpCode::HeappopFlat,
+            OpCode::SetDiscardIntegral => SerOpCode::SetDiscardIntegral,
+            OpCode::SetAddIntegral => SerOpCode::SetAddIntegral,
+            OpCode::ObjectIndexIntegral => SerOpCode::ObjectIndexIntegral,
+            OpCode::ObjectClear => SerOpCode::ObjectClear,
+            OpCode::ObjectSetIntegral => SerOpCode::ObjectSetIntegral,
+            OpCode::InIntegral => SerOpCode::InIntegral,
+            OpCode::NotInIntegral => SerOpCode::NotInIntegral,
+            OpCode::AbsI32 => SerOpCode::AbsI32,
+            OpCode::InGridBounds => SerOpCode::InGridBounds,
+            OpCode::InGridBoundsOut => SerOpCode::InGridBoundsOut,
+            OpCode::FScoreStaleCheck => SerOpCode::FScoreStaleCheck,
+            OpCode::DictGetIntegralLt => SerOpCode::DictGetIntegralLt,
+            OpCode::DictIndexIntegralAddImm(n) => SerOpCode::DictIndexIntegralAddImm(*n),
+            OpCode::GridGetI32(a, b) => SerOpCode::GridGetI32(*a, *b),
+            OpCode::GridSetI32(a, b, c) => SerOpCode::GridSetI32(*a, *b, *c),
+            OpCode::GridGetU8(a, b) => SerOpCode::GridGetU8(*a, *b),
+            OpCode::GridSetU8(a, b, c) => SerOpCode::GridSetU8(*a, *b, *c),
+            OpCode::GridTestBlocked(a, b) => SerOpCode::GridTestBlocked(*a, *b),
+            OpCode::GridHeapPush(a, b, c) => SerOpCode::GridHeapPush(*a, *b, *c),
+            OpCode::GridHeapPopUnpack2(a, b, c) => SerOpCode::GridHeapPopUnpack2(*a, *b, *c),
+            OpCode::GridHeapLen(a) => SerOpCode::GridHeapLen(*a),
+            OpCode::InvokeSpecialInit(a, b) => SerOpCode::InvokeSpecialInit(*a, *b),
         }
     }
 }
@@ -245,6 +351,12 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::Mod => OpCode::Mod,
             SerOpCode::Pow => OpCode::Pow,
             SerOpCode::Negate => OpCode::Negate,
+            SerOpCode::BitAnd => OpCode::BitAnd,
+            SerOpCode::BitOr => OpCode::BitOr,
+            SerOpCode::BitXor => OpCode::BitXor,
+            SerOpCode::ShiftLeft => OpCode::ShiftLeft,
+            SerOpCode::ShiftRight => OpCode::ShiftRight,
+            SerOpCode::BitNot => OpCode::BitNot,
             SerOpCode::Not => OpCode::Not,
             SerOpCode::Or => OpCode::Or,
             SerOpCode::And => OpCode::And,
@@ -257,6 +369,9 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::In => OpCode::In,
             SerOpCode::JumpLabel(a) => OpCode::JumpLabel(a),
             SerOpCode::JumpIfFalseLabel(a) => OpCode::JumpIfFalseLabel(a),
+            SerOpCode::JumpIfLocalHeapArrayEmptyLabel(a, b) => {
+                OpCode::JumpIfLocalHeapArrayEmptyLabel(a, b)
+            }
             SerOpCode::ForRange(a, b, c, d, e) => OpCode::ForRange(a, b, c, d, e),
             SerOpCode::ForRangeNext(a) => OpCode::ForRangeNext(a),
             SerOpCode::PopForRange => OpCode::PopForRange,
@@ -268,8 +383,18 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::JumpIfFalse8(a) => OpCode::JumpIfFalse8(a),
             SerOpCode::JumpIfFalse16(a) => OpCode::JumpIfFalse16(a),
             SerOpCode::JumpIfFalse32(a) => OpCode::JumpIfFalse32(a),
+            SerOpCode::JumpIfLocalHeapArrayEmpty8(a, b) => {
+                OpCode::JumpIfLocalHeapArrayEmpty8(a, b)
+            }
+            SerOpCode::JumpIfLocalHeapArrayEmpty16(a, b) => {
+                OpCode::JumpIfLocalHeapArrayEmpty16(a, b)
+            }
+            SerOpCode::JumpIfLocalHeapArrayEmpty32(a, b) => {
+                OpCode::JumpIfLocalHeapArrayEmpty32(a, b)
+            }
             SerOpCode::Call(a) => OpCode::Call(a),
             SerOpCode::CallWithUnpack(a) => OpCode::CallWithUnpack(a),
+            SerOpCode::CallVariadic(a) => OpCode::CallVariadic(a),
             SerOpCode::Return => OpCode::Return,
             SerOpCode::MakeArray(a) => OpCode::MakeArray(a),
             SerOpCode::MakeArrayDynamic => OpCode::MakeArrayDynamic,
@@ -279,11 +404,14 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::SetArrayElement => OpCode::SetArrayElement,
             SerOpCode::SetArraySlice => OpCode::SetArraySlice,
             SerOpCode::TableFilter => OpCode::TableFilter,
+            SerOpCode::TableFilterPred(a) => OpCode::TableFilterPred(a),
             SerOpCode::Clone => OpCode::Clone,
             SerOpCode::MakeTuple(a) => OpCode::MakeTuple(a),
             SerOpCode::MakeObject(a) => OpCode::MakeObject(a),
             SerOpCode::UnpackObject(a) => OpCode::UnpackObject(a),
             SerOpCode::MakeObjectDynamic => OpCode::MakeObjectDynamic,
+            SerOpCode::MakeSet(a) => OpCode::MakeSet(a),
+            SerOpCode::MakeSetDynamic => OpCode::MakeSetDynamic,
             SerOpCode::BeginTry(a) => OpCode::BeginTry(a),
             SerOpCode::EndTry => OpCode::EndTry,
             SerOpCode::Catch(a) => OpCode::Catch(a),
@@ -300,6 +428,33 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::YieldAwaitInput(a, b) => OpCode::YieldAwaitInput(a, b),
             SerOpCode::GeneratorDone => OpCode::GeneratorDone,
             SerOpCode::GeneratorDoneWithFinal => OpCode::GeneratorDoneWithFinal,
+            SerOpCode::HeappopUnpack2(a, b) => OpCode::HeappopUnpack2(a, b),
+            SerOpCode::HeappushFlat => OpCode::HeappushFlat,
+            SerOpCode::DivmodUnpack2(a, b) => OpCode::DivmodUnpack2(a, b),
+            SerOpCode::ObjectGetIntegral => OpCode::ObjectGetIntegral,
+            SerOpCode::HeappopFlat => OpCode::HeappopFlat,
+            SerOpCode::SetDiscardIntegral => OpCode::SetDiscardIntegral,
+            SerOpCode::SetAddIntegral => OpCode::SetAddIntegral,
+            SerOpCode::ObjectIndexIntegral => OpCode::ObjectIndexIntegral,
+            SerOpCode::ObjectClear => OpCode::ObjectClear,
+            SerOpCode::ObjectSetIntegral => OpCode::ObjectSetIntegral,
+            SerOpCode::InIntegral => OpCode::InIntegral,
+            SerOpCode::NotInIntegral => OpCode::NotInIntegral,
+            SerOpCode::AbsI32 => OpCode::AbsI32,
+            SerOpCode::InGridBounds => OpCode::InGridBounds,
+            SerOpCode::InGridBoundsOut => OpCode::InGridBoundsOut,
+            SerOpCode::FScoreStaleCheck => OpCode::FScoreStaleCheck,
+            SerOpCode::DictGetIntegralLt => OpCode::DictGetIntegralLt,
+            SerOpCode::DictIndexIntegralAddImm(n) => OpCode::DictIndexIntegralAddImm(n),
+            SerOpCode::GridGetI32(a, b) => OpCode::GridGetI32(a, b),
+            SerOpCode::GridSetI32(a, b, c) => OpCode::GridSetI32(a, b, c),
+            SerOpCode::GridGetU8(a, b) => OpCode::GridGetU8(a, b),
+            SerOpCode::GridSetU8(a, b, c) => OpCode::GridSetU8(a, b, c),
+            SerOpCode::GridTestBlocked(a, b) => OpCode::GridTestBlocked(a, b),
+            SerOpCode::GridHeapPush(a, b, c) => OpCode::GridHeapPush(a, b, c),
+            SerOpCode::GridHeapPopUnpack2(a, b, c) => OpCode::GridHeapPopUnpack2(a, b, c),
+            SerOpCode::GridHeapLen(a) => OpCode::GridHeapLen(a),
+            SerOpCode::InvokeSpecialInit(a, b) => OpCode::InvokeSpecialInit(a, b),
         }
     }
 }
@@ -333,6 +488,12 @@ pub struct SerCapturedVar {
     pub parent_slot_index: usize,
     pub local_slot_index: usize,
     pub ancestor_depth: usize,
+    #[serde(default = "ser_captured_var_parent_fn_legacy")]
+    pub parent_function_index: usize,
+}
+
+fn ser_captured_var_parent_fn_legacy() -> usize {
+    usize::MAX
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -348,8 +509,14 @@ pub struct SerFunction {
     pub is_cached: bool,
     #[serde(default)]
     pub is_stream: bool,
+    #[serde(default)]
+    pub variadic_pos_index: Option<usize>,
+    #[serde(default)]
+    pub variadic_kw_index: Option<usize>,
     pub route_method: Option<String>,
     pub route_path: Option<String>,
+    #[serde(default)]
+    pub ws_route_type: Option<String>,
 }
 
 fn chunk_to_ser(chunk: &Chunk) -> Result<SerChunk, String> {
@@ -430,12 +597,16 @@ fn function_to_ser(f: &Function) -> Result<SerFunction, String> {
                 parent_slot_index: c.parent_slot_index,
                 local_slot_index: c.local_slot_index,
                 ancestor_depth: c.ancestor_depth,
+                parent_function_index: c.parent_function_index,
             })
             .collect(),
         is_cached: f.is_cached,
         is_stream: f.is_stream,
+        variadic_pos_index: f.variadic_pos_index,
+        variadic_kw_index: f.variadic_kw_index,
         route_method: f.route_method.clone(),
         route_path: f.route_path.clone(),
+        ws_route_type: f.ws_route_type.clone(),
     })
 }
 
@@ -460,12 +631,16 @@ fn ser_to_function(ser: &SerFunction) -> Function {
             parent_slot_index: c.parent_slot_index,
             local_slot_index: c.local_slot_index,
             ancestor_depth: c.ancestor_depth,
+            parent_function_index: c.parent_function_index,
         })
         .collect();
     f.is_cached = ser.is_cached;
     f.is_stream = ser.is_stream;
+    f.variadic_pos_index = ser.variadic_pos_index;
+    f.variadic_kw_index = ser.variadic_kw_index;
     f.route_method = ser.route_method.clone();
     f.route_path = ser.route_path.clone();
+    f.ws_route_type = ser.ws_route_type.clone();
     f.cache = None;
     f
 }

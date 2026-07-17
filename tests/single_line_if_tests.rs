@@ -22,8 +22,8 @@ mod tests {
 
     fn assert_number(source: &str, expected: f64) {
         match run(source) {
-            Ok(Value::Number(n)) => assert!((n - expected).abs() < 1e-10, "got {}", n),
-            Ok(v) => panic!("Expected Number({}), got {:?}", expected, v),
+            Ok(v) if v.as_ieee_f64().map(|n| (n - expected).abs() < 1e-10) == Some(true) => {}
+            Ok(v) => panic!("Expected numeric({}), got {:?}", expected, v),
             Err(e) => panic!("Error: {:?}", e),
         }
     }

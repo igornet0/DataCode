@@ -13,7 +13,7 @@ use crate::abi::{
     DATACODE_MODULE_ENTRY_SYMBOL, DATACODE_MODULE_SYMBOL,
 };
 use crate::common::error::LangError;
-use crate::common::value::Value;
+use crate::common::value::{ObjectKind, Value};
 use crate::common::value_store::ValueStore;
 use crate::vm::abi_bridge::{materialize_value_for_abi, AbiBridgeContext, BridgeError};
 use crate::vm::heavy_store::HeavyStore;
@@ -372,10 +372,13 @@ fn nest_dotted_module_exports(map: &mut HashMap<String, Value>) {
         match map.get_mut(&prefix) {
             Some(Value::Object(obj_rc)) => {
                 let mut inner = obj_rc.borrow_mut();
-                inner.insert(suffix, val);
-                inner
-                    .entry(NATIVE_MODULE_TYPEOF_NAMESPACE.to_string())
-                    .or_insert_with(|| Value::String(prefix.clone()));
+                inner.str_key_insert(suffix, val);
+                if inner.str_key_get(NATIVE_MODULE_TYPEOF_NAMESPACE).is_none() {
+                    inner.str_key_insert(
+                        NATIVE_MODULE_TYPEOF_NAMESPACE.to_string(),
+                        Value::String(prefix.clone()),
+                    );
+                }
             }
             None => {
                 let mut inner = HashMap::new();
@@ -384,7 +387,10 @@ fn nest_dotted_module_exports(map: &mut HashMap<String, Value>) {
                     NATIVE_MODULE_TYPEOF_NAMESPACE.to_string(),
                     Value::String(prefix.clone()),
                 );
-                map.insert(prefix, Value::Object(Rc::new(RefCell::new(inner))));
+                map.insert(
+                    prefix,
+                    Value::Object(Rc::new(RefCell::new(ObjectKind::Legacy(inner)))),
+                );
             }
             Some(_) => {
                 map.insert(key, val);
@@ -813,11 +819,14 @@ mod tests {
             panic!("dataset must be Object");
         };
         assert!(
-            ds.borrow().contains_key("__call__"),
+            ds.borrow().legacy_contains_key("__call__"),
             "keys: {:?}",
-            ds.borrow().keys().collect::<Vec<_>>()
+            ds.borrow()
+                .legacy_ref()
+                .map(|m| m.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default()
         );
-        assert!(!ds.borrow().contains_key("_call__"));
+        assert!(!ds.borrow().legacy_contains_key("_call__"));
     }
 
     #[test]
@@ -850,8 +859,11 @@ mod tests {
             panic!("layer must be Object");
         };
         assert_eq!(
-            layer_rc.borrow().get("__plugin_namespace"),
-            Some(&Value::String("layer".to_string()))
+            layer_rc
+                .borrow()
+                .legacy_get("__plugin_namespace")
+                .map(|v| v.clone()),
+            Some(Value::String("layer".to_string()))
         );
     }
 

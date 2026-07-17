@@ -12,7 +12,8 @@ use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::global_slot::GlobalSlot;
 use crate::vm::heavy_store::HeavyStore;
-use crate::vm::store_convert::{load_value, tagged_to_value_id};
+use crate::vm::stack;
+use crate::vm::store_convert::{load_value, store_value, tagged_to_value_id};
 use crate::vm::types::VMStatus;
 
 /// State after resolving callee and function index for `Call(arity)`.
@@ -22,6 +23,8 @@ pub(super) struct CalleeResolution {
     pub function_index_final: usize,
     pub constructing_class_opt: Option<Value>,
     pub current_ip: usize,
+    /// When set, use this arity for frame setup (defaults pushed for class-object calls).
+    pub effective_arity: usize,
 }
 
 pub(super) enum CalleeResolveOutcome {
@@ -29,6 +32,265 @@ pub(super) enum CalleeResolveOutcome {
     EarlyReturn(VMStatus),
     /// Continue to closure dispatch or `match actual_callee`.
     Resolved(CalleeResolution),
+}
+
+fn constructor_arity_from_fn_name(class_name: &str, fn_name: &str) -> Option<usize> {
+    let prefix = format!("{}::new_", class_name);
+    let rest = fn_name.strip_prefix(&prefix)?;
+    let digit_len = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digit_len == 0 {
+        return None;
+    }
+    rest[..digit_len].parse().ok()
+}
+
+fn find_constructor_with_default_params(
+    class_name: &str,
+    call_arity: usize,
+    functions: &[crate::bytecode::Function],
+) -> Option<(usize, usize)> {
+    let prefix = format!("{}::new_", class_name);
+    let mut best: Option<(usize, usize)> = None;
+    for (idx, f) in functions.iter().enumerate() {
+        if !f.name.starts_with(&prefix) {
+            continue;
+        }
+        let m = constructor_arity_from_fn_name(class_name, &f.name)?;
+        if m < call_arity {
+            continue;
+        }
+        let ok = (call_arity..m).all(|i| {
+            f.default_values
+                .get(i)
+                .and_then(|v| v.as_ref())
+                .is_some()
+        });
+        if !ok {
+            continue;
+        }
+        match best {
+            None => best = Some((idx, m)),
+            Some((_, bm)) if m < bm => best = Some((idx, m)),
+            Some((_, bm)) if m == bm => return None,
+            _ => {}
+        }
+    }
+    best
+}
+
+/// When multiple typed `Class::new_{arity}_{types}` overloads exist, pick by argument types on the stack.
+fn find_typed_constructor_by_stack_args(
+    class_name: &str,
+    call_arity: usize,
+    stack: &[TaggedValue],
+    functions: &[crate::bytecode::Function],
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+) -> Option<usize> {
+    if call_arity == 0 || stack.len() < call_arity {
+        return None;
+    }
+    let prefix = format!("{}::new_{}_", class_name, call_arity);
+    let candidates: Vec<(usize, String)> = functions
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, f)| {
+            f.name
+                .strip_prefix(&prefix)
+                .map(|suffix| (idx, suffix.to_string()))
+        })
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+    if candidates.len() == 1 {
+        return Some(candidates[0].0);
+    }
+    let arg_start = if stack.len() > call_arity {
+        stack.len() - call_arity - 1
+    } else {
+        stack.len().saturating_sub(call_arity)
+    };
+    let mut inferred = Vec::with_capacity(call_arity);
+    for tv in &stack[arg_start..arg_start.saturating_add(call_arity).min(stack.len())] {
+        let v = load_value(tagged_to_value_id(*tv, value_store), value_store, heavy_store);
+        inferred.push(
+            crate::vm::type_compat::primitive_display_value_type(&v).to_string(),
+        );
+    }
+    if call_arity == 1 {
+        let inferred = &inferred[0];
+        let matched: Vec<_> = candidates
+            .iter()
+            .filter(|(_, suffix)| {
+                crate::common::constructor_overload::ctor_suffix_matches_inferred(
+                    suffix,
+                    inferred,
+                )
+            })
+            .collect();
+        if let Some((idx, _)) = matched.first() {
+            return Some(*idx);
+        }
+    }
+    let combined = inferred.join("_");
+    candidates
+        .iter()
+        .find(|(_, suffix)| *suffix == combined)
+        .map(|(idx, _)| *idx)
+}
+
+fn push_constructor_default_args(
+    stack: &mut Vec<TaggedValue>,
+    func: &crate::bytecode::Function,
+    call_arity: usize,
+    total_arity: usize,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+) {
+    for i in call_arity..total_arity {
+        if let Some(def) = func.default_values.get(i).and_then(|v| v.as_ref()) {
+            let id = store_value(def.clone(), value_store, heavy_store);
+            stack::push(stack, TaggedValue::from_heap(id));
+        }
+    }
+}
+
+fn ctor_supplies_defaults(func: &crate::bytecode::Function, call_arity: usize) -> bool {
+    let m = func.param_names.len();
+    if m < call_arity {
+        return false;
+    }
+    (call_arity..m).all(|i| {
+        func.default_values
+            .get(i)
+            .and_then(|v| v.as_ref())
+            .is_some()
+    })
+}
+
+fn load_global_name_before_call(frames: &[CallFrame], current_ip: usize) -> Option<String> {
+    frames.last().and_then(|f| {
+        let prev_ip = current_ip.saturating_sub(1);
+        f.function.chunk.code.get(prev_ip).and_then(|op| {
+            if let OpCode::LoadGlobal(idx) = op {
+                f.function.chunk.global_names.get(idx).cloned()
+            } else {
+                None
+            }
+        })
+    })
+}
+
+fn class_name_and_call_arity_from_ctor_global(name: &str) -> Option<(String, usize)> {
+    let pos = name.find("::new_")?;
+    let class_name = name[..pos].to_string();
+    let rest = &name[pos + 6..];
+    let digit_len = rest.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digit_len == 0 {
+        return None;
+    }
+    let call_arity = rest[..digit_len].parse().ok()?;
+    Some((class_name, call_arity))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_class_object_for_name(
+    class_name: &str,
+    globals: &mut [GlobalSlot],
+    global_names: &std::collections::BTreeMap<usize, String>,
+    value_store: &mut ValueStore,
+    heavy_store: &HeavyStore,
+    vm_ptr: *mut crate::vm::vm::Vm,
+) -> Option<Value> {
+    let indices: Vec<usize> = global_names
+        .iter()
+        .filter(|(_, n)| n.as_str() == class_name)
+        .map(|(idx, _)| *idx)
+        .collect();
+    for i in indices {
+        if i >= globals.len() {
+            continue;
+        }
+        let id = globals[i].resolve_to_value_id(value_store);
+        let v = load_value(id, value_store, heavy_store);
+        if let Value::Object(rc) = &v {
+            let o = rc.borrow();
+            if matches!(o.str_key_get("__class_name"), Some(Value::String(s)) if s.as_str() == class_name)
+            {
+                return Some(v.clone());
+            }
+        }
+    }
+    for i in 0..globals.len() {
+        let id = globals[i].resolve_to_value_id(value_store);
+        let v = load_value(id, value_store, heavy_store);
+        if let Value::Object(rc) = &v {
+            let o = rc.borrow();
+            if matches!(o.str_key_get("__class_name"), Some(Value::String(s)) if s.as_str() == class_name)
+            {
+                return Some(v.clone());
+            }
+        }
+    }
+    let modules = unsafe { (*vm_ptr).get_modules() };
+    for (_mod_key, rc) in modules.iter() {
+        if let Some(v) = rc.borrow().get_export(class_name) {
+            if let Value::Object(obj_rc) = &v {
+                let o = obj_rc.borrow();
+                let name_ok = matches!(o.str_key_get("__class_name"), Some(Value::String(s)) if s.as_str() == class_name)
+                    || o.str_key_contains("new_0")
+                    || o.str_key_contains("new_1");
+                if name_ok {
+                    return Some(v.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn try_resolve_missing_constructor_call(
+    call_arity: usize,
+    load_global_name: &str,
+    stack: &mut Vec<TaggedValue>,
+    functions: &[crate::bytecode::Function],
+    globals: &mut [GlobalSlot],
+    global_names: &std::collections::BTreeMap<usize, String>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+    vm_ptr: *mut crate::vm::vm::Vm,
+) -> Option<(Value, usize, usize, Option<Value>)> {
+    let (class_name, name_arity) = class_name_and_call_arity_from_ctor_global(load_global_name)?;
+    if name_arity != call_arity {
+        return None;
+    }
+    let (ctor_idx, m) = find_constructor_with_default_params(&class_name, call_arity, functions)?;
+    if m > call_arity {
+        push_constructor_default_args(
+            stack,
+            &functions[ctor_idx],
+            call_arity,
+            m,
+            value_store,
+            heavy_store,
+        );
+    }
+    let constructing_class = load_class_object_for_name(
+        &class_name,
+        globals,
+        global_names,
+        value_store,
+        heavy_store,
+        vm_ptr,
+    );
+    Some((
+        Value::Function(ctor_idx),
+        m,
+        ctor_idx,
+        constructing_class,
+    ))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -47,6 +309,7 @@ pub(super) fn resolve_call_callee(
     vm_ptr: *mut crate::vm::vm::Vm,
 ) -> Result<CalleeResolveOutcome, LangError> {
     let current_ip = frames.last().unwrap().ip - 1;
+    let mut effective_arity = arity;
     let mut function_index_opt: Option<usize> = None;
     let mut constructing_class_opt: Option<Value> = None;
     {
@@ -112,14 +375,15 @@ pub(super) fn resolve_call_callee(
             if let Value::Object(obj_rc) = &function_value {
                 let (class_name_opt, is_abstract, method_new, call_opt) = {
                     let obj_ref = obj_rc.borrow();
-                    let class_name = obj_ref.get("__class_name").cloned();
-                    let abstract_val = obj_ref.get("__abstract").cloned();
+                    let class_name = obj_ref.str_key_get("__class_name").cloned();
+                    let abstract_val = obj_ref.str_key_get("__abstract").cloned();
                     let method_key = format!("new_{}", arity);
-                    let method_new = obj_ref.get(&method_key).cloned();
-                    let call_ = obj_ref.get("__call__").cloned();
+                    let method_new = obj_ref.str_key_get(method_key.as_str()).cloned();
+                    let call_ = obj_ref.str_key_get("__call__").cloned();
                     (class_name, abstract_val, method_new, call_)
                 };
                 if let Some(Value::String(ref class_name)) = class_name_opt {
+                    if !crate::vm::special_methods::is_class_instance(&function_value) {
                     if matches!(is_abstract.as_ref(), Some(Value::Bool(true))) {
                         let error = ExceptionHandler::runtime_error(
                             &frames,
@@ -137,6 +401,48 @@ pub(super) fn resolve_call_callee(
                             )?,
                         ));
                     }
+                    let typed_prefix = format!("{}::new_{}_", class_name, arity);
+                    let typed_overload_count = functions
+                        .iter()
+                        .filter(|f| f.name.starts_with(&typed_prefix))
+                        .count();
+                    if typed_overload_count > 1 {
+                        if let Some(typed_idx) = find_typed_constructor_by_stack_args(
+                            class_name,
+                            arity,
+                            stack,
+                            functions,
+                            value_store,
+                            heavy_store,
+                        ) {
+                            debug_println!(
+                                "[DEBUG executor OpCode::Call] Class object '{}' resolved to typed constructor '{}'",
+                                class_name,
+                                functions[typed_idx].name
+                            );
+                            constructing_class_opt = Some(function_value.clone());
+                            Value::Function(typed_idx)
+                        } else {
+                            let error = ExceptionHandler::runtime_error(
+                                &frames,
+                                format!(
+                                    "Ambiguous constructor call for class '{}': cannot pick overload for {} argument(s) at runtime",
+                                    class_name, arity
+                                ),
+                                line,
+                            );
+                            return Ok(CalleeResolveOutcome::EarlyReturn(
+                                ExceptionHandler::handle_exception_vm(
+                                    stack,
+                                    frames,
+                                    exception_handlers,
+                                    error,
+                                    value_store,
+                                    heavy_store,
+                                )?,
+                            ));
+                        }
+                    } else {
                     let constructor_name = format!("{}::new_{}", class_name, arity);
                     let constructor_value = global_names
                         .iter()
@@ -179,8 +485,35 @@ pub(super) fn resolve_call_callee(
                             module_uid,
                             local_index,
                         }
+                    } else if let Some((ctor_idx, m)) =
+                        find_constructor_with_default_params(class_name, arity, functions)
+                    {
+                        debug_println!(
+                            "[DEBUG executor OpCode::Call] Class object '{}' resolved to constructor '{}' via default parameters (call arity {} -> {})",
+                            class_name,
+                            functions[ctor_idx].name,
+                            arity,
+                            m
+                        );
+                        if m > arity {
+                            push_constructor_default_args(
+                                stack,
+                                &functions[ctor_idx],
+                                arity,
+                                m,
+                                value_store,
+                                heavy_store,
+                            );
+                            effective_arity = m;
+                        }
+                        constructing_class_opt = Some(function_value.clone());
+                        Value::Function(ctor_idx)
                     } else {
                         function_value
+                    }
+                    }
+                    } else {
+                        function_value.clone()
                     }
                 } else if let Some(Value::Function(_)) | Some(Value::NativeFunction(_)) =
                     call_opt.as_ref()
@@ -220,6 +553,83 @@ pub(super) fn resolve_call_callee(
     } else {
         Value::Null
     };
+    if crate::vm::special_methods::is_class_instance(&actual_callee) {
+        if let Some(call_fn) =
+            crate::vm::special_methods::try_resolve_callable_instance(&actual_callee)
+        {
+            let frame = frames.last().unwrap();
+            let receiver_id = tagged_to_value_id(callee_tv, value_store);
+            stack::insert_at_frame_start(
+                stack,
+                frame.stack_start,
+                TaggedValue::from_heap(receiver_id),
+            );
+            effective_arity += 1;
+            actual_callee = call_fn;
+            if let Value::Function(i) = &actual_callee {
+                function_index_opt = Some(*i);
+            }
+        }
+    }
+    if let Some(load_name) = load_global_name_before_call(frames, current_ip) {
+        if load_name.contains("::new_") {
+            if matches!(&actual_callee, Value::Null) {
+                if let Some((resolved, eff, fn_idx, class_opt)) =
+                    try_resolve_missing_constructor_call(
+                        arity,
+                        &load_name,
+                        stack,
+                        functions,
+                        globals,
+                        global_names,
+                        value_store,
+                        heavy_store,
+                        vm_ptr,
+                    )
+                {
+                    debug_println!(
+                        "[DEBUG executor OpCode::Call] Null constructor slot '{}' resolved to '{}' (call arity {} -> {})",
+                        load_name,
+                        functions.get(fn_idx).map(|f| f.name.as_str()).unwrap_or("?"),
+                        arity,
+                        eff
+                    );
+                    actual_callee = resolved;
+                    effective_arity = eff;
+                    function_index_opt = Some(fn_idx);
+                    constructing_class_opt = class_opt.or(constructing_class_opt);
+                }
+            } else if let Value::Function(fn_idx) = &actual_callee {
+                if *fn_idx < functions.len() {
+                    let func = &functions[*fn_idx];
+                    let m = func.param_names.len();
+                    if m > effective_arity && ctor_supplies_defaults(func, effective_arity) {
+                        push_constructor_default_args(
+                            stack,
+                            func,
+                            effective_arity,
+                            m,
+                            value_store,
+                            heavy_store,
+                        );
+                        effective_arity = m;
+                        if constructing_class_opt.is_none() {
+                            if let Some(class_name) = func.name.split("::").next() {
+                                constructing_class_opt = load_class_object_for_name(
+                                    class_name,
+                                    globals,
+                                    global_names,
+                                    value_store,
+                                    heavy_store,
+                                    vm_ptr,
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
     if matches!(&actual_callee, Value::Array(_)) {
         if let Some(frame) = frames.last() {
             let prev_ip = frame.ip.saturating_sub(2);
@@ -295,7 +705,7 @@ pub(super) fn resolve_call_callee(
             }
         }
     }
-    let function_index_resolved = if callee_tv.is_heap() {
+    let mut function_index_resolved = if callee_tv.is_heap() {
         let id = callee_tv.get_heap_id();
         match value_store.get(id) {
             Some(ValueCell::Function(i)) => {
@@ -371,7 +781,7 @@ pub(super) fn resolve_call_callee(
     } else if matches!(actual_callee, Value::NativeFunction(_)) {
         0
     } else if let Value::Object(class_rc) = &actual_callee {
-        let class_name = class_rc.borrow().get("__class_name").and_then(|v| {
+        let class_name = class_rc.borrow().str_key_get("__class_name").and_then(|v| {
             if let Value::String(s) = v {
                 Some(s.clone())
             } else {
@@ -407,8 +817,30 @@ pub(super) fn resolve_call_callee(
         } else {
             None
         };
-        match by_name.or(from_module) {
-            Some(idx) => idx,
+        match by_name.or(from_module).or_else(|| {
+            class_name.as_ref().and_then(|cn| {
+                find_constructor_with_default_params(cn, arity, functions).map(|(idx, m)| {
+                    if m > arity {
+                        push_constructor_default_args(
+                            stack,
+                            &functions[idx],
+                            arity,
+                            m,
+                            value_store,
+                            heavy_store,
+                        );
+                        effective_arity = m;
+                    }
+                    constructing_class_opt = Some(Value::Object(class_rc.clone()));
+                    idx
+                })
+            })
+        }) {
+            Some(idx) => {
+                actual_callee = Value::Function(idx);
+                function_index_resolved = Some(idx);
+                idx
+            }
             None => {
                 let load_global_name = frames.last().and_then(|f| {
                     let prev_ip = current_ip.saturating_sub(1);
@@ -433,10 +865,10 @@ pub(super) fn resolve_call_callee(
                         )
                     };
                     let v_opt = obj
-                        .get("__call__")
+                        .str_key_get("__call__")
                         .cloned()
                         .filter(|v| is_callable(v))
-                        .or_else(|| obj.get(name).cloned().filter(|v| is_callable(v)));
+                        .or_else(|| obj.str_key_get(name).cloned().filter(|v| is_callable(v)));
                     drop(obj);
                     if let Some(v) = v_opt {
                         if matches!(
@@ -520,5 +952,6 @@ pub(super) fn resolve_call_callee(
         function_index_final,
         constructing_class_opt,
         current_ip,
+        effective_arity,
     }))
 }

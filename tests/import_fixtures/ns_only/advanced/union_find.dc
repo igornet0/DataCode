@@ -1,0 +1,13 @@
+cls UnionFind {
+    private:
+        n: int
+
+    new UnionFind(size: int) {
+        this.n = size
+    }
+
+    public:
+    fn count_components() -> int {
+        return this.n
+    }
+}

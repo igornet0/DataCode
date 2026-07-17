@@ -9,6 +9,16 @@ use crate::parser::ast::Expr;
 pub fn compile_property(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), LangError> {
     if let Expr::Property { object, name, line } = expr {
         *ctx.current_line = *line;
+        if name.starts_with('@') {
+            return Err(LangError::ParseError {
+                message: format!(
+                    "Special methods cannot be accessed directly (got `.{}`); they are invoked by operators and builtins",
+                    name
+                ),
+                line: *line,
+                file: ctx.source_name.map(|s| s.to_string()),
+            });
+        }
         // Компилируем объект
         expr::compile_expr(ctx, object)?;
         // Для table.idx мы просто оставляем таблицу на стеке

@@ -4,8 +4,8 @@ use crate::common::error::ErrorType;
 use crate::common::table::Table;
 use crate::common::{
     error::LangError,
-    value::Value,
-    value_store::{ValueCell, ValueId, ValueStore},
+    value::{ObjectKind, Value},
+    value_store::{ValueCell, ValueId, ValueStore, NULL_VALUE_ID},
     TaggedValue,
 };
 use crate::debug_println;
@@ -16,8 +16,10 @@ use crate::vm::native_indices::builtin;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::host::HostEntry;
 use crate::vm::stack;
+use crate::vm::memory::{canonical_integral_from_key_id, push_stack_value_id, slot_to_value};
 use crate::vm::store_convert::{
-    load_value, store_value, tagged_to_value_id, update_cell_if_mutable,
+    load_value, store_value, tagged_to_value_id,
+    update_cell_if_mutable,
 };
 use crate::vm::types::VMStatus;
 use crate::vm::types::{ExplicitPrimaryKey, ExplicitRelation};
@@ -38,6 +40,18 @@ impl Drop for RestoreVmContextGuard {
             *ctx.borrow_mut() = self.previous;
         });
     }
+}
+
+fn object_looks_like_module_receiver(map: &ObjectKind) -> bool {
+    fn native_export_count(map: &ObjectKind) -> usize {
+        let count_native = |v: &Value| matches!(v, Value::NativeFunction(_));
+        match map {
+            ObjectKind::Legacy(hm) => hm.values().filter(|v| count_native(v)).count(),
+            ObjectKind::Inline(pairs) => pairs.iter().filter(|(_, v)| count_native(v)).count(),
+            _ => 0,
+        }
+    }
+    native_export_count(map) >= 1
 }
 
 /// Execute a native (builtin or ABI) call. Called from call_dispatch when callee is Value::NativeFunction(native_index).
@@ -82,13 +96,25 @@ pub(crate) fn execute_native_call(
     if let Some(s) = fast_paths::try_range_fast_path(
         native_index,
         arity,
+        line,
+        stack,
+        frames,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    )? {
+        return Ok(s);
+    }
+    if let Some(s) = fast_paths::try_push_fast_path(
+        native_index,
+        arity,
         stack,
         frames,
         value_store,
     ) {
         return Ok(s);
     }
-    if let Some(s) = fast_paths::try_push_fast_path(
+    if let Some(s) = fast_paths::try_pop_fast_path(
         native_index,
         arity,
         stack,
@@ -103,6 +129,7 @@ pub(crate) fn execute_native_call(
         stack,
         frames,
         value_store,
+        heavy_store,
     ) {
         return Ok(s);
     }
@@ -116,6 +143,15 @@ pub(crate) fn execute_native_call(
     ) {
         return Ok(s);
     }
+    if let Some(s) = fast_paths::try_abs_fast_path(
+        native_index,
+        arity,
+        stack,
+        frames,
+        value_store,
+    ) {
+        return Ok(s);
+    }
     if let Some(s) = fast_paths::try_table_legacy_fast_path(
         native_index,
         arity,
@@ -125,6 +161,59 @@ pub(crate) fn execute_native_call(
         heavy_store,
     ) {
         return Ok(s);
+    }
+
+    let native_ptr = natives.get(native_index).and_then(HostEntry::as_fn_ptr);
+    if let Some(r) = super::heapq_fast::try_heapq_fast_path(
+        native_ptr,
+        arity,
+        line,
+        stack,
+        frames,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    ) {
+        return r;
+    }
+
+    if let Some(r) = super::object_get_fast::try_object_get_early(
+        native_index,
+        arity,
+        line,
+        stack,
+        frames,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    ) {
+        return r;
+    }
+
+    if let Some(r) = super::object_clear_fast::try_object_clear_early(
+        native_index,
+        arity,
+        line,
+        stack,
+        frames,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    ) {
+        return r;
+    }
+
+    if let Some(r) = super::set_fast::try_set_integral_mut_early(
+        native_index,
+        arity,
+        line,
+        stack,
+        frames,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    ) {
+        return r;
     }
 
     use crate::database_engine::natives as db_natives;
@@ -155,16 +244,21 @@ pub(crate) fn execute_native_call(
         || is_db_cluster_get
         || is_db_cluster_names;
 
+    #[cfg(feature = "profile")]
+    crate::vm::profile::record_native_call(
+        crate::vm::native_indices::builtin_native_name(native_index),
+    );
+
     native_args_buffer.clear();
     let mut native_arg_ids: Option<&mut Vec<ValueId>> = None;
     if is_db_engine_method {
         let frame = frames.last().unwrap();
-        let available = stack.len().saturating_sub(frame.stack_start);
+        let available = stack::available_in_frame(stack, frame.stack_start);
         let to_pop_total = arity.min(available);
         reusable_all_popped.clear();
         reusable_all_popped.reserve(to_pop_total);
         for _ in 0..to_pop_total {
-            let tv = stack.pop().unwrap_or(TaggedValue::null());
+            let tv = stack::pop_direct(stack).unwrap_or(TaggedValue::null());
             let id = tagged_to_value_id(tv, value_store);
             reusable_all_popped.push(load_value(id, value_store, heavy_store));
         }
@@ -185,7 +279,7 @@ pub(crate) fn execute_native_call(
         let frame = frames.last().unwrap();
         // Must match saturating_sub elsewhere: if stack.len() < stack_start (bug or imbalance),
         // raw subtraction wraps and we may pop past the frame — corrupting the stack (SIGSEGV).
-        let available_args = stack.len().saturating_sub(frame.stack_start);
+        let available_args = stack::available_in_frame(stack, frame.stack_start);
         if available_args < arity {
             let error = ExceptionHandler::runtime_error(
                 &frames,
@@ -206,8 +300,8 @@ pub(crate) fn execute_native_call(
         }
         // Fast path table(data, headers)
         if native_index == builtin::TABLE && arity == 2 {
-            let headers_tv = stack.pop().unwrap_or(TaggedValue::null());
-            let data_tv = stack.pop().unwrap_or(TaggedValue::null());
+            let headers_tv = stack::pop_direct(stack).unwrap_or(TaggedValue::null());
+            let data_tv = stack::pop_direct(stack).unwrap_or(TaggedValue::null());
             let headers_id = tagged_to_value_id(headers_tv, value_store);
             let data_id = tagged_to_value_id(data_tv, value_store);
             let row_slots_opt2 = value_store.get(data_id).and_then(|c| {
@@ -279,14 +373,25 @@ pub(crate) fn execute_native_call(
             stack::push_id(stack, data_id);
             stack::push_id(stack, headers_id);
         }
+
         reusable_native_arg_ids.clear();
         reusable_native_arg_ids.reserve(arity);
+        native_args_buffer.clear();
         native_args_buffer.reserve(arity);
         for _ in 0..arity {
-            let arg_tv = stack.pop().unwrap_or(TaggedValue::null());
-            let arg_id = tagged_to_value_id(arg_tv, value_store);
+            let arg_tv = stack::pop_direct(stack).unwrap_or(TaggedValue::null());
+            let arg_id = if arg_tv.is_heap() {
+                arg_tv.get_heap_id()
+            } else {
+                tagged_to_value_id(arg_tv, value_store)
+            };
             reusable_native_arg_ids.push(arg_id);
-            native_args_buffer.push(load_value(arg_id, value_store, heavy_store));
+            let arg_val = if arg_tv.is_heap() {
+                load_value(arg_id, value_store, heavy_store)
+            } else {
+                slot_to_value(arg_tv, value_store, heavy_store)
+            };
+            native_args_buffer.push(arg_val);
         }
         reusable_native_arg_ids.reverse();
         native_args_buffer.reverse();
@@ -316,11 +421,12 @@ pub(crate) fn execute_native_call(
                 heavy_store,
             );
         }
-        for arg in native_args_buffer.iter() {
-            if !matches!(arg, Value::Number(_)) {
+        match crate::common::range_args::range_spec_from_values(native_args_buffer) {
+            Ok(_) => {}
+            Err("zero_step") => {
                 let error = ExceptionHandler::runtime_error(
                     &frames,
-                    "range() arguments must be numbers".to_string(),
+                    "range() step cannot be zero".to_string(),
                     line,
                 );
                 return ExceptionHandler::handle_exception_vm(
@@ -332,24 +438,20 @@ pub(crate) fn execute_native_call(
                     heavy_store,
                 );
             }
-        }
-        if arity == 3 {
-            if let Value::Number(step) = &native_args_buffer[2] {
-                if *step == 0.0 {
-                    let error = ExceptionHandler::runtime_error(
-                        &frames,
-                        "range() step cannot be zero".to_string(),
-                        line,
-                    );
-                    return ExceptionHandler::handle_exception_vm(
-                        stack,
-                        frames,
-                        exception_handlers,
-                        error,
-                        value_store,
-                        heavy_store,
-                    );
-                }
+            Err(_) => {
+                let error = ExceptionHandler::runtime_error(
+                    &frames,
+                    "range() arguments must be integral numbers".to_string(),
+                    line,
+                );
+                return ExceptionHandler::handle_exception_vm(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                );
             }
         }
     }
@@ -401,9 +503,12 @@ pub(crate) fn execute_native_call(
             || ptr == Some(plot_natives::native_plot_heatmap as *const ())
     };
     let second_is_class = native_args_buffer.len() >= 2
-        && matches!(&native_args_buffer[1], Value::Object(rc) if rc.borrow().get("__class_name").is_some());
+        && matches!(&native_args_buffer[1], Value::Object(rc) if rc.borrow().str_key_get("__class_name").is_some());
     let skip_drop = arity == 1
         || native_index == builtin::ISINSTANCE
+        || native_index == builtin::OBJECT_GET
+        || native_index == builtin::SAVE
+        || native_index == builtin::COPY
         || second_is_class
         || (native_index == builtin::LEN && native_args_buffer.len() == 1)
         || is_db_column
@@ -411,9 +516,114 @@ pub(crate) fn execute_native_call(
         || is_sqenum_finalize
         || is_plot_line_bar_pie_heatmap;
     if !skip_drop && !native_args_buffer.is_empty() {
-        if let Value::Object(_) = &native_args_buffer[0] {
-            native_args_buffer.remove(0);
+        if native_args_buffer.len() > 1 {
+            if let Value::Object(obj_rc) = &native_args_buffer[0] {
+                if object_looks_like_module_receiver(&obj_rc.borrow()) {
+                    native_args_buffer.remove(0);
+                    if let Some(ids_ref) = native_arg_ids.as_mut() {
+                        ids_ref.remove(0);
+                    }
+                }
+            }
+            if native_args_buffer.len() > 1 {
+                if let Some(Value::Object(obj_rc)) = native_args_buffer.last() {
+                    if object_looks_like_module_receiver(&obj_rc.borrow()) {
+                        let last = native_args_buffer.len() - 1;
+                        native_args_buffer.remove(last);
+                        if let Some(ids_ref) = native_arg_ids.as_mut() {
+                            ids_ref.remove(last);
+                        }
+                    }
+                }
+            }
+        } else if let Value::Object(obj_rc) = &native_args_buffer[0] {
+            if object_looks_like_module_receiver(&obj_rc.borrow()) {
+                native_args_buffer.remove(0);
+                if let Some(ids_ref) = native_arg_ids.as_mut() {
+                    ids_ref.remove(0);
+                }
+            }
         }
+    }
+
+    if native_index == builtin::OBJECT_GET {
+        if let Some(ids) = native_arg_ids.as_ref() {
+            if (arity == 2 || arity == 3) && ids.len() == arity {
+                let obj_id = ids[0];
+                let key_id = ids[1];
+                let default_id = ids.get(2).copied().unwrap_or(NULL_VALUE_ID);
+                let out_id = if matches!(value_store.get(obj_id), Some(ValueCell::Object(_))) {
+                    if canonical_integral_from_key_id(key_id, value_store).is_none() {
+                        let key_ok = value_store
+                            .get(key_id)
+                            .map(crate::common::type_model::value_cell_is_hashable_key)
+                            .unwrap_or(false);
+                        if !key_ok {
+                            let key_material = load_value(key_id, value_store, heavy_store);
+                            if !crate::common::type_model::is_hashable_value(&key_material) {
+                                let tn = crate::vm::calls::get_type_name_value(&key_material);
+                                let error = ExceptionHandler::runtime_error_with_type(
+                                    &frames,
+                                    format!("unhashable type: {}", tn),
+                                    line,
+                                    ErrorType::TypeError,
+                                );
+                                return ExceptionHandler::handle_exception_vm(
+                                    stack,
+                                    frames,
+                                    exception_handlers,
+                                    error,
+                                    value_store,
+                                    heavy_store,
+                                );
+                            }
+                        }
+                    }
+                    crate::vm::memory::object_cell_try_lookup_by_key_id(
+                        obj_id,
+                        key_id,
+                        value_store,
+                        heavy_store,
+                    )
+                    .unwrap_or(default_id)
+                } else {
+                    let error = ExceptionHandler::runtime_error_with_type(
+                        &frames,
+                        "TypeError: .get() expects a plain dict object".to_string(),
+                        line,
+                        ErrorType::TypeError,
+                    );
+                    return ExceptionHandler::handle_exception_vm(
+                        stack,
+                        frames,
+                        exception_handlers,
+                        error,
+                        value_store,
+                        heavy_store,
+                    );
+                };
+                native_args_buffer.clear();
+                push_stack_value_id(stack, value_store, out_id);
+                return Ok(VMStatus::Continue);
+            }
+        }
+        let error = ExceptionHandler::runtime_error_with_type(
+            &frames,
+            format!(
+                "TypeError: .get() takes 1 or 2 arguments (plus optional default), got {}",
+                arity
+            ),
+            line,
+            ErrorType::TypeError,
+        );
+        return ExceptionHandler::handle_exception_vm(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        );
     }
 
     let result = if native_index < builtin_count {
@@ -514,6 +724,13 @@ pub(crate) fn execute_native_call(
         }
     }
 
+    // sort(...) возвращает отсортированный массив; синхронизируем arg0 перед write-back в store.
+    if native_index == builtin::SORT && arity >= 1 && !native_args_buffer.is_empty() {
+        if matches!(&result, Value::Array(_)) {
+            native_args_buffer[0] = result.clone();
+        }
+    }
+
     if native_index == builtin::ZIP_JOIN {
         let primary_keys = unsafe { (*vm_ptr).take_pending_primary_keys() };
         for (table_rc, col_name) in primary_keys {
@@ -545,7 +762,21 @@ pub(crate) fn execute_native_call(
         {
             debug_println!("⚠️  Предупреждение: {}", error_msg);
         } else {
-            let error_type = if error_msg.contains("ShapeError")
+            let error_type = if error_msg.starts_with("ReadOnlyError:") {
+                ErrorType::ReadOnlyError
+            } else if error_msg.starts_with("ZeroDivisionError:") {
+                ErrorType::ZeroDivisionError
+            } else if error_msg.starts_with("ValueError:") {
+                ErrorType::ValueError
+            } else if error_msg.starts_with("TypeError:") {
+                ErrorType::TypeError
+            } else if error_msg.starts_with("IndexError:") {
+                ErrorType::IndexError
+            } else if error_msg.starts_with("KeyError:") {
+                ErrorType::KeyError
+            } else if error_msg.starts_with("RuntimeError:") {
+                ErrorType::RuntimeError
+            } else if error_msg.contains("ShapeError")
                 || error_msg.contains("Shape mismatch")
                 || error_msg.starts_with("ShapeError:")
             {
@@ -574,6 +805,9 @@ pub(crate) fn execute_native_call(
                 // overwrite the ValueStore cell at item_id — which can alias another live array
                 // (e.g. empty pixels_list) and corrupt it. Other natives still get full write-back.
                 if native_index == builtin::PUSH && arity == 2 && i == 1 {
+                    continue;
+                }
+                if native_index == builtin::TABLE_ADD_ROW && arity == 2 && i == 1 {
                     continue;
                 }
                 // ORM Column(...) does not mutate its arguments. Write-back would resynthesize cells

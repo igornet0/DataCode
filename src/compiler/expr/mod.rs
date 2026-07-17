@@ -7,13 +7,16 @@ pub mod dict_comp;
 pub mod if_expr;
 pub mod list_comp;
 /// Модуль компиляции выражений
+pub mod integral_peephole;
 pub mod interpolated;
 pub mod lambda;
 pub mod literal;
 pub mod method_call;
+pub mod object_literal;
 pub mod property;
 pub mod super_expr;
 pub mod this;
+pub mod table_filter;
 pub mod unary;
 pub mod variable;
 

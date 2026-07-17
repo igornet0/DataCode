@@ -12,7 +12,7 @@ pub fn compile_call_value(ctx: &mut CompilationContext, expr: &Expr) -> Result<(
             match arg {
                 Arg::Positional(e) => expr::compile_expr(ctx, e)?,
                 Arg::Named { value, .. } => expr::compile_expr(ctx, value)?,
-                Arg::UnpackObject(e) => expr::compile_expr(ctx, e)?,
+                Arg::UnpackObject(e) | Arg::UnpackArray(e) => expr::compile_expr(ctx, e)?,
             }
         }
         expr::compile_expr(ctx, callee.as_ref())?;

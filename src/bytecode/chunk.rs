@@ -202,6 +202,30 @@ impl Chunk {
                 output.push_str("NEGATE\n");
                 offset + 1
             }
+            OpCode::BitAnd => {
+                output.push_str("BIT_AND\n");
+                offset + 1
+            }
+            OpCode::BitOr => {
+                output.push_str("BIT_OR\n");
+                offset + 1
+            }
+            OpCode::BitXor => {
+                output.push_str("BIT_XOR\n");
+                offset + 1
+            }
+            OpCode::ShiftLeft => {
+                output.push_str("SHIFT_LEFT\n");
+                offset + 1
+            }
+            OpCode::ShiftRight => {
+                output.push_str("SHIFT_RIGHT\n");
+                offset + 1
+            }
+            OpCode::BitNot => {
+                output.push_str("BIT_NOT\n");
+                offset + 1
+            }
             OpCode::Not => {
                 output.push_str("NOT\n");
                 offset + 1
@@ -274,6 +298,34 @@ impl Chunk {
                 output.push_str(&format!("JUMP_IF_FALSE_LABEL {}\n", label_id));
                 offset + 1
             }
+            OpCode::JumpIfLocalHeapArrayEmptyLabel(slot, label_id) => {
+                output.push_str(&format!(
+                    "JUMP_IF_LOCAL_HEAP_ARRAY_EMPTY_LABEL slot={} label={}\n",
+                    slot, label_id
+                ));
+                offset + 1
+            }
+            OpCode::JumpIfLocalHeapArrayEmpty8(slot, off) => {
+                output.push_str(&format!(
+                    "JUMP_IF_LOCAL_HEAP_ARRAY_EMPTY8 slot={} off={}\n",
+                    slot, off
+                ));
+                offset + 1
+            }
+            OpCode::JumpIfLocalHeapArrayEmpty16(slot, off) => {
+                output.push_str(&format!(
+                    "JUMP_IF_LOCAL_HEAP_ARRAY_EMPTY16 slot={} off={}\n",
+                    slot, off
+                ));
+                offset + 1
+            }
+            OpCode::JumpIfLocalHeapArrayEmpty32(slot, off) => {
+                output.push_str(&format!(
+                    "JUMP_IF_LOCAL_HEAP_ARRAY_EMPTY32 slot={} off={}\n",
+                    slot, off
+                ));
+                offset + 1
+            }
             OpCode::ForRange(var_slot, start_c, end_c, step_c, end_offset) => {
                 output.push_str(&format!(
                     "FOR_RANGE slot={} start_c={} end_c={} step_c={} end_off={}\n",
@@ -303,6 +355,10 @@ impl Chunk {
             }
             OpCode::CallWithUnpack(arity) => {
                 output.push_str(&format!("CALL_WITH_UNPACK {}\n", arity));
+                offset + 1
+            }
+            OpCode::CallVariadic(packed) => {
+                output.push_str(&format!("CALL_VARIADIC {}\n", packed));
                 offset + 1
             }
             OpCode::Return => {
@@ -379,6 +435,10 @@ impl Chunk {
             }
             OpCode::TableFilter => {
                 output.push_str("TABLE_FILTER\n");
+                offset + 1
+            }
+            OpCode::TableFilterPred(index) => {
+                output.push_str(&format!("TABLE_FILTER_PRED {:4}\n", index));
                 offset + 1
             }
             OpCode::Clone => {
@@ -492,6 +552,91 @@ impl Chunk {
             }
             OpCode::ObjectIndexIntegral => {
                 output.push_str("OBJECT_INDEX_INTEGRAL\n");
+                offset + 1
+            }
+            OpCode::ObjectClear => {
+                output.push_str("OBJECT_CLEAR\n");
+                offset + 1
+            }
+            OpCode::ObjectSetIntegral => {
+                output.push_str("OBJECT_SET_INTEGRAL\n");
+                offset + 1
+            }
+            OpCode::InIntegral => {
+                output.push_str("IN_INTEGRAL\n");
+                offset + 1
+            }
+            OpCode::NotInIntegral => {
+                output.push_str("NOT_IN_INTEGRAL\n");
+                offset + 1
+            }
+            OpCode::AbsI32 => {
+                output.push_str("ABS_I32\n");
+                offset + 1
+            }
+            OpCode::InGridBounds => {
+                output.push_str("IN_GRID_BOUNDS\n");
+                offset + 1
+            }
+            OpCode::InGridBoundsOut => {
+                output.push_str("IN_GRID_BOUNDS_OUT\n");
+                offset + 1
+            }
+            OpCode::FScoreStaleCheck => {
+                output.push_str("FSCORE_STALE_CHECK\n");
+                offset + 1
+            }
+            OpCode::DictGetIntegralLt => {
+                output.push_str("DICT_GET_INTEGRAL_LT\n");
+                offset + 1
+            }
+            OpCode::DictIndexIntegralAddImm(n) => {
+                output.push_str(&format!("DICT_INDEX_INTEGRAL_ADD_IMM {n}\n"));
+                offset + 1
+            }
+            OpCode::GridGetI32(a, b) => {
+                output.push_str(&format!("GRID_GET_I32 buf={} idx={}\n", a, b));
+                offset + 1
+            }
+            OpCode::GridSetI32(a, b, c) => {
+                output.push_str(&format!("GRID_SET_I32 buf={} idx={} val={}\n", a, b, c));
+                offset + 1
+            }
+            OpCode::GridGetU8(a, b) => {
+                output.push_str(&format!("GRID_GET_U8 buf={} idx={}\n", a, b));
+                offset + 1
+            }
+            OpCode::GridSetU8(a, b, c) => {
+                output.push_str(&format!("GRID_SET_U8 buf={} idx={} val={}\n", a, b, c));
+                offset + 1
+            }
+            OpCode::GridTestBlocked(a, b) => {
+                output.push_str(&format!("GRID_TEST_BLOCKED bitmap={} idx={}\n", a, b));
+                offset + 1
+            }
+            OpCode::GridHeapPush(h, n, f) => {
+                output.push_str(&format!(
+                    "GRID_HEAP_PUSH heap={} node={} f_buf={}\n",
+                    h, n, f
+                ));
+                offset + 1
+            }
+            OpCode::GridHeapPopUnpack2(f, n, h) => {
+                output.push_str(&format!(
+                    "GRID_HEAP_POP_UNPACK2 f={} node={} heap={}\n",
+                    f, n, h
+                ));
+                offset + 1
+            }
+            OpCode::GridHeapLen(h) => {
+                output.push_str(&format!("GRID_HEAP_LEN heap={}\n", h));
+                offset + 1
+            }
+            OpCode::InvokeSpecialInit(this_slot, param_count) => {
+                output.push_str(&format!(
+                    "INVOKE_SPECIAL_INIT this={} params={}\n",
+                    this_slot, param_count
+                ));
                 offset + 1
             }
         }

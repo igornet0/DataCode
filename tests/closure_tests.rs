@@ -3,15 +3,13 @@
 
 #[cfg(test)]
 mod tests {
-    use data_code::{run, Value};
+    use data_code::run;
 
     fn assert_number_result(source: &str, expected: f64) {
         let result = run(source);
         match result {
-            Ok(Value::Number(n)) => {
-                assert_eq!(n, expected, "Expected {}, got {}", expected, n);
-            }
-            Ok(v) => panic!("Expected Number({}), got {:?}", expected, v),
+            Ok(v) if v.as_ieee_f64() == Some(expected) => {}
+            Ok(v) => panic!("Expected numeric {}, got {:?}", expected, v),
             Err(e) => panic!("Error: {:?}", e),
         }
     }

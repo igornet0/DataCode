@@ -1,0 +1,12 @@
+global marker = 0
+
+cls Foo {}
+
+fn get_marker() {
+    return marker
+}
+
+fn __main__() {
+    global marker = 1
+    return marker
+}

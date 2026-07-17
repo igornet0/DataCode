@@ -41,8 +41,10 @@ mod tests {
     fn object_has_key_with_number(obj: &Value, key: &str, expected: f64) -> bool {
         match obj {
             Value::Object(rc) => {
-                if let Some(Value::Number(n)) = rc.borrow().str_key_get(key) {
-                    (n - expected).abs() < 1e-10
+                if let Some(v) = rc.borrow().str_key_get(key) {
+                    v.as_ieee_f64()
+                        .map(|n| (n - expected).abs() < 1e-10)
+                        .unwrap_or(false)
                 } else {
                     false
                 }
@@ -97,7 +99,7 @@ mod tests {
             fn SettingsConfigDict(opts) { return opts }
             model_config = SettingsConfigDict(**_config)
         "#;
-        assert_runtime_error_contains(source, "unexpected keys");
+        assert_runtime_error_contains(source, "unexpected keyword argument");
     }
 
     #[test]
@@ -164,7 +166,7 @@ mod tests {
             }
             x = DevSettings()
         "#;
-        assert_runtime_error_contains(source, "unexpected keys");
+        assert_runtime_error_contains(source, "unexpected keyword argument");
     }
 
     #[test]
@@ -178,6 +180,6 @@ mod tests {
             }
             x = DevSettings()
         "#;
-        assert_runtime_error_contains(source, "unexpected keys");
+        assert_runtime_error_contains(source, "unexpected keyword argument");
     }
 }

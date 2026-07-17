@@ -104,6 +104,22 @@ mod tests {
     }
 
     #[test]
+    fn test_scientific_notation_numbers() {
+        let source = "1e-9 2.5E+10 6e3";
+        let mut lexer = Lexer::new(source);
+        let mut lexemes = Vec::new();
+        loop {
+            let token = lexer.next_token().unwrap();
+            match token.kind {
+                TokenKind::Eof => break,
+                TokenKind::Number => lexemes.push(token.lexeme),
+                other => panic!("unexpected token {:?}", other),
+            }
+        }
+        assert_eq!(lexemes, vec!["1e-9", "2.5E+10", "6e3"]);
+    }
+
+    #[test]
     fn test_comments() {
         let source = "let x = 10 # это комментарий\nlet y = 20";
         let tokens = tokenize(source);

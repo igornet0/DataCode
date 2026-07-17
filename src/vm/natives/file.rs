@@ -1,7 +1,7 @@
 // File operations native functions
 
 use crate::common::value::Value;
-use chrono::Utc;
+use chrono::{FixedOffset, Utc};
 use regex::Regex;
 use std::cell::RefCell;
 use std::env;
@@ -10,10 +10,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 pub fn native_now(_args: &[Value]) -> Value {
-    // Возвращаем текущее время в формате RFC3339 (ISO 8601)
-    // Формат: YYYY-MM-DDTHH:MM:SSZ
-    let now = Utc::now();
-    Value::String(now.format("%Y-%m-%dT%H:%M:%SZ").to_string())
+    Value::Date(Utc::now().with_timezone(&FixedOffset::east_opt(0).expect("offset")))
 }
 
 pub fn native_getcwd(_args: &[Value]) -> Value {
@@ -74,13 +71,31 @@ pub fn format_path_for_error(path: &PathBuf) -> String {
     }
 }
 
+/// Resolve a relative path against script `base_path`, VM base, or cwd (outside --use-ve).
+fn resolve_relative_to_base(path: &PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        return path.clone();
+    }
+    if let Some(base) = crate::vm::file_import::get_base_path() {
+        return base.join(path);
+    }
+    if let Some(base) = crate::vm::vm::current_vm_ptr()
+        .and_then(|ptr| unsafe { (*ptr).get_base_path().clone() })
+    {
+        return base.join(path);
+    }
+    if let Ok(cwd) = env::current_dir() {
+        return cwd.join(path);
+    }
+    path.clone()
+}
+
 /// Безопасное разрешение пути относительно папки сессии в режиме --use-ve
 pub fn resolve_path_in_session(path: &PathBuf) -> Result<PathBuf, String> {
     use crate::websocket::{get_use_ve, get_user_session_path};
 
     if !get_use_ve() {
-        // В обычном режиме просто возвращаем путь как есть
-        return Ok(path.clone());
+        return Ok(resolve_relative_to_base(path));
     }
 
     let session_path = match get_user_session_path() {
@@ -446,23 +461,23 @@ pub fn native_list_files(args: &[Value]) -> Value {
 
     // Проверяем, является ли это SMB путем (lib://)
     if dir_path_str.starts_with("lib://") {
-        // Извлекаем имя шары и путь к директории
-        let path_without_prefix = &dir_path_str[6..]; // Убираем "lib://"
-        let parts: Vec<&str> = path_without_prefix.splitn(2, '/').collect();
-
-        if parts.is_empty() {
-            return Value::Array(Rc::new(RefCell::new(Vec::new())));
-        }
-
-        let share_name = parts[0];
-        let dir_path_on_share = if parts.len() > 1 { parts[1] } else { "" };
+        let (share_name, dir_path_on_share) = match crate::file_io::parse_lib_smb_path(
+            &dir_path_str,
+        ) {
+            Ok(parts) => parts,
+            Err(err_msg) => {
+                use crate::websocket::set_native_error;
+                set_native_error(err_msg);
+                return Value::Array(Rc::new(RefCell::new(Vec::new())));
+            }
+        };
 
         // Получаем SmbManager из thread-local storage; hold lock only for list_files, then release before building result.
         if let Some(smb_manager) = crate::vm::file_ops::get_smb_manager() {
             let regex_str = regex_pattern.as_deref();
             let list_result = {
                 let guard = smb_manager.lock().unwrap();
-                guard.list_files(share_name, dir_path_on_share, regex_str, true)
+                guard.list_files(&share_name, &dir_path_on_share, regex_str, true)
             };
             match list_result {
                 Ok(files) => {
@@ -527,20 +542,21 @@ pub fn native_read_file_bin(args: &[Value]) -> Value {
     let file_path_str = file_path.to_string_lossy().to_string();
 
     if file_path_str.starts_with("lib://") {
-        let path_without_prefix = &file_path_str[6..];
-        let parts: Vec<&str> = path_without_prefix.splitn(2, '/').collect();
-
-        if parts.is_empty() {
-            return Value::Null;
-        }
-
-        let share_name = parts[0];
-        let file_path_on_share = if parts.len() > 1 { parts[1] } else { "" };
+        let (share_name, file_path_on_share) = match crate::file_io::parse_lib_smb_path(
+            &file_path_str,
+        ) {
+            Ok(parts) => parts,
+            Err(err_msg) => {
+                use crate::websocket::set_native_error;
+                set_native_error(err_msg);
+                return Value::Null;
+            }
+        };
 
         if let Some(smb_manager) = crate::vm::file_ops::get_smb_manager() {
             let read_result = {
                 let guard = smb_manager.lock().unwrap();
-                guard.read_file(share_name, file_path_on_share)
+                guard.read_file(&share_name, &file_path_on_share)
             };
             match read_result {
                 Ok(content) => {

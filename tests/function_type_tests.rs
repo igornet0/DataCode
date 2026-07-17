@@ -254,16 +254,16 @@ mod tests {
         );
     }
 
-    /// `read_file_bin` returns `ByteBuffer`; it must satisfy `: array` like `Array` / `ArrayView`.
+    /// `read` returns `ByteBuffer`; it must satisfy `: array` like `Array` / `ArrayView`.
     #[test]
-    fn test_array_function_accepts_read_file_bin_bytebuffer() {
+    fn test_array_function_accepts_read_bytebuffer() {
         let bin_path = get_test_data_path("read_file_bin_sample.bin");
         let source = format!(
             r#"
             fn array_len(arr: array) -> int {{
                 return len(arr)
             }}
-            array_len(read_file_bin("{}"))
+            array_len(read("{}"))
             "#,
             bin_path
         );

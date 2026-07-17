@@ -109,6 +109,40 @@ tentative < g.get(7, float(inf))
 }
 
 #[test]
+fn array_index_plus_one_equality_runtime_and_bytecode() {
+    use data_code::bytecode::OpCode;
+    use data_code::compile;
+    let source = r#"
+fn __main__() {
+    dist = [0, 0, 0, 0]
+    u = 3
+    pu = 0
+    return dist[pu] == dist[u] + 1
+}
+"#;
+    let (_chunk, funcs) = compile(source).expect("compile");
+    let main = funcs
+        .iter()
+        .find(|f| f.name == "__main__")
+        .expect("__main__");
+    let ops: Vec<_> = main.chunk.code.clone();
+    assert!(
+        ops.iter().any(|op| matches!(op, OpCode::Equal)),
+        "expected Equal in {:?}",
+        ops
+    );
+    assert_bool(
+        r#"
+dist = [0, 0, 0, 0]
+u = 3
+pu = 0
+dist[pu] == dist[u] + 1
+"#,
+        false,
+    );
+}
+
+#[test]
 fn integral_set_membership_stress() {
     assert_bool(
         r#"

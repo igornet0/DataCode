@@ -16,7 +16,7 @@ use crate::vm;
 use crate::vm::Vm;
 
 use crate::common::error::LangError;
-use crate::common::value::Value;
+use crate::common::value::{ObjectKind, Value};
 
 /// Preload native [`operator_descriptor`](vm::native_loader::merge_operator_descriptor_from_native_module_object)
 /// for every imported module name found in the token stream (any dylib), then build the parse-time registry.
@@ -192,6 +192,9 @@ pub fn run_with_existing_vm(
         vm.ensure_globals_from_chunk(&f.chunk);
     }
     vm.register_all_builtin_modules()?;
+    // Match file_import::run_compiled_module: high-index LoadGlobal("int", "str", …) must not stay null.
+    vm.ensure_builtin_globals_high_indices();
+    vm.ensure_exception_constructors();
     // Sync Path B with Path A: update LoadGlobal/StoreGlobal indices to match vm.global_names
     // before set_functions, so create_all and other globals resolve correctly (fixes "no such table: users").
     vm.update_chunk_indices(&mut chunk);
@@ -226,7 +229,7 @@ pub fn run_with_vm_and_path(
     if let Some(vm) = existing_vm {
         run_with_vm_into_vm(source, vm)
     } else {
-        run_with_vm_internal_with_args(source, None, None, explicit_base, None)
+        run_with_vm_internal_with_args(source, None, None, explicit_base, None, None)
     }
 }
 
@@ -307,7 +310,16 @@ pub fn run_with_vm_with_args_and_lib(
         lib_path,
         base_path.map(std::path::PathBuf::from),
         source_name.map(std::path::PathBuf::from),
+        None,
     )
+}
+
+/// Execute source with a specific permission policy (e.g. WebSocket execute sandbox).
+pub fn run_with_vm_with_policy(
+    source: &str,
+    policy: crate::vm::PermissionPolicy,
+) -> Result<(Value, Vm), LangError> {
+    run_with_vm_internal_with_args(source, None, None, None, None, Some(policy))
 }
 
 /// Извлекает глобальные переменные из VM как HashMap (globals are GlobalSlot)
@@ -384,13 +396,13 @@ pub fn get_main_entry_params(source: &str) -> Option<Vec<(String, Option<Value>)
 pub(crate) fn remap_function_indices_in_exports(
     exports: &mut std::collections::HashMap<String, Value>,
     start_idx: usize,
-    root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+    root_rc: Option<&Rc<RefCell<ObjectKind>>>,
 ) {
     let mut seen = HashSet::new();
     fn remap_value(
         v: &mut Value,
         start_idx: usize,
-        root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+        root_rc: Option<&Rc<RefCell<ObjectKind>>>,
         seen: &mut HashSet<*const ()>,
     ) {
         match v {
@@ -404,8 +416,18 @@ pub(crate) fn remap_function_indices_in_exports(
                     return;
                 }
                 seen.insert(ptr);
-                for (_, inner) in rc.borrow_mut().iter_mut() {
-                    remap_value(inner, start_idx, root_rc, seen);
+                match &mut *rc.borrow_mut() {
+                    ObjectKind::Legacy(map) => {
+                        for (_, inner) in map.iter_mut() {
+                            remap_value(inner, start_idx, root_rc, seen);
+                        }
+                    }
+                    ObjectKind::Inline(entries) => {
+                        for (_, inner) in entries.iter_mut() {
+                            remap_value(inner, start_idx, root_rc, seen);
+                        }
+                    }
+                    ObjectKind::Bucket(_) => {}
                 }
                 seen.remove(&ptr);
             }
@@ -424,13 +446,13 @@ pub(crate) fn replace_function_with_module_function_in_exports(
     exports: &mut std::collections::HashMap<String, Value>,
     module_name: &str,
     submodule_keys: &std::collections::HashSet<String>,
-    root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+    root_rc: Option<&Rc<RefCell<ObjectKind>>>,
 ) {
     let mut seen = HashSet::new();
     fn replace_value(
         v: &mut Value,
         module_path: &str,
-        root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+        root_rc: Option<&Rc<RefCell<ObjectKind>>>,
         seen: &mut HashSet<*const ()>,
     ) {
         match v {
@@ -449,8 +471,18 @@ pub(crate) fn replace_function_with_module_function_in_exports(
                     return;
                 }
                 seen.insert(ptr);
-                for (_, inner) in rc.borrow_mut().iter_mut() {
-                    replace_value(inner, module_path, root_rc, seen);
+                match &mut *rc.borrow_mut() {
+                    ObjectKind::Legacy(map) => {
+                        for (_, inner) in map.iter_mut() {
+                            replace_value(inner, module_path, root_rc, seen);
+                        }
+                    }
+                    ObjectKind::Inline(entries) => {
+                        for (_, inner) in entries.iter_mut() {
+                            replace_value(inner, module_path, root_rc, seen);
+                        }
+                    }
+                    ObjectKind::Bucket(_) => {}
                 }
                 seen.remove(&ptr);
             }
@@ -495,13 +527,13 @@ pub(crate) fn remap_function_constants_in_chunks(
 pub(crate) fn remap_native_indices_in_exports(
     exports: &mut std::collections::HashMap<String, Value>,
     native_start: usize,
-    root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+    root_rc: Option<&Rc<RefCell<ObjectKind>>>,
 ) {
     let mut seen = HashSet::new();
     fn remap_value(
         v: &mut Value,
         native_start: usize,
-        root_rc: Option<&Rc<RefCell<std::collections::HashMap<String, Value>>>>,
+        root_rc: Option<&Rc<RefCell<ObjectKind>>>,
         seen: &mut HashSet<*const ()>,
     ) {
         match v {
@@ -517,8 +549,18 @@ pub(crate) fn remap_native_indices_in_exports(
                     return;
                 }
                 seen.insert(ptr);
-                for (_, inner) in rc.borrow_mut().iter_mut() {
-                    remap_value(inner, native_start, root_rc, seen);
+                match &mut *rc.borrow_mut() {
+                    ObjectKind::Legacy(map) => {
+                        for (_, inner) in map.iter_mut() {
+                            remap_value(inner, native_start, root_rc, seen);
+                        }
+                    }
+                    ObjectKind::Inline(entries) => {
+                        for (_, inner) in entries.iter_mut() {
+                            remap_value(inner, native_start, root_rc, seen);
+                        }
+                    }
+                    ObjectKind::Bucket(_) => {}
                 }
                 seen.remove(&ptr);
             }
@@ -533,7 +575,7 @@ pub(crate) fn remap_native_indices_in_exports(
 /// Внутренняя функция выполнения кода (используется через run_with_vm_internal_with_args)
 #[allow(dead_code)]
 fn run_with_vm_internal(source: &str) -> Result<(Value, Vm), LangError> {
-    run_with_vm_internal_with_args(source, None, None, None, None)
+    run_with_vm_internal_with_args(source, None, None, None, None, None)
 }
 
 /// Внутренняя функция выполнения кода с аргументами
@@ -550,6 +592,7 @@ fn run_with_vm_internal_with_args(
     lib_path: Option<&std::path::Path>,
     explicit_base_path: Option<std::path::PathBuf>,
     source_name: Option<std::path::PathBuf>,
+    permission_policy: Option<crate::vm::PermissionPolicy>,
 ) -> Result<(Value, Vm), LangError> {
     use compiler::Compiler;
     use lexer::Lexer;
@@ -683,6 +726,9 @@ fn run_with_vm_internal_with_args(
 
     // 5. Выполнение на VM
     let mut vm = Vm::new();
+    if let Some(policy) = permission_policy {
+        vm.set_permission_policy(policy);
+    }
     vm.set_operator_registry_snapshot(Some(preload.operator_registry));
     // Сразу задаём base_path и project_root в VM, чтобы импорты и load_env разрешались детерминированно
     let base = explicit_base_path
@@ -693,15 +739,14 @@ fn run_with_vm_internal_with_args(
 
     // Сначала регистрируем нативные функции (индексы 0-69)
     vm.register_native_globals();
-    // Добавляем слоты для глобалов из chunk (в т.ч. имён модулей и импортов: Config из "from config import Config")
-    // ДО регистрации встроенных модулей и ДО merge из __lib__.dc, чтобы merge перезаписывал существующий слот,
-    // а не создавал второй слот с тем же именем (детерминизм: sentinel в конструкторах резолвится в один и тот же индекс).
-    vm.ensure_globals_from_chunk(&chunk);
+    // Main chunk: preserve compiler indices (e.g. read → same slot as read_file at 46).
+    vm.ensure_globals_from_chunk_preserve_indices(&chunk);
     for f in &functions {
         vm.ensure_globals_from_chunk(&f.chunk);
     }
     // Регистрируем встроенные модули (plot, settings_env, uuid) — они заполняют слоты по имени
     vm.register_all_builtin_modules()?;
+    vm.ensure_builtin_globals_high_indices();
 
     // Module isolation: register __lib__.dc as a module (no merge). Main must "from __lib__ import X" to use lib exports.
     if let Some(mut lib_vm) = lib_vm {
@@ -713,15 +758,13 @@ fn run_with_vm_internal_with_args(
         remap_function_constants_in_chunks(vm.get_functions_mut(), start_idx, lib_fn_count);
         let mut exports = crate::vm::file_import::export_globals_from_vm(&mut lib_vm);
         remap_function_indices_in_exports(&mut exports, start_idx, None);
-        let lib_module_value = Value::Object(Rc::new(RefCell::new(exports)));
+        let ns = Rc::new(RefCell::new(ObjectKind::Legacy(exports)));
+        let lib_module_value = Value::Object(ns.clone());
         {
             use crate::vm::module_object::ModuleObject;
-            if let Value::Object(ref namespace_rc) = lib_module_value {
-                let mod_obj =
-                    ModuleObject::from_namespace("__lib__".to_string(), namespace_rc.clone());
-                vm.get_modules_mut()
-                    .insert("__lib__".to_string(), Rc::new(RefCell::new(mod_obj)));
-            }
+            let mod_obj = ModuleObject::from_namespace("__lib__".to_string(), ns.clone());
+            vm.get_modules_mut()
+                .insert("__lib__".to_string(), Rc::new(RefCell::new(mod_obj)));
         }
         // Set __lib__ slot in main VM so "from __lib__ import X" and "import __lib__" resolve.
         let lib_slot_idx = vm
@@ -917,7 +960,6 @@ fn run_with_vm_internal_with_args(
         &chunk,
         Some((argv_slot_index, &argv_old_indices, Some(argv_id))),
     )?;
-
     Ok((result, vm))
 }
 
@@ -944,7 +986,7 @@ pub fn run_lib_file(lib_path: &std::path::Path) -> Result<Vm, LangError> {
 
     // Выполняем __lib__.dc без argv (пустой массив)
     // Флаг is_executing_lib предотвратит автоматический поиск __lib__.dc
-    let (_, vm) = run_with_vm_internal_with_args(&source, Some(Vec::new()), None, None, None)?;
+    let (_, vm) = run_with_vm_internal_with_args(&source, Some(Vec::new()), None, None, None, None)?;
 
     // Снимаем флаг выполнения __lib__.dc
     file_import::set_executing_lib(false);

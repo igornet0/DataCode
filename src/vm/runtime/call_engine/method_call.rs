@@ -24,7 +24,7 @@ pub fn prepare_method_args(
         let class_val = match this_val {
             Value::Object(obj_rc) => obj_rc
                 .borrow()
-                .get("__class")
+                .str_key_get("__class")
                 .cloned()
                 .unwrap_or(Value::Null),
             _ => Value::Null,

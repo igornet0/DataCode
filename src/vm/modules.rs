@@ -5,9 +5,7 @@ use crate::vm::global_slot::{default_global_slot, GlobalSlot};
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::host::HostEntry;
 use crate::vm::store_convert::{load_value, store_value_arena};
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 /// Built-in module names (for error messages, is_known_module, and register_all_builtin_modules / loaded_modules).
 pub const BUILTIN_MODULE_NAMES: &[&str] = &[
@@ -18,6 +16,10 @@ pub const BUILTIN_MODULE_NAMES: &[&str] = &[
     "database_engine",
     "system",
     "debug",
+    "heapq",
+    "pathfind",
+    "grid",
+    "websocket",
 ];
 
 /// Check if a name is a known module name
@@ -59,6 +61,10 @@ pub fn register_module(
         "database_engine" => register_database_module(natives, globals, global_names, store, heap),
         "system" => register_system_module(natives, globals, global_names, store, heap),
         "debug" => register_debug_module(natives, globals, global_names, store, heap),
+        "heapq" => register_heapq_module(natives, globals, global_names, store, heap),
+        "pathfind" => register_pathfind_module(natives, globals, global_names, store, heap),
+        "grid" => register_grid_module(natives, globals, global_names, store, heap),
+        "websocket" => register_websocket_module(natives, globals, global_names, store, heap),
         _ => Err(LangError::runtime_error(
             format!("Unknown module: {}", module_name),
             0,
@@ -186,7 +192,7 @@ fn register_plot_module(
             let id = slot.resolve_to_value_id(store);
             let v = load_value(id, store, heap);
             if let Value::Object(map_rc) = &v {
-                if map_rc.borrow().contains_key("image") {
+                if map_rc.borrow().str_key_contains("image") {
                     return Some(i);
                 }
             }
@@ -197,7 +203,7 @@ fn register_plot_module(
         } else {
             let idx = globals.len();
             globals.push(GlobalSlot::Heap(store_value_arena(
-                Value::Object(Rc::new(RefCell::new(plot_object.clone()))),
+                Value::legacy_object(plot_object.clone()),
                 store,
                 heap,
             )));
@@ -207,7 +213,7 @@ fn register_plot_module(
     };
 
     globals[plot_index] = GlobalSlot::Heap(store_value_arena(
-        Value::Object(Rc::new(RefCell::new(plot_object))),
+        Value::legacy_object(plot_object),
         store,
         heap,
     ));
@@ -237,7 +243,7 @@ fn register_settings_env_module(
     let mut settings_object = HashMap::new();
     settings_object.insert("__call__".to_string(), settings_call);
     settings_object.insert("config".to_string(), config_fn.clone());
-    let settings_value = Value::Object(Rc::new(RefCell::new(settings_object)));
+    let settings_value = Value::legacy_object(settings_object);
     settings_env_object.insert("load_env".to_string(), load_env_fn);
     settings_env_object.insert("Settings".to_string(), settings_value.clone());
     settings_env_object.insert("settings".to_string(), settings_value);
@@ -260,7 +266,7 @@ fn register_settings_env_module(
     };
 
     globals[settings_env_index] = GlobalSlot::Heap(store_value_arena(
-        Value::Object(Rc::new(RefCell::new(settings_env_object))),
+        Value::legacy_object(settings_env_object),
         store,
         heap,
     ));
@@ -296,7 +302,7 @@ fn register_debug_module(
     };
 
     globals[debug_index] = GlobalSlot::Heap(store_value_arena(
-        Value::Object(Rc::new(RefCell::new(debug_object))),
+        Value::legacy_object(debug_object),
         store,
         heap,
     ));
@@ -360,7 +366,7 @@ fn register_uuid_module(
     };
 
     globals[uuid_index] = GlobalSlot::Heap(store_value_arena(
-        Value::Object(Rc::new(RefCell::new(uuid_object))),
+        Value::legacy_object(uuid_object),
         store,
         heap,
     ));
@@ -395,11 +401,11 @@ fn register_crypto_module(
     let mut crypto_object = HashMap::new();
     crypto_object.insert(
         "Argon2".to_string(),
-        Value::Object(Rc::new(RefCell::new(argon2_obj))),
+        Value::legacy_object(argon2_obj),
     );
     crypto_object.insert(
         "bcrypt".to_string(),
-        Value::Object(Rc::new(RefCell::new(bcrypt_obj))),
+        Value::legacy_object(bcrypt_obj),
     );
     crypto_object.insert(
         "secure_compare".to_string(),
@@ -419,7 +425,7 @@ fn register_crypto_module(
     };
 
     globals[crypto_index] = GlobalSlot::Heap(store_value_arena(
-        Value::Object(Rc::new(RefCell::new(crypto_object))),
+        Value::legacy_object(crypto_object),
         store,
         heap,
     ));
@@ -513,7 +519,7 @@ fn register_database_module(
     );
     database_object.insert(
         "SQLEnum".to_string(),
-        Value::Object(Rc::new(RefCell::new(sqenum_marker))),
+        Value::legacy_object(sqenum_marker),
     );
 
     database_object.insert("engine".to_string(), Value::NativeFunction(start + 0));
@@ -537,7 +543,7 @@ fn register_database_module(
     database_object.insert("date".to_string(), Value::NativeFunction(10));
     database_object.insert(
         "validators".to_string(),
-        Value::Object(Rc::new(RefCell::new(validators_obj))),
+        Value::legacy_object(validators_obj),
     );
 
     let database_index = if let Some(idx) = global_index_by_name(global_names, "database_engine") {
@@ -553,7 +559,7 @@ fn register_database_module(
     };
 
     globals[database_index] = GlobalSlot::Heap(store_value_arena(
-        Value::Object(Rc::new(RefCell::new(database_object))),
+        Value::legacy_object(database_object),
         store,
         heap,
     ));
@@ -618,6 +624,23 @@ fn register_system_module(
     natives.push(HostEntry::Extended(
         natives::native_system_time_monotonic_ms,
     ));
+    natives.push(HostEntry::Extended(natives::native_system_time_perf_counter));
+
+    // process compute API (append only — keep native indices stable)
+    use crate::system::process_compute as proc;
+    natives.push(HostEntry::Extended(proc::native_process_get_device));
+    natives.push(HostEntry::Extended(proc::native_process_set_device));
+    natives.push(HostEntry::Extended(proc::native_process_get_gpu_min_size));
+    natives.push(HostEntry::Extended(proc::native_process_set_gpu_min_size));
+    natives.push(HostEntry::Extended(proc::native_process_auto_device));
+    natives.push(HostEntry::Extended(proc::native_process_has_gpu));
+    natives.push(HostEntry::Extended(proc::native_process_has_cuda));
+    natives.push(HostEntry::Extended(proc::native_process_has_metal));
+    natives.push(HostEntry::Extended(proc::native_process_info));
+    natives.push(HostEntry::Extended(proc::native_process_vector_add));
+    natives.push(HostEntry::Extended(proc::native_process_vector_mul));
+    natives.push(HostEntry::Extended(proc::native_process_run));
+    natives.push(HostEntry::Extended(natives::native_system_trim_allocator));
 
     let mut env = HashMap::new();
     env.insert("get_os".to_string(), Value::NativeFunction(start + 0));
@@ -663,6 +686,10 @@ fn register_system_module(
         "get_dpm_env_root".to_string(),
         Value::NativeFunction(start + 35),
     );
+    runtime.insert(
+        "trim_allocator".to_string(),
+        Value::NativeFunction(start + 50),
+    );
 
     let mut hardware = HashMap::new();
     hardware.insert("cpu_count".to_string(), Value::NativeFunction(start + 15));
@@ -681,6 +708,10 @@ fn register_system_module(
     time.insert(
         "monotonic_ms".to_string(),
         Value::NativeFunction(start + 36),
+    );
+    time.insert(
+        "perf_counter".to_string(),
+        Value::NativeFunction(start + 37),
     );
 
     let mut permissions = HashMap::new();
@@ -708,36 +739,53 @@ fn register_system_module(
 
     let mut process = HashMap::new();
     process.insert("exec".to_string(), Value::NativeFunction(start + 31));
+    process.insert("cpu".to_string(), proc::device_constant(crate::compute::device::DeviceKind::Cpu));
+    process.insert("gpu".to_string(), proc::device_constant(crate::compute::device::DeviceKind::Gpu));
+    process.insert("cuda".to_string(), proc::device_constant(crate::compute::device::DeviceKind::Cuda));
+    process.insert("metal".to_string(), proc::device_constant(crate::compute::device::DeviceKind::Metal));
+    process.insert("auto".to_string(), proc::device_constant(crate::compute::device::DeviceKind::Auto));
+    process.insert("get_device".to_string(), Value::NativeFunction(start + 38));
+    process.insert("set_device".to_string(), Value::NativeFunction(start + 39));
+    process.insert("get_gpu_min_size".to_string(), Value::NativeFunction(start + 40));
+    process.insert("set_gpu_min_size".to_string(), Value::NativeFunction(start + 41));
+    process.insert("auto_device".to_string(), Value::NativeFunction(start + 42));
+    process.insert("has_gpu".to_string(), Value::NativeFunction(start + 43));
+    process.insert("has_cuda".to_string(), Value::NativeFunction(start + 44));
+    process.insert("has_metal".to_string(), Value::NativeFunction(start + 45));
+    process.insert("info".to_string(), Value::NativeFunction(start + 46));
+    process.insert("vector_add".to_string(), Value::NativeFunction(start + 47));
+    process.insert("vector_mul".to_string(), Value::NativeFunction(start + 48));
+    process.insert("run".to_string(), Value::NativeFunction(start + 49));
 
     let mut fs = HashMap::new();
     fs.insert("read".to_string(), Value::NativeFunction(start + 32));
     fs.insert("write".to_string(), Value::NativeFunction(start + 33));
 
     let mut system_object = HashMap::new();
-    system_object.insert("env".to_string(), Value::Object(Rc::new(RefCell::new(env))));
+    system_object.insert("env".to_string(), Value::legacy_object(env));
     system_object.insert(
         "runtime".to_string(),
-        Value::Object(Rc::new(RefCell::new(runtime))),
+        Value::legacy_object(runtime),
     );
     system_object.insert(
         "hardware".to_string(),
-        Value::Object(Rc::new(RefCell::new(hardware))),
+        Value::legacy_object(hardware),
     );
     system_object.insert(
         "time".to_string(),
-        Value::Object(Rc::new(RefCell::new(time))),
+        Value::legacy_object(time),
     );
     system_object.insert(
         "permissions".to_string(),
-        Value::Object(Rc::new(RefCell::new(permissions))),
+        Value::legacy_object(permissions),
     );
-    system_object.insert("log".to_string(), Value::Object(Rc::new(RefCell::new(log))));
-    system_object.insert("net".to_string(), Value::Object(Rc::new(RefCell::new(net))));
+    system_object.insert("log".to_string(), Value::legacy_object(log));
+    system_object.insert("net".to_string(), Value::legacy_object(net));
     system_object.insert(
         "process".to_string(),
-        Value::Object(Rc::new(RefCell::new(process))),
+        Value::legacy_object(process),
     );
-    system_object.insert("fs".to_string(), Value::Object(Rc::new(RefCell::new(fs))));
+    system_object.insert("fs".to_string(), Value::legacy_object(fs));
 
     let system_index = if let Some(idx) = global_index_by_name(global_names, "system") {
         if idx >= globals.len() {
@@ -752,7 +800,226 @@ fn register_system_module(
     };
 
     globals[system_index] = GlobalSlot::Heap(store_value_arena(
-        Value::Object(Rc::new(RefCell::new(system_object))),
+        Value::legacy_object(system_object),
+        store,
+        heap,
+    ));
+
+    Ok(())
+}
+
+fn register_heapq_module(
+    natives: &mut Vec<HostEntry>,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
+) -> Result<(), LangError> {
+    use crate::heapq::natives as heapq_natives;
+
+    let start = natives.len();
+    natives.push(HostEntry::Extended(heapq_natives::native_heapq_heappush));
+    natives.push(HostEntry::Extended(heapq_natives::native_heapq_heappop));
+    natives.push(HostEntry::Extended(heapq_natives::native_heapq_heapify));
+    natives.push(HostEntry::Extended(heapq_natives::native_heapq_heappeek));
+    natives.push(HostEntry::Extended(heapq_natives::native_heapq_heapreplace));
+    natives.push(HostEntry::Extended(heapq_natives::native_heapq_heap_clear));
+
+    let mut heapq_object = HashMap::new();
+    heapq_object.insert("heappush".to_string(), Value::NativeFunction(start + 0));
+    heapq_object.insert("heappop".to_string(), Value::NativeFunction(start + 1));
+    heapq_object.insert("heapify".to_string(), Value::NativeFunction(start + 2));
+    heapq_object.insert("heappeek".to_string(), Value::NativeFunction(start + 3));
+    heapq_object.insert("heapreplace".to_string(), Value::NativeFunction(start + 4));
+    heapq_object.insert("heap_clear".to_string(), Value::NativeFunction(start + 5));
+
+    let heapq_index = if let Some(idx) = global_index_by_name(global_names, "heapq") {
+        if idx >= globals.len() {
+            globals.resize(idx + 1, default_global_slot());
+        }
+        idx
+    } else {
+        let idx = globals.len();
+        globals.push(default_global_slot());
+        global_names.insert(idx, "heapq".to_string());
+        idx
+    };
+
+    globals[heapq_index] = GlobalSlot::Heap(store_value_arena(
+        Value::legacy_object(heapq_object),
+        store,
+        heap,
+    ));
+
+    Ok(())
+}
+
+fn register_pathfind_module(
+    natives: &mut Vec<HostEntry>,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
+) -> Result<(), LangError> {
+    use crate::pathfind::natives as pathfind_natives;
+
+    let start = natives.len();
+    natives.push(HostEntry::Extended(
+        pathfind_natives::native_pathfind_astar_grid,
+    ));
+
+    let mut pathfind_object = HashMap::new();
+    pathfind_object.insert(
+        "astar_grid".to_string(),
+        Value::NativeFunction(start + 0),
+    );
+
+    let pathfind_index = if let Some(idx) = global_index_by_name(global_names, "pathfind") {
+        if idx >= globals.len() {
+            globals.resize(idx + 1, default_global_slot());
+        }
+        idx
+    } else {
+        let idx = globals.len();
+        globals.push(default_global_slot());
+        global_names.insert(idx, "pathfind".to_string());
+        idx
+    };
+
+    globals[pathfind_index] = GlobalSlot::Heap(store_value_arena(
+        Value::legacy_object(pathfind_object),
+        store,
+        heap,
+    ));
+
+    Ok(())
+}
+
+fn register_grid_module(
+    natives: &mut Vec<HostEntry>,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
+) -> Result<(), LangError> {
+    use crate::grid::natives as grid_natives;
+
+    let start = natives.len();
+    natives.push(HostEntry::Extended(grid_natives::native_grid_alloc_i32));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_alloc_u8));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_fill_i32));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_fill_u8));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_get_i32));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_set_i32));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_get_u8));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_set_u8));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_test_blocked));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_set_blocked));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_shrink));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_bitmap_bytes));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_astar));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_bitmap_from_ids));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_store_len));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_astar_from_set));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_heap_alloc));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_heap_clear));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_heap_push));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_heap_pop));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_heap_len));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_shrink_all));
+    natives.push(HostEntry::Extended(grid_natives::native_grid_astar_step));
+
+    let mut grid_object = HashMap::new();
+    grid_object.insert("alloc_i32".to_string(), Value::NativeFunction(start + 0));
+    grid_object.insert("alloc_u8".to_string(), Value::NativeFunction(start + 1));
+    grid_object.insert("fill_i32".to_string(), Value::NativeFunction(start + 2));
+    grid_object.insert("fill_u8".to_string(), Value::NativeFunction(start + 3));
+    grid_object.insert("get_i32".to_string(), Value::NativeFunction(start + 4));
+    grid_object.insert("set_i32".to_string(), Value::NativeFunction(start + 5));
+    grid_object.insert("get_u8".to_string(), Value::NativeFunction(start + 6));
+    grid_object.insert("set_u8".to_string(), Value::NativeFunction(start + 7));
+    grid_object.insert("test_blocked".to_string(), Value::NativeFunction(start + 8));
+    grid_object.insert("set_blocked".to_string(), Value::NativeFunction(start + 9));
+    grid_object.insert("shrink".to_string(), Value::NativeFunction(start + 10));
+    grid_object.insert("bitmap_bytes".to_string(), Value::NativeFunction(start + 11));
+    grid_object.insert("astar".to_string(), Value::NativeFunction(start + 12));
+    grid_object.insert(
+        "bitmap_from_ids".to_string(),
+        Value::NativeFunction(start + 13),
+    );
+    grid_object.insert("store_len".to_string(), Value::NativeFunction(start + 14));
+    grid_object.insert(
+        "astar_from_set".to_string(),
+        Value::NativeFunction(start + 15),
+    );
+    grid_object.insert("heap_alloc".to_string(), Value::NativeFunction(start + 16));
+    grid_object.insert("heap_clear".to_string(), Value::NativeFunction(start + 17));
+    grid_object.insert("heap_push".to_string(), Value::NativeFunction(start + 18));
+    grid_object.insert("heap_pop".to_string(), Value::NativeFunction(start + 19));
+    grid_object.insert("heap_len".to_string(), Value::NativeFunction(start + 20));
+    grid_object.insert("shrink_all".to_string(), Value::NativeFunction(start + 21));
+    grid_object.insert("astar_step".to_string(), Value::NativeFunction(start + 22));
+
+    let grid_index = if let Some(idx) = global_index_by_name(global_names, "grid") {
+        if idx >= globals.len() {
+            globals.resize(idx + 1, default_global_slot());
+        }
+        idx
+    } else {
+        let idx = globals.len();
+        globals.push(default_global_slot());
+        global_names.insert(idx, "grid".to_string());
+        idx
+    };
+
+    globals[grid_index] = GlobalSlot::Heap(store_value_arena(
+        Value::legacy_object(grid_object),
+        store,
+        heap,
+    ));
+
+    Ok(())
+}
+
+fn register_websocket_module(
+    natives: &mut Vec<HostEntry>,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
+) -> Result<(), LangError> {
+    use crate::websocket::natives as ws_natives;
+
+    let start = natives.len();
+    natives.push(HostEntry::Extended(ws_natives::native_websocket_configure));
+    natives.push(HostEntry::Extended(ws_natives::native_websocket_disable_builtin));
+    natives.push(HostEntry::Extended(ws_natives::native_websocket_enable_builtin));
+
+    let mut ws_object = HashMap::new();
+    ws_object.insert("configure".to_string(), Value::NativeFunction(start));
+    ws_object.insert(
+        "disable_builtin".to_string(),
+        Value::NativeFunction(start + 1),
+    );
+    ws_object.insert(
+        "enable_builtin".to_string(),
+        Value::NativeFunction(start + 2),
+    );
+
+    let ws_index = if let Some(idx) = global_index_by_name(global_names, "websocket") {
+        if idx >= globals.len() {
+            globals.resize(idx + 1, default_global_slot());
+        }
+        idx
+    } else {
+        let idx = globals.len();
+        globals.push(default_global_slot());
+        global_names.insert(idx, "websocket".to_string());
+        idx
+    };
+
+    globals[ws_index] = GlobalSlot::Heap(store_value_arena(
+        Value::legacy_object(ws_object),
         store,
         heap,
     ));

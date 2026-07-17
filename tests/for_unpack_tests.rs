@@ -2,17 +2,23 @@
 
 #[cfg(test)]
 mod tests {
+    use data_code::common::numeric::IntValue;
     use data_code::{run, LangError, Value};
 
     fn assert_number_result(source: &str, expected: f64) {
         let result = run(source);
-        match result {
-            Ok(Value::Number(n)) => {
-                assert_eq!(n, expected, "Expected {}, got {}", expected, n);
-            }
+        let n = match result {
+            Ok(Value::Number(n)) => n,
+            Ok(Value::Int(IntValue::Finite(i))) => i as f64,
             Ok(v) => panic!("Expected Number({}), got {:?}", expected, v),
             Err(e) => panic!("Error: {:?}", e),
-        }
+        };
+        assert!(
+            (n - expected).abs() < 1e-9,
+            "Expected {}, got {}",
+            expected,
+            n
+        );
     }
 
     fn assert_error(source: &str, expected_error_contains: &str) {

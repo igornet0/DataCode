@@ -1,6 +1,7 @@
 // Тесты для парсера
 #[cfg(test)]
 mod tests {
+    use data_code::common::error::LangError;
     use data_code::lexer::Lexer;
     use data_code::parser::ast::{Arg, Expr, ImportItem, ImportStmt};
     use data_code::parser::{Parser, Stmt};
@@ -10,6 +11,24 @@ mod tests {
         let tokens = lexer.tokenize().unwrap();
         let mut parser = Parser::new(tokens);
         parser.parse().unwrap()
+    }
+
+    fn assert_parse_error_message(source: &str, expected_substr: &str) {
+        let mut lexer = Lexer::new(source);
+        let tokens = lexer.tokenize().unwrap();
+        let mut parser = Parser::new(tokens);
+        match parser.parse() {
+            Err(LangError::ParseError { message, .. }) => {
+                assert!(
+                    message.contains(expected_substr),
+                    "expected message containing {:?}, got {:?}",
+                    expected_substr,
+                    message
+                );
+            }
+            Ok(_) => panic!("Expected ParseError for: {}", source),
+            Err(e) => panic!("Expected ParseError, got {:?}", e),
+        }
     }
 
     #[test]
@@ -68,6 +87,28 @@ mod tests {
         } else {
             panic!("Expected While statement");
         }
+    }
+
+    #[test]
+    fn test_parse_error_python_not_instead_of_bang() {
+        assert_parse_error_message(
+            "while not q.is_empty() { }",
+            "Use `!` for logical negation instead of `not`",
+        );
+    }
+
+    #[test]
+    fn test_while_bang_negation_parses() {
+        let stmts = parse("while !x { }");
+        assert_eq!(stmts.len(), 1);
+        assert!(matches!(stmts[0], Stmt::While { .. }));
+    }
+
+    #[test]
+    fn test_while_not_variable_parses() {
+        let stmts = parse("while not { }");
+        assert_eq!(stmts.len(), 1);
+        assert!(matches!(stmts[0], Stmt::While { .. }));
     }
 
     #[test]
@@ -180,13 +221,13 @@ mod tests {
     }
 
     #[test]
-    fn test_read_file_bin_call_parse() {
-        let source = r#"let r = read_file_bin(path("x.bin"))"#;
+    fn test_read_call_parse() {
+        let source = r#"let r = read(path("x.bin"))"#;
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
         if let Stmt::Let { value, .. } = &stmts[0] {
             if let Expr::Call { name, args, .. } = value {
-                assert_eq!(name, "read_file_bin");
+                assert_eq!(name, "read");
                 assert_eq!(args.len(), 1);
             } else {
                 panic!("Expected Call expression");
@@ -197,13 +238,30 @@ mod tests {
     }
 
     #[test]
+    fn test_save_call_two_args_with_object_literal() {
+        let source = r#"save({"a": 1}, "/tmp/out.json")"#;
+        let stmts = parse(source);
+        assert_eq!(stmts.len(), 1);
+        if let Stmt::Expr { expr, .. } = &stmts[0] {
+            if let Expr::Call { name, args, .. } = expr {
+                assert_eq!(name, "save");
+                assert_eq!(args.len(), 2, "expected 2 args, got {:?}", args);
+            } else {
+                panic!("Expected Call, got {:?}", expr);
+            }
+        } else {
+            panic!("Expected Expr stmt");
+        }
+    }
+
+    #[test]
     fn test_named_argument_with_function_call() {
-        let source = "let result = read_file(path(\"data.csv\"), header_row=2)";
+        let source = "let result = read(path(\"data.csv\"), header_row=2)";
         let stmts = parse(source);
         assert_eq!(stmts.len(), 1);
         if let Stmt::Let { value, .. } = &stmts[0] {
             if let Expr::Call { name, args, .. } = value {
-                assert_eq!(name, "read_file");
+                assert_eq!(name, "read");
                 assert_eq!(args.len(), 2);
                 // Первый аргумент должен быть позиционным (вызов функции path)
                 match &args[0] {
@@ -315,5 +373,55 @@ let x = 1"#;
             ImportItem::Aliased { name, alias } if name == "foo" && alias == "f"
         ));
         assert!(matches!(&items[1], ImportItem::Named(n) if n == "bar"));
+    }
+
+    fn parse_let_expr(source: &str) -> Expr {
+        let stmts = parse(source);
+        match &stmts[0] {
+            Stmt::Let { value, .. } => value.clone(),
+            other => panic!("expected Let, got {:?}", other),
+        }
+    }
+
+    fn is_array_index_add_one(expr: &Expr) -> bool {
+        use data_code::lexer::TokenKind;
+        use data_code::parser::ast::{BinaryOpKind, IndexExpr};
+        matches!(
+            expr,
+            Expr::Binary {
+                op: BinaryOpKind::Builtin(TokenKind::Plus),
+                left,
+                right,
+                ..
+            } if matches!(left.as_ref(), Expr::ArrayIndex { index: IndexExpr::Scalar(_), .. })
+                && matches!(right.as_ref(), Expr::Literal { .. })
+        )
+    }
+
+    /// Regression: `dist[pu] == dist[u] + 1` must be `==` with RHS `(dist[u] + 1)`, not chained
+    /// `dist[pu] == dist[u]` nor index `dist[u + 1]`.
+    #[test]
+    fn test_array_index_plus_one_rhs_of_equality() {
+        let expr = parse_let_expr("let x = dist[pu] == dist[u] + 1");
+        match &expr {
+            Expr::Binary {
+                op: data_code::parser::ast::BinaryOpKind::Builtin(data_code::lexer::TokenKind::EqualEqual),
+                left,
+                right,
+                ..
+            } => {
+                assert!(
+                    matches!(left.as_ref(), Expr::ArrayIndex { .. }),
+                    "left should be dist[pu], got {:?}",
+                    left
+                );
+                assert!(
+                    is_array_index_add_one(right),
+                    "right should be dist[u] + 1, got {:?}",
+                    right
+                );
+            }
+            other => panic!("expected == binary, got {:?}", other),
+        }
     }
 }

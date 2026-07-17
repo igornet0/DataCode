@@ -457,7 +457,7 @@ impl SmbManager {
         let connection = self
             .connections
             .get(share_name)
-            .ok_or_else(|| format!("SMB share '{}' не подключена", share_name))?;
+            .ok_or_else(|| self.share_not_connected_error(share_name))?;
 
         // Компилируем regex, если он задан
         let regex = if let Some(pattern) = regex {
@@ -873,7 +873,7 @@ impl SmbManager {
         let connection = self
             .connections
             .get(share_name)
-            .ok_or_else(|| format!("SMB share '{}' не подключена", share_name))?;
+            .ok_or_else(|| self.share_not_connected_error(share_name))?;
 
         #[cfg(target_os = "windows")]
         {
@@ -977,6 +977,19 @@ impl SmbManager {
     /// Получить все подключенные шары
     pub fn list_connections(&self) -> Vec<String> {
         self.connections.keys().cloned().collect()
+    }
+
+    fn share_not_connected_error(&self, share_name: &str) -> String {
+        let connected = self.list_connections();
+        let connected_str = if connected.is_empty() {
+            "нет".to_string()
+        } else {
+            connected.join(", ")
+        };
+        format!(
+            "SMB share '{}' не подключена. Сначала отправьте smb_connect с share_name='{}'. Подключённые шары: [{}]",
+            share_name, share_name, connected_str
+        )
     }
 }
 

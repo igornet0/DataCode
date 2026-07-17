@@ -1,6 +1,24 @@
 /// Работа с замыканиями: поиск захваченных переменных
 use crate::common::error::LangError;
-use crate::parser::ast::{Expr, IndexExpr, InterpolatedSegment, ListComprehensionClause, Stmt, UnpackPattern};
+use crate::parser::ast::{AssignTarget, Expr, IndexExpr, InterpolatedSegment, ListComprehensionClause, Stmt, TableFilterPred, UnpackPattern};
+
+fn walk_table_filter_pred_assign_checks(
+    pred: &TableFilterPred,
+    ancestor_bindings: &std::collections::HashSet<String>,
+    locals: &mut std::collections::HashSet<String>,
+) -> Result<(), LangError> {
+    match pred {
+        TableFilterPred::Compare { value, .. }
+        | TableFilterPred::Membership { container: value, .. }
+        | TableFilterPred::StringMatch { pattern: value, .. } => {
+            walk_expr_assign_checks(value, ancestor_bindings, locals)
+        }
+        TableFilterPred::And(l, r) | TableFilterPred::Or(l, r) => {
+            walk_table_filter_pred_assign_checks(l, ancestor_bindings, locals)?;
+            walk_table_filter_pred_assign_checks(r, ancestor_bindings, locals)
+        }
+    }
+}
 
 /// Собирает имена переменных из паттерна распаковки
 pub fn collect_unpack_pattern_variables(
@@ -35,9 +53,17 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
             vars.insert(name.clone());
             vars.extend(find_used_variables_in_expr(value));
         }
-        Expr::UnpackAssign { names, value, .. } => {
-            for name in names {
-                vars.insert(name.clone());
+        Expr::UnpackAssign { targets, value, .. } => {
+            for target in targets {
+                match target {
+                    AssignTarget::Name(name) => {
+                        vars.insert(name.clone());
+                    }
+                    AssignTarget::Index { array, index } => {
+                        vars.extend(find_used_variables_in_expr(array));
+                        vars.extend(find_used_variables_in_expr(index));
+                    }
+                }
             }
             vars.extend(find_used_variables_in_expr(value));
         }
@@ -58,7 +84,7 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
                     Arg::Named { value, .. } => {
                         vars.extend(find_used_variables_in_expr(value));
                     }
-                    Arg::UnpackObject(expr) => {
+                    Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                         vars.extend(find_used_variables_in_expr(expr));
                     }
                 }
@@ -152,9 +178,9 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
             vars.extend(find_used_variables_in_index_expr(index));
             vars.extend(find_used_variables_in_expr(value));
         }
-        Expr::TableFilter { table, value, .. } => {
+        Expr::TableFilter { table, predicate, .. } => {
             vars.extend(find_used_variables_in_expr(table));
-            vars.extend(find_used_variables_in_expr(value));
+            predicate.for_each_value_expr(&mut |e| vars.extend(find_used_variables_in_expr(e)));
         }
         Expr::Property { object, .. } => {
             vars.extend(find_used_variables_in_expr(object));
@@ -170,7 +196,7 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
                     Arg::Named { value, .. } => {
                         vars.extend(find_used_variables_in_expr(value));
                     }
-                    Arg::UnpackObject(expr) => {
+                    Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                         vars.extend(find_used_variables_in_expr(expr));
                     }
                 }
@@ -193,7 +219,8 @@ pub fn find_used_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
                     crate::parser::ast::Arg::Named { value, .. } => {
                         vars.extend(find_used_variables_in_expr(value));
                     }
-                    crate::parser::ast::Arg::UnpackObject(expr) => {
+                    crate::parser::ast::Arg::UnpackObject(expr)
+                    | crate::parser::ast::Arg::UnpackArray(expr) => {
                         vars.extend(find_used_variables_in_expr(expr));
                     }
                 }
@@ -304,7 +331,7 @@ pub fn find_read_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
                     Arg::Named { value, .. } => {
                         vars.extend(find_read_variables_in_expr(value));
                     }
-                    Arg::UnpackObject(expr) => {
+                    Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                         vars.extend(find_read_variables_in_expr(expr));
                     }
                 }
@@ -398,9 +425,9 @@ pub fn find_read_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
             vars.extend(find_read_variables_in_index_expr(index));
             vars.extend(find_read_variables_in_expr(value));
         }
-        Expr::TableFilter { table, value, .. } => {
+        Expr::TableFilter { table, predicate, .. } => {
             vars.extend(find_read_variables_in_expr(table));
-            vars.extend(find_read_variables_in_expr(value));
+            predicate.for_each_value_expr(&mut |e| vars.extend(find_read_variables_in_expr(e)));
         }
         Expr::Property { object, .. } => {
             vars.extend(find_read_variables_in_expr(object));
@@ -416,7 +443,7 @@ pub fn find_read_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
                     Arg::Named { value, .. } => {
                         vars.extend(find_read_variables_in_expr(value));
                     }
-                    Arg::UnpackObject(expr) => {
+                    Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                         vars.extend(find_read_variables_in_expr(expr));
                     }
                 }
@@ -439,7 +466,8 @@ pub fn find_read_variables_in_expr(expr: &Expr) -> std::collections::HashSet<Str
                     crate::parser::ast::Arg::Named { value, .. } => {
                         vars.extend(find_read_variables_in_expr(value));
                     }
-                    crate::parser::ast::Arg::UnpackObject(expr) => {
+                    crate::parser::ast::Arg::UnpackObject(expr)
+                    | crate::parser::ast::Arg::UnpackArray(expr) => {
                         vars.extend(find_read_variables_in_expr(expr));
                     }
                 }
@@ -865,9 +893,11 @@ fn collect_assign_declarations_from_expr(
         Expr::Assign { name, .. } => {
             declared_vars.insert(name.clone());
         }
-        Expr::UnpackAssign { names, .. } => {
-            for name in names {
-                declared_vars.insert(name.clone());
+        Expr::UnpackAssign { targets, .. } => {
+            for target in targets {
+                if let AssignTarget::Name(name) = target {
+                    declared_vars.insert(name.clone());
+                }
             }
         }
         _ => {}
@@ -1026,7 +1056,7 @@ fn walk_args_assign_checks(
             Arg::Named { value, .. } => {
                 walk_expr_assign_checks(value, ancestor_bindings, locals)?;
             }
-            Arg::UnpackObject(expr) => {
+            Arg::UnpackObject(expr) | Arg::UnpackArray(expr) => {
                 walk_expr_assign_checks(expr, ancestor_bindings, locals)?;
             }
         }
@@ -1078,10 +1108,18 @@ fn walk_expr_assign_checks(
             walk_expr_assign_checks(value, ancestor_bindings, locals)?;
             record_simple_assign_target(name, *line, ancestor_bindings, locals)?;
         }
-        Expr::UnpackAssign { names, value, line } => {
+        Expr::UnpackAssign { targets, value, line } => {
             walk_expr_assign_checks(value, ancestor_bindings, locals)?;
-            for n in names {
-                record_simple_assign_target(n, *line, ancestor_bindings, locals)?;
+            for target in targets {
+                match target {
+                    AssignTarget::Name(n) => {
+                        record_simple_assign_target(n, *line, ancestor_bindings, locals)?;
+                    }
+                    AssignTarget::Index { array, index } => {
+                        walk_expr_assign_checks(array, ancestor_bindings, locals)?;
+                        walk_expr_assign_checks(index, ancestor_bindings, locals)?;
+                    }
+                }
             }
         }
         Expr::Lambda {
@@ -1197,11 +1235,11 @@ fn walk_expr_assign_checks(
         }
         Expr::TableFilter {
             table,
-            value,
+            predicate,
             ..
         } => {
             walk_expr_assign_checks(table, ancestor_bindings, locals)?;
-            walk_expr_assign_checks(value, ancestor_bindings, locals)?;
+            walk_table_filter_pred_assign_checks(predicate, ancestor_bindings, locals)?;
         }
         Expr::Property { object, .. } => {
             walk_expr_assign_checks(object, ancestor_bindings, locals)?;
@@ -1327,10 +1365,16 @@ fn walk_stmt_assign_checks(
             ..
         } => {
             walk_expr_assign_checks(iterable, ancestor_bindings, locals)?;
+            let mut pattern_names = std::collections::HashSet::new();
+            collect_unpack_pattern_variables(pattern, &mut pattern_names);
             let mut inner = locals.clone();
             collect_unpack_pattern_variables(pattern, &mut inner);
             walk_stmts_assign_checks(body, ancestor_bindings, &mut inner)?;
-            locals.extend(inner.iter().cloned());
+            for name in inner {
+                if !pattern_names.contains(&name) {
+                    locals.insert(name);
+                }
+            }
             Ok(())
         }
         Stmt::Function { .. } | Stmt::StreamFunction { .. } | Stmt::Class { .. } => Ok(()),

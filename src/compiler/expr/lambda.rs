@@ -4,8 +4,8 @@ use crate::bytecode::{Function, OpCode};
 use crate::common::error::LangError;
 use crate::common::value::Value;
 use crate::compiler::closure;
-use crate::compiler::constant_fold;
 use crate::compiler::context::CompilationContext;
+use crate::compiler::defaults;
 use crate::compiler::expr;
 use crate::parser::ast::Expr;
 
@@ -26,27 +26,20 @@ pub fn compile_lambda(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
         let mut param_names = Vec::new();
         let mut param_types = Vec::new();
         let mut default_values = Vec::new();
+        let signature_param_names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
 
         for param in params.iter() {
             param_names.push(param.name.clone());
             param_types.push(param.type_annotation.clone());
             if let Some(ref default_expr) = param.default_value {
-                match constant_fold::evaluate_constant_expr(default_expr) {
-                    Ok(Some(constant_value)) => {
-                        default_values.push(Some(constant_value));
-                    }
-                    Ok(None) => {
-                        return Err(LangError::ParseError {
-                            message: format!(
-                                "Default value for parameter '{}' must be a constant expression",
-                                param.name
-                            ),
-                            line: default_expr.line(),
-                            file: None,
-                        });
-                    }
-                    Err(e) => return Err(e),
-                }
+                let constant_value = defaults::resolve_default_param_value(
+                    default_expr,
+                    &param.name,
+                    &signature_param_names,
+                    ctx.compile_time_bindings,
+                    ctx.source_name,
+                )?;
+                default_values.push(Some(constant_value));
             } else {
                 default_values.push(None);
             }
@@ -56,6 +49,12 @@ pub fn compile_lambda(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
         function.param_types = param_types;
         function.return_type = return_type.clone();
         function.default_values = default_values;
+        function.variadic_pos_index = params
+            .iter()
+            .position(|p| p.kind == crate::parser::ast::ParamKind::VariadicPositional);
+        function.variadic_kw_index = params
+            .iter()
+            .position(|p| p.kind == crate::parser::ast::ParamKind::VariadicKeyword);
         function.arity = params.len();
 
         ctx.functions.push(function.clone());
@@ -142,6 +141,7 @@ pub fn compile_lambda(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
 
         for param in params.iter() {
             ctx.scope.declare_local(&param.name);
+            ctx.record_bound_name(&param.name);
         }
 
         expr::compile_expr(ctx, body.as_ref())?;

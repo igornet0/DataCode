@@ -123,6 +123,7 @@ datacode filename.dc --debug  # Выполнить с отладочной ин�
 datacode filename.dc --build_model  # Выполнить и экспортировать таблицы в SQLite
 datacode filename.dc --build_model output.db  # Экспортировать в указанный файл
 datacode --websocket       # Запустить WebSocket сервер (ws://127.0.0.1:8080)
+datacode ws_app.dc --websocket --host 0.0.0.0 --port 8899  # Скрипт настройки ws_app.dc
 datacode --websocket --host 0.0.0.0 --port 8899  # Кастомный хост/порт
 datacode --websocket --use-ve  # Режим виртуальной среды (изоляция сессий)
 datacode --http            # Запустить HTTP сервер (или datacode-server)
@@ -300,7 +301,7 @@ fn validate(age) {
 # Цикл по массиву переменных
 for file in files {
     let path = basePath / 'data' / file
-    let text = read_file(path)
+    let text = read(path)
     print('>>', file, 'length:', text)
 }
 
@@ -351,13 +352,14 @@ while x > 0 {
 |---------|----------|
 | `getcwd()` | Текущая директория |
 | `path(string)` | Создание пути из строки |
-| `read_file(path)` | Чтение файлов (.txt, .csv, .xlsx) |
-| `read_file(path, sheet_name="sheet_name")` | Чтение XLSX с выбором листа по имени |
-| `read_file(path, header_row)` | Чтение CSV/XLSX с выбором строки заголовка (0-based) |
-| `read_file(path, header_row, sheet_name)` | Чтение XLSX с выбором строки заголовка и листа по имени |
-| `read_file(path, header_row, sheet_name, header)` | Чтение с фильтрацией/переименованием колонок |
+| `read(path)` | Чтение файлов: CSV/XLSX → table, JSON/TOML/YAML → object, TXT → string, BIN → bytes |
+| `save(data, path)` | Сохранение по расширению (table/object/string/bytes) |
+| `read(path, sheet_name="sheet_name")` | Чтение XLSX с выбором листа по имени |
+| `read(path, header_row)` | Чтение CSV/XLSX с выбором строки заголовка (0-based) |
+| `read(path, header_row, sheet_name)` | Чтение XLSX с выбором строки заголовка и листа по имени |
+| `read(path, header_row, sheet_name, header)` | Чтение с фильтрацией/переименованием колонок |
 
-**Опциональные параметры `read_file()`:**
+**Опциональные параметры `read()`:**
 - `header_row` (число) - номер строки с заголовками, начиная с 0 (по умолчанию 0)
 - `sheet_name` (строка) - имя листа для XLSX файлов (по умолчанию первый лист)
 - `header` (массив | словарь) - фильтр колонок или переименование:
@@ -367,22 +369,22 @@ while x > 0 {
 **Примеры:**
 ```datacode
 # Базовое чтение
-data = read_file(path("data.csv"))
+data = read(path("data.csv"))
 
 # Чтение конкретного листа Excel
-data = read_file(path("report.xlsx"), sheet_name="Sales")
+data = read(path("report.xlsx"), sheet_name="Sales")
 
 # Чтение с заголовком в строке 2
-data = read_file(path("data.csv"), 2)
+data = read(path("data.csv"), 2)
 
 # Комбинация: лист + строка заголовка
-data = read_file(path("report.xlsx"), 1, "DataSheet")
+data = read(path("report.xlsx"), 1, "DataSheet")
 
 # Загрузка только указанных колонок
-sample_table = read_file(path("sample.csv"), header_row=0, header=["Name", "Age", "City", "Salary"])
+sample_table = read(path("sample.csv"), header_row=0, header=["Name", "Age", "City", "Salary"])
 
 # Переименование колонок при загрузке
-sample_table = read_file(path("sample.csv"), header_row=0, header={"Name": "Name_A", "Age": null, "City": null, "Salary": null})
+sample_table = read(path("sample.csv"), header_row=0, header={"Name": "Name_A", "Age": null, "City": null, "Salary": null})
 ```
 
 ### 🧮 Математические функции
@@ -466,9 +468,9 @@ DATACODE_SQLITE_OUTPUT=model.db datacode load_model_data.dc --build_model
 
 ```datacode
 # Загрузка данных
-global sales = read_file("sales.csv")
-global products = read_file("products.csv")
-global customers = read_file("customers.csv")
+global sales = read("sales.csv")
+global products = read("products.csv")
+global customers = read("customers.csv")
 
 # Обработка данных
 global sales_table = table(sales)
@@ -602,7 +604,7 @@ for file in files {
 
     # Если это CSV файл, показываем таблицу
     if contains(file, '.csv') {
-        let table = read_file(fullPath)
+        let table = read(fullPath)
         print('📊 Содержимое таблицы:')
         table_head(table, 3)
     }
@@ -642,7 +644,7 @@ print('✅ Анализ завершен!')
 - Unknown variable: foo
 - Invalid / expression
 - Unsupported expression
-- read_file() expects 1-3 arguments (path, [header_row], [sheet_name])
+- read() expects 1-3 arguments (path, [header_row], [sheet_name])
 
 ---
 
@@ -831,12 +833,13 @@ cargo run examples/ru/09-создание\ модели\ данных/05-table-j
 
 ## 📋 Техническая документация
 
-### Документация разработчика
-- **[docs/ru/builtin_functions.md](docs/ru/builtin_functions.md)** - Полное описание всех 50 встроенных функций
-- **[docs/ru/data_types.md](docs/ru/data_types.md)** - Подробное описание типов данных
-- **[docs/ru/table_create_function.md](docs/ru/table_create_function.md)** - Работа с таблицами
-- **[docs/ru/websocket_server.md](docs/ru/websocket_server.md)** - WebSocket сервер для удаленного выполнения
-- **[docs/ru/system-lib/README.md](docs/ru/system-lib/README.md)** — встроенный модуль `system` (ОС, рантайм, sandbox); [English](docs/en/system-lib/README.md)
+### Документация
+
+- **[docs/ru/README.md](docs/ru/README.md)** — русская документация (разделы **0 · 1 · 2 · 200**)
+- **[docs/ru/2-язык/функции/](docs/ru/2-язык/функции/README.md)** — встроенные функции
+- **[docs/ru/2-язык/таблицы/](docs/ru/2-язык/таблицы/README.md)** — таблицы и JOIN
+- **[docs/ru/2-язык/сервисы/websocket-сервер.md](docs/ru/2-язык/сервисы/websocket-сервер.md)** — WebSocket
+- **[docs/ru/2-язык/модули/system/](docs/ru/2-язык/модули/system/README.md)** — модуль `system`; [English](docs/en/system-lib/README.md)
 - **HTTP сервер (datacode-server)** — маршрутизация `@route("METHOD", "/path")`, Request/Response, примеры в [sandbox/web_api](sandbox/web_api), Nginx: [packaging/nginx](packaging/nginx)
 
 ---

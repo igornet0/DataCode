@@ -12,6 +12,10 @@ pub struct WebSocketConfig {
     pub port: u16,
     pub use_ve: bool,
     pub build_model: bool,
+    /// Optional ws_app.dc with @ws_route handlers and websocket.configure()
+    pub app_file: Option<String>,
+    /// When set, resolve app file path from this directory
+    pub base_dir: Option<String>,
 }
 
 /// Configuration for HTTP server (datacode-server)
@@ -100,10 +104,13 @@ pub fn print_help() {
     println!();
     println!("WebSocket Server:");
     println!("  • Start server: datacode --websocket");
+    println!("  • With app script: datacode ws_app.dc --websocket --host 0.0.0.0 --port 8899");
+    println!("  • Or: datacode --websocket ws_app.dc --use-ve --build_model");
     println!("  • Default address: ws://127.0.0.1:8080");
     println!("  • Custom host/port: datacode --websocket --host 0.0.0.0 --port 8899");
     println!("  • Or use env var: DATACODE_WS_ADDRESS=0.0.0.0:3000 datacode --websocket");
     println!("  • Virtual environment mode: datacode --websocket --use-ve");
+    println!("  • App script (ws_app.dc): @ws_route(\"type\") handlers, websocket.configure()");
     println!("    - Creates isolated session folders in src/temp_sessions");
     println!("    - getcwd() returns empty string");
     println!("    - Supports file uploads via upload_file request");
@@ -262,9 +269,114 @@ fn parse_file_execution_flags(
     ))
 }
 
+/// Parse WebSocket server flags from full argv (when --websocket appears anywhere).
+fn parse_websocket_args(args: &[String]) -> Result<WebSocketConfig, String> {
+    let mut host = "127.0.0.1".to_string();
+    let mut port = 8080u16;
+    let mut use_ve = false;
+    let mut build_model = false;
+    let mut app_file: Option<String> = None;
+    let mut base_dir: Option<String> = None;
+
+    if let Ok(ws_address) = env::var("DATACODE_WS_ADDRESS") {
+        if let Some(colon_pos) = ws_address.find(':') {
+            host = ws_address[..colon_pos].to_string();
+            if let Ok(p) = ws_address[colon_pos + 1..].parse::<u16>() {
+                port = p;
+            }
+        } else {
+            host = ws_address;
+        }
+    }
+
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--websocket" => {
+                i += 1;
+            }
+            "--host" => {
+                if i + 1 < args.len() {
+                    host = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    return Err("Ошибка: --host требует значение".to_string());
+                }
+            }
+            "--port" => {
+                if i + 1 < args.len() {
+                    if let Ok(p) = args[i + 1].parse::<u16>() {
+                        port = p;
+                        i += 2;
+                    } else {
+                        return Err("Ошибка: неверный номер порта".to_string());
+                    }
+                } else {
+                    return Err("Ошибка: --port требует значение".to_string());
+                }
+            }
+            "--use-ve" => {
+                use_ve = true;
+                i += 1;
+            }
+            "--build_model" | "--build-model" => {
+                build_model = true;
+                i += 1;
+            }
+            "--base-dir" | "--base_dir" => {
+                if i + 1 < args.len() {
+                    base_dir = Some(args[i + 1].clone());
+                    i += 2;
+                } else {
+                    return Err(
+                        "Ошибка: --base-dir требует значение (путь к директории)".to_string(),
+                    );
+                }
+            }
+            arg if !arg.starts_with('-') && arg.ends_with(".dc") => {
+                if app_file.is_none() {
+                    app_file = Some(arg.to_string());
+                }
+                i += 1;
+            }
+            _ => {
+                return Err(format!("Неизвестный аргумент WebSocket: {}", args[i]));
+            }
+        }
+    }
+
+    if let Some(ref app) = app_file {
+        let script_path: std::path::PathBuf = if let Some(ref b) = base_dir {
+            Path::new(b).join(app)
+        } else {
+            Path::new(app).to_path_buf()
+        };
+        if !script_path.exists() {
+            return Err(format!(
+                "Ошибка: файл ws_app '{}' не найден",
+                script_path.display()
+            ));
+        }
+    }
+
+    Ok(WebSocketConfig {
+        host,
+        port,
+        use_ve,
+        build_model,
+        app_file,
+        base_dir,
+    })
+}
+
 /// Parse CLI arguments
 pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
     if args.len() > 1 {
+        // WebSocket mode: --websocket may appear anywhere in argv
+        if args.iter().skip(1).any(|a| a == "--websocket") {
+            return Ok(CliArgs::WebSocket(parse_websocket_args(&args)?));
+        }
+
         let arg = &args[1];
 
         match arg.as_str() {
@@ -281,69 +393,6 @@ pub fn parse_args(args: Vec<String>) -> Result<CliArgs, String> {
                     );
                 }
                 return Ok(CliArgs::UpdateVersion);
-            }
-            "--websocket" => {
-                let mut host = "127.0.0.1".to_string();
-                let mut port = 8080u16;
-                let mut use_ve = false;
-                let mut build_model = false;
-
-                // Check environment variable
-                if let Ok(ws_address) = env::var("DATACODE_WS_ADDRESS") {
-                    if let Some(colon_pos) = ws_address.find(':') {
-                        host = ws_address[..colon_pos].to_string();
-                        if let Ok(p) = ws_address[colon_pos + 1..].parse::<u16>() {
-                            port = p;
-                        }
-                    } else {
-                        host = ws_address;
-                    }
-                }
-
-                // Parse command line arguments
-                let mut i = 2;
-                while i < args.len() {
-                    match args[i].as_str() {
-                        "--host" => {
-                            if i + 1 < args.len() {
-                                host = args[i + 1].clone();
-                                i += 2;
-                            } else {
-                                return Err("Ошибка: --host требует значение".to_string());
-                            }
-                        }
-                        "--port" => {
-                            if i + 1 < args.len() {
-                                if let Ok(p) = args[i + 1].parse::<u16>() {
-                                    port = p;
-                                    i += 2;
-                                } else {
-                                    return Err("Ошибка: неверный номер порта".to_string());
-                                }
-                            } else {
-                                return Err("Ошибка: --port требует значение".to_string());
-                            }
-                        }
-                        "--use-ve" => {
-                            use_ve = true;
-                            i += 1;
-                        }
-                        "--build_model" | "--build-model" => {
-                            build_model = true;
-                            i += 1;
-                        }
-                        _ => {
-                            return Err(format!("Неизвестный аргумент: {}", args[i]));
-                        }
-                    }
-                }
-
-                return Ok(CliArgs::WebSocket(WebSocketConfig {
-                    host,
-                    port,
-                    use_ve,
-                    build_model,
-                }));
             }
             "--http" => {
                 let mut host = "127.0.0.1".to_string();

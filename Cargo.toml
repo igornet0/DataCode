@@ -12,7 +12,7 @@ exclude = [
 
 [package]
 name = "data-code"
-version = "2.3.8"
+version = "2.3.9"
 edition = "2021"
 description = "ДатаКод - Интерактивный язык программирования для быстрой обработки данных"
 license = "MIT"
@@ -26,8 +26,11 @@ default = ["threaded_dispatch"]
 profile = []  # Счётчики: opcodes, store allocations, store get (вывод в конце run)
 threaded_dispatch = []  # Hot-first opcode dispatch in executor (reordered match)
 allocator_jemalloc = ["jemallocator"]
+archive-rar = ["dep:unrar-ng"]
 # Reserved for embedders that need the legacy global-merge API re-exported at crate boundary (see `legacy_merge` module).
 legacy_vm_merge = []
+metal = []
+deferred_stack_gc = []
 
 [lib]
 name = "data_code"
@@ -102,6 +105,9 @@ uuid = { version = "1", features = ["v3", "v4", "v5", "v7"] }
 
 # DPM: manifest and config
 toml = "0.8"
+serde_yaml = "0.9"
+quick-xml = "0.37"
+roxmltree = "0.20"
 dirs = "5.0"
 dialoguer = "0.11"
 
@@ -110,6 +116,12 @@ libloading = "0.8"
 
 # Native module artifact (.dcmodule zip)
 zip = { version = "2", default-features = false, features = ["deflate"] }
+
+# Archive API
+memmap2 = "0.9"
+lru = "0.12"
+sevenz-rust2 = { version = "0.20", default-features = false, features = ["compress", "util"] }
+unrar-ng = { version = "0.7", optional = true }
 
 # Registry index for `dpm add <name>` (same crate as DPM binary)
 ureq = { version = "2", default-features = true, features = ["tls"] }
@@ -122,6 +134,8 @@ if-addrs = { version = "0.15.0", default-features = false }
 
 [dev-dependencies]
 tempfile = "3"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+sevenz-rust2 = { version = "0.20", default-features = false, features = ["compress", "util"] }
 
 [lints]
 workspace = true

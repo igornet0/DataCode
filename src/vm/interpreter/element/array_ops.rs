@@ -5,10 +5,11 @@ use std::rc::Rc;
 
 use crate::common::array_slice::{contiguous_positive_slice_bounds, slice_indices};
 use crate::common::error::ErrorType;
+use crate::common::numeric::integer_value_as_i64_if_whole;
 use crate::common::value::{ArrayViewData, ArrayViewSource, ByteBuffer, Value};
 use crate::common::{
     error::LangError,
-    value_store::{ValueCell, ValueStore},
+    value_store::{ObjectProjectionKind, ValueCell, ValueStore},
     TaggedValue,
 };
 use crate::vm::array_view::{
@@ -19,8 +20,85 @@ use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::stack;
+use crate::vm::interpreter::element::object_dict;
 use crate::vm::store_convert::store_value;
 use crate::vm::types::VMStatus;
+
+/// Positive array index from integral `int` / whole `number`, with negative wrap.
+#[allow(clippy::too_many_arguments)]
+fn resolve_array_index(
+    index_value: &Value,
+    len: usize,
+    allow_past_end: bool,
+    line: usize,
+    stack: &mut Vec<TaggedValue>,
+    frames: &mut Vec<CallFrame>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+) -> Result<Result<usize, VMStatus>, LangError> {
+    if let Some(mut idx) = integer_value_as_i64_if_whole(index_value) {
+        if idx < 0 {
+            idx += len as i64;
+        }
+        if idx < 0 || (!allow_past_end && (idx as usize) >= len) {
+            let error = ExceptionHandler::runtime_error_with_type(
+                frames,
+                format!("Array index {} out of bounds (length: {})", idx, len),
+                line,
+                ErrorType::IndexError,
+            );
+            return match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
+                Ok(()) => Ok(Err(VMStatus::Continue)),
+                Err(e) => Err(e),
+            };
+        }
+        return Ok(Ok(idx as usize));
+    }
+    if let Value::Number(n) = index_value {
+        if n.fract() != 0.0 && (n - n.round()).abs() > 1e-9 {
+            let error = ExceptionHandler::runtime_error(
+                frames,
+                "Array index must be an integer".to_string(),
+                line,
+            );
+            return match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
+                Ok(()) => Ok(Err(VMStatus::Continue)),
+                Err(e) => Err(e),
+            };
+        }
+    }
+    let error = ExceptionHandler::runtime_error(
+        frames,
+        "Array index must be a number".to_string(),
+        line,
+    );
+    match ExceptionHandler::handle_exception(
+        stack,
+        frames,
+        exception_handlers,
+        error,
+        value_store,
+        heavy_store,
+    ) {
+        Ok(()) => Ok(Err(VMStatus::Continue)),
+        Err(e) => Err(e),
+    }
+}
 
 /// Get element from Array. Called when container is Value::Array.
 #[allow(clippy::too_many_arguments)]
@@ -79,69 +157,19 @@ pub fn get_array(
     } else {
         arr.borrow().len()
     };
-    let index = match index_value {
-        Value::Number(n) => {
-            if n.fract() != 0.0 && (n - n.round()).abs() > 1e-9 {
-                let error = ExceptionHandler::runtime_error(
-                    &frames,
-                    "Array index must be an integer".to_string(),
-                    line,
-                );
-                match ExceptionHandler::handle_exception(
-                    stack,
-                    frames,
-                    exception_handlers,
-                    error,
-                    value_store,
-                    heavy_store,
-                ) {
-                    Ok(()) => return Ok(VMStatus::Continue),
-                    Err(e) => return Err(e),
-                }
-            }
-            let mut idx = n as i64;
-            if idx < 0 {
-                idx += len as i64;
-            }
-            if idx < 0 || (idx as usize) >= len {
-                let error = ExceptionHandler::runtime_error_with_type(
-                    &frames,
-                    format!("Array index {} out of bounds (length: {})", n as i64, len),
-                    line,
-                    ErrorType::IndexError,
-                );
-                return match ExceptionHandler::handle_exception(
-                    stack,
-                    frames,
-                    exception_handlers,
-                    error,
-                    value_store,
-                    heavy_store,
-                ) {
-                    Ok(()) => Ok(VMStatus::Continue),
-                    Err(e) => Err(e),
-                };
-            }
-            idx as usize
-        }
-        _ => {
-            let error = ExceptionHandler::runtime_error(
-                &frames,
-                "Array index must be a number".to_string(),
-                line,
-            );
-            match ExceptionHandler::handle_exception(
-                stack,
-                frames,
-                exception_handlers,
-                error,
-                value_store,
-                heavy_store,
-            ) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
-        }
+    let index = match resolve_array_index(
+        &index_value,
+        len,
+        false,
+        line,
+        stack,
+        frames,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    )? {
+        Ok(i) => i,
+        Err(status) => return Ok(status),
     };
     if let Some(ValueCell::Array(slots)) = value_store.get(container_id) {
         if index < slots.len() {
@@ -188,6 +216,49 @@ pub fn get_array(
         _ => element.clone(),
     };
     stack::push_id(stack, store_value(value, value_store, heavy_store));
+    Ok(VMStatus::Continue)
+}
+
+/// Numeric index into read-only [`Value::ObjectFieldList`] (live `.values`, snapshot `.keys`).
+#[allow(clippy::too_many_arguments)]
+pub fn get_object_field_list(
+    line: usize,
+    stack: &mut Vec<TaggedValue>,
+    frames: &mut Vec<CallFrame>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+    source_object_id: crate::common::value_store::ValueId,
+    projection: crate::common::value_store::ObjectProjectionKind,
+    element_ids: &std::rc::Rc<Vec<crate::common::value_store::ValueId>>,
+    index_value: Value,
+) -> Result<VMStatus, LangError> {
+    let len = element_ids.len();
+    let index = match resolve_array_index(
+        &index_value,
+        len,
+        false,
+        line,
+        stack,
+        frames,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    )? {
+        Ok(i) => i,
+        Err(status) => return Ok(status),
+    };
+    if object_dict::push_object_projection_element(
+        source_object_id,
+        projection,
+        index,
+        stack,
+        value_store,
+        heavy_store,
+    ) {
+        return Ok(VMStatus::Continue);
+    }
+    stack::push_id(stack, element_ids[index]);
     Ok(VMStatus::Continue)
 }
 
@@ -244,69 +315,19 @@ pub fn get_array_view(
         };
     }
     let len = av.length;
-    let index = match index_value {
-        Value::Number(n) => {
-            if n.fract() != 0.0 && (n - n.round()).abs() > 1e-9 {
-                let error = ExceptionHandler::runtime_error(
-                    &frames,
-                    "Array index must be an integer".to_string(),
-                    line,
-                );
-                match ExceptionHandler::handle_exception(
-                    stack,
-                    frames,
-                    exception_handlers,
-                    error,
-                    value_store,
-                    heavy_store,
-                ) {
-                    Ok(()) => return Ok(VMStatus::Continue),
-                    Err(e) => return Err(e),
-                }
-            }
-            let mut idx = n as i64;
-            if idx < 0 {
-                idx += len as i64;
-            }
-            if idx < 0 || (idx as usize) >= len {
-                let error = ExceptionHandler::runtime_error_with_type(
-                    &frames,
-                    format!("Array index {} out of bounds (length: {})", n as i64, len),
-                    line,
-                    ErrorType::IndexError,
-                );
-                return match ExceptionHandler::handle_exception(
-                    stack,
-                    frames,
-                    exception_handlers,
-                    error,
-                    value_store,
-                    heavy_store,
-                ) {
-                    Ok(()) => Ok(VMStatus::Continue),
-                    Err(e) => Err(e),
-                };
-            }
-            idx as usize
-        }
-        _ => {
-            let error = ExceptionHandler::runtime_error(
-                &frames,
-                "Array index must be a number".to_string(),
-                line,
-            );
-            match ExceptionHandler::handle_exception(
-                stack,
-                frames,
-                exception_handlers,
-                error,
-                value_store,
-                heavy_store,
-            ) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
-        }
+    let index = match resolve_array_index(
+        &index_value,
+        len,
+        false,
+        line,
+        stack,
+        frames,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    )? {
+        Ok(i) => i,
+        Err(status) => return Ok(status),
     };
     let element = match view_get_element(av, index, value_store, heavy_store) {
         Some(e) => e,
@@ -359,36 +380,15 @@ pub fn get_tuple(
     tuple: Rc<RefCell<Vec<Value>>>,
     index_value: Value,
 ) -> Result<VMStatus, LangError> {
-    let index = match index_value {
-        Value::Number(n) => {
-            let idx = n as i64;
-            if idx < 0 {
-                let error = ExceptionHandler::runtime_error(
-                    &frames,
-                    "Tuple index must be non-negative".to_string(),
-                    line,
-                );
-                match ExceptionHandler::handle_exception(
-                    stack,
-                    frames,
-                    exception_handlers,
-                    error,
-                    value_store,
-                    heavy_store,
-                ) {
-                    Ok(()) => return Ok(VMStatus::Continue),
-                    Err(e) => return Err(e),
-                }
-            }
-            idx as usize
-        }
-        _ => {
+    let index = match integer_value_as_i64_if_whole(&index_value) {
+        Some(idx) if idx >= 0 => idx as usize,
+        Some(_) => {
             let error = ExceptionHandler::runtime_error(
                 &frames,
-                "Tuple index must be a number".to_string(),
+                "Tuple index must be non-negative".to_string(),
                 line,
             );
-            match ExceptionHandler::handle_exception(
+            return match ExceptionHandler::handle_exception(
                 stack,
                 frames,
                 exception_handlers,
@@ -396,9 +396,27 @@ pub fn get_tuple(
                 value_store,
                 heavy_store,
             ) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
+                Ok(()) => Ok(VMStatus::Continue),
+                Err(e) => Err(e),
+            };
+        }
+        None => {
+            let error = ExceptionHandler::runtime_error(
+                &frames,
+                "Tuple index must be a number".to_string(),
+                line,
+            );
+            return match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
+                Ok(()) => Ok(VMStatus::Continue),
+                Err(e) => Err(e),
+            };
         }
     };
     let tuple_ref = tuple.borrow();
@@ -551,74 +569,44 @@ pub fn set_array(
     index_value: Value,
     value: Value,
 ) -> Result<VMStatus, LangError> {
+    if let Some(ValueCell::ObjectFieldList { projection, .. }) =
+        value_store.get(container_id)
+    {
+        let msg = match projection {
+            ObjectProjectionKind::Keys => "cannot modify read-only object keys view",
+            ObjectProjectionKind::Values => "cannot modify read-only object values view",
+        };
+        let error = ExceptionHandler::runtime_error(&frames, msg.to_string(), line);
+        return match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
+            Ok(()) => Ok(VMStatus::Continue),
+            Err(e) => Err(e),
+        };
+    }
     let len = if let Some(ValueCell::Array(slots)) = value_store.get(container_id) {
         slots.len()
     } else {
         0
     };
-    let index = match index_value {
-        Value::Number(n) => {
-            if n.fract() != 0.0 && (n - n.round()).abs() > 1e-9 {
-                let error = ExceptionHandler::runtime_error(
-                    &frames,
-                    "Array index must be an integer".to_string(),
-                    line,
-                );
-                match ExceptionHandler::handle_exception(
-                    stack,
-                    frames,
-                    exception_handlers,
-                    error,
-                    value_store,
-                    heavy_store,
-                ) {
-                    Ok(()) => return Ok(VMStatus::Continue),
-                    Err(e) => return Err(e),
-                }
-            }
-            let mut idx = n as i64;
-            if idx < 0 {
-                idx += len as i64;
-            }
-            if idx < 0 {
-                let error = ExceptionHandler::runtime_error_with_type(
-                    &frames,
-                    format!("Array index {} out of bounds (length: {})", n as i64, len),
-                    line,
-                    ErrorType::IndexError,
-                );
-                return match ExceptionHandler::handle_exception(
-                    stack,
-                    frames,
-                    exception_handlers,
-                    error,
-                    value_store,
-                    heavy_store,
-                ) {
-                    Ok(()) => Ok(VMStatus::Continue),
-                    Err(e) => Err(e),
-                };
-            }
-            idx as usize
-        }
-        _ => {
-            let error = ExceptionHandler::runtime_error(
-                &frames,
-                "Array index must be a number".to_string(),
-                line,
-            );
-            match ExceptionHandler::handle_exception(
-                stack,
-                frames,
-                exception_handlers,
-                error,
-                value_store,
-                heavy_store,
-            ) {
-                Ok(()) => return Ok(VMStatus::Continue),
-                Err(e) => return Err(e),
-            }
-        }
+    let index = match resolve_array_index(
+        &index_value,
+        len,
+        true,
+        line,
+        stack,
+        frames,
+        exception_handlers,
+        value_store,
+        heavy_store,
+    )? {
+        Ok(i) => i,
+        Err(status) => return Ok(status),
     };
     let slot_tv = match &value {
         Value::Number(n) => TaggedValue::from_f64(*n),

@@ -12,7 +12,7 @@ exclude = [
 
 [package]
 name = "data-code"
-version = "2.3.9"
+version = "2.3.10"
 edition = "2021"
 description = "ДатаКод - Интерактивный язык программирования для быстрой обработки данных"
 license = "MIT"
@@ -80,6 +80,8 @@ subtle = "2.5"
 tokio-tungstenite = "0.21"
 tungstenite = "0.21"
 base64 = "0.22"
+crc32fast = "1.4"
+flate2 = "1.0"
 
 # HTTP server (datacode-server)
 axum = "0.7"

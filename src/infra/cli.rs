@@ -105,21 +105,20 @@ pub fn print_help() {
     println!("WebSocket Server:");
     println!("  • Start server: datacode --websocket");
     println!("  • With app script: datacode ws_app.dc --websocket --host 0.0.0.0 --port 8899");
-    println!("  • Or: datacode --websocket ws_app.dc --use-ve --build_model");
+    println!("  • Or: datacode --websocket ws_app.dc --build_model");
     println!("  • Default address: ws://127.0.0.1:8080");
     println!("  • Custom host/port: datacode --websocket --host 0.0.0.0 --port 8899");
     println!("  • Or use env var: DATACODE_WS_ADDRESS=0.0.0.0:3000 datacode --websocket");
-    println!("  • Virtual environment mode: datacode --websocket --use-ve");
+    println!("  • --use-ve: kept for CLI compatibility (in-memory DCP VFS is always used on WebSocket)");
     println!("  • App script (ws_app.dc): @ws_route(\"type\") handlers, websocket.configure()");
-    println!("    - Creates isolated session folders in src/temp_sessions");
+    println!("    - DCP assets are read from in-memory VFS (no temp_sessions folder)");
     println!("    - getcwd() returns empty string");
-    println!("    - Supports file uploads via upload_file request");
-    println!("    - Session folder is deleted on disconnect");
-    println!("  • Send JSON: {{\"code\": \"print('Hello World')\"}}");
+    println!("    - Local save()/write is blocked in DCP WebSocket sessions");
+    println!("  • Send binary WebSocket frame with raw .dcp package bytes (magic DCPK)");
     println!(
-        "  • Receive JSON: {{\"success\": true, \"output\": \"Hello World\\n\", \"error\": null}}"
+        "  • Receive JSON: {{\"success\": true, \"output\": \"...\", \"error\": null}}"
     );
-    println!("      • Upload file: {{\"type\": \"upload_file\", \"filename\": \"test.txt\", \"content\": \"...\"}}");
+    println!("  • SMB control still uses JSON text: smb_connect, smb_list_files, smb_read_file");
     println!();
     println!("HTTP Server (datacode-server):");
     println!("  • Start: datacode --http  or  datacode-server");

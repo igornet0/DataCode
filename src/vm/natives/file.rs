@@ -31,6 +31,12 @@ pub fn native_getcwd(_args: &[Value]) -> Value {
 /// Безопасное форматирование пути для сообщений об ошибках
 /// В режиме --use-ve преобразует полный путь в относительный
 pub fn format_path_for_error(path: &PathBuf) -> String {
+    if crate::dcp::dcp_vfs_active() {
+        if let Ok(key) = crate::dcp::normalize_vfs_path(path) {
+            return crate::dcp::format_logical_path(&key);
+        }
+    }
+
     use crate::websocket::{get_use_ve, get_user_session_path};
 
     if get_use_ve() {
@@ -92,6 +98,11 @@ fn resolve_relative_to_base(path: &PathBuf) -> PathBuf {
 
 /// Безопасное разрешение пути относительно папки сессии в режиме --use-ve
 pub fn resolve_path_in_session(path: &PathBuf) -> Result<PathBuf, String> {
+    if crate::dcp::dcp_vfs_active() {
+        let key = crate::dcp::normalize_vfs_path(path).map_err(|e| e.to_string())?;
+        return Ok(crate::dcp::logical_path_to_pathbuf(&key));
+    }
+
     use crate::websocket::{get_use_ve, get_user_session_path};
 
     if !get_use_ve() {
@@ -327,6 +338,10 @@ fn list_files_recursive(
     regex: Option<&Regex>,
     session_path: &PathBuf,
 ) -> Vec<Value> {
+    if let Some(vfs) = crate::dcp::get_dcp_vfs() {
+        return list_files_vfs(dir, regex, &vfs);
+    }
+
     let mut files = Vec::new();
 
     // Проверяем безопасность пути в режиме --use-ve
@@ -407,6 +422,53 @@ fn list_files_recursive(
     }
 
     files
+}
+
+fn list_files_vfs(dir: &PathBuf, regex: Option<&Regex>, vfs: &crate::dcp::DcpVfs) -> Vec<Value> {
+    let prefix = match resolve_path_in_session(dir) {
+        Ok(p) => crate::dcp::normalize_vfs_path(&p).unwrap_or_default(),
+        Err(_) => return Vec::new(),
+    };
+
+    if !prefix.is_empty() && !vfs.is_dir(&prefix) {
+        if vfs.contains_file(&prefix) {
+            return vec![Value::Path(crate::dcp::logical_path_to_pathbuf(&prefix))];
+        }
+        return Vec::new();
+    }
+
+    let mut files = Vec::new();
+    list_files_vfs_recursive(&prefix, regex, vfs, &mut files);
+    files
+}
+
+fn list_files_vfs_recursive(
+    prefix: &str,
+    regex: Option<&Regex>,
+    vfs: &crate::dcp::DcpVfs,
+    out: &mut Vec<Value>,
+) {
+    for child_path in vfs.list_dir_paths(prefix) {
+        let key = crate::dcp::normalize_vfs_path(&child_path).unwrap_or_default();
+        let name = child_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        if name.starts_with('.') || name == ".DS_Store" {
+            continue;
+        }
+
+        if vfs.contains_file(&key) {
+            if regex.as_ref().is_none_or(|re| re.is_match(name)) {
+                out.push(Value::Path(child_path));
+            }
+        } else if vfs.is_dir(&key) {
+            if regex.as_ref().is_none_or(|re| re.is_match(name)) {
+                out.push(Value::Path(child_path.clone()));
+            }
+            list_files_vfs_recursive(&key, regex, vfs, out);
+        }
+    }
 }
 
 pub fn native_list_files(args: &[Value]) -> Value {
@@ -568,38 +630,11 @@ pub fn native_read_file_bin(args: &[Value]) -> Value {
             Value::Null
         }
     } else {
-        let resolved_path = match resolve_path_in_session(&file_path) {
-            Ok(p) => p,
+        match crate::file_io::read_bytes_from_path(&file_path) {
+            Ok(content) => Value::ByteBuffer(crate::common::value::ByteBuffer::from_vec(content)),
             Err(err_msg) => {
                 use crate::websocket::set_native_error;
-                set_native_error(format!("Path resolution error: {}", err_msg));
-                return Value::Null;
-            }
-        };
-
-        if !resolved_path.exists() {
-            use crate::websocket::set_native_error;
-            set_native_error(format!(
-                "File does not exist: {}",
-                format_path_for_error(&resolved_path)
-            ));
-            return Value::Null;
-        }
-
-        if !resolved_path.is_file() {
-            use crate::websocket::set_native_error;
-            set_native_error(format!(
-                "Path is not a file: {}",
-                format_path_for_error(&resolved_path)
-            ));
-            return Value::Null;
-        }
-
-        match fs::read(&resolved_path) {
-            Ok(content) => Value::ByteBuffer(crate::common::value::ByteBuffer::from_vec(content)),
-            Err(e) => {
-                use crate::websocket::set_native_error;
-                set_native_error(format!("Error reading file: {}", e));
+                set_native_error(err_msg);
                 Value::Null
             }
         }

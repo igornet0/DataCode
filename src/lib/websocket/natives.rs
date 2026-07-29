@@ -62,7 +62,7 @@ pub fn native_websocket_configure(args: &[Value]) -> Value {
     Value::Null
 }
 
-/// `websocket.disable_builtin("upload_file")`
+/// `websocket.disable_builtin("smb_connect")`
 pub fn native_websocket_disable_builtin(args: &[Value]) -> Value {
     let Some(name) = arg_string(args, "disable_builtin") else {
         return Value::Null;
@@ -73,7 +73,7 @@ pub fn native_websocket_disable_builtin(args: &[Value]) -> Value {
     Value::Null
 }
 
-/// `websocket.enable_builtin("upload_file")`
+/// `websocket.enable_builtin("smb_connect")`
 pub fn native_websocket_enable_builtin(args: &[Value]) -> Value {
     let Some(name) = arg_string(args, "enable_builtin") else {
         return Value::Null;

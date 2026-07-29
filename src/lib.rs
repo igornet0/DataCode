@@ -44,6 +44,8 @@ pub mod file_io;
 pub mod archive;
 #[path = "lib/datasource/mod.rs"]
 pub mod datasource;
+#[path = "lib/dcp/mod.rs"]
+pub mod dcp;
 #[path = "lib/websocket/mod.rs"]
 pub mod websocket;
 

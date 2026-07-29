@@ -1,6 +1,7 @@
-//! WebSocket message routing: custom @ws_route handlers and built-in types.
+//! WebSocket message routing: DCP binary execution, custom @ws_route handlers, and SMB.
 
 use crate::common::value::Value;
+use crate::dcp::{clear_dcp_vfs, DcpDecoder, DcpVfs};
 use crate::run_with_vm_with_policy;
 use crate::sqlite_export;
 use crate::vm::PermissionPolicy;
@@ -17,8 +18,6 @@ use std::fs;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-use super::get_user_session_path;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ExecuteResponse {
@@ -50,17 +49,9 @@ struct SmbReadFileResponse {
     error: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-struct UploadFileResponse {
-    success: bool,
-    message: String,
-    error: Option<String>,
-}
-
 /// Per-connection context passed to the router.
 pub struct ClientContext {
     pub smb_manager: Arc<Mutex<SmbManager>>,
-    pub use_ve: bool,
     pub build_model: bool,
 }
 
@@ -115,28 +106,54 @@ fn value_to_json_string(v: &Value) -> String {
         .unwrap_or_else(|| "{\"success\":false,\"error\":\"Failed to serialize handler response\"}".to_string())
 }
 
-fn error_json(success: bool, error: &str) -> String {
+pub fn error_json(success: bool, error: &str) -> String {
     serde_json::to_string(&ExecuteResponse {
         success,
         output: String::new(),
         error: Some(error.to_string()),
         sqlite_db: None,
     })
-    .unwrap_or_else(|_| format!("{{\"success\":false,\"error\":{}}}", serde_json::to_string(error).unwrap_or_default()))
+    .unwrap_or_else(|_| {
+        format!(
+            "{{\"success\":false,\"error\":{}}}",
+            serde_json::to_string(error).unwrap_or_default()
+        )
+    })
 }
 
 fn extract_message_type(payload: &serde_json::Value) -> Option<String> {
-    if let Some(t) = payload.get("type").and_then(|v| v.as_str()) {
-        return Some(t.to_string());
-    }
-    // Legacy: {"code": "..."} without type
-    if payload.get("code").is_some() && payload.get("type").is_none() {
-        return Some("execute".to_string());
-    }
-    None
+    payload
+        .get("type")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
 }
 
-/// Route an incoming JSON text message to custom or built-in handlers.
+/// Decode a binary DCP package, mount assets in VFS, execute code, return JSON response.
+pub fn dispatch_dcp(data: &[u8], ctx: &ClientContext) -> String {
+    let decoded = match DcpDecoder::decode(data) {
+        Ok(pkg) => pkg,
+        Err(e) => return error_json(false, &e.to_string()),
+    };
+
+    let vfs = match DcpVfs::from_assets(decoded.assets) {
+        Ok(v) => std::sync::Arc::new(v),
+        Err(e) => return error_json(false, &e.to_string()),
+    };
+    crate::dcp::set_dcp_vfs(Some(vfs));
+
+    let config = app_config();
+    let response = execute_code(
+        &decoded.code,
+        &ctx.smb_manager,
+        ctx.build_model,
+        config.execute_permission_policy,
+    );
+    clear_dcp_vfs();
+    serde_json::to_string(&response)
+        .unwrap_or_else(|e| error_json(false, &format!("Failed to serialize response: {e}")))
+}
+
+/// Route an incoming JSON text message to custom or built-in SMB handlers.
 pub fn dispatch_message(raw_json: &str, ctx: &ClientContext) -> String {
     let payload: serde_json::Value = match serde_json::from_str(raw_json) {
         Ok(v) => v,
@@ -144,8 +161,7 @@ pub fn dispatch_message(raw_json: &str, ctx: &ClientContext) -> String {
             return error_json(
                 false,
                 &format!(
-                    "Ошибка парсинга JSON: {}. Ожидается JSON с полем type или code",
-                    e
+                    "JSON parse error: {e}. Expected JSON with field type for SMB/custom routes"
                 ),
             );
         }
@@ -156,12 +172,11 @@ pub fn dispatch_message(raw_json: &str, ctx: &ClientContext) -> String {
         None => {
             return error_json(
                 false,
-                "Ошибка парсинга запроса. Ожидается JSON с полем type (или legacy code)",
+                "JSON request requires field type. DCP packages must be sent as binary frames",
             );
         }
     };
 
-    // Custom @ws_route handler (including overrides of built-in types)
     if let Some(handler_idx) = route_handler_index(&msg_type) {
         let request_value = json_to_value(&payload);
         return match call_route_handler(handler_idx, request_value) {
@@ -175,11 +190,11 @@ pub fn dispatch_message(raw_json: &str, ctx: &ClientContext) -> String {
     if is_builtin_disabled(&config, &msg_type) {
         return error_json(
             false,
-            &format!("Message type '{}' is disabled by ws_app configuration", msg_type),
+            &format!("Message type '{msg_type}' is disabled by ws_app configuration"),
         );
     }
 
-    match handle_builtin(&msg_type, &payload, ctx, &config) {
+    match handle_builtin(&msg_type, &payload, ctx) {
         Ok(json) => json,
         Err(e) => error_json(false, &e),
     }
@@ -189,17 +204,8 @@ fn handle_builtin(
     msg_type: &str,
     payload: &serde_json::Value,
     ctx: &ClientContext,
-    config: &crate::websocket::config::WsAppConfig,
 ) -> Result<String, String> {
     match msg_type {
-        "execute" => {
-            let code = payload
-                .get("code")
-                .and_then(|v| v.as_str())
-                .ok_or("execute request requires 'code' field")?;
-            let response = execute_code(code, &ctx.smb_manager, ctx.build_model, config.execute_permission_policy);
-            serde_json::to_string(&response).map_err(|e| e.to_string())
-        }
         "smb_connect" => {
             let ip = str_field(payload, "ip")?;
             let login = str_field(payload, "login")?;
@@ -265,7 +271,7 @@ fn handle_builtin(
                             base64::engine::general_purpose::STANDARD.encode(&content);
                         SmbReadFileResponse {
                             success: true,
-                            content: Some(format!("base64:{}", base64_content)),
+                            content: Some(format!("base64:{base64_content}")),
                             error: None,
                         }
                     }
@@ -278,13 +284,9 @@ fn handle_builtin(
             };
             serde_json::to_string(&response).map_err(|e| e.to_string())
         }
-        "upload_file" => {
-            let filename = str_field(payload, "filename")?;
-            let content = str_field(payload, "content")?;
-            let response = handle_upload_file(&filename, &content, ctx.use_ve);
-            serde_json::to_string(&response).map_err(|e| e.to_string())
-        }
-        other => Err(format!("Unknown message type: {}", other)),
+        other => Err(format!(
+            "Unknown message type: {other}. DCP execution requires a binary frame"
+        )),
     }
 }
 
@@ -293,66 +295,7 @@ fn str_field(payload: &serde_json::Value, key: &str) -> Result<String, String> {
         .get(key)
         .and_then(|v| v.as_str())
         .map(|s| s.to_string())
-        .ok_or_else(|| format!("Missing or invalid '{}' field", key))
-}
-
-fn handle_upload_file(filename: &str, content: &str, use_ve: bool) -> UploadFileResponse {
-    if !use_ve {
-        return UploadFileResponse {
-            success: false,
-            message: String::new(),
-            error: Some("Режим --use-ve не включен".to_string()),
-        };
-    }
-    let Some(session_path) = get_user_session_path() else {
-        return UploadFileResponse {
-            success: false,
-            message: String::new(),
-            error: Some("Сессия пользователя не найдена".to_string()),
-        };
-    };
-    let file_path = session_path.join(filename);
-    let Some(parent) = file_path.parent() else {
-        return UploadFileResponse {
-            success: false,
-            message: String::new(),
-            error: Some("Некорректный путь к файлу".to_string()),
-        };
-    };
-    if let Err(e) = fs::create_dir_all(parent) {
-        return UploadFileResponse {
-            success: false,
-            message: String::new(),
-            error: Some(format!("Ошибка создания директории: {}", e)),
-        };
-    }
-    let file_content_result = if content.starts_with("base64:") {
-        use base64::Engine;
-        base64::engine::general_purpose::STANDARD
-            .decode(&content[7..])
-            .map_err(|e| format!("Ошибка декодирования base64: {}", e))
-    } else {
-        Ok(content.as_bytes().to_vec())
-    };
-    match file_content_result {
-        Ok(file_content) => match fs::write(&file_path, file_content) {
-            Ok(_) => UploadFileResponse {
-                success: true,
-                message: format!("Файл {} успешно загружен", filename),
-                error: None,
-            },
-            Err(e) => UploadFileResponse {
-                success: false,
-                message: String::new(),
-                error: Some(format!("Ошибка записи файла: {}", e)),
-            },
-        },
-        Err(e) => UploadFileResponse {
-            success: false,
-            message: String::new(),
-            error: Some(e),
-        },
-    }
+        .ok_or_else(|| format!("Missing or invalid '{key}' field"))
 }
 
 fn execute_code(
@@ -387,7 +330,7 @@ fn execute_code(
                             .unwrap()
                             .as_nanos();
                         let temp_db_path =
-                            env::temp_dir().join(format!("datacode_export_{}.db", timestamp));
+                            env::temp_dir().join(format!("datacode_export_{timestamp}.db"));
 
                         if sqlite_export::export_to_sqlite(
                             &mut vm,
@@ -407,7 +350,7 @@ fn execute_code(
                     }
                     Ok(_) => {}
                     Err(e) => {
-                        eprintln!("⚠️  Ошибка проверки таблиц: {}", e);
+                        eprintln!("⚠️  Table export error: {e}");
                     }
                 }
             }

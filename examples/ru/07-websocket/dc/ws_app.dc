@@ -1,14 +1,12 @@
-# Скрипт приложения WebSocket: политика execute и пользовательские маршруты.
+# Ограничение sandbox для DCP + пользовательские JSON-маршруты
 # Запуск:
-#   datacode dc/ws_app.dc --websocket --host 0.0.0.0 --port 8899 --use-ve
+#   datacode dc/ws_app.dc --websocket --host 0.0.0.0 --port 8899
 
 from websocket import configure, disable_builtin
 
-# restricted — запрет опасных операций в execute (рекомендуется для продакшена)
 configure({"execute_policy": "restricted"})
 
-# Раскомментируйте, чтобы отключить встроенную загрузку файлов:
-# disable_builtin("upload_file")
+# disable_builtin("smb_connect")
 
 @ws_route("ping")
 fn ping(req) {

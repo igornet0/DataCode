@@ -1,0 +1,54 @@
+# syntax=docker/dockerfile:1.7
+
+############################
+# 1. Builder
+############################
+FROM rustlang/rust:nightly as builder
+
+WORKDIR /app
+
+# Кеш зависимостей
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir src && echo "fn main() {}" > src/main.rs
+RUN cargo build --release || true
+
+# Копируем полный проект
+COPY . .
+
+# Сборка всех бинарников
+RUN cargo build --release --bins
+
+############################
+# 2. Runtime (минимальный)
+############################
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Создаём пользователя
+RUN useradd -m -u 10001 datacode
+
+WORKDIR /app
+
+# Копируем ВСЕ бинарники (как у тебя в Makefile)
+COPY --from=builder /app/target/release/datacode /usr/local/bin/datacode
+COPY --from=builder /app/target/release/dpm /usr/local/bin/dpm
+COPY --from=builder /app/target/release/datacode-server /usr/local/bin/datacode-server
+
+# Права
+RUN chmod +x /usr/local/bin/*
+
+USER datacode
+
+############################
+# 3. Поведение контейнера
+############################
+
+# по умолчанию CLI
+ENTRYPOINT ["datacode"]
+
+# но можно переопределить:
+# docker run image dpm ...
+# docker run image datacode-server ...

@@ -1,1 +1,2 @@
 websockets>=12.0
+datacode_dcp>=1.1.0

@@ -1239,6 +1239,11 @@ impl Value {
             Value::Function(_) | Value::ModuleFunction { .. } => "<function>".to_string(),
             Value::NativeFunction(_) => "<native function>".to_string(),
             Value::Path(p) => {
+                if crate::dcp::dcp_vfs_active() {
+                    if let Ok(key) = crate::dcp::normalize_vfs_path(p) {
+                        return crate::dcp::format_logical_path(&key);
+                    }
+                }
                 // В режиме --use-ve показываем относительные пути
                 use crate::websocket::{get_use_ve, get_user_session_path};
                 if get_use_ve() {

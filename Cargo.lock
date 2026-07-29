@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "data-code"
-version = "2.3.9"
+version = "2.3.10"
 dependencies = [
  "argon2",
  "axum",
@@ -678,10 +678,12 @@ dependencies = [
  "bincode",
  "calamine",
  "chrono",
+ "crc32fast",
  "csv",
  "datacode_abi",
  "dialoguer",
  "dirs",
+ "flate2",
  "fontdue",
  "futures-util",
  "getrandom 0.2.17",

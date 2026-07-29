@@ -67,29 +67,42 @@ fn invalid_lib_smb_path_error(file_path_str: &str) -> String {
 pub fn read_bytes_from_path(path: &PathBuf) -> Result<Vec<u8>, String> {
     let file_path_str = path.to_string_lossy().to_string();
     if file_path_str.starts_with("lib://") {
-        read_smb_bytes(&file_path_str)
-    } else {
-        let resolved = resolve_local_path(path)?;
-        if !resolved.exists() {
-            return Err(format!(
-                "File does not exist: {}",
-                format_path_for_error(&resolved)
-            ));
-        }
-        if !resolved.is_file() {
-            return Err(format!(
-                "Path is not a file: {}",
-                format_path_for_error(&resolved)
-            ));
-        }
-        std::fs::read(&resolved).map_err(|e| {
-            format!(
-                "Error reading file {}: {}",
-                format_path_for_error(&resolved),
-                e
-            )
-        })
+        return read_smb_bytes(&file_path_str);
     }
+
+    if let Some(vfs) = crate::dcp::get_dcp_vfs() {
+        let key = crate::dcp::normalize_vfs_path(path).map_err(|e| e.to_string())?;
+        if key.is_empty() {
+            return Err("Path is a directory, not a file".to_string());
+        }
+        return vfs.get(&key).map(|b| b.to_vec()).ok_or_else(|| {
+            format!(
+                "File does not exist: {}",
+                crate::dcp::format_logical_path(&key)
+            )
+        });
+    }
+
+    let resolved = resolve_local_path(path)?;
+    if !resolved.exists() {
+        return Err(format!(
+            "File does not exist: {}",
+            format_path_for_error(&resolved)
+        ));
+    }
+    if !resolved.is_file() {
+        return Err(format!(
+            "Path is not a file: {}",
+            format_path_for_error(&resolved)
+        ));
+    }
+    std::fs::read(&resolved).map_err(|e| {
+        format!(
+            "Error reading file {}: {}",
+            format_path_for_error(&resolved),
+            e
+        )
+    })
 }
 
 pub fn write_bytes_to_path(path: &PathBuf, data: &[u8]) -> Result<PathBuf, String> {
@@ -99,6 +112,9 @@ pub fn write_bytes_to_path(path: &PathBuf, data: &[u8]) -> Result<PathBuf, Strin
             "Cannot write to SMB path via save(): {}",
             file_path_str
         ));
+    }
+    if crate::dcp::dcp_vfs_active() {
+        return Err("Write not allowed in DCP WebSocket session".to_string());
     }
     let resolved = resolve_local_path(path)?;
     if let Some(parent) = resolved.parent() {

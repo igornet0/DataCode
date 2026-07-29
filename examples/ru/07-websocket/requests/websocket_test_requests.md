@@ -1,42 +1,42 @@
-# Шпаргалка: ручное тестирование WebSocket
+# Тестовые запросы WebSocket (DCP)
 
-Полное руководство — в [README.md](../README.md).
-
-## Запуск сервера
+Сервер должен быть запущен:
 
 ```bash
 datacode --websocket --host 127.0.0.1 --port 8899
 ```
 
-## wscat
+## Выполнение DCP (binary frame)
 
 ```bash
-npm install -g wscat
-wscat -c ws://127.0.0.1:8899
+python3 examples/ru/07-websocket/python/test_dcp_run.py
 ```
 
+Или вручную:
+
+```bash
+dcp create -o /tmp/job.dcp --code examples/ru/07-websocket/dc/upload_data.dc --assets-dir examples/ru/07-websocket/data
+```
+
+Отправьте байты `/tmp/job.dcp` как **binary** WebSocket frame. Ответ — JSON text.
+
+## Пользовательский маршрут (JSON text)
+
 ```json
-{"type": "execute", "code": "print('Привет!')"}
 {"type": "ping"}
 ```
 
-## websocat
+Нужен `ws_app.dc` (см. `examples/ru/07-websocket/dc/ws_app.dc`).
 
-```bash
-cargo install websocat
-echo '{"type":"execute","code":"print(\"ok\")"}' | websocat ws://127.0.0.1:8899
-```
+## SMB connect (JSON text)
 
-## Готовые запросы
-
-См. [`websocket_requests.json`](./websocket_requests.json).
-
-## Автотесты
-
-```bash
-cd ../python
-pip install -r requirements.txt
-python3 test_websocket.py
-python3 test_file_upload.py      # сервер с --use-ve
-python3 test_smb_connection.py   # по умолчанию ../dc/test_smb_load_data.dc
+```json
+{
+  "type": "smb_connect",
+  "ip": "192.168.1.100",
+  "login": "user",
+  "password": "pass",
+  "domain": "WORKGROUP",
+  "share_name": "data"
+}
 ```

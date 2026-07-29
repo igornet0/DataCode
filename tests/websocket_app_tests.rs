@@ -90,7 +90,6 @@ fn websocket_router_dispatch_custom_route() {
 
     let ctx = ClientContext {
         smb_manager: Arc::new(Mutex::new(SmbManager::new())),
-        use_ve: false,
         build_model: false,
     };
     let resp = dispatch_message(r#"{"type":"ping"}"#, &ctx);

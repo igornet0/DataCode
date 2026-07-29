@@ -11,14 +11,10 @@ pub fn start_websocket_server(config: WebSocketConfig) -> Result<(), String> {
     if let Some(ref app) = config.app_file {
         println!("📜 ws_app: {}", app);
     }
-    if config.use_ve {
-        println!("📁 Режим виртуальной среды: включен (--use-ve)");
-    }
     if config.build_model {
-        println!("🗄️  Режим экспорта SQLite: включен (--build_model)");
+        println!("🗄️  SQLite export mode: enabled (--build_model)");
     }
-    println!("💡 Используйте --host и --port для изменения адреса");
-    println!("💡 Или переменную окружения DATACODE_WS_ADDRESS");
+    println!("💡 Send a binary WebSocket frame with a DCP package (.dcp bytes)");
     println!();
 
     let rt = tokio::runtime::Runtime::new()

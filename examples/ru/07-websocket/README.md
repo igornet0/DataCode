@@ -1,8 +1,29 @@
 # WebSocket в DataCode
 
-Удалённое выполнение кода DataCode по протоколу WebSocket: клиент отправляет JSON, сервер выполняет скрипт и возвращает вывод `print()` и ошибки.
+Удалённое выполнение DataCode через **DCP-пакеты** по WebSocket: клиент отправляет binary frame с `.dcp`, сервер декодирует, извлекает файлы, выполняет код и возвращает JSON.
 
-**Полная документация протокола:** [`docs/ru/2-язык/сервисы/websocket-сервер.md`](../../../docs/ru/2-язык/сервисы/websocket-сервер.md)
+**Документация:** [`docs/ru/2-язык/сервисы/websocket-сервер.md`](../../../docs/ru/2-язык/сервисы/websocket-сервер.md) · [DCP-python](../../../DCP-python/README.md)
+
+---
+
+## Быстрый старт
+
+```bash
+# Сервер
+datacode --websocket --host 127.0.0.1 --port 8899 --build_model
+
+# Клиент (assets читаются из in-memory VFS, temp_sessions не создаётся)
+pip install websockets
+pip install git+https://github.com/igornet0/DCP-python.git
+python3 python/test_dcp_run.py
+```
+
+Сборка пакета вручную:
+```bash
+dcp create -o job.dcp --code dc/upload_data.dc --assets-dir data
+```
+
+Протоколы JSON `execute` / `upload_file` **удалены** — используйте DCP.
 
 ---
 
@@ -22,7 +43,7 @@
 | Папка | Содержимое |
 |-------|------------|
 | [`dc/`](./dc/) | `ws_app.dc`, `upload_data.dc`, `test_smb_load_data.dc` |
-| [`python/`](./python/) | `test_websocket.py`, `test_file_upload.py`, `test_smb_connection.py`, … |
+| [`python/`](./python/) | `test_dcp_run.py`, `test_smb_connection.py`, … |
 | [`node/`](./node/) | `test_websocket.js` |
 | [`bash/`](./bash/) | `test_websocket.sh` |
 | [`html/`](./html/) | `websocket_client_example.html` |

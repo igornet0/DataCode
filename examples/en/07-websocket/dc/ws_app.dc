@@ -1,10 +1,10 @@
-# Restrict execute sandbox + custom routes
+# Restrict DCP execute sandbox + custom JSON routes
 from websocket import configure, disable_builtin
 
 configure({"execute_policy": "restricted"})
 
-# Optional: disable built-in upload (requires --use-ve on server)
-# disable_builtin("upload_file")
+# Optional: disable SMB built-in handlers
+# disable_builtin("smb_connect")
 
 @ws_route("ping")
 fn ping(req) {

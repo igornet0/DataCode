@@ -1,9 +1,10 @@
 # DataCode WebSocket Server
 
-WebSocket server for remote execution of DataCode code.
+WebSocket server for remote execution of DataCode via **DCP packages** (Datacode Package format).
 
 **📚 Usage examples:**
 - WebSocket clients: [`examples/en/07-websocket/`](../../../examples/en/07-websocket/)
+- DCP format: [DCP-python](https://github.com/igornet0/DCP-python/blob/main/README.md)
 
 ## Starting the server
 
@@ -11,27 +12,20 @@ WebSocket server for remote execution of DataCode code.
 # Default address (127.0.0.1:8080)
 datacode --websocket
 
-# Custom host and port via flags
-datacode --websocket --host 0.0.0.0 --port 8899
+# Custom host and port
+datacode --websocket --host 0.0.0.0 --port 8899 --build_model
 
-# Custom address via environment variable
-DATACODE_WS_ADDRESS=0.0.0.0:3000 datacode --websocket
-
-# Flags take priority over environment variable
-DATACODE_WS_ADDRESS=127.0.0.1:8080 datacode --websocket --host 0.0.0.0 --port 8899
-# Result: server starts on 0.0.0.0:8899
+# With optional ws_app.dc
+datacode examples/en/07-websocket/dc/ws_app.dc --websocket --host 0.0.0.0 --port 8899
 ```
+
+Each client connection runs in a sandbox (`getcwd()` empty, paths relative to DCP assets). Asset files are served from an **in-memory VFS** populated from DCP ASSET sections — no `temp_sessions` directory on disk.
+
+Local `save()` / file writes are **blocked** in DCP WebSocket sessions.
 
 ### Application script (`ws_app.dc`)
 
-Optional setup script (analogous to HTTP `app.dc`). Runs once at startup before accepting connections.
-
-```bash
-datacode examples/en/07-websocket/dc/ws_app.dc --websocket --host 0.0.0.0 --port 8899 --use-ve --build_model
-datacode --websocket examples/en/07-websocket/dc/ws_app.dc --port 8899
-```
-
-Without `ws_app.dc` the server works as before — built-in handlers only.
+Optional setup script. Runs once at startup before accepting connections.
 
 **Example** [`examples/en/07-websocket/dc/ws_app.dc`](../../../examples/en/07-websocket/dc/ws_app.dc):
 
@@ -46,50 +40,49 @@ fn ping(req) {
 }
 ```
 
-**`websocket` module:**
-
 | Function | Description |
 |----------|-------------|
 | `websocket.configure({...})` | `execute_policy`: `"allow_all"` (default) or `"restricted"` |
-| `websocket.disable_builtin("type")` | Disable built-in message type |
+| `websocket.disable_builtin("type")` | Disable built-in JSON handler (e.g. `smb_connect`) |
 | `websocket.enable_builtin("type")` | Re-enable |
 
-**`@ws_route("type")`** — handler for JSON with `"type": "type"`. Receives request object, returns response object. Overrides built-in type with the same name.
-
-CLI flags (`--use-ve`, `--build_model`, `--host`, `--port`) are preserved; `ws_app.dc` adds routes and policy.
+**`@ws_route("type")`** — custom JSON handler. Receives the request object, returns a response object.
 
 ## Protocol
 
-### Connection
+### DCP execution (primary)
 
-Connect to the WebSocket server at `ws://127.0.0.1:8080` (or the configured address).
+| Direction | Format |
+|-----------|--------|
+| Request | **Binary WebSocket frame** — raw `.dcp` bytes (magic `DCPK`) |
+| Response | **JSON text** — execution result |
 
-### Request format
+**Build a package** (Python CLI or library):
 
-The WebSocket server supports several request types. All requests must include a `type` field specifying the operation.
+```bash
+dcp create -o job.dcp --code script.dc --assets-dir ./data
+```
 
-#### Code execution
+**Send** the file bytes as one binary WebSocket message.
 
-Send a JSON message with type `execute` and field `code`:
+**Response:**
 
 ```json
 {
-  "type": "execute",
-  "code": "print('Hello, World!')"
+  "success": true,
+  "output": "asset: hello\n2 + 2 = 4\n",
+  "error": null,
+  "sqlite_db": null
 }
 ```
 
-**Backward compatibility:** The old format without `type` is also supported:
+With `--build_model`, successful runs may include `sqlite_db` (base64-encoded SQLite file).
 
-```json
-{
-  "code": "print('Hello, World!')"
-}
-```
+The DCP package must contain a `CODE` section (`__code__`). Optional `ASSET` sections (relative paths) are written into the client session before execution.
 
-#### SMB share connection
+### SMB control (JSON text)
 
-To connect to an SMB (Samba/CIFS) share, use type `smb_connect`:
+SMB operations still use JSON text messages with a `type` field:
 
 ```json
 {
@@ -102,213 +95,45 @@ To connect to an SMB (Samba/CIFS) share, use type `smb_connect`:
 }
 ```
 
-**Parameters:**
-- `ip` - IP address or hostname of SMB server
-- `login` - username
-- `password` - password
-- `domain` - domain (usually `WORKGROUP` or domain name; may be empty string)
-- `share_name` - SMB share name
+After `smb_connect`, run DCP code that uses `lib://share_name/path`.
 
-**Response:**
-```json
-{
-  "success": true,
-  "message": "Successfully connected to SMB share 'share_name'",
-  "error": null
-}
-```
-
-### Response format
-
-The server returns JSON with execution result:
-
-**Success:**
-```json
-{
-  "success": true,
-  "output": "Hello, World!\n",
-  "error": null
-}
-```
-
-**Execution error:**
-```json
-{
-  "success": false,
-  "output": "",
-  "error": "Error: variable 'x' is not defined"
-}
-```
-
-## Usage examples
-
-### JavaScript/Node.js
-
-```javascript
-const WebSocket = require('ws');
-
-const ws = new WebSocket('ws://127.0.0.1:8080');
-
-ws.on('open', function open() {
-    const request = {
-        type: "execute",
-        code: "print('Hello from WebSocket!')"
-    };
-    ws.send(JSON.stringify(request));
-});
-
-ws.on('message', function message(data) {
-    const response = JSON.parse(data);
-    console.log('Output:', response.output);
-    if (response.error) {
-        console.error('Error:', response.error);
-    }
-});
-```
-
-### Python
+## Python client example
 
 ```python
 import asyncio
-import websockets
+import io
 import json
-
-async def execute_code():
-    uri = "ws://127.0.0.1:8080"
-    async with websockets.connect(uri) as websocket:
-        request = {
-            "type": "execute",
-            "code": "print('Hello from Python!')"
-        }
-        await websocket.send(json.dumps(request))
-        response = json.loads(await websocket.recv())
-        print("Output:", response["output"])
-        if response["error"]:
-            print("Error:", response["error"])
-
-asyncio.run(execute_code())
-```
-
-### cURL (via wscat)
-
-```bash
-# Install wscat: npm install -g wscat
-wscat -c ws://127.0.0.1:8080
-# Then send:
-{"type": "execute", "code": "print('Hello!')"}
-```
-
-## SMB share connection
-
-The WebSocket server supports connecting to SMB (Samba/CIFS) shares for working with files on remote servers.
-
-### Requirements
-
-**Linux/Mac:**
-```bash
-brew install samba  # macOS
-# or
-sudo apt-get install samba-client  # Ubuntu/Debian
-```
-
-**Windows:** SMB client is built into the system.
-
-### Using the `lib://` protocol
-
-After a successful `smb_connect` request, you can use the special `lib://` protocol in DataCode scripts:
-
-```
-lib://share_name/path/to/file
-```
-
-Where `share_name` is the connected SMB share name and `path/to/file` is the path on the share.
-
-### SMB example
-
-```python
-import asyncio
 import websockets
-import json
+from datacode_dcp import DCPEncoder
 
-async def smb_example():
-    async with websockets.connect("ws://localhost:8899") as websocket:
-        # 1. Connect to SMB
-        connect_request = {
-            "type": "smb_connect",
-            "ip": "192.168.1.100",
-            "login": "user",
-            "password": "pass",
-            "domain": "WORKGROUP",
-            "share_name": "data"
-        }
-        await websocket.send(json.dumps(connect_request))
-        response = json.loads(await websocket.recv())
-        print("SMB Connect:", response)
-        
-        # 2. Run DataCode script using SMB
-        code = """
-        files = list_files(path("lib://data/reports"))
-        for file in files {
-            print("File:", file)
-        }
-        """
-        
-        execute_request = {
-            "type": "execute",
-            "code": code
-        }
-        await websocket.send(json.dumps(execute_request))
-        response = json.loads(await websocket.recv())
-        print("Execute:", response)
+async def run():
+    buf = io.BytesIO()
+    DCPEncoder().code("print('Hello from DCP')").write(buf)
 
-asyncio.run(smb_example())
+    async with websockets.connect("ws://127.0.0.1:8899") as ws:
+        await ws.send(buf.getvalue())          # binary frame
+        result = json.loads(await ws.recv())   # JSON response
+        print(result["output"])
 
+asyncio.run(run())
 ```
 
-### Supported operations
-
-After connecting to an SMB share, these DataCode operations are available:
-
-- **list_files(path("lib://share_name/dir"))** - list files (recursively walks subdirectories)
-- **list_files(path("lib://share_name/dir"), regex="*.csv")** - filtered list (glob like `*.csv` or regular expressions)
-- **read(path("lib://share_name/file.csv"))** - read file (CSV, XLSX, TXT supported)
-
-See [`examples/en/07-websocket/README.md`](../../../examples/en/07-websocket/README.md) for details.
+See [`examples/en/07-websocket/python/test_dcp_run.py`](../../../examples/en/07-websocket/python/test_dcp_run.py) for a full example with assets.
 
 ## Features
 
-1. **Session isolation**: Each client gets its own interpreter. Variables and functions defined by one client are not visible to others.
-
-2. **Output capture**: All `print()` calls are captured and sent to the client in the `output` field.
-
-3. **Error handling**: Execution errors are returned in the `error` field with `success` set to `false`.
-
-4. **Multi-line code**: Multi-line code execution is supported:
-
-```json
-{
-  "type": "execute",
-  "code": "global x = 10\nglobal y = 20\nprint('Sum:', x + y)"
-}
-```
-
-5. **SMB connections**: Each client has its own SMB connections, closed automatically on disconnect.
-
-## Web client
-
-Open `examples/en/07-websocket/html/websocket_client_example.html` in a browser for interactive WebSocket server testing.
+1. **DCP packages** — code, metadata, and files in one binary payload
+2. **Session isolation** — per-client temp directory for assets
+3. **Output capture** — `print()` output in the `output` field
+4. **SMB** — per-client SMB connections via JSON control messages
+5. **Custom routes** — `@ws_route` in `ws_app.dc`
 
 ## Security
 
-⚠️ **Warning**: The current implementation does not include authentication or access restrictions. Do not use on public servers without additional protection!
-
-## Limitations
-
-- The interpreter is not thread-safe (`Send`), so each client is handled in a separate local task
-- Variables and functions are not persisted between requests from one client (each request runs in the same interpreter, but state may change)
+⚠️ No authentication or rate limiting. Do not expose on public networks without additional protection.
 
 ---
 
 **See also:**
-- [WebSocket examples](../../../examples/en/07-websocket/) - practical usage
-- [Path functions](../functions/paths.md) — working with files and paths
+- [WebSocket examples](../../../examples/en/07-websocket/)
+- [DCP-python README](../../../../DCP-python/README.md)

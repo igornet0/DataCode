@@ -16,6 +16,10 @@ impl PermissionPolicy {
     pub const FS_WRITE: &'static str = "fs.write";
     pub const PROCESS_EXEC: &'static str = "process.exec";
     pub const ENV_WRITE: &'static str = "env.write";
+    /// Outbound HTTP via built-in `web.http`.
+    pub const NET_HTTP: &'static str = "net.http";
+    /// Browser automation via built-in `web.browser`.
+    pub const NET_BROWSER: &'static str = "net.browser";
 }
 
 const RESTRICTED_DENIED: &[&str] = &[
@@ -23,6 +27,8 @@ const RESTRICTED_DENIED: &[&str] = &[
     PermissionPolicy::FS_WRITE,
     PermissionPolicy::PROCESS_EXEC,
     PermissionPolicy::ENV_WRITE,
+    PermissionPolicy::NET_HTTP,
+    PermissionPolicy::NET_BROWSER,
 ];
 
 /// True if `perm` is allowed under `policy` (used by [`crate::vm::Vm::can_system_permission`]).

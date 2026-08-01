@@ -837,6 +837,14 @@ impl Vm {
             &mut self.value_store,
             &mut self.heavy_store,
         )?;
+        modules::register_module(
+            "web",
+            &mut self.natives,
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+            &mut self.heavy_store,
+        )?;
         // So `import plot` / `ensure_module_loaded` does not call register_module again and shift natives.len(),
         // which would desync ml native indices (builtin_count) from abi_natives indexing.
         for name in modules::BUILTIN_MODULE_NAMES {

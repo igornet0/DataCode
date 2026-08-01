@@ -1,0 +1,17 @@
+# Stealth browser (requires Chrome/Chromium)
+
+from web import browser
+
+page = browser.open("https://example.com", stealth=true)
+print("text:", page.text("h1"))
+page.close()
+
+# Persistent profile + options bag
+page = browser.open("https://example.com", options={
+    stealth: true,
+    headless: true,
+    profile: "./.datacode_browser_profile",
+    viewport: [1280, 720]
+})
+page.wait_for("body")
+page.close()

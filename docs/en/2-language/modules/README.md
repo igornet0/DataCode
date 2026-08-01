@@ -13,6 +13,7 @@ Documentation for modules shipped with DataCode.
 | [pathfind](./pathfind/README.md) | Native grid A* (production SLA) |
 | [grid](./grid/README.md) | Flat buffers + `grid.astar` for DC A* |
 | [crypto](./crypto/README.md) | Argon2id, bcrypt, `secure_compare` |
+| [web](./web/README.md) | HTTP client, Chromium browser automation, HTML→table |
 | [debug](./debug/README.md) | `debug.operators()` — VM operator table |
 
 ### Installable packages (DPM)

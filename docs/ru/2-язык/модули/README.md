@@ -13,6 +13,7 @@
 | [pathfind](./pathfind/README.md) | Native A* на сетке (production SLA) |
 | [grid](./grid/README.md) | Плоские буферы + `grid.astar` для DC A* |
 | [crypto](./crypto/README.md) | Argon2id, bcrypt, `secure_compare` |
+| [web](./web/README.md) | HTTP-клиент, автоматизация Chromium, HTML→таблица |
 | [debug](./debug/README.md) | `debug.operators()` — таблица операторов VM |
 
 ### Устанавливаемые пакеты (DPM)

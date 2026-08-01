@@ -8,3 +8,4 @@ pub(crate) use crate::datasource::response::DataSourceResponse;
 pub(crate) use crate::database_engine::cluster::DatabaseCluster;
 pub(crate) use crate::database_engine::engine::DatabaseEngine;
 pub(crate) use crate::plot::{Axis, Figure, Image, PlotWindowHandle};
+pub(crate) use crate::web::{HttpResponse, WebElement, WebPage};

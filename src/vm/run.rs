@@ -7,7 +7,9 @@ use crate::common::{
     value::Value,
     value_store::{ValueId, NULL_VALUE_ID},
 };
-use crate::vm::context_guards::{ClearScriptArgvGuard, PlotContextGuard, RunContextGuard};
+use crate::vm::context_guards::{
+    ClearScriptArgvGuard, PlotContextGuard, RunContextGuard, WebBrowserCleanupGuard,
+};
 use crate::vm::frame::{CallFrame, CALL_FRAME_FUNCTION_INDEX_MAIN};
 use crate::vm::global_slot::GlobalSlot;
 use crate::vm::store_convert::{load_value, tagged_to_value_id};
@@ -59,6 +61,7 @@ pub fn execute_run(
     crate::plot::PlotContext::set_current(plot_ctx);
     let plot_ctx_ptr = vm.get_plot_context_mut_ptr();
     let _plot_guard = PlotContextGuard(plot_ctx_ptr);
+    let _web_browser_guard = WebBrowserCleanupGuard;
 
     vm.merge_global_names_from_chunk(chunk);
 

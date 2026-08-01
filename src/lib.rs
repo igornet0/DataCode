@@ -48,6 +48,8 @@ pub mod datasource;
 pub mod dcp;
 #[path = "lib/websocket/mod.rs"]
 pub mod websocket;
+#[path = "lib/web/mod.rs"]
+pub mod web;
 
 mod run_api;
 

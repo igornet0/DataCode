@@ -1,0 +1,24 @@
+# Parse HTML into tables / records (no network)
+
+from web import data
+
+html = """
+<table id="products">
+  <tr><th>name</th><th>price</th></tr>
+  <tr><td>Widget</td><td>1200</td></tr>
+  <tr><td>Gadget</td><td>800</td></tr>
+</table>
+<div class="product"><span class="name">Alpha</span><span class="price">100</span><a href="/p/1">x</a></div>
+<div class="product"><span class="name">Beta</span><span class="price">200</span><a href="/p/2">x</a></div>
+"""
+
+table products = data.table(html, "#products")
+print(products)
+
+items = data.extract(html, ".product", {
+    name: ".name",
+    price: ".price",
+    url: { selector: "a", attribute: "href" }
+})
+table items = data.table(items)
+print(items)

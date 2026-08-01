@@ -1,0 +1,10 @@
+# Browser automation (requires Chrome/Chromium)
+
+from web import browser, data
+
+page = browser.open("https://example.com", true)
+print("title text:", page.text("h1"))
+page.screenshot("./example.png")
+html = page.html()
+page.close()
+print("html length:", len(html))

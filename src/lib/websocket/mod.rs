@@ -166,5 +166,6 @@ fn cleanup_client(smb_manager: &Arc<Mutex<SmbManager>>) {
 
     crate::vm::file_ops::clear_smb_manager();
     clear_dcp_session();
+    crate::web::cleanup_all();
     set_use_ve(false);
 }

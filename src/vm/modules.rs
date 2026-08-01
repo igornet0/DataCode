@@ -21,6 +21,7 @@ pub const BUILTIN_MODULE_NAMES: &[&str] = &[
     "grid",
     "websocket",
     "ws",
+    "web",
 ];
 
 /// Check if a name is a known module name
@@ -47,6 +48,7 @@ pub fn builtin_module_exports(name: &str) -> Option<&'static [&'static str]> {
             "source_table",
             "tables",
         ],
+        "web" => &["http", "browser", "data"],
         "websocket" => &["configure", "disable_builtin", "enable_builtin"],
         "heapq" => &[
             "heap_clear",
@@ -119,6 +121,7 @@ pub fn register_module(
         "grid" => register_grid_module(natives, globals, global_names, store, heap),
         "websocket" => register_websocket_module(natives, globals, global_names, store, heap),
         "ws" => register_ws_module(natives, globals, global_names, store, heap),
+        "web" => register_web_module(natives, globals, global_names, store, heap),
         _ => Err(LangError::runtime_error(
             format!("Unknown module: {}", module_name),
             0,
@@ -1124,6 +1127,100 @@ fn register_ws_module(
 
     globals[ws_index] = GlobalSlot::Heap(store_value_arena(
         Value::legacy_object(ws_object),
+        store,
+        heap,
+    ));
+
+    Ok(())
+}
+
+fn register_web_module(
+    natives: &mut Vec<HostEntry>,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
+) -> Result<(), LangError> {
+    use crate::web::natives as web_natives;
+
+    let start = natives.len();
+    // http: 0..7
+    natives.push(HostEntry::Extended(web_natives::native_http_get));
+    natives.push(HostEntry::Extended(web_natives::native_http_post));
+    natives.push(HostEntry::Extended(web_natives::native_http_put));
+    natives.push(HostEntry::Extended(web_natives::native_http_patch));
+    natives.push(HostEntry::Extended(web_natives::native_http_delete));
+    natives.push(HostEntry::Extended(web_natives::native_http_head));
+    natives.push(HostEntry::Extended(web_natives::native_http_options));
+    natives.push(HostEntry::Extended(web_natives::native_http_get_table));
+    // browser.open: 8
+    natives.push(HostEntry::Extended(web_natives::native_browser_open));
+    // page methods: 9..25
+    natives.push(HostEntry::Extended(web_natives::native_page_goto));
+    natives.push(HostEntry::Extended(web_natives::native_page_close));
+    natives.push(HostEntry::Extended(web_natives::native_page_click));
+    natives.push(HostEntry::Extended(web_natives::native_page_type));
+    natives.push(HostEntry::Extended(web_natives::native_page_fill));
+    natives.push(HostEntry::Extended(web_natives::native_page_clear));
+    natives.push(HostEntry::Extended(web_natives::native_page_select));
+    natives.push(HostEntry::Extended(web_natives::native_page_text));
+    natives.push(HostEntry::Extended(web_natives::native_page_html));
+    natives.push(HostEntry::Extended(web_natives::native_page_screenshot));
+    natives.push(HostEntry::Extended(web_natives::native_page_wait));
+    natives.push(HostEntry::Extended(web_natives::native_page_wait_for));
+    natives.push(HostEntry::Extended(web_natives::native_page_wait_for_navigation));
+    natives.push(HostEntry::Extended(web_natives::native_page_find));
+    natives.push(HostEntry::Extended(web_natives::native_page_find_all));
+    natives.push(HostEntry::Extended(web_natives::native_page_set_cookie));
+    natives.push(HostEntry::Extended(web_natives::native_page_delete_cookie));
+    // element methods: 26..32
+    natives.push(HostEntry::Extended(web_natives::native_element_click));
+    natives.push(HostEntry::Extended(web_natives::native_element_text));
+    natives.push(HostEntry::Extended(web_natives::native_element_html));
+    natives.push(HostEntry::Extended(web_natives::native_element_type));
+    natives.push(HostEntry::Extended(web_natives::native_element_fill));
+    natives.push(HostEntry::Extended(web_natives::native_element_clear));
+    natives.push(HostEntry::Extended(web_natives::native_element_attr));
+    // data: 33..34
+    natives.push(HostEntry::Extended(web_natives::native_data_table));
+    natives.push(HostEntry::Extended(web_natives::native_data_extract));
+
+    let mut http = HashMap::new();
+    http.insert("get".to_string(), Value::NativeFunction(start));
+    http.insert("post".to_string(), Value::NativeFunction(start + 1));
+    http.insert("put".to_string(), Value::NativeFunction(start + 2));
+    http.insert("patch".to_string(), Value::NativeFunction(start + 3));
+    http.insert("delete".to_string(), Value::NativeFunction(start + 4));
+    http.insert("head".to_string(), Value::NativeFunction(start + 5));
+    http.insert("options".to_string(), Value::NativeFunction(start + 6));
+    http.insert("get_table".to_string(), Value::NativeFunction(start + 7));
+
+    let mut browser = HashMap::new();
+    browser.insert("open".to_string(), Value::NativeFunction(start + 8));
+
+    let mut data = HashMap::new();
+    data.insert("table".to_string(), Value::NativeFunction(start + 33));
+    data.insert("extract".to_string(), Value::NativeFunction(start + 34));
+
+    let mut web_object = HashMap::new();
+    web_object.insert("http".to_string(), Value::legacy_object(http));
+    web_object.insert("browser".to_string(), Value::legacy_object(browser));
+    web_object.insert("data".to_string(), Value::legacy_object(data));
+
+    let web_index = if let Some(idx) = global_index_by_name(global_names, "web") {
+        if idx >= globals.len() {
+            globals.resize(idx + 1, default_global_slot());
+        }
+        idx
+    } else {
+        let idx = globals.len();
+        globals.push(default_global_slot());
+        global_names.insert(idx, "web".to_string());
+        idx
+    };
+
+    globals[web_index] = GlobalSlot::Heap(store_value_arena(
+        Value::legacy_object(web_object),
         store,
         heap,
     ));

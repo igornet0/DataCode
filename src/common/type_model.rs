@@ -65,6 +65,9 @@ pub fn is_mutable_value(v: &Value) -> bool {
         | Value::Archive(_)
         | Value::DataSource(_)
         | Value::DataSourceResponse(_)
+        | Value::HttpResponse(_)
+        | Value::WebPage(_)
+        | Value::WebElement(_)
         | Value::Enumerate { .. }
         | Value::Iterable(_)
         | Value::Generator(_)

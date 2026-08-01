@@ -32,3 +32,11 @@ impl Drop for RunContextGuard {
         }
     }
 }
+
+/// Closes any open `web.browser` pages left after a run.
+pub struct WebBrowserCleanupGuard;
+impl Drop for WebBrowserCleanupGuard {
+    fn drop(&mut self) {
+        crate::web::cleanup_all();
+    }
+}

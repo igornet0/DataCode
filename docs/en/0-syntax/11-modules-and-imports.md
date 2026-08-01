@@ -133,6 +133,8 @@ These modules are built into the runtime; no matching `.dc` file or package is n
 | `uuid` | UUID generation (v4, v7), parse, to_string, bytes, v3/v5 |
 | `system` | OS, runtime, paths, hardware, network, processes, FS, logs, permissions ([documentation](../2-language/modules/system/README.md)) |
 | `database_engine` | DB engine and DatabaseCluster |
+| `web` | HTTP, browser automation, HTML→table ([documentation](../2-language/modules/web/README.md)) |
+| `websocket` / `ws` | WebSocket server and DCP session helpers |
 
 Example:
 

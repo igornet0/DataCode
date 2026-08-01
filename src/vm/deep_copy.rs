@@ -181,6 +181,9 @@ fn deep_copy_impl(value: &Value, ctx: &mut DeepCopyCtx<'_>) -> Result<Value, Str
         | Value::Archive(_)
         | Value::DataSource(_)
         | Value::DataSourceResponse(_)
+        | Value::HttpResponse(_)
+        | Value::WebPage(_)
+        | Value::WebElement(_)
         | Value::ObjectFieldList { .. } => Err(format!(
             "TypeError: copy() does not support type {}",
             get_type_name_value(value)

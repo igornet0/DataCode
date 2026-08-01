@@ -466,6 +466,16 @@ pub fn get_method_param_names(method: &str) -> Option<Vec<String>> {
     match method {
         "push" => Some(vec!["item".to_string(), "ignore".to_string()]),
         "save_csv" | "save_sqlite" => Some(vec!["path".to_string()]),
+        // `web.browser.open` — named kwargs: stealth=, options=, profile=
+        "open" => Some(vec![
+            "url".to_string(),
+            "headless".to_string(),
+            "user_agent".to_string(),
+            "headers".to_string(),
+            "stealth".to_string(),
+            "options".to_string(),
+            "profile".to_string(),
+        ]),
         _ => None,
     }
 }

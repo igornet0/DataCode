@@ -565,6 +565,18 @@ pub fn store_value(v: Value, store: &mut ValueStore, heap: &mut HeavyStore) -> V
             let idx = heap.push(Value::DataSourceResponse(rc));
             store.allocate(ValueCell::Heavy(idx))
         }
+        Value::HttpResponse(rc) => {
+            let idx = heap.push(Value::HttpResponse(rc));
+            store.allocate(ValueCell::Heavy(idx))
+        }
+        Value::WebPage(rc) => {
+            let idx = heap.push(Value::WebPage(rc));
+            store.allocate(ValueCell::Heavy(idx))
+        }
+        Value::WebElement(rc) => {
+            let idx = heap.push(Value::WebElement(rc));
+            store.allocate(ValueCell::Heavy(idx))
+        }
         Value::Enumerate { data, start } => {
             let data_id = store_value(Value::Array(data), store, heap);
             store.allocate(ValueCell::Enumerate { data_id, start })
@@ -1172,6 +1184,18 @@ pub fn store_value_arena(v: Value, store: &mut ValueStore, heap: &mut HeavyStore
         }
         Value::DataSourceResponse(rc) => {
             let idx = heap.push(Value::DataSourceResponse(rc));
+            store.allocate_arena(ValueCell::Heavy(idx))
+        }
+        Value::HttpResponse(rc) => {
+            let idx = heap.push(Value::HttpResponse(rc));
+            store.allocate_arena(ValueCell::Heavy(idx))
+        }
+        Value::WebPage(rc) => {
+            let idx = heap.push(Value::WebPage(rc));
+            store.allocate_arena(ValueCell::Heavy(idx))
+        }
+        Value::WebElement(rc) => {
+            let idx = heap.push(Value::WebElement(rc));
             store.allocate_arena(ValueCell::Heavy(idx))
         }
         Value::Enumerate { data, start } => {

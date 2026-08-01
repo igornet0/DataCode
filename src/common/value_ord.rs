@@ -47,6 +47,9 @@ pub fn value_ord_type_name(v: &Value) -> &'static str {
         Value::Archive(_) => "archive",
         Value::DataSource(_) => "datasource",
         Value::DataSourceResponse(_) => "response",
+        Value::HttpResponse(_) => "http_response",
+        Value::WebPage(_) => "web_page",
+        Value::WebElement(_) => "web_element",
         Value::Ellipsis => "ellipsis",
     }
 }

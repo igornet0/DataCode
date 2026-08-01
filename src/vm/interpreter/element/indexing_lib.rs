@@ -976,3 +976,395 @@ pub fn get_datasource_response(
     }
     Ok(VMStatus::Continue)
 }
+
+/// Get HttpResponse property (web.http).
+#[allow(clippy::too_many_arguments)]
+pub fn get_http_response(
+    line: usize,
+    stack: &mut Vec<crate::common::TaggedValue>,
+    frames: &mut Vec<CallFrame>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+    resp_rc: Rc<RefCell<crate::web::HttpResponse>>,
+    index_value: Value,
+) -> Result<VMStatus, LangError> {
+    use crate::web::http::natives::{ensure_json, headers_value};
+    match index_value {
+        Value::String(key) => {
+            match key.as_str() {
+                "status" => {
+                    let status = resp_rc.borrow().status;
+                    stack::push_id(
+                        stack,
+                        store_value(Value::Number(status as f64), value_store, heavy_store),
+                    );
+                }
+                "status_text" => {
+                    let t = resp_rc.borrow().status_text.clone();
+                    stack::push_id(
+                        stack,
+                        store_value(Value::String(t), value_store, heavy_store),
+                    );
+                }
+                "ok" => {
+                    let ok = resp_rc.borrow().ok;
+                    stack::push_id(
+                        stack,
+                        store_value(Value::Bool(ok), value_store, heavy_store),
+                    );
+                }
+                "url" => {
+                    let url = resp_rc.borrow().url.clone();
+                    stack::push_id(
+                        stack,
+                        store_value(Value::String(url), value_store, heavy_store),
+                    );
+                }
+                "headers" => {
+                    let headers = resp_rc.borrow().headers.clone();
+                    stack::push_id(
+                        stack,
+                        store_value(headers_value(&headers), value_store, heavy_store),
+                    );
+                }
+                "body" => {
+                    let body = resp_rc.borrow().body_string().unwrap_or_default();
+                    stack::push_id(
+                        stack,
+                        store_value(Value::String(body), value_store, heavy_store),
+                    );
+                }
+                "json" => {
+                    let mut resp = resp_rc.borrow_mut();
+                    match ensure_json(&mut resp) {
+                        Ok(v) => {
+                            stack::push_id(stack, store_value(v, value_store, heavy_store));
+                        }
+                        Err(e) => {
+                            let error = ExceptionHandler::runtime_error_with_type(
+                                &frames,
+                                e.message,
+                                line,
+                                ErrorType::ValueError,
+                            );
+                            return match ExceptionHandler::handle_exception(
+                                stack,
+                                frames,
+                                exception_handlers,
+                                error,
+                                value_store,
+                                heavy_store,
+                            ) {
+                                Ok(()) => Ok(VMStatus::Continue),
+                                Err(err) => Err(err),
+                            };
+                        }
+                    }
+                }
+                "size" => {
+                    let size = resp_rc.borrow().size();
+                    stack::push_id(
+                        stack,
+                        store_value(Value::Number(size as f64), value_store, heavy_store),
+                    );
+                }
+                _ => {
+                    let error = ExceptionHandler::runtime_error_with_type(
+                        &frames,
+                        format!(
+                            "HttpResponse has no property '{}'. Available: status, status_text, ok, headers, body, json, url, size",
+                            key
+                        ),
+                        line,
+                        ErrorType::KeyError,
+                    );
+                    return match ExceptionHandler::handle_exception(
+                        stack,
+                        frames,
+                        exception_handlers,
+                        error,
+                        value_store,
+                        heavy_store,
+                    ) {
+                        Ok(()) => Ok(VMStatus::Continue),
+                        Err(e) => Err(e),
+                    };
+                }
+            }
+        }
+        _ => {
+            let error = ExceptionHandler::runtime_error(
+                &frames,
+                "HttpResponse property access must use string key".to_string(),
+                line,
+            );
+            return match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
+                Ok(()) => Ok(VMStatus::Continue),
+                Err(e) => Err(e),
+            };
+        }
+    }
+    Ok(VMStatus::Continue)
+}
+
+fn push_method_by_ptr(
+    stack: &mut Vec<crate::common::TaggedValue>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+    natives: &[crate::vm::host::HostEntry],
+    ptr: *const (),
+) -> bool {
+    if let Some(idx) = natives.iter().position(|e| e.as_fn_ptr() == Some(ptr)) {
+        stack::push_id(
+            stack,
+            store_value(Value::NativeFunction(idx), value_store, heavy_store),
+        );
+        true
+    } else {
+        false
+    }
+}
+
+/// Get WebPage property/method.
+#[allow(clippy::too_many_arguments)]
+pub fn get_web_page(
+    line: usize,
+    stack: &mut Vec<crate::common::TaggedValue>,
+    frames: &mut Vec<CallFrame>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+    natives: &[crate::vm::host::HostEntry],
+    _page_rc: Rc<RefCell<crate::web::WebPage>>,
+    index_value: Value,
+) -> Result<VMStatus, LangError> {
+    use crate::web::browser::natives as bn;
+    match index_value {
+        Value::String(key) => {
+            let ptr = match key.as_str() {
+                "goto" => Some(bn::native_page_goto as *const ()),
+                "close" => Some(bn::native_page_close as *const ()),
+                "click" => Some(bn::native_page_click as *const ()),
+                "type" => Some(bn::native_page_type as *const ()),
+                "fill" => Some(bn::native_page_fill as *const ()),
+                "clear" => Some(bn::native_page_clear as *const ()),
+                "select" => Some(bn::native_page_select as *const ()),
+                "text" => Some(bn::native_page_text as *const ()),
+                "html" => Some(bn::native_page_html as *const ()),
+                "screenshot" => Some(bn::native_page_screenshot as *const ()),
+                "wait" => Some(bn::native_page_wait as *const ()),
+                "wait_for" => Some(bn::native_page_wait_for as *const ()),
+                "wait_for_navigation" => Some(bn::native_page_wait_for_navigation as *const ()),
+                "find" => Some(bn::native_page_find as *const ()),
+                "find_all" => Some(bn::native_page_find_all as *const ()),
+                "set_cookie" => Some(bn::native_page_set_cookie as *const ()),
+                "delete_cookie" => Some(bn::native_page_delete_cookie as *const ()),
+                "cookies" => {
+                    // property: call cookies via driver
+                    match _page_rc.borrow().driver.lock() {
+                        Ok(mut d) => match d.cookies() {
+                            Ok(v) => {
+                                stack::push_id(stack, store_value(v, value_store, heavy_store));
+                                return Ok(VMStatus::Continue);
+                            }
+                            Err(e) => {
+                                let error = ExceptionHandler::runtime_error(
+                                    &frames,
+                                    e.message,
+                                    line,
+                                );
+                                return match ExceptionHandler::handle_exception(
+                                    stack,
+                                    frames,
+                                    exception_handlers,
+                                    error,
+                                    value_store,
+                                    heavy_store,
+                                ) {
+                                    Ok(()) => Ok(VMStatus::Continue),
+                                    Err(err) => Err(err),
+                                };
+                            }
+                        },
+                        Err(_) => {
+                            let error = ExceptionHandler::runtime_error(
+                                &frames,
+                                "browser driver lock poisoned".to_string(),
+                                line,
+                            );
+                            return match ExceptionHandler::handle_exception(
+                                stack,
+                                frames,
+                                exception_handlers,
+                                error,
+                                value_store,
+                                heavy_store,
+                            ) {
+                                Ok(()) => Ok(VMStatus::Continue),
+                                Err(err) => Err(err),
+                            };
+                        }
+                    }
+                }
+                _ => None,
+            };
+            if let Some(ptr) = ptr {
+                if push_method_by_ptr(stack, value_store, heavy_store, natives, ptr) {
+                    return Ok(VMStatus::Continue);
+                }
+            }
+            let error = ExceptionHandler::runtime_error_with_type(
+                &frames,
+                format!(
+                    "WebPage has no property '{}'",
+                    key
+                ),
+                line,
+                ErrorType::KeyError,
+            );
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
+                Ok(()) => Ok(VMStatus::Continue),
+                Err(e) => Err(e),
+            }
+        }
+        _ => {
+            let error = ExceptionHandler::runtime_error(
+                &frames,
+                "WebPage property access must use string key".to_string(),
+                line,
+            );
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
+                Ok(()) => Ok(VMStatus::Continue),
+                Err(e) => Err(e),
+            }
+        }
+    }
+}
+
+/// Get WebElement property/method.
+#[allow(clippy::too_many_arguments)]
+pub fn get_web_element(
+    line: usize,
+    stack: &mut Vec<crate::common::TaggedValue>,
+    frames: &mut Vec<CallFrame>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+    natives: &[crate::vm::host::HostEntry],
+    el_rc: Rc<RefCell<crate::web::WebElement>>,
+    index_value: Value,
+) -> Result<VMStatus, LangError> {
+    use crate::web::browser::natives as bn;
+    match index_value {
+        Value::String(key) => {
+            let ptr = match key.as_str() {
+                "click" => Some(bn::native_element_click as *const ()),
+                "text" => Some(bn::native_element_text as *const ()),
+                "html" => Some(bn::native_element_html as *const ()),
+                "type" => Some(bn::native_element_type as *const ()),
+                "fill" => Some(bn::native_element_fill as *const ()),
+                "clear" => Some(bn::native_element_clear as *const ()),
+                "attr" => Some(bn::native_element_attr as *const ()),
+                "attributes" => {
+                    let (driver, selector) = {
+                        let el = el_rc.borrow();
+                        (el.driver.clone(), el.selector.clone())
+                    };
+                    let attrs_result = match driver.lock() {
+                        Ok(mut d) => d.attributes(&selector),
+                        Err(_) => Err(crate::web::error::WebError::runtime(
+                            "browser driver lock poisoned",
+                        )),
+                    };
+                    match attrs_result {
+                        Ok(v) => {
+                            stack::push_id(stack, store_value(v, value_store, heavy_store));
+                            return Ok(VMStatus::Continue);
+                        }
+                        Err(e) => {
+                            let error = ExceptionHandler::runtime_error(
+                                &frames,
+                                e.message,
+                                line,
+                            );
+                            return match ExceptionHandler::handle_exception(
+                                stack,
+                                frames,
+                                exception_handlers,
+                                error,
+                                value_store,
+                                heavy_store,
+                            ) {
+                                Ok(()) => Ok(VMStatus::Continue),
+                                Err(err) => Err(err),
+                            };
+                        }
+                    }
+                }
+                _ => None,
+            };
+            if let Some(ptr) = ptr {
+                if push_method_by_ptr(stack, value_store, heavy_store, natives, ptr) {
+                    return Ok(VMStatus::Continue);
+                }
+            }
+            let error = ExceptionHandler::runtime_error_with_type(
+                &frames,
+                format!("WebElement has no property '{}'", key),
+                line,
+                ErrorType::KeyError,
+            );
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
+                Ok(()) => Ok(VMStatus::Continue),
+                Err(e) => Err(e),
+            }
+        }
+        _ => {
+            let error = ExceptionHandler::runtime_error(
+                &frames,
+                "WebElement property access must use string key".to_string(),
+                line,
+            );
+            match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
+                Ok(()) => Ok(VMStatus::Continue),
+                Err(e) => Err(e),
+            }
+        }
+    }
+}

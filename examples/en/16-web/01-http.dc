@@ -1,0 +1,18 @@
+# HTTP client example (needs network or a local API)
+
+from web import http
+
+response = http.get("https://httpbin.org/get", {
+    params: { foo: "bar" },
+    timeout: 30
+})
+
+print("status:", response.status)
+print("ok:", response.ok)
+print("url:", response.url)
+print("typeof:", typeof(response))
+
+if response.ok {
+    data = response.json
+    print("args:", data["args"])
+}

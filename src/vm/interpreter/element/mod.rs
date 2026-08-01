@@ -87,7 +87,23 @@ fn object_map_use_builtin_get(
     store: &ValueStore,
     heap: &HeavyStore,
 ) -> bool {
-    !object_map_needs_visibility_checks(omap, store, heap)
+    if object_map_needs_visibility_checks(omap, store, heap) {
+        return false;
+    }
+    // Module namespaces (e.g. `web.http`, `system.env`) export a real `get` NativeFunction.
+    // Prefer that over injecting the plain-dict `.get(key)` builtin.
+    let get_key = Value::String("get".to_string());
+    if let Some(h) = crate::common::type_model::object_key_hash_value(&get_key) {
+        if omap
+            .find_in_bucket(h, |k_id| {
+                matches!(load_value(k_id, store, heap), Value::String(ref s) if s == "get")
+            })
+            .is_some()
+        {
+            return false;
+        }
+    }
+    true
 }
 
 /// Plain dict `obj[n]` when `n` is numeric and missing → `null` (adjacency / parent maps in graph examples).
@@ -1829,6 +1845,44 @@ pub(crate) fn op_get_array_element(
                 value_store,
                 heavy_store,
                 resp_rc,
+                index_value,
+            );
+        }
+        Value::HttpResponse(resp_rc) => {
+            return indexing_lib::get_http_response(
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+                resp_rc,
+                index_value,
+            );
+        }
+        Value::WebPage(page_rc) => {
+            return indexing_lib::get_web_page(
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+                natives,
+                page_rc,
+                index_value,
+            );
+        }
+        Value::WebElement(el_rc) => {
+            return indexing_lib::get_web_element(
+                line,
+                stack,
+                frames,
+                exception_handlers,
+                value_store,
+                heavy_store,
+                natives,
+                el_rc,
                 index_value,
             );
         }

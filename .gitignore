@@ -16,6 +16,7 @@ node_modules
 sandbox
 packaging/macos/DataCode.app/Contents/MacOS/datacode
 .datacode_history
+.datacode_browser_profile/
 *.db
 *.sqlite
 temp_sessions/

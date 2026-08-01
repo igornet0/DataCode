@@ -4,7 +4,10 @@ use crate::common::numeric::{self, FloatValue, IntValue};
 use crate::common::object_map::ObjectMap;
 use crate::common::set_map::SetMap;
 use crate::common::table::Table;
-use crate::common::value_host_types::{Archive, Axis, DataSource, DataSourceResponse, DatabaseCluster, DatabaseEngine, Figure, Image, PlotWindowHandle};
+use crate::common::value_host_types::{
+    Archive, Axis, DataSource, DataSourceResponse, DatabaseCluster, DatabaseEngine, Figure,
+    HttpResponse, Image, PlotWindowHandle, WebElement, WebPage,
+};
 use chrono::{DateTime, Duration, FixedOffset};
 use crate::common::value_store::{ObjectProjectionKind, ValueId};
 use crate::common::TaggedValue;
@@ -182,6 +185,9 @@ pub enum Value {
     Archive(Rc<RefCell<Archive>>),
     DataSource(Rc<RefCell<DataSource>>),
     DataSourceResponse(Rc<RefCell<DataSourceResponse>>),
+    HttpResponse(Rc<RefCell<HttpResponse>>),
+    WebPage(Rc<RefCell<WebPage>>),
+    WebElement(Rc<RefCell<WebElement>>),
     Enumerate {
         data: Rc<RefCell<Vec<Value>>>,
         start: i64,
@@ -733,6 +739,16 @@ impl std::fmt::Debug for Value {
                 Value::DataSourceResponse(_) => {
                     f.debug_tuple("DataSourceResponse").finish_non_exhaustive()
                 }
+                Value::HttpResponse(_) => f.debug_tuple("HttpResponse").finish_non_exhaustive(),
+                Value::WebPage(p) => f
+                    .debug_struct("WebPage")
+                    .field("id", &p.borrow().id)
+                    .field("closed", &p.borrow().closed)
+                    .finish(),
+                Value::WebElement(e) => f
+                    .debug_struct("WebElement")
+                    .field("selector", &e.borrow().selector)
+                    .finish(),
                 Value::Enumerate { data, start } => f
                     .debug_struct("Enumerate")
                     .field("data", &data.borrow())
@@ -1083,6 +1099,9 @@ impl PartialEq for Value {
             (Value::Archive(a), Value::Archive(b)) => Rc::ptr_eq(a, b),
             (Value::DataSource(a), Value::DataSource(b)) => Rc::ptr_eq(a, b),
             (Value::DataSourceResponse(a), Value::DataSourceResponse(b)) => Rc::ptr_eq(a, b),
+            (Value::HttpResponse(a), Value::HttpResponse(b)) => Rc::ptr_eq(a, b),
+            (Value::WebPage(a), Value::WebPage(b)) => Rc::ptr_eq(a, b),
+            (Value::WebElement(a), Value::WebElement(b)) => Rc::ptr_eq(a, b),
             (Value::Enumerate { data: a, start: sa }, Value::Enumerate { data: b, start: sb }) => {
                 Rc::ptr_eq(a, b) && sa == sb
             }
@@ -1194,6 +1213,9 @@ impl Value {
             Value::Archive(_) => true,
             Value::DataSource(_) => true,
             Value::DataSourceResponse(r) => !r.borrow().body.is_empty(),
+            Value::HttpResponse(r) => r.borrow().ok,
+            Value::WebPage(p) => !p.borrow().closed,
+            Value::WebElement(_) => true,
             Value::Enumerate { data, .. } => !data.borrow().is_empty(),
             Value::Iterable(_) => true,
             Value::ByteBuffer(b) => b.len > 0,
@@ -1436,6 +1458,18 @@ impl Value {
                 let resp = r.borrow();
                 format!("<response: {} {}>", resp.status, resp.url)
             }
+            Value::HttpResponse(r) => {
+                let resp = r.borrow();
+                format!("<http_response: {} {}>", resp.status, resp.url)
+            }
+            Value::WebPage(p) => {
+                let page = p.borrow();
+                format!("<web_page: id={} closed={}>", page.id, page.closed)
+            }
+            Value::WebElement(e) => {
+                let el = e.borrow();
+                format!("<web_element: {}>", el.selector)
+            }
             Value::Uuid(hi, lo) => {
                 let hi_b = hi.to_be_bytes();
                 let lo_b = lo.to_be_bytes();
@@ -1615,6 +1649,9 @@ impl Clone for Value {
             Value::Archive(archive) => Value::Archive(archive.clone()),
             Value::DataSource(ds) => Value::DataSource(ds.clone()),
             Value::DataSourceResponse(r) => Value::DataSourceResponse(r.clone()),
+            Value::HttpResponse(r) => Value::HttpResponse(r.clone()),
+            Value::WebPage(p) => Value::WebPage(p.clone()),
+            Value::WebElement(e) => Value::WebElement(e.clone()),
             Value::Enumerate { data, start } => Value::Enumerate {
                 data: data.clone(),
                 start: *start,

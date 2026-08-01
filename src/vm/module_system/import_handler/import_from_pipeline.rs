@@ -15,16 +15,14 @@ use crate::vm::frame::CallFrame;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::store_convert::load_value;
 use crate::vm::types::VMStatus;
-use std::collections::HashSet;
 
-/// Decoded `ImportFrom` opcode operands and derived import name set.
+/// Decoded `ImportFrom` opcode operands.
 pub(crate) struct ImportFromOperands {
     pub module_name: String,
     pub items_array: Vec<Value>,
-    pub imported_names: HashSet<String>,
 }
 
-/// Phase 1: read constant pool module name and items array; build `imported_names`.
+/// Phase 1: read constant pool module name and items array.
 pub(crate) fn decode_import_from_operands(
     module_const_id: ValueId,
     items_const_id: ValueId,
@@ -71,25 +69,8 @@ pub(crate) fn decode_import_from_operands(
             ));
         }
     };
-    let imported_names: HashSet<String> = items_array
-        .iter()
-        .filter_map(|v| {
-            if let Value::String(s) = v {
-                if s == "*" {
-                    Some("*".to_string())
-                } else if let Some((_, alias)) = s.split_once(':') {
-                    Some(alias.to_string())
-                } else {
-                    Some(s.clone())
-                }
-            } else {
-                None
-            }
-        })
-        .collect();
     Ok(ImportFromOperands {
         module_name,
         items_array,
-        imported_names,
     })
 }

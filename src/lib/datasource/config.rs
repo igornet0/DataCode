@@ -2,9 +2,7 @@
 
 use crate::common::value::{ObjectKind, Value};
 use crate::datasource::error::DataSourceError;
-use std::cell::RefCell;
 use std::collections::HashMap;
-use std::rc::Rc;
 
 #[derive(Debug, Clone)]
 pub struct DataSourceConfig {

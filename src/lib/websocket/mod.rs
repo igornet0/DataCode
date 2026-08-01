@@ -10,9 +10,10 @@ pub mod natives;
 pub mod output_capture;
 pub mod router;
 pub mod smb;
+pub mod ws_natives;
 
 use app::bootstrap_app;
-use crate::dcp::clear_dcp_vfs;
+use crate::dcp::clear_dcp_session;
 use router::{ClientContext, dispatch_dcp, dispatch_message};
 use smb::SmbManager;
 
@@ -111,7 +112,7 @@ async fn handle_client(stream: TcpStream, build_model: bool) {
 
     crate::vm::file_ops::set_smb_manager(smb_manager.clone());
     set_use_ve(true);
-    clear_dcp_vfs();
+    clear_dcp_session();
 
     let ctx = ClientContext {
         smb_manager: smb_manager.clone(),
@@ -164,6 +165,6 @@ fn cleanup_client(smb_manager: &Arc<Mutex<SmbManager>>) {
     drop(manager);
 
     crate::vm::file_ops::clear_smb_manager();
-    clear_dcp_vfs();
+    clear_dcp_session();
     set_use_ve(false);
 }

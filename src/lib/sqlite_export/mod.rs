@@ -1,5 +1,9 @@
 // Модуль для экспорта таблиц DataCode в SQLite
 
+mod apply_sql;
+
+pub use apply_sql::{apply_sql_table_soft, apply_sql_transaction};
+
 use crate::common::table::{Table, TableData};
 use crate::common::value::Value;
 use crate::vm::Vm;

@@ -6,9 +6,12 @@ use crate::dcp::string_pool::StringPool;
 #[derive(Debug, Clone)]
 pub struct SectionIndexEntry {
     pub section_type: SectionType,
-    pub flags: u16,
     pub name: String,
     pub offset: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct SectionIndexMeta {
     pub data_length: u64,
     pub compression: CompressionType,
     pub checksum_type: ChecksumType,
@@ -19,7 +22,7 @@ pub fn read_index(
     count: u32,
     version: u16,
     string_pool: Option<&StringPool>,
-) -> Result<Vec<SectionIndexEntry>, DcpError> {
+) -> Result<Vec<(SectionIndexEntry, SectionIndexMeta)>, DcpError> {
     let mut entries = Vec::with_capacity(count as usize);
     let pooled = uses_string_pool(version);
 
@@ -28,7 +31,7 @@ pub fn read_index(
         let section_type = SectionType::from_u16(section_type_value).ok_or_else(|| {
             DcpError::InvalidSection(format!("unknown section type {section_type_value}"))
         })?;
-        let flags = reader.u16()?;
+        let _flags = reader.u16()?;
 
         let name = if pooled {
             let string_id = reader.u32()? as usize;
@@ -54,15 +57,18 @@ pub fn read_index(
         let checksum_type = ChecksumType::from_u8(checksum_type_value)
             .ok_or_else(|| DcpError::InvalidSection("unknown checksum type".into()))?;
 
-        entries.push(SectionIndexEntry {
-            section_type,
-            flags,
-            name,
-            offset,
-            data_length,
-            compression,
-            checksum_type,
-        });
+        entries.push((
+            SectionIndexEntry {
+                section_type,
+                name,
+                offset,
+            },
+            SectionIndexMeta {
+                data_length,
+                compression,
+                checksum_type,
+            },
+        ));
     }
 
     Ok(entries)

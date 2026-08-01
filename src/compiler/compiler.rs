@@ -31,6 +31,8 @@ pub struct Compiler {
     loop_contexts: Vec<LoopContext>,           // Стек контекстов циклов для break/continue
     /// Symbols from `from module import X`: name -> module. Uppercase names from file modules are compiled as constructor calls.
     imported_symbols: std::collections::HashMap<String, String>,
+    /// Set when compiling `from M import *`; unknown call names may allocate globals for runtime ImportFrom.
+    has_star_import: bool,
     /// Class name -> list of private field names (for inheritance: merge in subclass constructors).
     class_private_fields: std::collections::HashMap<String, Vec<String>>,
     /// Class name -> list of protected field names (for inheritance: merge in subclass constructors).
@@ -113,6 +115,7 @@ impl Compiler {
             error_type_table: Vec::new(),
             loop_contexts: Vec::new(),
             imported_symbols: std::collections::HashMap::new(),
+            has_star_import: false,
             class_private_fields: std::collections::HashMap::new(),
             class_protected_fields: std::collections::HashMap::new(),
             class_private_methods: std::collections::HashMap::new(),
@@ -595,6 +598,7 @@ impl Compiler {
             error_type_table: &mut self.error_type_table,
             loop_contexts: &mut self.loop_contexts,
             imported_symbols: &mut self.imported_symbols,
+            has_star_import: &mut self.has_star_import,
             class_private_fields: &mut self.class_private_fields,
             class_protected_fields: &mut self.class_protected_fields,
             class_private_methods: &mut self.class_private_methods,

@@ -68,7 +68,72 @@ dcp create -o job.dcp --code script.dc --assets-dir ./data
 
 С `--build_model` при успехе может быть поле `sqlite_db` (base64 SQLite).
 
-Пакет должен содержать секцию `CODE` (`__code__`). ASSET-секции (относительные пути) записываются в сессию клиента.
+### SQL после сборки модели (секция `__sql__`)
+
+В DCP можно добавить секцию **`__sql__`** (`SectionType.SQL = 7`) с UTF-8 SQL-скриптом. Сервер выполняет его **после** экспорта глобальных таблиц в SQLite, в одной транзакции, **только с флагом `--build_model`**.
+
+```python
+from datacode_dcp import DCPEncoder
+
+DCPEncoder().code("""
+global t = table([[1, "a"]], ["id", "name"])
+""").sql("CREATE VIEW v_names AS SELECT name FROM t;").write(buf)
+```
+
+| Исход | `success` | `error` | `sqlite_db` |
+|-------|-----------|---------|-------------|
+| Код + экспорт + SQL OK | `true` | `null` | БД **с** SQL |
+| Код OK, SQL упал | `false` | `"SQL error: ..."` | БД **без** SQL |
+| SQL без `--build_model` | `false` | `"SQL section requires --build_model"` | `null` |
+
+Пример: [`examples/ru/07-websocket/python/test_dcp_sql.py`](../../../../examples/ru/07-websocket/python/test_dcp_sql.py).
+
+### Мягкий SQL к таблицам (`sql_table` / `table_insert`)
+
+Вставки после экспорта `--build_model`. Ошибки (нет таблицы, несовпадение колонок) — **пропуск + warning в консоль**, пакет не падает.
+
+```python
+DCPEncoder().code("""
+global t = table([[1, "a"]], ["id", "name"])
+""").table_insert("t", {"id": 2, "name": "b"}).write(buf)
+```
+
+Секция `__sql_table__` (type=8). Применяется **до** жёсткого `__sql__`.
+
+Пакет должен содержать секцию `CODE` (`__code__`). ASSET-секции монтируются в in-memory VFS. Секции `ARROW_TABLE` доступны через встроенный модуль **`ws`** (см. ниже).
+
+### Модуль `ws` (API текущего DCP)
+
+Пока на WebSocket выполняется DCP-пакет, код может импортировать `ws` для **безопасного** доступа к данным пакета — без путей сервера, host/port и учётных данных.
+
+```dc
+from ws import source_table, tables, assets, package_info
+
+print(tables())
+global orders = source_table("orders", ["id", "date", "value"])
+global renamed = source_table("orders", {"id": null, "value": "amount"})
+```
+
+| Функция | Описание |
+|---------|----------|
+| `tables()` | Имена секций ARROW_TABLE |
+| `has_table(name)` | Есть ли таблица |
+| `source_table(name, columns?)` | Загрузить таблицу по имени секции |
+| `assets()` | Логические пути ASSET |
+| `has_asset(name)` | Есть ли asset |
+| `metadata()` | Пользовательские metadata (строки) |
+| `metadata_get(key)` | Одно значение или `null` |
+| `package_info()` | Безопасная сводка: counts и флаги |
+
+**Фильтр колонок `source_table`** (строже, чем `read(..., header=...)`):
+
+- без аргумента / `null` — все колонки
+- массив строк — только перечисленные, порядок как в массиве; **ошибка**, если колонки нет
+- объект — только ключи; строка переименовывает, `null` оставляет имя; **ошибка**, если ключ отсутствует в таблице
+
+Вне активной DCP-сессии: `ws: no active DCP session`.
+
+Пример: [`examples/ru/07-websocket/dc/ws_source_table.dc`](../../../../examples/ru/07-websocket/dc/ws_source_table.dc).
 
 ### SMB (JSON text)
 

@@ -355,7 +355,6 @@ pub(crate) fn handle_import_from(
     };
     let module_name = ops.module_name;
     let items_array = ops.items_array;
-    let imported_names = ops.imported_names;
     let argv_slot_import = unsafe { (*vm_ptr).get_argv_slot_index() };
     // Preserve argv value id before any feed/per-item writes so we can restore the slot at the end (nested module run clears RunContext/SCRIPT_ARGV_VALUE_ID visibility).
     let saved_argv_value_id = argv_slot_import.and_then(|slot_idx| {

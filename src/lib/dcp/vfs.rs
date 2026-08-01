@@ -69,6 +69,16 @@ impl DcpVfs {
         Ok(Self { files })
     }
 
+    pub fn asset_paths(&self) -> Vec<String> {
+        let mut paths: Vec<String> = self.files.keys().cloned().collect();
+        paths.sort();
+        paths
+    }
+
+    pub fn asset_count(&self) -> usize {
+        self.files.len()
+    }
+
     pub fn get(&self, key: &str) -> Option<&[u8]> {
         self.files.get(key).map(|v| v.as_slice())
     }

@@ -25,6 +25,22 @@ fn is_builtin_pascal_native_callable(name: &str) -> bool {
     )
 }
 
+/// Resolve or allocate a global slot for a call target. After `from M import *`, unknown names get a slot filled at runtime.
+fn ensure_callable_global(ctx: &mut CompilationContext, name: &str) -> Option<usize> {
+    if let Some(&idx) = ctx.scope.globals.get(name) {
+        return Some(idx);
+    }
+    if *ctx.has_star_import {
+        let global_index = ctx.scope.globals.len();
+        ctx.scope.globals.insert(name.to_string(), global_index);
+        ctx.chunk
+            .global_names
+            .insert(global_index, name.to_string());
+        return Some(global_index);
+    }
+    None
+}
+
 /// First type-name component for constructor suffix (matches `param_types_suffix` in class.rs).
 fn type_suffix_from_param_annotation(param_types: &Option<Vec<TypePart>>) -> Option<String> {
     let parts = param_types.as_ref()?;
@@ -1576,7 +1592,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         if is_class_style_ctor {
             let has_named = call_args
                 .iter()
-                .any(|a| matches!(a, Arg::Named { .. } | Arg::UnpackObject(_) | Arg::UnpackArray(_) | Arg::UnpackArray(_)));
+                .any(|a| matches!(a, Arg::Named { .. } | Arg::UnpackObject(_) | Arg::UnpackArray(_)));
             if has_named {
                 let ctor_info = ctx
                     .class_constructor
@@ -1786,7 +1802,7 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
                 ctx.chunk.global_names.insert(global_index, name.clone());
                 ctx.chunk
                     .write_with_line(OpCode::LoadGlobal(global_index), *ctx.current_line);
-            } else if let Some(&global_index) = ctx.scope.globals.get(name) {
+            } else if let Some(global_index) = ensure_callable_global(ctx, name) {
                 ctx.chunk.global_names.insert(global_index, name.clone());
                 ctx.chunk
                     .write_with_line(OpCode::LoadGlobal(global_index), *ctx.current_line);
@@ -1843,8 +1859,8 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             ctx.chunk.global_names.insert(global_index, name.clone());
             ctx.chunk
                 .write_with_line(OpCode::LoadGlobal(global_index), *ctx.current_line);
-        } else if let Some(&global_index) = ctx.scope.globals.get(name) {
-            // Глобальная переменная содержит функцию (встроенная или импорт)
+        } else if let Some(global_index) = ensure_callable_global(ctx, name) {
+            // Глобальная переменная содержит функцию (встроенная, импорт или слот после import *)
             ctx.chunk.global_names.insert(global_index, name.clone());
             ctx.chunk
                 .write_with_line(OpCode::LoadGlobal(global_index), *ctx.current_line);

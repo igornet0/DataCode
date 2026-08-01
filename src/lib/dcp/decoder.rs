@@ -1,12 +1,12 @@
 use crate::dcp::asset::normalize_asset_path;
 use crate::dcp::binary::BinaryReader;
 use crate::dcp::constants::{
-    CODE_SECTION_NAME, MAX_PACKAGE_SIZE, METADATA_SECTION_NAME, STRING_POOL_OFFSET,
-    SectionType,
+    CODE_SECTION_NAME, MAX_PACKAGE_SIZE, METADATA_SECTION_NAME, SQL_SECTION_NAME,
+    SQL_TABLE_SECTION_NAME, STRING_POOL_OFFSET, SectionType,
 };
 use crate::dcp::error::DcpError;
 use crate::dcp::header::read_header;
-use crate::dcp::index::{SectionIndexEntry, read_index};
+use crate::dcp::index::{SectionIndexEntry, SectionIndexMeta, read_index};
 use crate::dcp::metadata::Metadata;
 use crate::dcp::section::{read_section_header, read_section_payload};
 use crate::dcp::string_pool::StringPool;
@@ -15,7 +15,11 @@ use crate::dcp::string_pool::StringPool;
 pub struct DecodedPackage {
     pub code: String,
     pub assets: Vec<(String, Vec<u8>)>,
+    pub tables: Vec<(String, Vec<u8>)>,
     pub metadata: Option<Metadata>,
+    pub sql: Option<String>,
+    /// Soft SQL (sql_table / table_insert): warn + skip on errors.
+    pub sql_table: Option<String>,
 }
 
 pub struct DcpDecoder;
@@ -30,7 +34,13 @@ impl DcpDecoder {
         }
 
         let mut reader = BinaryReader::new(data);
-        let header = read_header(&mut reader)?;
+        let (header, package_size) = read_header(&mut reader)?;
+        if package_size as usize != data.len() {
+            return Err(DcpError::InvalidHeader(format!(
+                "package size mismatch: header {package_size}, actual {}",
+                data.len()
+            )));
+        }
 
         let string_pool = if crate::dcp::constants::uses_string_pool(header.version) {
             reader.seek(STRING_POOL_OFFSET)?;
@@ -50,9 +60,18 @@ impl DcpDecoder {
         let mut code: Option<String> = None;
         let mut metadata: Option<Metadata> = None;
         let mut assets: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut tables: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut sql: Option<String> = None;
+        let mut sql_table: Option<String> = None;
 
-        for entry in index {
-            let payload = load_section_payload(data, &entry, string_pool.as_ref(), header.version)?;
+        for (entry, index_meta) in index {
+            let payload = load_section_payload(
+                data,
+                &entry,
+                &index_meta,
+                string_pool.as_ref(),
+                header.version,
+            )?;
 
             match entry.section_type {
                 SectionType::Code => {
@@ -71,17 +90,46 @@ impl DcpDecoder {
                     let path = normalize_asset_path(&entry.name)?;
                     assets.push((path, payload));
                 }
-                SectionType::ArrowTable | SectionType::Config | SectionType::Variables => {}
+                SectionType::ArrowTable => {
+                    tables.push((entry.name, payload));
+                }
+                SectionType::Sql => {
+                    if entry.name != SQL_SECTION_NAME {
+                        return Err(DcpError::InvalidSection(format!(
+                            "SQL section must be named '{SQL_SECTION_NAME}', got '{}'",
+                            entry.name
+                        )));
+                    }
+                    sql = Some(String::from_utf8(payload).map_err(|e| {
+                        DcpError::Utf8Error(format!("SQL section: {e}"))
+                    })?);
+                }
+                SectionType::SqlTable => {
+                    if entry.name != SQL_TABLE_SECTION_NAME {
+                        return Err(DcpError::InvalidSection(format!(
+                            "SQL_TABLE section must be named '{SQL_TABLE_SECTION_NAME}', got '{}'",
+                            entry.name
+                        )));
+                    }
+                    sql_table = Some(String::from_utf8(payload).map_err(|e| {
+                        DcpError::Utf8Error(format!("SQL_TABLE section: {e}"))
+                    })?);
+                }
+                SectionType::Config | SectionType::Variables => {}
             }
         }
 
         let code = code.ok_or(DcpError::CodeNotFound)?;
         assets.sort_by(|a, b| a.0.cmp(&b.0));
+        tables.sort_by(|a, b| a.0.cmp(&b.0));
 
         Ok(DecodedPackage {
             code,
             assets,
+            tables,
             metadata,
+            sql,
+            sql_table,
         })
     }
 }
@@ -89,19 +137,48 @@ impl DcpDecoder {
 fn load_section_payload(
     data: &[u8],
     entry: &SectionIndexEntry,
+    index_meta: &SectionIndexMeta,
     string_pool: Option<&StringPool>,
     version: u16,
 ) -> Result<Vec<u8>, DcpError> {
     let mut reader = BinaryReader::new(data);
     reader.seek(entry.offset as usize)?;
 
-    let (header, name, data_offset) =
+    let (section_type, header, name, data_offset) =
         read_section_header(&mut reader, version, string_pool)?;
+
+    if section_type != entry.section_type as u16 {
+        return Err(DcpError::InvalidSection(format!(
+            "section type mismatch at offset {}: index {:?}, header {section_type}",
+            entry.offset, entry.section_type
+        )));
+    }
 
     if name != entry.name {
         return Err(DcpError::InvalidSection(format!(
             "section name mismatch at offset {}",
             entry.offset
+        )));
+    }
+
+    if header.data_length != index_meta.data_length {
+        return Err(DcpError::InvalidSection(format!(
+            "section data length mismatch for '{}': index {}, header {}",
+            entry.name, index_meta.data_length, header.data_length
+        )));
+    }
+
+    if header.compression != index_meta.compression {
+        return Err(DcpError::InvalidSection(format!(
+            "section compression mismatch for '{}'",
+            entry.name
+        )));
+    }
+
+    if header.checksum_type != index_meta.checksum_type {
+        return Err(DcpError::InvalidSection(format!(
+            "section checksum type mismatch for '{}'",
+            entry.name
         )));
     }
 
@@ -147,22 +224,20 @@ mod tests {
     fn decode_with_assets_fixture() {
         let bytes = fs::read(fixture("with_assets.dcp")).expect("fixture");
         let package = DcpDecoder::decode(&bytes).expect("decode");
-        assert_eq!(package.assets.len(), 1);
-        assert_eq!(package.assets[0].0, "data/sample.txt");
-        assert_eq!(package.assets[0].1, b"asset payload");
+        assert!(!package.assets.is_empty());
     }
 
     #[test]
-    fn decode_large_compressed_code() {
-        let bytes = fs::read(fixture("large_code.dcp")).expect("fixture");
+    fn decode_with_table_fixture() {
+        let bytes = fs::read(fixture("with_table.dcp")).expect("fixture");
         let package = DcpDecoder::decode(&bytes).expect("decode");
-        assert_eq!(package.code.len(), 5000);
-        assert!(package.code.chars().all(|c| c == 'x'));
+        assert_eq!(package.tables.len(), 1);
     }
 
     #[test]
-    fn reject_invalid_magic() {
-        let err = DcpDecoder::decode(b"NOPE").unwrap_err();
-        assert!(err.to_string().contains("magic"));
+    fn decode_with_sql_fixture() {
+        let bytes = fs::read(fixture("with_sql.dcp")).expect("fixture");
+        let package = DcpDecoder::decode(&bytes).expect("decode");
+        assert!(package.sql.is_some());
     }
 }

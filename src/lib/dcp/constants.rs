@@ -4,12 +4,13 @@ pub const DCP_VERSION_1_0: u16 = (DCP_VERSION_MAJOR << 8) | 0;
 pub const DCP_VERSION_1_1: u16 = (DCP_VERSION_MAJOR << 8) | 1;
 pub const HEADER_SIZE: usize = 64;
 pub const STRING_POOL_OFFSET: usize = HEADER_SIZE;
-pub const SECTION_HEADER_FIXED_SIZE: usize = 20;
 
 pub const CODE_SECTION_NAME: &str = "__code__";
 pub const METADATA_SECTION_NAME: &str = "__metadata__";
 pub const CONFIG_SECTION_NAME: &str = "__config__";
 pub const VARIABLES_SECTION_NAME: &str = "__variables__";
+pub const SQL_SECTION_NAME: &str = "__sql__";
+pub const SQL_TABLE_SECTION_NAME: &str = "__sql_table__";
 
 pub const MAX_PACKAGE_SIZE: usize = 100 * 1024 * 1024;
 
@@ -22,6 +23,8 @@ pub enum SectionType {
     Asset = 4,
     Config = 5,
     Variables = 6,
+    Sql = 7,
+    SqlTable = 8,
 }
 
 impl SectionType {
@@ -33,6 +36,8 @@ impl SectionType {
             4 => Some(Self::Asset),
             5 => Some(Self::Config),
             6 => Some(Self::Variables),
+            7 => Some(Self::Sql),
+            8 => Some(Self::SqlTable),
             _ => None,
         }
     }
@@ -87,7 +92,5 @@ pub fn uses_string_pool(version: u16) -> bool {
 }
 
 pub fn is_supported_version(version: u16) -> bool {
-    let major = version >> 8;
-    let minor = version & 0xFF;
-    major == DCP_VERSION_MAJOR && minor <= 1
+    matches!(version, DCP_VERSION_1_0 | DCP_VERSION_1_1)
 }

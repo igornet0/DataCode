@@ -510,14 +510,6 @@ impl Vm {
         self.stack_sp
     }
 
-    pub(crate) fn stack_sp(&self) -> usize {
-        self.stack_sp
-    }
-
-    pub(crate) fn stack_sp_mut(&mut self) -> &mut usize {
-        &mut self.stack_sp
-    }
-
     /// Снять верхний фрейм после yield в stream fn (состояние копируется в [`GeneratorState`]).
     pub(crate) fn pop_last_frame_for_generator(&mut self) -> Option<CallFrame> {
         self.frames.pop()
@@ -831,6 +823,14 @@ impl Vm {
         )?;
         modules::register_module(
             "websocket",
+            &mut self.natives,
+            &mut self.globals,
+            &mut self.global_names,
+            &mut self.value_store,
+            &mut self.heavy_store,
+        )?;
+        modules::register_module(
+            "ws",
             &mut self.natives,
             &mut self.globals,
             &mut self.global_names,

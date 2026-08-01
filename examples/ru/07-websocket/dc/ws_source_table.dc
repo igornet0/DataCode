@@ -1,0 +1,13 @@
+# Пример: таблица Arrow из DCP через ws.source_table.
+# Соберите пакет в Python (datacode_dcp + pyarrow) или используйте tests/dcp_fixtures/with_table.dcp.
+
+from ws import source_table, tables, package_info
+
+print("tables:", tables())
+print("info:", package_info())
+
+global orders = source_table("orders", ["id", "date", "value"])
+print("rows:", len(orders))
+
+global renamed = source_table("orders", {"id": null, "value": "amount"})
+print("renamed rows:", len(renamed))

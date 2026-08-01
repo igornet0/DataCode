@@ -70,7 +70,16 @@ pub fn compile_import(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), L
                             to_register.push((alias.clone(), module.clone()));
                         }
                         ImportItem::All => {
-                            // All items will be imported at runtime, we can't register them here
+                            // Builtin modules: register known exports so calls compile (same as named import).
+                            // File/plugin modules: mark star-import so unknown calls can allocate global slots.
+                            *ctx.has_star_import = true;
+                            if let Some(exports) =
+                                crate::vm::modules::builtin_module_exports(module)
+                            {
+                                for name in exports {
+                                    to_register.push(((*name).to_string(), module.clone()));
+                                }
+                            }
                         }
                     }
                 }

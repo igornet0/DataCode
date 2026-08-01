@@ -47,9 +47,9 @@ pub fn read_section_header(
     reader: &mut BinaryReader<'_>,
     version: u16,
     string_pool: Option<&StringPool>,
-) -> Result<(SectionHeaderInfo, String, usize), DcpError> {
+) -> Result<(u16, SectionHeaderInfo, String, usize), DcpError> {
     let section_type = reader.u16()?;
-    let flags = reader.u16()?;
+    let _flags = reader.u16()?;
     let identifier = reader.u32()?;
     let data_length = reader.u64()?;
     let compression_value = reader.u8()?;
@@ -64,28 +64,23 @@ pub fn read_section_header(
     let compression = CompressionType::from_u8(compression_value)
         .ok_or_else(|| DcpError::InvalidSection("unknown compression type".into()))?;
 
-    let (name, string_id, name_length) = if uses_string_pool(version) {
+    let name = if uses_string_pool(version) {
         let pool = string_pool.ok_or_else(|| {
             DcpError::InvalidSection("string pool required for v1.1 sections".into())
         })?;
-        let name = pool.resolve(identifier as usize)?;
-        (name, identifier, 0)
+        pool.resolve(identifier as usize)?
     } else {
         let name_length = identifier as usize;
         let name_bytes = reader.bytes(name_length)?;
-        let name = String::from_utf8(name_bytes.to_vec())
-            .map_err(|e| DcpError::Utf8Error(e.to_string()))?;
-        (name, 0, name_length as u32)
+        String::from_utf8(name_bytes.to_vec())
+            .map_err(|e| DcpError::Utf8Error(e.to_string()))?
     };
 
     let data_offset = reader.position();
 
     Ok((
+        section_type,
         SectionHeaderInfo {
-            section_type,
-            flags,
-            string_id,
-            name_length,
             data_length,
             compression,
             checksum_type,
@@ -98,10 +93,6 @@ pub fn read_section_header(
 
 #[derive(Debug, Clone)]
 pub struct SectionHeaderInfo {
-    pub section_type: u16,
-    pub flags: u16,
-    pub string_id: u32,
-    pub name_length: u32,
     pub data_length: u64,
     pub compression: CompressionType,
     pub checksum_type: ChecksumType,

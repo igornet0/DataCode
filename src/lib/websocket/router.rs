@@ -1,7 +1,10 @@
 //! WebSocket message routing: DCP binary execution, custom @ws_route handlers, and SMB.
 
 use crate::common::value::Value;
-use crate::dcp::{clear_dcp_vfs, DcpDecoder, DcpVfs};
+use crate::dcp::{
+    clear_dcp_session, set_dcp_metadata, set_dcp_tables, set_dcp_vfs, DcpDecoder, DcpTables,
+    DcpVfs,
+};
 use crate::run_with_vm_with_policy;
 use crate::sqlite_export;
 use crate::vm::PermissionPolicy;
@@ -139,7 +142,28 @@ pub fn dispatch_dcp(data: &[u8], ctx: &ClientContext) -> String {
         Ok(v) => std::sync::Arc::new(v),
         Err(e) => return error_json(false, &e.to_string()),
     };
-    crate::dcp::set_dcp_vfs(Some(vfs));
+    let tables = std::sync::Arc::new(DcpTables::from_entries(decoded.tables));
+    let metadata = decoded
+        .metadata
+        .map(|m| m.to_map())
+        .filter(|m| !m.is_empty());
+
+    set_dcp_vfs(Some(vfs));
+    set_dcp_tables(Some(tables));
+    set_dcp_metadata(metadata);
+
+    let has_sql = decoded
+        .sql
+        .as_ref()
+        .is_some_and(|s| !s.trim().is_empty());
+    let has_sql_table = decoded
+        .sql_table
+        .as_ref()
+        .is_some_and(|s| !s.trim().is_empty());
+    if (has_sql || has_sql_table) && !ctx.build_model {
+        clear_dcp_session();
+        return error_json(false, "SQL section requires --build_model");
+    }
 
     let config = app_config();
     let response = execute_code(
@@ -147,8 +171,10 @@ pub fn dispatch_dcp(data: &[u8], ctx: &ClientContext) -> String {
         &ctx.smb_manager,
         ctx.build_model,
         config.execute_permission_policy,
+        decoded.sql.as_deref(),
+        decoded.sql_table.as_deref(),
     );
-    clear_dcp_vfs();
+    clear_dcp_session();
     serde_json::to_string(&response)
         .unwrap_or_else(|e| error_json(false, &format!("Failed to serialize response: {e}")))
 }
@@ -298,11 +324,18 @@ fn str_field(payload: &serde_json::Value, key: &str) -> Result<String, String> {
         .ok_or_else(|| format!("Missing or invalid '{key}' field"))
 }
 
+fn encode_sqlite_db(bytes: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
 fn execute_code(
     code: &str,
     smb_manager: &Arc<Mutex<SmbManager>>,
     build_model: bool,
     policy: PermissionPolicy,
+    sql: Option<&str>,
+    sql_table: Option<&str>,
 ) -> ExecuteResponse {
     crate::vm::file_ops::set_smb_manager(smb_manager.clone());
 
@@ -321,6 +354,9 @@ fn execute_code(
     match result {
         Ok((_, mut vm)) => {
             let mut sqlite_db = None;
+            let sql_script = sql.map(str::trim).filter(|s| !s.is_empty());
+            let sql_table_script = sql_table.map(str::trim).filter(|s| !s.is_empty());
+            let needs_model = sql_script.is_some() || sql_table_script.is_some();
 
             if build_model {
                 match sqlite_export::get_global_tables(&mut vm) {
@@ -332,24 +368,85 @@ fn execute_code(
                         let temp_db_path =
                             env::temp_dir().join(format!("datacode_export_{timestamp}.db"));
 
-                        if sqlite_export::export_to_sqlite(
+                        match sqlite_export::export_to_sqlite(
                             &mut vm,
                             temp_db_path.to_str().unwrap(),
                             false,
-                        )
-                        .is_ok()
-                        {
-                            if let Ok(db_bytes) = fs::read(&temp_db_path) {
-                                use base64::Engine;
-                                sqlite_db = Some(
-                                    base64::engine::general_purpose::STANDARD.encode(&db_bytes),
-                                );
+                        ) {
+                            Ok(()) => {
+                                // Soft inserts first (warn + skip on errors).
+                                if let Some(soft) = sql_table_script {
+                                    let _ =
+                                        sqlite_export::apply_sql_table_soft(&temp_db_path, soft);
+                                }
+
+                                let pre_sql_bytes = fs::read(&temp_db_path).ok();
+
+                                if let Some(script) = sql_script {
+                                    match sqlite_export::apply_sql_transaction(
+                                        &temp_db_path,
+                                        script,
+                                    ) {
+                                        Ok(()) => {
+                                            if let Ok(bytes) = fs::read(&temp_db_path) {
+                                                sqlite_db = Some(encode_sqlite_db(&bytes));
+                                            }
+                                        }
+                                        Err(sql_err) => {
+                                            let _ = fs::remove_file(&temp_db_path);
+                                            return ExecuteResponse {
+                                                success: false,
+                                                output,
+                                                error: Some(sql_err),
+                                                sqlite_db: pre_sql_bytes
+                                                    .as_ref()
+                                                    .map(|b| encode_sqlite_db(b)),
+                                            };
+                                        }
+                                    }
+                                } else if let Some(db_bytes) = pre_sql_bytes {
+                                    sqlite_db = Some(encode_sqlite_db(&db_bytes));
+                                }
+
+                                let _ = fs::remove_file(&temp_db_path);
                             }
-                            let _ = fs::remove_file(&temp_db_path);
+                            Err(e) => {
+                                if needs_model {
+                                    return ExecuteResponse {
+                                        success: false,
+                                        output,
+                                        error: Some(format!(
+                                            "Failed to export model for SQL: {e}"
+                                        )),
+                                        sqlite_db: None,
+                                    };
+                                }
+                                eprintln!("⚠️  Table export error: {e}");
+                            }
                         }
                     }
-                    Ok(_) => {}
+                    Ok(_) => {
+                        if needs_model {
+                            return ExecuteResponse {
+                                success: false,
+                                output,
+                                error: Some(
+                                    "SQL section requires exported tables from --build_model"
+                                        .to_string(),
+                                ),
+                                sqlite_db: None,
+                            };
+                        }
+                    }
                     Err(e) => {
+                        if needs_model {
+                            return ExecuteResponse {
+                                success: false,
+                                output,
+                                error: Some(format!("Failed to export model for SQL: {e}")),
+                                sqlite_db: None,
+                            };
+                        }
                         eprintln!("⚠️  Table export error: {e}");
                     }
                 }

@@ -1,0 +1,13 @@
+# Example: read an Arrow table embedded in a DCP package via `ws.source_table`.
+# Build the package with Python (datacode_dcp + pyarrow) or use tests/dcp_fixtures/with_table.dcp.
+
+from ws import source_table, tables, package_info
+
+print("tables:", tables())
+print("info:", package_info())
+
+global orders = source_table("orders", ["id", "date", "value"])
+print("rows:", len(orders))
+
+global renamed = source_table("orders", {"id": null, "value": "amount"})
+print("renamed rows:", len(renamed))

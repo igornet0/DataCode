@@ -4,31 +4,14 @@ use crate::common::table::Table;
 use crate::common::value::Value;
 use crate::vm::natives::table::try_parse_date;
 use std::io;
-use std::path::Path;
-
-pub fn read_csv_path(path: &Path) -> Result<Table, io::Error> {
-    read_csv_path_inner(path, true)
-}
 
 pub fn read_csv_bytes(content: &[u8]) -> Result<Table, io::Error> {
     read_csv_bytes_inner(content, true)
 }
 
 /// Read CSV with every row as data (no separate header row). Used before transpose.
-pub fn read_csv_path_raw(path: &Path) -> Result<Table, io::Error> {
-    read_csv_path_inner(path, false)
-}
-
 pub fn read_csv_bytes_raw(content: &[u8]) -> Result<Table, io::Error> {
     read_csv_bytes_inner(content, false)
-}
-
-fn read_csv_path_inner(path: &Path, has_headers: bool) -> Result<Table, io::Error> {
-    use csv::ReaderBuilder;
-    let mut reader = ReaderBuilder::new()
-        .has_headers(has_headers)
-        .from_path(path)?;
-    build_csv_table(&mut reader, has_headers)
 }
 
 fn read_csv_bytes_inner(content: &[u8], has_headers: bool) -> Result<Table, io::Error> {
@@ -93,14 +76,6 @@ fn parse_csv_field(field: &str) -> Value {
     }
 }
 
-pub fn read_xlsx_path(
-    path: &Path,
-    header_row: usize,
-    sheet_name: Option<&str>,
-) -> Result<Table, Box<dyn std::error::Error>> {
-    read_xlsx_path_inner(path, header_row, sheet_name, false)
-}
-
 pub fn read_xlsx_bytes(
     content: &[u8],
     header_row: usize,
@@ -110,42 +85,11 @@ pub fn read_xlsx_bytes(
 }
 
 /// Read XLSX with all rows as data (no header row extraction). Used before transpose.
-pub fn read_xlsx_path_raw(
-    path: &Path,
-    sheet_name: Option<&str>,
-) -> Result<Table, Box<dyn std::error::Error>> {
-    read_xlsx_path_inner(path, 0, sheet_name, true)
-}
-
 pub fn read_xlsx_bytes_raw(
     content: &[u8],
     sheet_name: Option<&str>,
 ) -> Result<Table, Box<dyn std::error::Error>> {
     read_xlsx_bytes_inner(content, 0, sheet_name, true)
-}
-
-fn read_xlsx_path_inner(
-    path: &Path,
-    header_row: usize,
-    sheet_name: Option<&str>,
-    raw: bool,
-) -> Result<Table, Box<dyn std::error::Error>> {
-    use calamine::{open_workbook, Reader, Xlsx};
-    let mut workbook: Xlsx<_> = open_workbook(path)?;
-    let sheet = if let Some(name) = sheet_name {
-        workbook.worksheet_range(name)?
-    } else {
-        let sheet_names = workbook.sheet_names();
-        if sheet_names.is_empty() {
-            return Err("No sheets found".into());
-        }
-        workbook.worksheet_range(&sheet_names[0])?
-    };
-    if raw {
-        read_xlsx_sheet_raw(sheet)
-    } else {
-        read_xlsx_sheet(sheet, header_row)
-    }
 }
 
 fn read_xlsx_bytes_inner(

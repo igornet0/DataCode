@@ -1,6 +1,6 @@
 //! Single file entry metadata inside an archive.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct ArchiveEntry {

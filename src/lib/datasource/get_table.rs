@@ -6,9 +6,7 @@ use crate::datasource::error::DataSourceError;
 use crate::datasource::request::GetTableSpec;
 use crate::datasource::response::{format_from_spec_or_content_type, DataSourceResponse};
 use crate::file_io::{read_bytes_from_memory, ReadOptions};
-use std::cell::RefCell;
 use std::path::PathBuf;
-use std::rc::Rc;
 
 pub fn bytes_to_table(
     bytes: &[u8],

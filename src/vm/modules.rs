@@ -20,6 +20,7 @@ pub const BUILTIN_MODULE_NAMES: &[&str] = &[
     "pathfind",
     "grid",
     "websocket",
+    "ws",
 ];
 
 /// Check if a name is a known module name
@@ -30,6 +31,58 @@ pub fn is_known_module(name: &str) -> bool {
 /// Comma-separated list of built-in module names for error messages
 pub fn builtin_modules_list() -> String {
     BUILTIN_MODULE_NAMES.join(", ")
+}
+
+/// Top-level public exports of a built-in module (no `__*` keys).
+/// Used by the compiler so `from M import *` can register call targets at compile time.
+pub fn builtin_module_exports(name: &str) -> Option<&'static [&'static str]> {
+    Some(match name {
+        "ws" => &[
+            "assets",
+            "has_asset",
+            "has_table",
+            "metadata",
+            "metadata_get",
+            "package_info",
+            "source_table",
+            "tables",
+        ],
+        "websocket" => &["configure", "disable_builtin", "enable_builtin"],
+        "heapq" => &[
+            "heap_clear",
+            "heappeek",
+            "heapify",
+            "heappop",
+            "heappush",
+            "heapreplace",
+        ],
+        "debug" => &["operators"],
+        "uuid" => &[
+            "DNS", "OID", "URL", "from_bytes", "new", "parse", "random", "timestamp",
+            "to_bytes", "to_string", "v3", "v4", "v5", "v7", "variant", "version",
+        ],
+        "settings_env" => &["Config", "Field", "Settings", "load_env", "settings"],
+        "crypto" => &["Argon2", "bcrypt", "secure_compare"],
+        "pathfind" => &["astar_grid"],
+        "system" => &[
+            "env", "fs", "hardware", "log", "net", "permissions", "process", "runtime", "time",
+        ],
+        "database_engine" => &[
+            "Column", "DatabaseCluster", "MetaData", "SQLEnum", "bool", "date", "engine",
+            "float", "int", "now_call", "select", "str", "validators",
+        ],
+        "plot" => &[
+            "bar", "draw", "heatmap", "image", "line", "pie", "show", "show_grid", "subplots",
+            "tight_layout", "wait", "window", "xlabel", "ylabel",
+        ],
+        "grid" => &[
+            "alloc_i32", "alloc_u8", "astar", "astar_from_set", "astar_step", "bitmap_bytes",
+            "bitmap_from_ids", "fill_i32", "fill_u8", "get_i32", "get_u8", "heap_alloc",
+            "heap_clear", "heap_len", "heap_pop", "heap_push", "set_blocked", "set_i32", "set_u8",
+            "shrink", "shrink_all", "store_len", "test_blocked",
+        ],
+        _ => return None,
+    })
 }
 
 /// Deterministic global slot by name (min index when multiple; stable across HashMap iteration).
@@ -65,6 +118,7 @@ pub fn register_module(
         "pathfind" => register_pathfind_module(natives, globals, global_names, store, heap),
         "grid" => register_grid_module(natives, globals, global_names, store, heap),
         "websocket" => register_websocket_module(natives, globals, global_names, store, heap),
+        "ws" => register_ws_module(natives, globals, global_names, store, heap),
         _ => Err(LangError::runtime_error(
             format!("Unknown module: {}", module_name),
             0,
@@ -1015,6 +1069,56 @@ fn register_websocket_module(
         let idx = globals.len();
         globals.push(default_global_slot());
         global_names.insert(idx, "websocket".to_string());
+        idx
+    };
+
+    globals[ws_index] = GlobalSlot::Heap(store_value_arena(
+        Value::legacy_object(ws_object),
+        store,
+        heap,
+    ));
+
+    Ok(())
+}
+
+fn register_ws_module(
+    natives: &mut Vec<HostEntry>,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
+) -> Result<(), LangError> {
+    use crate::websocket::ws_natives;
+
+    let start = natives.len();
+    natives.push(HostEntry::Extended(ws_natives::native_ws_tables));
+    natives.push(HostEntry::Extended(ws_natives::native_ws_has_table));
+    natives.push(HostEntry::Extended(ws_natives::native_ws_source_table));
+    natives.push(HostEntry::Extended(ws_natives::native_ws_assets));
+    natives.push(HostEntry::Extended(ws_natives::native_ws_has_asset));
+    natives.push(HostEntry::Extended(ws_natives::native_ws_metadata));
+    natives.push(HostEntry::Extended(ws_natives::native_ws_metadata_get));
+    natives.push(HostEntry::Extended(ws_natives::native_ws_package_info));
+
+    let mut ws_object = HashMap::new();
+    ws_object.insert("tables".to_string(), Value::NativeFunction(start));
+    ws_object.insert("has_table".to_string(), Value::NativeFunction(start + 1));
+    ws_object.insert("source_table".to_string(), Value::NativeFunction(start + 2));
+    ws_object.insert("assets".to_string(), Value::NativeFunction(start + 3));
+    ws_object.insert("has_asset".to_string(), Value::NativeFunction(start + 4));
+    ws_object.insert("metadata".to_string(), Value::NativeFunction(start + 5));
+    ws_object.insert("metadata_get".to_string(), Value::NativeFunction(start + 6));
+    ws_object.insert("package_info".to_string(), Value::NativeFunction(start + 7));
+
+    let ws_index = if let Some(idx) = global_index_by_name(global_names, "ws") {
+        if idx >= globals.len() {
+            globals.resize(idx + 1, default_global_slot());
+        }
+        idx
+    } else {
+        let idx = globals.len();
+        globals.push(default_global_slot());
+        global_names.insert(idx, "ws".to_string());
         idx
     };
 

@@ -18,6 +18,14 @@ pub struct RequestSpec {
     pub form: HashMap<String, String>,
     pub parameters: Vec<Value>,
     pub timeout: Option<f64>,
+    /// Operation hint for non-HTTP backends: "find", "count", "list_databases", …
+    pub op: Option<String>,
+    pub collection: Option<String>,
+    pub filter: Option<Value>,
+    pub native: Option<Value>,
+    pub aggregation: Option<Value>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -34,6 +42,16 @@ pub struct GetTableSpec {
     pub timeout: Option<f64>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
+    pub collection: Option<String>,
+    pub filter: Option<Value>,
+    pub select: Option<Value>,
+    pub sort: Option<Value>,
+    pub aggregation: Option<Value>,
+    pub native: Option<Value>,
+    pub array_mode: Option<String>,
+    pub flatten: bool,
+    pub schema_sample_size: Option<usize>,
+    pub batch_size: Option<usize>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -44,6 +62,7 @@ pub struct SendTableSpec {
     pub url: Option<String>,
     pub method: String,
     pub table_name: Option<String>,
+    pub collection: Option<String>,
     pub sql: Option<String>,
     pub format: Option<String>,
     pub batch_size: usize,
@@ -53,6 +72,17 @@ fn string_from_value(v: &Value) -> Option<String> {
     match v {
         Value::String(s) => Some(s.clone()),
         Value::Path(p) => Some(p.to_string_lossy().into_owned()),
+        _ => None,
+    }
+}
+
+fn usize_from_value(v: &Value) -> Option<usize> {
+    match v {
+        Value::Number(n) if *n >= 0.0 => Some(*n as usize),
+        Value::Int(i) => match i {
+            crate::common::numeric::IntValue::Finite(n) if *n >= 0 => Some(*n as usize),
+            _ => None,
+        },
         _ => None,
     }
 }
@@ -89,6 +119,16 @@ pub fn parse_request_spec(value: &Value) -> Result<RequestSpec, DataSourceError>
             Value::Number(n) => Some(*n),
             _ => None,
         }),
+        op: map.get("op").and_then(string_from_value),
+        collection: map
+            .get("collection")
+            .and_then(string_from_value)
+            .or_else(|| map.get("table_name").and_then(string_from_value)),
+        filter: map.get("filter").cloned(),
+        native: map.get("native").cloned(),
+        aggregation: map.get("aggregation").cloned(),
+        limit: map.get("limit").and_then(usize_from_value),
+        offset: map.get("offset").and_then(usize_from_value),
         ..Default::default()
     };
     if let Some(h) = map.get("headers") {
@@ -115,6 +155,10 @@ pub fn parse_request_spec(value: &Value) -> Result<RequestSpec, DataSourceError>
 
 pub fn parse_get_table_spec(value: &Value) -> Result<GetTableSpec, DataSourceError> {
     let map = object_to_map(value)?;
+    let flatten = match map.get("flatten") {
+        Some(Value::Bool(b)) => *b,
+        _ => false,
+    };
     let mut spec = GetTableSpec {
         method: map
             .get("method")
@@ -130,14 +174,24 @@ pub fn parse_get_table_spec(value: &Value) -> Result<GetTableSpec, DataSourceErr
             Value::Number(n) => Some(*n),
             _ => None,
         }),
-        limit: map.get("limit").and_then(|v| match v {
-            Value::Number(n) if *n >= 0.0 => Some(*n as usize),
-            _ => None,
-        }),
-        offset: map.get("offset").and_then(|v| match v {
-            Value::Number(n) if *n >= 0.0 => Some(*n as usize),
-            _ => None,
-        }),
+        limit: map.get("limit").and_then(usize_from_value),
+        offset: map.get("offset").and_then(usize_from_value),
+        collection: map
+            .get("collection")
+            .and_then(string_from_value)
+            .or_else(|| map.get("table_name").and_then(string_from_value)),
+        filter: map.get("filter").cloned(),
+        select: map
+            .get("select")
+            .cloned()
+            .or_else(|| map.get("projection").cloned()),
+        sort: map.get("sort").cloned(),
+        aggregation: map.get("aggregation").cloned(),
+        native: map.get("native").cloned(),
+        array_mode: map.get("array_mode").and_then(string_from_value),
+        flatten,
+        schema_sample_size: map.get("schema_sample_size").and_then(usize_from_value),
+        batch_size: map.get("batch_size").and_then(usize_from_value),
         ..Default::default()
     };
     if let Some(h) = map.get("headers") {
@@ -182,14 +236,18 @@ pub fn parse_send_table_spec(
             spec.path = map.get("path").and_then(string_from_value);
             spec.url = map.get("url").and_then(string_from_value);
             spec.table_name = map.get("table_name").and_then(string_from_value);
+            spec.collection = map
+                .get("collection")
+                .and_then(string_from_value)
+                .or_else(|| map.get("table_name").and_then(string_from_value));
             spec.sql = map.get("sql").and_then(string_from_value);
             spec.format = map.get("format").and_then(string_from_value);
             if let Some(m) = map.get("method").and_then(string_from_value) {
                 spec.method = m.to_uppercase();
             }
-            if let Some(Value::Number(n)) = map.get("batch_size") {
-                if *n > 0.0 {
-                    spec.batch_size = *n as usize;
+            if let Some(n) = map.get("batch_size").and_then(usize_from_value) {
+                if n > 0 {
+                    spec.batch_size = n;
                 }
             }
             return Ok(spec);
@@ -207,6 +265,10 @@ pub fn parse_send_table_spec(
         spec.path = map.get("path").and_then(string_from_value);
         spec.url = map.get("url").and_then(string_from_value);
         spec.table_name = map.get("table_name").and_then(string_from_value);
+        spec.collection = map
+            .get("collection")
+            .and_then(string_from_value)
+            .or_else(|| map.get("table_name").and_then(string_from_value));
         spec.format = map.get("format").and_then(string_from_value);
     }
     if spec.table.is_none() {

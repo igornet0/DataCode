@@ -16,6 +16,7 @@ pub struct DataSourceConfig {
     pub path: Option<String>,
     pub database: Option<String>,
     pub schema: Option<String>,
+    pub collection: Option<String>,
     pub username: Option<String>,
     pub password: Option<String>,
     pub token: Option<String>,
@@ -43,6 +44,7 @@ impl Default for DataSourceConfig {
             path: None,
             database: None,
             schema: None,
+            collection: None,
             username: None,
             password: None,
             token: None,
@@ -161,36 +163,81 @@ pub fn parse_config(value: &Value) -> Result<DataSourceConfig, DataSourceError> 
     let connector_type = get_string(&map, "type").ok_or_else(|| DataSourceError::Validation {
         message: "datasource config requires 'type' field".to_string(),
     })?;
+    // Nested `connection: { uri, database, collection, ... }` merges into top-level fields.
+    let mut merged = map.clone();
+    if let Some(conn) = map.get("connection") {
+        if let Ok(cm) = object_to_map(conn) {
+            for (k, v) in cm {
+                merged.entry(k).or_insert(v);
+            }
+        }
+    }
     let mut cfg = DataSourceConfig {
         connector_type: connector_type.to_lowercase(),
-        name: get_string(&map, "name"),
-        description: get_string(&map, "description"),
-        enabled: get_bool(&map, "enabled", true),
-        url: get_string(&map, "url"),
-        host: get_string(&map, "host"),
-        port: get_u16(&map, "port"),
-        path: get_string(&map, "path"),
-        database: get_string(&map, "database"),
-        schema: get_string(&map, "schema"),
-        username: get_string(&map, "username"),
-        password: get_string(&map, "password"),
-        token: get_string(&map, "token"),
-        api_key: get_string(&map, "api_key"),
-        verify_ssl: get_bool(&map, "verify_ssl", true),
-        timeout: get_f64(&map, "timeout"),
-        connect_timeout: get_f64(&map, "connect_timeout"),
-        read_timeout: get_f64(&map, "read_timeout"),
-        retry_count: get_u32(&map, "retry_count", 0),
+        name: get_string(&merged, "name"),
+        description: get_string(&merged, "description"),
+        enabled: get_bool(&merged, "enabled", true),
+        url: get_string(&merged, "url").or_else(|| get_string(&merged, "uri")),
+        host: get_string(&merged, "host"),
+        port: get_u16(&merged, "port"),
+        path: get_string(&merged, "path"),
+        database: get_string(&merged, "database"),
+        schema: get_string(&merged, "schema"),
+        collection: get_string(&merged, "collection"),
+        username: get_string(&merged, "username").or_else(|| get_string(&merged, "user")),
+        password: get_string(&merged, "password"),
+        token: get_string(&merged, "token"),
+        api_key: get_string(&merged, "api_key"),
+        verify_ssl: get_bool(&merged, "verify_ssl", true),
+        timeout: get_f64(&merged, "timeout"),
+        connect_timeout: get_f64(&merged, "connect_timeout"),
+        read_timeout: get_f64(&merged, "read_timeout"),
+        retry_count: get_u32(&merged, "retry_count", 0),
         raw: map.clone(),
         ..Default::default()
     };
-    if let Some(h) = map.get("headers") {
+    if let Some(h) = merged.get("headers") {
         cfg.headers = headers_from_value(h);
     }
-    if let Some(opts) = map.get("options") {
+    if let Some(opts) = merged.get("options") {
         cfg.options = object_to_map(opts).unwrap_or_default();
     }
     Ok(cfg)
+}
+
+/// Build a SQL/Mongo connection URL from config fields when `url` is absent.
+pub fn sql_url_from_config(cfg: &DataSourceConfig) -> Result<String, DataSourceError> {
+    if let Some(url) = &cfg.url {
+        return Ok(url.clone());
+    }
+    let ty = cfg.connector_type.as_str();
+    if ty == "sqlite" || ty == "sql" {
+        return sqlite_url_from_config(cfg);
+    }
+    let host = cfg.host.as_deref().unwrap_or("localhost");
+    let user = cfg.username.as_deref().unwrap_or("");
+    let pass = cfg.password.as_deref().unwrap_or("");
+    let db = cfg.database.as_deref().unwrap_or("");
+    let auth = if user.is_empty() {
+        String::new()
+    } else if pass.is_empty() {
+        format!("{}@", user)
+    } else {
+        format!("{}:{}@", user, pass)
+    };
+    let (scheme, default_port) = match ty {
+        "postgresql" | "postgres" => ("postgres", 5432u16),
+        "mysql" | "mariadb" => ("mysql", 3306),
+        "mssql" | "sqlserver" => ("mssql", 1433),
+        "mongodb" => ("mongodb", 27017),
+        other => {
+            return Err(DataSourceError::Validation {
+                message: format!("cannot build URL for datasource type '{}'", other),
+            })
+        }
+    };
+    let port = cfg.port.unwrap_or(default_port);
+    Ok(format!("{}://{}{}:{}/{}", scheme, auth, host, port, db))
 }
 
 pub fn sqlite_url_from_config(cfg: &DataSourceConfig) -> Result<String, DataSourceError> {

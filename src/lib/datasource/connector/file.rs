@@ -4,6 +4,7 @@ use crate::archive::archive::Archive;
 use crate::archive::format::detect_format;
 use crate::common::table::Table;
 use crate::common::value::Value;
+use crate::datasource::capabilities::Capabilities;
 use crate::datasource::config::DataSourceConfig;
 use crate::datasource::connector::ConnectorBackend;
 use crate::datasource::error::DataSourceError;
@@ -78,6 +79,10 @@ impl FileConnector {
 impl ConnectorBackend for FileConnector {
     fn connector_type(&self) -> &str {
         "file"
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::file_default()
     }
 
     fn connect(&mut self) -> Result<(), DataSourceError> {

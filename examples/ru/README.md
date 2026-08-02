@@ -27,7 +27,7 @@
 | 12 | [12-uuid](12-uuid/) | UUID v4/v7, v3/v5 |
 | 13 | [13-database](13-database/) | `database_engine` |
 | 14 | [14-модули](14-модули/) | пакеты, `__lib__.dc` |
-| 15 | [15-datasource](15-datasource/) | HTTP / file / SQLite DataSource |
+| 15 | [15-datasource](15-datasource/) | HTTP / file / SQL / MongoDB DataSource |
 | 16 | [16-крипто](16-крипто/) | `sha256`, `random`, модуль `crypto` |
 | 17 | [17-process-gpu](17-process-gpu/) | `system`: GPU, бенчмарки |
 | 18 | [18-debug](18-debug/) | `debug.operators()` |

@@ -1,0 +1,16 @@
+# SQLite DataSource (in-memory, no external server)
+
+db = datasource({ type: "sqlite", url: "sqlite:///:memory:" })
+db.connect()
+
+db.request({ sql: "CREATE TABLE users (id INT, name TEXT)" })
+
+rows = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+db.send_table({ table: rows, mode: "append", table_name: "users" })
+
+result = db.get_table({ sql: "SELECT * FROM users ORDER BY id" })
+print("rows:", len(result))
+print("columns:", result.columns)
+print("capabilities.supports_sql:", db.capabilities.supports_sql)
+
+db.disconnect()

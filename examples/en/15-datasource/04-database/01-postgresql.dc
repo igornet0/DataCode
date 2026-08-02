@@ -1,0 +1,23 @@
+# PostgreSQL DataSource (requires a PostgreSQL server)
+# URL: postgres://user:password@host:5432/database
+
+db = datasource({
+    type: "postgresql",
+    url: "postgres://postgres:postgres@localhost:5432/datacode",
+    timeout: 10
+})
+
+db.connect()
+print("ping:", db.ping())
+
+db.request({ sql: "CREATE TABLE IF NOT EXISTS users (id INT, name TEXT)" })
+db.request({ sql: "DELETE FROM users" })
+
+rows = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+db.send_table({ table: rows, mode: "append", table_name: "users" })
+
+result = db.get_table({ sql: "SELECT * FROM users ORDER BY id" })
+print("rows:", len(result))
+print("columns:", result.columns)
+
+db.disconnect()

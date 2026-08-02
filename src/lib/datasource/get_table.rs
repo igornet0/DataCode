@@ -37,7 +37,33 @@ pub fn bytes_to_table(
             message: e,
         }
     })?;
-    table_from_value(&value)
+    if spec.flatten {
+        table_from_value_flattened(&value, spec)
+    } else {
+        table_from_value(&value)
+    }
+}
+
+/// Convert JSON array/object documents to a Table with nested flatten.
+pub fn table_from_value_flattened(
+    value: &Value,
+    spec: &GetTableSpec,
+) -> Result<Table, DataSourceError> {
+    use crate::datasource::normalize::{documents_to_table, FlattenOptions};
+    let opts = FlattenOptions::from_array_mode_str(spec.array_mode.as_deref());
+    match value {
+        Value::Table(rc) => Ok(rc.borrow().clone()),
+        Value::Array(rc) => {
+            let arr = rc.borrow();
+            if arr.iter().all(|v| matches!(v, Value::Object(_))) {
+                Ok(documents_to_table(&arr, &opts))
+            } else {
+                table_from_value(value)
+            }
+        }
+        Value::Object(_) => Ok(documents_to_table(&[value.clone()], &opts)),
+        _ => table_from_value(value),
+    }
 }
 
 pub fn response_to_table(

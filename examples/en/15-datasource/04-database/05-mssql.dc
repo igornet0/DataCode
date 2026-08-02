@@ -1,0 +1,25 @@
+# Microsoft SQL Server DataSource (requires SQL Server)
+# URL: mssql://user:password@host:1433/database
+
+db = datasource({
+    type: "mssql",
+    url: "mssql://sa:Your_password123@localhost:1433/master",
+    timeout: 10
+})
+
+db.connect()
+print("ping:", db.ping())
+
+db.request({
+    sql: "IF OBJECT_ID('users', 'U') IS NULL CREATE TABLE users (id INT, name NVARCHAR(100))"
+})
+db.request({ sql: "DELETE FROM users" })
+
+rows = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+db.send_table({ table: rows, mode: "append", table_name: "users" })
+
+result = db.get_table({ sql: "SELECT * FROM users ORDER BY id" })
+print("rows:", len(result))
+print("columns:", result.columns)
+
+db.disconnect()

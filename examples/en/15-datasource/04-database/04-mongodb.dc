@@ -1,0 +1,45 @@
+# MongoDB DataSource (requires MongoDB)
+# Documents → flatten/normalize → Table
+
+db = datasource({
+    type: "mongodb",
+    url: "mongodb://localhost:27017",
+    database: "datacode_test",
+    collection: "users",
+    timeout: 10
+})
+
+db.connect()
+print("ping:", db.ping())
+print("supports_aggregation:", db.capabilities.supports_aggregation)
+
+rows = table(
+    [["1", "John", 25, "Helsinki"], ["2", "Alice", 30, "Moscow"]],
+    ["_id", "name", "age", "city"]
+)
+db.send_table({ table: rows, mode: "append", collection: "users" })
+
+# filter age > 18 → MongoDB $gt; result is a Table
+result = db.get_table({
+    filter: { age: { gt: 18 } },
+    sort: { age: 1 },
+    limit: 100,
+    array_mode: "keep"
+})
+print("rows:", len(result))
+print("columns:", result.columns)
+
+# Count without loading all documents
+cnt = db.request({ op: "count", filter: { age: { gte: 18 } } })
+print("count status:", cnt.status)
+
+# Native aggregation pipeline
+agg = db.get_table({
+    aggregation: [
+        { "$match": { age: { "$gte": 18 } } },
+        { "$group": { "_id": "$city", "count": { "$sum": 1 } } }
+    ]
+})
+print("agg rows:", len(agg))
+
+db.disconnect()

@@ -2,6 +2,7 @@
 
 use crate::common::table::Table;
 use crate::common::value::Value;
+use crate::datasource::capabilities::Capabilities;
 use crate::datasource::config::DataSourceConfig;
 use crate::datasource::connector::ConnectorBackend;
 use crate::datasource::error::DataSourceError;
@@ -181,6 +182,10 @@ impl HttpConnector {
 impl ConnectorBackend for HttpConnector {
     fn connector_type(&self) -> &str {
         "http"
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::http_default()
     }
 
     fn connect(&mut self) -> Result<(), DataSourceError> {

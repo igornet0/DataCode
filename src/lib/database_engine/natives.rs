@@ -113,28 +113,20 @@ pub fn native_engine(args: &[Value]) -> Value {
     let timeout = args.get(5).and_then(get_f64_opt);
     let connect_args = args.get(6).map(extract_connect_args).unwrap_or_default();
 
-    let url_lower = url.to_lowercase();
-    if url_lower.starts_with("sqlite:") {
-        match DatabaseEngine::new_sqlite(
-            url,
-            echo,
-            echo_pool,
-            pool_size,
-            max_overflow,
-            timeout,
-            connect_args,
-        ) {
-            Ok(engine) => Value::DatabaseEngine(Rc::new(RefCell::new(engine))),
-            Err(e) => {
-                crate::websocket::set_native_error(format!("database.engine: {}", e));
-                Value::Null
-            }
+    match DatabaseEngine::from_url(
+        url,
+        echo,
+        echo_pool,
+        pool_size,
+        max_overflow,
+        timeout,
+        connect_args,
+    ) {
+        Ok(engine) => Value::DatabaseEngine(Rc::new(RefCell::new(engine))),
+        Err(e) => {
+            crate::websocket::set_native_error(format!("database.engine: {}", e));
+            Value::Null
         }
-    } else {
-        crate::websocket::set_native_error(format!(
-            "database.engine: unsupported database URL scheme (only sqlite:// is supported in MVP)"
-        ));
-        Value::Null
     }
 }
 

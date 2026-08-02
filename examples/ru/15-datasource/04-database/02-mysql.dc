@@ -1,0 +1,23 @@
+# MySQL DataSource (нужен сервер MySQL)
+# URL: mysql://user:password@host:3306/database
+
+db = datasource({
+    type: "mysql",
+    url: "mysql://root:root@localhost:3306/datacode",
+    timeout: 10
+})
+
+db.connect()
+print("ping:", db.ping())
+
+db.request({ sql: "CREATE TABLE IF NOT EXISTS users (id INT, name TEXT)" })
+db.request({ sql: "DELETE FROM users" })
+
+rows = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+db.send_table({ table: rows, mode: "append", table_name: "users" })
+
+result = db.get_table({ sql: "SELECT * FROM users ORDER BY id" })
+print("строк:", len(result))
+print("колонки:", result.columns)
+
+db.disconnect()

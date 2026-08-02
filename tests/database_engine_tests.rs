@@ -105,7 +105,7 @@ mod tests {
     fn test_engine_invalid_url_raises_error() {
         let source = r#"
             from database_engine import engine
-            engine("postgres://localhost/db")
+            engine("unknowndb://localhost/db")
         "#;
         assert!(
             run_plain(source).is_err(),

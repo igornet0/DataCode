@@ -2,6 +2,7 @@
 
 use crate::common::table::Table;
 use crate::common::value::Value;
+use crate::datasource::capabilities::Capabilities;
 use crate::datasource::config::DataSourceConfig;
 use crate::datasource::connector::{create_backend, ConnectorBackend};
 use crate::datasource::error::DataSourceError;
@@ -61,5 +62,9 @@ impl DataSource {
             config: self.config.clone(),
             backend: RefCell::new(backend),
         })
+    }
+
+    pub fn capabilities(&self) -> Capabilities {
+        self.backend.borrow().capabilities()
     }
 }

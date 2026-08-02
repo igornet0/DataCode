@@ -645,6 +645,16 @@ pub fn get_datasource(
                         store_value(Value::Bool(ds.config.enabled), value_store, heavy_store),
                     );
                 }
+                "capabilities" => {
+                    stack::push_id(
+                        stack,
+                        store_value(
+                            ds.capabilities().to_value(),
+                            value_store,
+                            heavy_store,
+                        ),
+                    );
+                }
                 "request" => {
                     stack::push_id(
                         stack,
@@ -729,7 +739,7 @@ pub fn get_datasource(
                     let error = ExceptionHandler::runtime_error_with_type(
                         &frames,
                         format!(
-                            "DataSource has no property '{}'. Available: type, name, url, enabled, request, get_table, send_table, connect, disconnect, ping, test, clone",
+                            "DataSource has no property '{}'. Available: type, name, url, enabled, capabilities, request, get_table, send_table, connect, disconnect, ping, test, clone",
                             key
                         ),
                         line,

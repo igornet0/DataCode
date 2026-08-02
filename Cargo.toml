@@ -12,7 +12,7 @@ exclude = [
 
 [package]
 name = "data-code"
-version = "2.4.1"
+version = "2.4.2"
 edition = "2021"
 description = "ДатаКод - Интерактивный язык программирования для быстрой обработки данных"
 license = "MIT"
@@ -93,6 +93,15 @@ local-ip-address = "0.6"
 
 # SQLite экспорт для модели данных
 rusqlite = { version = "0.30", features = ["bundled"] }
+
+# DataSource SQL / MongoDB drivers
+postgres = "0.19"
+bytes = "1"
+mysql = "25"
+tiberius = { version = "0.12", default-features = false, features = ["chrono", "tds73", "rustls"] }
+tokio-util = { version = "0.7", features = ["compat"] }
+mongodb = { version = "3", default-features = true }
+bson = "2"
 
 # Plot module dependencies
 winit = "0.29"

@@ -1,30 +1,40 @@
-//! SQLite connector wrapping DatabaseEngine.
+//! SQL connector wrapping DatabaseEngine (SQLite / PostgreSQL / MySQL / MSSQL).
 
 use crate::common::table::Table;
 use crate::common::value::Value;
-use crate::database_engine::engine::DatabaseEngine;
-use crate::datasource::config::{sqlite_url_from_config, DataSourceConfig};
+use crate::database_engine::engine::{insert_placeholders, DatabaseEngine, SqlDialect};
+use crate::datasource::capabilities::Capabilities;
+use crate::datasource::config::{sql_url_from_config, sqlite_url_from_config, DataSourceConfig};
 use crate::datasource::connector::ConnectorBackend;
 use crate::datasource::error::DataSourceError;
 use crate::datasource::request::{GetTableSpec, RequestSpec, SendTableSpec};
 use crate::datasource::response::DataSourceResponse;
 use crate::datasource::send_table::table_rows_batch;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::time::Instant;
 
 pub struct SqlConnector {
     config: DataSourceConfig,
     engine: Option<DatabaseEngine>,
     url: String,
+    connector_type: String,
 }
 
 impl SqlConnector {
     pub fn new(config: DataSourceConfig) -> Result<Self, DataSourceError> {
-        let url = sqlite_url_from_config(&config)?;
+        let connector_type = config.connector_type.clone();
+        let url = if connector_type == "sqlite" || connector_type == "sql" {
+            sqlite_url_from_config(&config)?
+        } else {
+            sql_url_from_config(&config)?
+        };
         Ok(Self {
             config,
             engine: None,
             url,
+            connector_type,
         })
     }
 
@@ -38,14 +48,18 @@ impl SqlConnector {
 
 impl ConnectorBackend for SqlConnector {
     fn connector_type(&self) -> &str {
-        "sqlite"
+        &self.connector_type
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities::sql_default()
     }
 
     fn connect(&mut self) -> Result<(), DataSourceError> {
         if self.engine.is_some() {
             return Ok(());
         }
-        let engine = DatabaseEngine::new_sqlite(
+        let engine = DatabaseEngine::from_url(
             self.url.clone(),
             false,
             false,
@@ -65,16 +79,25 @@ impl ConnectorBackend for SqlConnector {
 
     fn ping(&mut self) -> Result<bool, DataSourceError> {
         let engine = self.engine_mut()?;
+        let sql = match engine.dialect() {
+            SqlDialect::Mssql => "SELECT 1",
+            _ => "SELECT 1",
+        };
         engine
-            .query("SELECT 1", &[])
+            .query(sql, &[])
             .map(|_| true)
             .map_err(|e| DataSourceError::Connection { message: e })
     }
 
     fn test(&mut self) -> Result<Value, DataSourceError> {
         match self.ping() {
-            Ok(ok) => Ok(sql_diagnostic(ok, &self.url, None)),
-            Err(e) => Ok(sql_diagnostic(false, &self.url, Some(e.display()))),
+            Ok(ok) => Ok(sql_diagnostic(ok, &self.connector_type, &self.url, None)),
+            Err(e) => Ok(sql_diagnostic(
+                false,
+                &self.connector_type,
+                &self.url,
+                Some(e.display()),
+            )),
         }
     }
 
@@ -85,7 +108,7 @@ impl ConnectorBackend for SqlConnector {
         let start = Instant::now();
         let engine = self.engine_mut()?;
         let sql_upper = sql.trim().to_uppercase();
-        if sql_upper.starts_with("SELECT") {
+        if sql_upper.starts_with("SELECT") || sql_upper.starts_with("WITH") {
             let table = engine
                 .query(sql, &spec.parameters)
                 .map_err(|e| DataSourceError::Other { message: e })?;
@@ -96,7 +119,7 @@ impl ConnectorBackend for SqlConnector {
             );
             Ok(DataSourceResponse::new(
                 200,
-                self.url.clone(),
+                redact_url(&self.url),
                 HashMap::from([(
                     "Content-Type".to_string(),
                     "application/json".to_string(),
@@ -111,7 +134,7 @@ impl ConnectorBackend for SqlConnector {
             let body = format!("{{\"affected_rows\": {}}}", count);
             Ok(DataSourceResponse::new(
                 200,
-                self.url.clone(),
+                redact_url(&self.url),
                 HashMap::from([(
                     "Content-Type".to_string(),
                     "application/json".to_string(),
@@ -124,22 +147,51 @@ impl ConnectorBackend for SqlConnector {
 
     fn get_table(&mut self, spec: &GetTableSpec) -> Result<Table, DataSourceError> {
         let sql = spec.sql.as_ref().ok_or_else(|| DataSourceError::Validation {
-            message: "get_table for sqlite requires 'sql' field".to_string(),
+            message: "get_table for sql requires 'sql' field".to_string(),
         })?;
         let engine = self.engine_mut()?;
+        let mut sql = sql.clone();
+        // Apply limit/offset if not already in SQL (best-effort).
+        if let Some(limit) = spec.limit {
+            if !sql.to_ascii_lowercase().contains(" limit ") {
+                match engine.dialect() {
+                    SqlDialect::Mssql => {
+                        // Only if no TOP / OFFSET already — skip auto for MSSQL complexity.
+                    }
+                    _ => {
+                        sql = format!("{} LIMIT {}", sql, limit);
+                        if let Some(offset) = spec.offset {
+                            sql = format!("{} OFFSET {}", sql, offset);
+                        }
+                    }
+                }
+            }
+        } else if let Some(offset) = spec.offset {
+            if !sql.to_ascii_lowercase().contains(" offset ") {
+                match engine.dialect() {
+                    SqlDialect::Sqlite | SqlDialect::Postgres | SqlDialect::Mysql => {
+                        sql = format!("{} LIMIT -1 OFFSET {}", sql, offset);
+                    }
+                    SqlDialect::Mssql => {}
+                }
+            }
+        }
         engine
-            .query(sql, &spec.parameters)
+            .query(&sql, &spec.parameters)
             .map_err(|e| DataSourceError::Other { message: e })
     }
 
     fn send_table(&mut self, spec: &SendTableSpec) -> Result<(), DataSourceError> {
         if spec.mode != "append" {
             return Err(DataSourceError::Unsupported {
-                message: format!("send_table mode '{}' not supported in v1 (use 'append')", spec.mode),
+                message: format!(
+                    "send_table mode '{}' not supported in v1 (use 'append')",
+                    spec.mode
+                ),
             });
         }
         let table_name = spec.table_name.as_ref().ok_or_else(|| DataSourceError::Validation {
-            message: "send_table for sqlite requires 'table_name'".to_string(),
+            message: "send_table for sql requires 'table_name'".to_string(),
         })?;
         let table_val = spec.table.as_ref().ok_or_else(|| DataSourceError::Validation {
             message: "send_table requires table".to_string(),
@@ -155,12 +207,12 @@ impl ConnectorBackend for SqlConnector {
             return Ok(());
         }
         let col_list = headers.join(", ");
-        let placeholders = (0..headers.len()).map(|_| "?").collect::<Vec<_>>().join(", ");
+        let engine = self.engine_mut()?;
+        let placeholders = insert_placeholders(engine.dialect(), headers.len());
         let sql = format!(
             "INSERT INTO {} ({}) VALUES ({})",
             table_name, col_list, placeholders
         );
-        let engine = self.engine_mut()?;
         for batch in table_rows_batch(&table, spec.batch_size) {
             for row in batch {
                 engine
@@ -176,22 +228,33 @@ impl ConnectorBackend for SqlConnector {
             config: self.config.clone(),
             engine: None,
             url: self.url.clone(),
+            connector_type: self.connector_type.clone(),
         })
     }
 }
 
-fn sql_diagnostic(ok: bool, url: &str, message: Option<String>) -> Value {
-    use crate::common::value::ObjectKind;
-    use std::cell::RefCell;
-    use std::rc::Rc;
+fn sql_diagnostic(ok: bool, ty: &str, url: &str, message: Option<String>) -> Value {
     let mut m = HashMap::new();
     m.insert("ok".to_string(), Value::Bool(ok));
-    m.insert("type".to_string(), Value::String("sqlite".to_string()));
-    m.insert("url".to_string(), Value::String(url.to_string()));
+    m.insert("type".to_string(), Value::String(ty.to_string()));
+    m.insert("url".to_string(), Value::String(redact_url(url)));
     if let Some(msg) = message {
         m.insert("message".to_string(), Value::String(msg));
     } else if ok {
         m.insert("message".to_string(), Value::String("ok".to_string()));
     }
-    Value::Object(Rc::new(RefCell::new(ObjectKind::legacy(m))))
+    Value::Object(Rc::new(RefCell::new(
+        crate::common::value::ObjectKind::legacy(m),
+    )))
+}
+
+fn redact_url(url: &str) -> String {
+    if let Some(scheme_end) = url.find("://") {
+        let scheme = &url[..scheme_end + 3];
+        let rest = &url[scheme_end + 3..];
+        if let Some(at) = rest.find('@') {
+            return format!("{}***@{}", scheme, &rest[at + 1..]);
+        }
+    }
+    url.to_string()
 }

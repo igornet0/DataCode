@@ -142,6 +142,19 @@ pub(crate) fn execute_closure_call(
 
     method_call::prepare_method_args(&function, &mut args, &mut arg_tvs, value_store, heavy_store);
 
+    if args.len() < function.arity
+        && crate::vm::call_defaults::trailing_defaults_available(&function, args.len())
+    {
+        crate::vm::call_defaults::append_trailing_defaults(
+            &function,
+            args.len(),
+            &mut args,
+            &mut arg_tvs,
+            value_store,
+            heavy_store,
+        );
+    }
+
     if args.len() != function.arity {
         let error = ExceptionHandler::runtime_error(
             &frames,

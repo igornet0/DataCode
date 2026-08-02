@@ -108,7 +108,23 @@ pub fn setup_function_call(
     let function = functions[function_index].clone();
 
     // Module-style call: compiler passes receiver for obj.method(); if function has arity 0, treat single Object arg as receiver and drop it.
-    let effective_args: &[Value] = if function.arity == 0 && args.len() == 1 {
+    let padded_args: Option<Vec<Value>> = if args.len() < function.arity
+        && !(function.arity == 0 && args.len() == 1)
+        && crate::vm::call_defaults::trailing_defaults_available(&function, args.len())
+    {
+        let mut owned = args.to_vec();
+        for i in args.len()..function.arity {
+            if let Some(def) = function.default_values.get(i).and_then(|v| v.as_ref()) {
+                owned.push(def.clone());
+            }
+        }
+        Some(owned)
+    } else {
+        None
+    };
+    let effective_args: &[Value] = if let Some(ref owned) = padded_args {
+        owned.as_slice()
+    } else if function.arity == 0 && args.len() == 1 {
         if let Value::Object(_) = &args[0] {
             &args[1..] // empty slice
         } else {
@@ -282,6 +298,21 @@ pub fn setup_function_call_with_arg_ids(
     }
 
     let function = functions[function_index].clone();
+
+    let padded_ids: Option<Vec<ValueId>> = if arg_ids.len() < function.arity
+        && crate::vm::call_defaults::trailing_defaults_available(&function, arg_ids.len())
+    {
+        let mut owned = arg_ids.to_vec();
+        for i in arg_ids.len()..function.arity {
+            if let Some(def) = function.default_values.get(i).and_then(|v| v.as_ref()) {
+                owned.push(store_value(def.clone(), store, heap));
+            }
+        }
+        Some(owned)
+    } else {
+        None
+    };
+    let arg_ids: &[ValueId] = padded_ids.as_deref().unwrap_or(arg_ids);
 
     if arg_ids.len() != function.arity {
         return Err(LangError::runtime_error(

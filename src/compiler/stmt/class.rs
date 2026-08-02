@@ -24,6 +24,37 @@ pub const MODEL_CONFIG_CLASS_LOAD_INDEX: usize = 0x0FFF_FFFF;
 /// Global name for the slot the VM sets to the class being constructed (leaf class).
 pub const CONSTRUCTING_CLASS_GLOBAL_NAME: &str = "__constructing_class__";
 
+/// Build `default_values` for a class method: leading `None` for `this` (and `@class` if present),
+/// then compile-time constants for user parameters that have defaults.
+fn method_default_values(
+    user_params: &[&Param],
+    has_at_class: bool,
+    bindings: &HashMap<String, Value>,
+    source_name: Option<&str>,
+) -> Result<Vec<Option<Value>>, LangError> {
+    let signature_param_names: Vec<String> = user_params.iter().map(|p| p.name.clone()).collect();
+    let mut default_values = Vec::with_capacity(1 + (has_at_class as usize) + user_params.len());
+    default_values.push(None); // this
+    if has_at_class {
+        default_values.push(None); // @class (injected by VM)
+    }
+    for param in user_params {
+        if let Some(ref default_expr) = param.default_value {
+            let constant_value = crate::compiler::defaults::resolve_default_param_value(
+                default_expr,
+                &param.name,
+                &signature_param_names,
+                bindings,
+                source_name,
+            )?;
+            default_values.push(Some(constant_value));
+        } else {
+            default_values.push(None);
+        }
+    }
+    Ok(default_values)
+}
+
 fn emit_special_init_call(
     ctx: &mut CompilationContext,
     line: usize,
@@ -787,6 +818,12 @@ pub fn compile_class(
             method_function.param_names = param_names;
             method_function.param_types = param_types;
             method_function.return_type = method.return_type.clone();
+            method_function.default_values = method_default_values(
+                &user_params,
+                false,
+                ctx.compile_time_bindings,
+                ctx.source_name,
+            )?;
 
             let function_index = ctx.functions.len();
             ctx.functions.push(method_function.clone());
@@ -831,6 +868,12 @@ pub fn compile_class(
             method_function.param_names = param_names;
             method_function.param_types = param_types;
             method_function.return_type = method.return_type.clone();
+            method_function.default_values = method_default_values(
+                &user_params,
+                has_at_class,
+                ctx.compile_time_bindings,
+                ctx.source_name,
+            )?;
 
             // Сохраняем функцию (forward declaration)
             let function_index = ctx.functions.len();

@@ -1,0 +1,22 @@
+# Nested module re-exported by package — mirrors aicontrol_2a Client pattern.
+
+cls Client {
+    public:
+        key: str
+        base: any
+        timeout: float
+
+    new Client(api_key, base_url = null, timeout = 60.0) {
+        this.key = api_key
+        this.base = base_url
+        this.timeout = timeout
+    }
+
+    fn greet(prefix, suffix = "!") {
+        return prefix + this.key + suffix
+    }
+}
+
+fn make_client(timeout = 15.0) {
+    return Client("env-key", null, timeout)
+}

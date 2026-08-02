@@ -11,15 +11,23 @@ use crate::vm::heavy_store::HeavyStore;
 use crate::vm::interpreter::element::object_map_needs_visibility_checks;
 use crate::vm::memory::{
     canonical_integral_from_key_id, load_value, object_cell_try_lookup_by_key_id,
-    push_integral_slot, push_stack_value_id, store_value,
+    push_integral_slot, push_stack_value_id, slot_to_value, store_value,
 };
 use crate::vm::native_indices::builtin;
-use crate::vm::natives::utils::call_user_function;
+use crate::vm::natives::utils::{call_user_function, invoke_value_callable};
 use crate::vm::stack;
 use crate::vm::store_convert::tagged_to_value_id;
 use crate::vm::types::VMStatus;
 
 use crate::common::error::LangError;
+
+#[inline]
+fn is_callable_get(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::NativeFunction(_) | Value::Function(_) | Value::ModuleFunction { .. }
+    )
+}
 
 fn push_default(
     stack: &mut Vec<TaggedValue>,
@@ -139,6 +147,70 @@ fn try_invoke_class_instance_get(
     }
 }
 
+/// Plain / module maps with an **own callable** `get` (e.g. `web.http`, `system.env`):
+/// invoke it instead of treating `.get` as dict key-lookup.
+/// Args are `[key]` or `[key, default]` (no dict receiver), matching module-style Call.
+/// Returns `Ok(true)` when handled; `Ok(false)` to fall through to plain-dict semantics.
+fn try_invoke_own_callable_get(
+    _line: usize,
+    stack: &mut Vec<TaggedValue>,
+    frames: &mut Vec<CallFrame>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+    obj_id: ValueId,
+    key_id: ValueId,
+    default_tv: TaggedValue,
+) -> Result<bool, LangError> {
+    let Some(ValueCell::Object(omap)) = value_store.get(obj_id) else {
+        return Ok(false);
+    };
+    // Class instances are handled by try_invoke_class_instance_get.
+    if object_map_needs_visibility_checks(omap, value_store, heavy_store) {
+        return Ok(false);
+    }
+
+    let get_name_id = store_value(Value::String("get".to_string()), value_store, heavy_store);
+    let Some(method_id) =
+        object_cell_try_lookup_by_key_id(obj_id, get_name_id, value_store, heavy_store)
+    else {
+        return Ok(false);
+    };
+
+    let method = load_value(method_id, value_store, heavy_store);
+    if !is_callable_get(&method) {
+        // Own non-callable `get` field — keep plain-dict `.get(key[, default])`.
+        return Ok(false);
+    }
+
+    let key = load_value(key_id, value_store, heavy_store);
+    let default = slot_to_value(default_tv, value_store, heavy_store);
+    let call_args: Vec<Value> = if matches!(default, Value::Null) {
+        vec![key]
+    } else {
+        vec![key, default]
+    };
+
+    match invoke_value_callable(&method, &call_args) {
+        Ok(value) => {
+            let out_id = store_value(value, value_store, heavy_store);
+            push_stack_value_id(stack, value_store, out_id);
+            Ok(true)
+        }
+        Err(e) => {
+            ExceptionHandler::handle_exception_vm(
+                stack,
+                frames,
+                exception_handlers,
+                e,
+                value_store,
+                heavy_store,
+            )?;
+            Ok(true)
+        }
+    }
+}
+
 /// Stack `[obj, key, default]` → lookup result (integral fast path + generic fallback).
 pub(crate) fn object_get_from_stack(
     line: usize,
@@ -181,6 +253,20 @@ pub(crate) fn object_get_from_stack(
         heavy_store,
         obj_id,
         key_id,
+    )? {
+        return Ok(VMStatus::Continue);
+    }
+
+    if try_invoke_own_callable_get(
+        line,
+        stack,
+        frames,
+        exception_handlers,
+        value_store,
+        heavy_store,
+        obj_id,
+        key_id,
+        default_tv,
     )? {
         return Ok(VMStatus::Continue);
     }

@@ -80,30 +80,52 @@ pub(crate) fn object_map_needs_visibility_checks(
     false
 }
 
-/// Plain bucket dicts expose builtin `.get(key [, default])`; class-like maps may define `fn get()`.
+/// True when the map has an own callable property `prop` (`NativeFunction` / `Function` / `ModuleFunction`).
+#[inline]
+fn object_map_has_own_callable_prop(
+    omap: &crate::common::object_map::ObjectMap,
+    store: &ValueStore,
+    heap: &HeavyStore,
+    prop: &str,
+) -> bool {
+    let prop_key = Value::String(prop.to_string());
+    let Some(h) = crate::common::type_model::object_key_hash_value(&prop_key) else {
+        return false;
+    };
+    let Some(value_id) = omap.find_in_bucket(h, |k_id| {
+        matches!(load_value(k_id, store, heap), Value::String(ref s) if s == prop)
+    }) else {
+        return false;
+    };
+    matches!(
+        load_value(value_id, store, heap),
+        Value::NativeFunction(_) | Value::Function(_) | Value::ModuleFunction { .. }
+    )
+}
+
+/// Whether to inject plain-dict builtin for property `prop` (`"get"` → OBJECT_GET, `"clear"` → OBJECT_CLEAR).
+/// Class-like maps and maps with an own callable `prop` keep their real member.
+#[inline]
+fn should_inject_dict_builtin(
+    omap: &crate::common::object_map::ObjectMap,
+    store: &ValueStore,
+    heap: &HeavyStore,
+    prop: &str,
+) -> bool {
+    if object_map_needs_visibility_checks(omap, store, heap) {
+        return false;
+    }
+    !object_map_has_own_callable_prop(omap, store, heap, prop)
+}
+
+/// Plain bucket dicts (no own callable `get`) expose builtin `.get(key [, default])`.
 #[inline]
 fn object_map_use_builtin_get(
     omap: &crate::common::object_map::ObjectMap,
     store: &ValueStore,
     heap: &HeavyStore,
 ) -> bool {
-    if object_map_needs_visibility_checks(omap, store, heap) {
-        return false;
-    }
-    // Module namespaces (e.g. `web.http`, `system.env`) export a real `get` NativeFunction.
-    // Prefer that over injecting the plain-dict `.get(key)` builtin.
-    let get_key = Value::String("get".to_string());
-    if let Some(h) = crate::common::type_model::object_key_hash_value(&get_key) {
-        if omap
-            .find_in_bucket(h, |k_id| {
-                matches!(load_value(k_id, store, heap), Value::String(ref s) if s == "get")
-            })
-            .is_some()
-        {
-            return false;
-        }
-    }
-    true
+    should_inject_dict_builtin(omap, store, heap, "get")
 }
 
 /// Plain dict `obj[n]` when `n` is numeric and missing → `null` (adjacency / parent maps in graph examples).
@@ -1216,11 +1238,10 @@ pub(crate) fn op_get_array_element(
         }
     }
     if let Some(ValueCell::Object(omap)) = value_store.get(container_id) {
-        if object_map_use_builtin_get(omap, value_store, heavy_store)
-            && matches!(
-                load_value(index_value_id, value_store, heavy_store),
-                Value::String(ref s) if s == "get"
-            )
+        if matches!(
+            load_value(index_value_id, value_store, heavy_store),
+            Value::String(ref s) if s == "get"
+        ) && should_inject_dict_builtin(omap, value_store, heavy_store, "get")
         {
             stack::push_id(
                 stack,
@@ -1232,11 +1253,10 @@ pub(crate) fn op_get_array_element(
             );
             return Ok(VMStatus::Continue);
         }
-        if object_map_use_builtin_get(omap, value_store, heavy_store)
-            && matches!(
-                load_value(index_value_id, value_store, heavy_store),
-                Value::String(ref s) if s == "clear"
-            )
+        if matches!(
+            load_value(index_value_id, value_store, heavy_store),
+            Value::String(ref s) if s == "clear"
+        ) && should_inject_dict_builtin(omap, value_store, heavy_store, "clear")
         {
             stack::push_id(
                 stack,

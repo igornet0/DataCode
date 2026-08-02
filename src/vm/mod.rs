@@ -33,6 +33,7 @@ pub mod vm;
 
 pub mod natives;
 
+pub mod call_defaults;
 pub mod calls;
 pub mod exception;
 pub mod exceptions;

@@ -17,22 +17,28 @@ pub fn prepare_method_args(
     heavy_store: &mut HeavyStore,
 ) {
     if function.param_names.get(1).map(|s| s.as_str()) == Some("@class")
-        && args.len() + 1 == function.arity
         && !args.is_empty()
+        && args.len() < function.arity
     {
-        let this_val = &args[0];
-        let class_val = match this_val {
-            Value::Object(obj_rc) => obj_rc
-                .borrow()
-                .str_key_get("__class")
-                .cloned()
-                .unwrap_or(Value::Null),
-            _ => Value::Null,
-        };
-        let class_id = store_value(class_val.clone(), value_store, heavy_store);
-        let class_tv = TaggedValue::from_heap(class_id);
-        args.insert(1, class_val);
-        arg_tvs.insert(1, class_tv);
+        let after_inject = args.len() + 1;
+        let rest_ok = after_inject <= function.arity
+            && (after_inject == function.arity
+                || crate::vm::call_defaults::trailing_defaults_available(function, after_inject));
+        if rest_ok {
+            let this_val = &args[0];
+            let class_val = match this_val {
+                Value::Object(obj_rc) => obj_rc
+                    .borrow()
+                    .str_key_get("__class")
+                    .cloned()
+                    .unwrap_or(Value::Null),
+                _ => Value::Null,
+            };
+            let class_id = store_value(class_val.clone(), value_store, heavy_store);
+            let class_tv = TaggedValue::from_heap(class_id);
+            args.insert(1, class_val);
+            arg_tvs.insert(1, class_tv);
+        }
     }
 
     if function.arity == 0 && args.len() == 1 {

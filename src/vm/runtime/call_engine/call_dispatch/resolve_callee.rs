@@ -13,7 +13,7 @@ use crate::vm::frame::CallFrame;
 use crate::vm::global_slot::GlobalSlot;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::stack;
-use crate::vm::store_convert::{load_value, store_value, tagged_to_value_id};
+use crate::vm::store_convert::{load_value, tagged_to_value_id};
 use crate::vm::types::VMStatus;
 
 /// State after resolving callee and function index for `Call(arity)`.
@@ -55,7 +55,9 @@ fn find_constructor_with_default_params(
         if !f.name.starts_with(&prefix) {
             continue;
         }
-        let m = constructor_arity_from_fn_name(class_name, &f.name)?;
+        let Some(m) = constructor_arity_from_fn_name(class_name, &f.name) else {
+            continue;
+        };
         if m < call_arity {
             continue;
         }
@@ -71,7 +73,58 @@ fn find_constructor_with_default_params(
         match best {
             None => best = Some((idx, m)),
             Some((_, bm)) if m < bm => best = Some((idx, m)),
-            Some((_, bm)) if m == bm => return None,
+            // Duplicate same-arity entries (nested package merge) are not ambiguous — keep first.
+            Some((_, bm)) if m == bm => {}
+            _ => {}
+        }
+    }
+    best
+}
+
+/// Under-arity ctor from class object keys `new_M` (M >= call_arity). Prefers smallest M.
+/// Returns `(callee, total_arity, host_function_index)` for padding defaults.
+fn find_constructor_with_defaults_from_class_keys(
+    class_obj: &crate::common::value::ObjectKind,
+    call_arity: usize,
+    functions: &[crate::bytecode::Function],
+    vm_ptr: *mut crate::vm::vm::Vm,
+) -> Option<(Value, usize, usize)> {
+    let mut best: Option<(Value, usize, usize)> = None;
+    for (key, val) in class_obj.str_key_pairs() {
+        let Some(rest) = key.strip_prefix("new_") else {
+            continue;
+        };
+        if rest.is_empty() || !rest.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(m) = rest.parse::<usize>() else {
+            continue;
+        };
+        if m < call_arity {
+            continue;
+        }
+        let host_idx = match val {
+            Value::Function(i) if *i < functions.len() => *i,
+            Value::ModuleFunction {
+                module_uid,
+                local_index,
+            } => match unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) } {
+                Some(i) => i,
+                None => continue,
+            },
+            _ => continue,
+        };
+        let f = &functions[host_idx];
+        if !ctor_supplies_defaults(f, call_arity) {
+            continue;
+        }
+        let total = f.arity;
+        if total < call_arity {
+            continue;
+        }
+        match &best {
+            None => best = Some((val.clone(), total, host_idx)),
+            Some((_, bm, _)) if total < *bm => best = Some((val.clone(), total, host_idx)),
             _ => {}
         }
     }
@@ -148,12 +201,14 @@ fn push_constructor_default_args(
     value_store: &mut ValueStore,
     heavy_store: &mut HeavyStore,
 ) {
-    for i in call_arity..total_arity {
-        if let Some(def) = func.default_values.get(i).and_then(|v| v.as_ref()) {
-            let id = store_value(def.clone(), value_store, heavy_store);
-            stack::push(stack, TaggedValue::from_heap(id));
-        }
-    }
+    crate::vm::call_defaults::push_trailing_defaults_on_stack(
+        stack,
+        func,
+        call_arity,
+        total_arity,
+        value_store,
+        heavy_store,
+    );
 }
 
 fn ctor_supplies_defaults(func: &crate::bytecode::Function, call_arity: usize) -> bool {
@@ -485,6 +540,34 @@ pub(super) fn resolve_call_callee(
                             module_uid,
                             local_index,
                         }
+                    } else if let Some((callee, m, host_idx)) = {
+                        let obj_ref = obj_rc.borrow();
+                        find_constructor_with_defaults_from_class_keys(
+                            &obj_ref,
+                            arity,
+                            functions,
+                            vm_ptr,
+                        )
+                    } {
+                        debug_println!(
+                            "[DEBUG executor OpCode::Call] Class object '{}' resolved to constructor via class key defaults (call arity {} -> {})",
+                            class_name,
+                            arity,
+                            m
+                        );
+                        if m > arity {
+                            push_constructor_default_args(
+                                stack,
+                                &functions[host_idx],
+                                arity,
+                                m,
+                                value_store,
+                                heavy_store,
+                            );
+                            effective_arity = m;
+                        }
+                        constructing_class_opt = Some(function_value.clone());
+                        callee
                     } else if let Some((ctor_idx, m)) =
                         find_constructor_with_default_params(class_name, arity, functions)
                     {
@@ -818,21 +901,47 @@ pub(super) fn resolve_call_callee(
             None
         };
         match by_name.or(from_module).or_else(|| {
-            class_name.as_ref().and_then(|cn| {
-                find_constructor_with_default_params(cn, arity, functions).map(|(idx, m)| {
-                    if m > arity {
-                        push_constructor_default_args(
-                            stack,
-                            &functions[idx],
-                            arity,
-                            m,
-                            value_store,
-                            heavy_store,
-                        );
-                        effective_arity = m;
-                    }
-                    constructing_class_opt = Some(Value::Object(class_rc.clone()));
-                    idx
+            {
+                let obj_ref = class_rc.borrow();
+                find_constructor_with_defaults_from_class_keys(
+                    &obj_ref,
+                    arity,
+                    functions,
+                    vm_ptr,
+                )
+            }
+            .map(|(_, m, host_idx)| {
+                if m > arity {
+                    push_constructor_default_args(
+                        stack,
+                        &functions[host_idx],
+                        arity,
+                        m,
+                        value_store,
+                        heavy_store,
+                    );
+                    effective_arity = m;
+                }
+                constructing_class_opt = Some(Value::Object(class_rc.clone()));
+                host_idx
+            })
+            .or_else(|| {
+                class_name.as_ref().and_then(|cn| {
+                    find_constructor_with_default_params(cn, arity, functions).map(|(idx, m)| {
+                        if m > arity {
+                            push_constructor_default_args(
+                                stack,
+                                &functions[idx],
+                                arity,
+                                m,
+                                value_store,
+                                heavy_store,
+                            );
+                            effective_arity = m;
+                        }
+                        constructing_class_opt = Some(Value::Object(class_rc.clone()));
+                        idx
+                    })
                 })
             })
         }) {

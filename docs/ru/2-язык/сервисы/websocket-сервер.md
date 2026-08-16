@@ -68,6 +68,24 @@ dcp create -o job.dcp --code script.dc --assets-dir ./data
 
 С `--build_model` при успехе может быть поле `sqlite_db` (base64 SQLite).
 
+### Режим проверки FK (`__config__`)
+
+В DCP можно добавить секцию **`__config__`** (`SectionType.CONFIG = 5`) с JSON `{"fk_check":"warn"}`. Флаг сервера не меняется: `datacode --websocket --build_model` без этой секции — **`strict`**.
+
+```python
+from datacode_dcp import DCPEncoder
+
+DCPEncoder().code(script).fk_check("warn").write(buf)
+```
+
+| режим | FK в DDL | сироты | экспорт |
+|-------|----------|--------|---------|
+| `strict` (по умолчанию) | все `relate` | нет | fail |
+| `warn` | только выполняемые | да, без сломанного FK | ok + `warning` |
+| `skip` | все `relate` | да | ok, БД с нарушениями |
+
+Невалидное значение `fk_check` — ошибка decode пакета. При `warn` / `skip` в JSON-ответе может быть поле `warning` (`success: true`, `sqlite_db` заполнен).
+
 ### SQL после сборки модели (секция `__sql__`)
 
 В DCP можно добавить секцию **`__sql__`** (`SectionType.SQL = 7`) с UTF-8 SQL-скриптом. Сервер выполняет его **после** экспорта глобальных таблиц в SQLite, в одной транзакции, **только с флагом `--build_model`**.
@@ -107,9 +125,10 @@ global t = table([[1, "a"]], ["id", "name"])
 Пока на WebSocket выполняется DCP-пакет, код может импортировать `ws` для **безопасного** доступа к данным пакета — без путей сервера, host/port и учётных данных.
 
 ```dc
-from ws import source_table, tables, assets, package_info
+from ws import source_table, tables, assets, content_assets, package_info
 
 print(tables())
+print(content_assets())  # SHA-256 id content-addressed assets
 global orders = source_table("orders", ["id", "date", "value"])
 global renamed = source_table("orders", {"id": null, "value": "amount"})
 ```
@@ -118,18 +137,23 @@ global renamed = source_table("orders", {"id": null, "value": "amount"})
 |---------|----------|
 | `tables()` | Имена секций ARROW_TABLE |
 | `has_table(name)` | Есть ли таблица |
-| `source_table(name, columns?)` | Загрузить таблицу по имени секции |
-| `assets()` | Логические пути ASSET |
-| `has_asset(name)` | Есть ли asset |
+| `source_table(name, columns?)` | Загрузить таблицу; проверяет ссылки `asset://` |
+| `assets()` | Логические пути path-based ASSET (VFS) |
+| `has_asset(name)` | Есть ли path asset |
+| `content_assets()` | SHA-256 id content-addressed assets (`assets/{id}`) |
+| `has_content_asset(id)` | Есть ли content asset |
+| `content_asset(id)` | `Image` для image kind/mime, иначе `ByteBuffer` |
 | `metadata()` | Пользовательские metadata (строки) |
 | `metadata_get(key)` | Одно значение или `null` |
-| `package_info()` | Безопасная сводка: counts и флаги |
+| `package_info()` | Сводка (включая `content_asset_count`) |
 
 **Фильтр колонок `source_table`** (строже, чем `read(..., header=...)`):
 
 - без аргумента / `null` — все колонки
 - массив строк — только перечисленные, порядок как в массиве; **ошибка**, если колонки нет
 - объект — только ключи; строка переименовывает, `null` оставляет имя; **ошибка**, если ключ отсутствует в таблице
+
+**Content-addressed assets:** в ячейках таблиц — UTF-8 `asset://{sha256}`; байты в секциях `ASSET` с именем `assets/{sha256}` (дедуп по хешу). Path-based VFS assets для `read(path(...))` остаются отдельно. При `--build_model` content assets пишутся в SQLite-таблицу `__assets`; бизнес-колонки сохраняют текст `asset://`.
 
 Вне активной DCP-сессии: `ws: no active DCP session`.
 

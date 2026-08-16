@@ -3,6 +3,11 @@
 use crate::common::table::Table;
 use crate::common::value::ByteBuffer;
 use crate::common::value::Value;
+use crate::sqlite_export::type_map::{
+    ensure_system_tables_sql, schema_discovery_from_pragma, sql_value_to_datacode,
+    validate_schema_type_pair, value_to_owned_sql, SchemaCache, SchemaColumn, SCHEMA_VERSION,
+    TABLE_SCHEMA, TABLE_VERSION,
+};
 use crate::web::browser::runtime::block_on;
 use postgres::types::ToSql as PgToSql;
 use postgres::{Client as PgClient, NoTls};
@@ -54,6 +59,10 @@ pub struct DatabaseEngine {
     pub max_overflow: u32,
     pub timeout: Option<f64>,
     pub connect_args: HashMap<String, Value>,
+    /// Lazy-loaded `_datacode_schema` (SQLite only). `None` = not yet attempted.
+    schema_cache: Option<SchemaCache>,
+    /// Declared types from `PRAGMA table_info` keyed by (table, column).
+    declared_cache: HashMap<(String, String), String>,
 }
 
 impl DatabaseEngine {
@@ -134,11 +143,191 @@ impl DatabaseEngine {
             max_overflow,
             timeout,
             connect_args,
+            schema_cache: None,
+            declared_cache: HashMap::new(),
         })
     }
 
     pub fn dialect(&self) -> SqlDialect {
         self.dialect
+    }
+
+    /// Ensure `_datacode_version` + `_datacode_schema` exist (SQLite only).
+    pub fn ensure_datacode_system_tables(&mut self) -> Result<(), String> {
+        let DbBackend::SQLite(conn) = &mut self.backend else {
+            return Ok(());
+        };
+        conn.execute_batch(ensure_system_tables_sql())
+            .map_err(|e| e.to_string())?;
+        let count: i64 = conn
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {}", TABLE_VERSION),
+                [],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if count == 0 {
+            conn.execute(
+                &format!("INSERT INTO {} (version) VALUES (?1)", TABLE_VERSION),
+                [SCHEMA_VERSION],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        // Invalidate cache so next read reloads.
+        self.schema_cache = None;
+        Ok(())
+    }
+
+    /// Register column types in the in-memory schema cache only (no disk I/O).
+    ///
+    /// Used by ORM `create_all` so typed reads work in-session without creating
+    /// `_datacode_*` system tables (those are written by export / explicit upsert).
+    pub fn register_datacode_schema_cache(
+        &mut self,
+        table_name: &str,
+        columns: &[(String, String, String)],
+    ) -> Result<(), String> {
+        for (_col, dc, sql_ty) in columns {
+            validate_schema_type_pair(dc, sql_ty)?;
+        }
+        if self.schema_cache.is_none() {
+            self.schema_cache = Some(HashMap::new());
+        }
+        for (col, dc, sql_ty) in columns {
+            if let Some(cache) = self.schema_cache.as_mut() {
+                cache.insert(
+                    (table_name.to_string(), col.clone()),
+                    SchemaColumn {
+                        table_name: table_name.to_string(),
+                        column_name: col.clone(),
+                        datacode_type: dc.clone(),
+                        sqlite_type: sql_ty.clone(),
+                        nullable: true,
+                    },
+                );
+            }
+            self.declared_cache
+                .insert((table_name.to_string(), col.clone()), sql_ty.clone());
+        }
+        Ok(())
+    }
+
+    /// Upsert column metadata into `_datacode_schema` for one table.
+    /// Each entry is `(column_name, datacode_type, sqlite_type)`.
+    pub fn upsert_datacode_schema(
+        &mut self,
+        table_name: &str,
+        columns: &[(String, String, String)],
+    ) -> Result<(), String> {
+        self.ensure_datacode_system_tables()?;
+        {
+            let DbBackend::SQLite(conn) = &mut self.backend else {
+                return Ok(());
+            };
+            let mut stmt = conn
+                .prepare(&format!(
+                    "INSERT OR REPLACE INTO {}
+                    (table_name, column_name, datacode_type, sqlite_type, nullable, version)
+                    VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+                    TABLE_SCHEMA
+                ))
+                .map_err(|e| e.to_string())?;
+            for (col, dc, sql_ty) in columns {
+                validate_schema_type_pair(dc, sql_ty)?;
+                stmt.execute(rusqlite::params![
+                    table_name,
+                    col,
+                    dc,
+                    sql_ty,
+                    SCHEMA_VERSION
+                ])
+                .map_err(|e| e.to_string())?;
+            }
+        }
+        self.register_datacode_schema_cache(table_name, columns)
+    }
+
+    /// Stub: sync `_datacode_schema` after ALTER TABLE (no ALTER API yet).
+    pub fn sync_schema_after_alter(
+        &mut self,
+        _table_name: &str,
+    ) -> Result<(), String> {
+        // When ALTER TABLE is added, update `_datacode_schema` in the same transaction.
+        Err(
+            "sync_schema_after_alter: ALTER TABLE is not implemented; schema sync is a stub"
+                .to_string(),
+        )
+    }
+
+    fn ensure_schema_cache_loaded(&mut self) {
+        if self.schema_cache.is_some() {
+            return;
+        }
+        let cache = match &self.backend {
+            DbBackend::SQLite(conn) => load_datacode_schema(conn),
+            _ => HashMap::new(),
+        };
+        self.schema_cache = Some(cache);
+    }
+
+    fn ensure_declared_for_table(&mut self, table: &str) {
+        if self
+            .declared_cache
+            .keys()
+            .any(|(t, _)| t.eq_ignore_ascii_case(table))
+        {
+            return;
+        }
+        let discovered = match &self.backend {
+            DbBackend::SQLite(conn) => schema_discovery_from_pragma(conn, table),
+            _ => Vec::new(),
+        };
+        for col in discovered {
+            self.declared_cache.insert(
+                (col.table_name.clone(), col.column_name.clone()),
+                col.sqlite_type.clone(),
+            );
+            if let Some(cache) = self.schema_cache.as_mut() {
+                let key = (col.table_name.clone(), col.column_name.clone());
+                cache.entry(key).or_insert(col);
+            }
+        }
+    }
+
+    fn column_type_hints(
+        &mut self,
+        table_hint: Option<&str>,
+        col_name: &str,
+    ) -> (Option<String>, Option<String>) {
+        self.ensure_schema_cache_loaded();
+        if let Some(t) = table_hint {
+            self.ensure_declared_for_table(t);
+        }
+        let cache = self.schema_cache.as_ref().unwrap();
+        if let Some(t) = table_hint {
+            let key = (t.to_string(), col_name.to_string());
+            if let Some(sc) = cache.get(&key) {
+                return (
+                    Some(sc.datacode_type.clone()),
+                    Some(sc.sqlite_type.clone()),
+                );
+            }
+            if let Some(decl) = self.declared_cache.get(&key) {
+                return (None, Some(decl.clone()));
+            }
+        }
+        // Unique column-name match across schema
+        let matches: Vec<_> = cache
+            .values()
+            .filter(|c| c.column_name == col_name)
+            .collect();
+        if matches.len() == 1 {
+            return (
+                Some(matches[0].datacode_type.clone()),
+                Some(matches[0].sqlite_type.clone()),
+            );
+        }
+        (None, None)
     }
 
     pub fn execute(&mut self, sql: &str, params: &[Value]) -> Result<i64, String> {
@@ -196,8 +385,12 @@ impl DatabaseEngine {
         if self.echo {
             eprintln!("[SQL] {}", sql);
         }
-        match &mut self.backend {
-            DbBackend::SQLite(conn) => {
+        if matches!(self.backend, DbBackend::SQLite(_)) {
+            let table_hint = extract_simple_from_table(sql);
+            let (headers, sql_rows) = {
+                let DbBackend::SQLite(conn) = &self.backend else {
+                    unreachable!()
+                };
                 let params_vec: Vec<Box<dyn rusqlite::ToSql>> =
                     params.iter().map(value_to_sqlite_param).collect();
                 let params_refs: Vec<&dyn rusqlite::ToSql> =
@@ -213,17 +406,40 @@ impl DatabaseEngine {
                     .query_map(params_refs.as_slice(), |row| {
                         let mut r = Vec::with_capacity(column_count);
                         for i in 0..column_count {
-                            r.push(sqlite_row_get_value(row, i));
+                            use rusqlite::types::Value as SqlValue;
+                            let sql_val = row.get::<_, SqlValue>(i).unwrap_or(SqlValue::Null);
+                            r.push(sql_val);
                         }
                         Ok(r)
                     })
                     .map_err(|e| format!("Query failed: {}", e))?;
-                let mut rows = Vec::new();
+                let mut sql_rows = Vec::new();
                 for row_result in rows_iter {
-                    rows.push(row_result.map_err(|e| format!("Row error: {}", e))?);
+                    sql_rows.push(row_result.map_err(|e| format!("Row error: {}", e))?);
                 }
-                Ok(Table::from_data(rows, Some(headers)))
+                (headers, sql_rows)
+            };
+            let mut hints = Vec::with_capacity(headers.len());
+            for h in &headers {
+                hints.push(self.column_type_hints(table_hint.as_deref(), h));
             }
+            let mut rows = Vec::with_capacity(sql_rows.len());
+            for sql_row in sql_rows {
+                let mut r = Vec::with_capacity(headers.len());
+                for (i, sql_val) in sql_row.into_iter().enumerate() {
+                    let (dc, decl) = &hints[i];
+                    r.push(sql_value_to_datacode(
+                        sql_val,
+                        dc.as_deref(),
+                        decl.as_deref(),
+                    ));
+                }
+                rows.push(r);
+            }
+            return Ok(Table::from_data(rows, Some(headers)));
+        }
+        match &mut self.backend {
+            DbBackend::SQLite(_) => unreachable!(),
             DbBackend::Postgres(client) => {
                 let pg_params = values_to_pg_params(params);
                 let refs: Vec<&(dyn PgToSql + Sync)> = pg_params
@@ -399,6 +615,55 @@ fn parse_mssql_url(url: &str) -> Result<MssqlUrl, String> {
     })
 }
 
+fn value_to_sqlite_param(v: &Value) -> Box<dyn rusqlite::ToSql> {
+    Box::new(value_to_owned_sql(v, None)) as Box<dyn rusqlite::ToSql>
+}
+
+fn load_datacode_schema(conn: &Connection) -> SchemaCache {
+    let mut cache = HashMap::new();
+    let Ok(mut stmt) = conn.prepare(&format!(
+        "SELECT table_name, column_name, datacode_type, sqlite_type, nullable
+         FROM {}",
+        TABLE_SCHEMA
+    )) else {
+        return cache;
+    };
+    let Ok(rows) = stmt.query_map([], |row| {
+        Ok(SchemaColumn {
+            table_name: row.get::<_, String>(0)?,
+            column_name: row.get::<_, String>(1)?,
+            datacode_type: row.get::<_, String>(2)?,
+            sqlite_type: row.get::<_, String>(3)?,
+            nullable: row.get::<_, i64>(4).unwrap_or(1) != 0,
+        })
+    }) else {
+        return cache;
+    };
+    for row in rows.flatten() {
+        cache.insert((row.table_name.clone(), row.column_name.clone()), row);
+    }
+    cache
+}
+
+/// Best-effort extract of a single table name from simple `FROM table` SQL.
+fn extract_simple_from_table(sql: &str) -> Option<String> {
+    let lower = sql.to_ascii_lowercase();
+    let idx = lower.find(" from ")?;
+    let after = sql[idx + 6..].trim_start();
+    let token = after
+        .split(|c: char| c.is_whitespace() || c == ',' || c == ';' || c == ')')
+        .next()?
+        .trim_matches(|c| c == '"' || c == '`' || c == '[' || c == ']');
+    if token.is_empty() || token.eq_ignore_ascii_case("select") {
+        return None;
+    }
+    // Skip subquery
+    if token.starts_with('(') {
+        return None;
+    }
+    Some(token.to_string())
+}
+
 fn parse_sqlite_path(url: &str) -> Result<PathBuf, String> {
     let url = url.trim();
     if url.starts_with("sqlite:///") {
@@ -407,41 +672,6 @@ fn parse_sqlite_path(url: &str) -> Result<PathBuf, String> {
         Ok(PathBuf::from(&url["sqlite:".len()..]))
     } else {
         Err(format!("Invalid SQLite URL: {}", url))
-    }
-}
-
-fn value_to_sqlite_param(v: &Value) -> Box<dyn rusqlite::ToSql> {
-    match v {
-        Value::Number(n) => {
-            if n.fract() == 0.0 {
-                Box::new(*n as i64) as Box<dyn rusqlite::ToSql>
-            } else {
-                Box::new(*n) as Box<dyn rusqlite::ToSql>
-            }
-        }
-        Value::Bool(b) => Box::new(if *b { 1i64 } else { 0i64 }) as Box<dyn rusqlite::ToSql>,
-        Value::String(s) => Box::new(s.clone()) as Box<dyn rusqlite::ToSql>,
-        Value::Null => Box::new(Option::<String>::None) as Box<dyn rusqlite::ToSql>,
-        Value::ByteBuffer(b) => {
-            let blob = b.bytes[b.offset..b.offset + b.len].to_vec();
-            Box::new(blob) as Box<dyn rusqlite::ToSql>
-        }
-        _ => Box::new(v.to_string()) as Box<dyn rusqlite::ToSql>,
-    }
-}
-
-fn sqlite_row_get_value(row: &rusqlite::Row, idx: usize) -> Value {
-    use rusqlite::types::Value as SqlValue;
-    let sql_val = match row.get::<_, SqlValue>(idx) {
-        Ok(v) => v,
-        Err(_) => return Value::Null,
-    };
-    match sql_val {
-        SqlValue::Integer(i) => Value::Number(i as f64),
-        SqlValue::Real(r) => Value::Number(r),
-        SqlValue::Text(s) => Value::String(s),
-        SqlValue::Blob(bytes) => Value::ByteBuffer(ByteBuffer::from_vec(bytes)),
-        SqlValue::Null => Value::Null,
     }
 }
 

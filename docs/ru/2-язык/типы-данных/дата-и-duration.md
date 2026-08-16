@@ -116,4 +116,11 @@ print(date("2024-01-02") - date("2024-01-01"))
 
 ## Экспорт в SQLite
 
-При выгрузке в SQLite значения типа **`duration`** сохраняются как **REAL** (секунды, с дробной частью).
+При выгрузке в SQLite (или записи через ORM/`database_engine`):
+
+- **`date`** (полночь UTC) → declared `DATE`, хранение `YYYY-MM-DD`
+- **`date`** со временем → metadata `datetime`, declared `DATETIME`, хранение UTC `YYYY-MM-DDTHH:MM:SS.fffZ`
+- **`duration`** → declared `INTEGER` (наносекунды как `i64`)
+- **Строковые ячейки**, похожие на date (`YYYY-MM-DD`), datetime (RFC3339 / ISO), int или float, определяются автоматически для DDL и `_datacode_schema`
+
+Типы колонок также пишутся в `_datacode_schema` (вместе с `_datacode_version`). При чтении приоритет у metadata; иначе используются declared-типы из `PRAGMA table_info`. После скрипта DCP `__sql__` / `__sql_table__` `_datacode_schema` пересинхронизируется с итоговым PRAGMA (TEXT-колонки могут уточняться до `date` / `datetime` по выборке значений).

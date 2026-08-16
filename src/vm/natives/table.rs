@@ -1040,6 +1040,74 @@ pub fn table_map_impl(table: &Table, column: &str, func: &Value) -> Result<Table
     Ok(Table::from_data(mapped_rows, Some(headers.to_vec())))
 }
 
+/// Apply `fn` to each cell of a column reference; returns a materialized array.
+pub fn column_map_impl(
+    table: &Table,
+    column_name: &str,
+    func: &Value,
+) -> Result<Vec<Value>, Value> {
+    use super::utils::invoke_value_callable;
+    use crate::common::error::LangError;
+    use crate::vm::vm::{current_vm_ptr, VmExecutionContext, VM_CALL_CONTEXT};
+
+    if !table.has_column(column_name) {
+        return Err(table_col_error(format!(
+            "KeyError: column '{}' not found in table",
+            column_name
+        )));
+    }
+
+    validate_map_callback(func)?;
+
+    let rows = materialize_table_rows(table);
+    let headers = table.headers();
+    let col_idx = headers
+        .iter()
+        .position(|h| h == column_name)
+        .expect("has_column implied index exists");
+
+    let vm_ptr = current_vm_ptr();
+    let mut out = Vec::with_capacity(rows.len());
+
+    for row in rows {
+        let cell = row[col_idx].clone();
+        if let Some(vm_ptr) = vm_ptr {
+            VM_CALL_CONTEXT.with(|ctx| {
+                *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+            });
+        }
+        let new_val = match invoke_value_callable(func, &[cell]) {
+            Ok(v) => v,
+            Err(e) => {
+                let message = match e {
+                    LangError::LexError { message, .. }
+                    | LangError::ParseError { message, .. }
+                    | LangError::SemanticError { message, .. }
+                    | LangError::RuntimeError { message, .. } => message,
+                };
+                return Err(table_col_error(message));
+            }
+        };
+        out.push(new_val);
+    }
+
+    Ok(out)
+}
+
+/// `column.map(fn)` — materialized array (not lazy iterable).
+pub fn native_column_map(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return table_col_error("TypeError: column.map() expects 1 argument (function)");
+    }
+    let Value::ColumnReference { table, column_name } = &args[0] else {
+        return table_col_error("TypeError: column.map() expects a column reference as receiver");
+    };
+    match column_map_impl(&table.borrow(), column_name, &args[1]) {
+        Ok(vals) => Value::Array(Rc::new(RefCell::new(vals))),
+        Err(v) => v,
+    }
+}
+
 /// Split one column by delimiter string (no VM callback).
 pub fn table_split_column_delim_impl(
     table: &Table,

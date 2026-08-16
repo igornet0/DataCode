@@ -1011,31 +1011,55 @@ impl Vm {
     pub fn flush_pending_schema_metadata(&mut self) {
         use crate::vm::store_convert::load_value;
         let relations = self.take_pending_relations();
-        let names = if self.explicit_global_names.is_empty() {
-            self.global_names.clone()
-        } else {
-            self.explicit_global_names.clone()
-        };
-        for (table1_rc, col1_name, table2_rc, col2_name) in relations {
-            let mut found_table1_name = None;
-            let mut found_table2_name = None;
-            for (index, slot) in self.globals.iter_mut().enumerate() {
-                let value_id = slot.resolve_to_value_id(&mut self.value_store);
-                let value = load_value(value_id, &mut self.value_store, &self.heavy_store);
-                if let Value::Table(table) = &value {
-                    if Rc::ptr_eq(table, &table1_rc) {
-                        if let Some(var_name) = names.get(&index) {
-                            found_table1_name = Some(var_name.clone());
-                        }
-                    }
-                    if Rc::ptr_eq(table, &table2_rc) {
-                        if let Some(var_name) = names.get(&index) {
-                            found_table2_name = Some(var_name.clone());
-                        }
-                    }
+        let mut names = self.global_names.clone();
+        for (idx, name) in &self.explicit_global_names {
+            names.insert(*idx, name.clone());
+        }
+
+        let mut named_tables: Vec<(String, Rc<RefCell<crate::common::table::Table>>)> = Vec::new();
+        for (index, slot) in self.globals.iter_mut().enumerate() {
+            let Some(var_name) = names.get(&index) else {
+                continue;
+            };
+            let value_id = slot.resolve_to_value_id(&mut self.value_store);
+            let value = load_value(value_id, &mut self.value_store, &self.heavy_store);
+            if let Value::Table(table) = value {
+                named_tables.push((var_name.clone(), table));
+            }
+        }
+
+        let resolve = |target: &Rc<RefCell<crate::common::table::Table>>| -> Option<String> {
+            let mut matched: Vec<&str> = Vec::new();
+            for (name, table) in &named_tables {
+                if Rc::ptr_eq(table, target)
+                    || table.borrow().same_schema_binding(&target.borrow())
+                {
+                    matched.push(name.as_str());
                 }
             }
-            if let (Some(table1_name), Some(table2_name)) = (found_table1_name, found_table2_name) {
+            if matched.len() == 1 {
+                return Some(matched[0].to_string());
+            }
+            if matched.len() > 1 {
+                return Some(matched[0].to_string());
+            }
+            let headers = target.borrow().headers().clone();
+            let header_hits: Vec<&str> = named_tables
+                .iter()
+                .filter(|(_, t)| t.borrow().headers().as_slice() == headers.as_slice())
+                .map(|(n, _)| n.as_str())
+                .collect();
+            if header_hits.len() == 1 {
+                Some(header_hits[0].to_string())
+            } else {
+                None
+            }
+        };
+
+        for (table1_rc, col1_name, table2_rc, col2_name) in relations {
+            if let (Some(table1_name), Some(table2_name)) =
+                (resolve(&table1_rc), resolve(&table2_rc))
+            {
                 self.explicit_relations.push(ExplicitRelation {
                     source_table_name: table2_name,
                     source_column_name: col2_name,
@@ -1046,19 +1070,7 @@ impl Vm {
         }
         let primary_keys = self.take_pending_primary_keys();
         for (table_rc, col_name) in primary_keys {
-            let mut found_table_name = None;
-            for (index, slot) in self.globals.iter_mut().enumerate() {
-                let value_id = slot.resolve_to_value_id(&mut self.value_store);
-                let value = load_value(value_id, &mut self.value_store, &self.heavy_store);
-                if let Value::Table(table) = &value {
-                    if Rc::ptr_eq(table, &table_rc) {
-                        if let Some(var_name) = names.get(&index) {
-                            found_table_name = Some(var_name.clone());
-                        }
-                    }
-                }
-            }
-            if let Some(table_name) = found_table_name {
+            if let Some(table_name) = resolve(&table_rc) {
                 self.explicit_primary_keys.push(ExplicitPrimaryKey {
                     table_name,
                     column_name: col_name,

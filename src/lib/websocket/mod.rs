@@ -76,26 +76,32 @@ pub async fn start_server(
     println!("💡 SMB control messages still use JSON text: smb_connect, smb_list_files, smb_read_file");
     println!();
 
-    let local_set = tokio::task::LocalSet::new();
-
-    local_set
-        .run_until(async {
-            loop {
-                let (stream, addr) = match listener.accept().await {
-                    Ok((s, a)) => (s, a),
-                    Err(e) => {
-                        eprintln!("❌ Accept error: {e}");
-                        continue;
-                    }
-                };
-
-                println!("✅ New connection from {addr}");
-                local_set.spawn_local(handle_client(stream, build_model));
+    // Each client runs on its own multi-thread runtime (dedicated OS thread).
+    // A LocalSet was previously used for thread-locals, but LocalSet forbids
+    // `tokio::task::block_in_place`, which MongoDB/MSSQL/browser bridges need.
+    loop {
+        let (stream, addr) = match listener.accept().await {
+            Ok((s, a)) => (s, a),
+            Err(e) => {
+                eprintln!("❌ Accept error: {e}");
+                continue;
             }
-        })
-        .await;
+        };
 
-    Ok(())
+        println!("✅ New connection from {addr}");
+        std::thread::Builder::new()
+            .name(format!("datacode-ws-{addr}"))
+            .spawn(move || {
+                let rt = tokio::runtime::Builder::new_multi_thread()
+                    .worker_threads(2)
+                    .enable_all()
+                    .thread_name(format!("ws-client-{addr}"))
+                    .build()
+                    .expect("failed to create per-client tokio runtime");
+                rt.block_on(handle_client(stream, build_model));
+            })
+            .expect("failed to spawn WebSocket client thread");
+    }
 }
 
 async fn handle_client(stream: TcpStream, build_model: bool) {

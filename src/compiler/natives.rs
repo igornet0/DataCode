@@ -164,7 +164,7 @@ fn register(globals: &mut std::collections::HashMap<String, usize>, name: &str) 
 pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
     match function_name {
         // Функции с переменным числом аргументов — kwargs не задаём здесь
-        "print" | "array" | "set" | "random" => None,
+        "print" | "array" | "set" | "random" | "relate" => None,
 
         // iterable + опциональный key (именованный key= поддерживается; varargs через позиционные вызовы)
         "min" => Some(vec!["iterable".to_string(), "key".to_string()]),
@@ -340,7 +340,6 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "left_suffix".to_string(),
             "right_suffix".to_string(),
         ]),
-        "relate" => Some(vec!["col1".to_string(), "col2".to_string()]),
         "primary_key" => Some(vec!["col".to_string()]),
         "Table" => Some(vec!["path".to_string()]),
 

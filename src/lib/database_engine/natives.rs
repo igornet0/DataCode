@@ -1218,8 +1218,58 @@ fn run_create_all(
         let cols = col_specs.join(", ");
         let sql = format!("CREATE TABLE IF NOT EXISTS {} ({})", name, cols);
         engine.execute(&sql, &[]).map_err(|e| e.to_string())?;
+
+        // In-memory type hints for this session; do not create `_datacode_*`
+        // system tables here (they would appear in sqlite_master). Persistence
+        // of schema meta is handled by sqlite_export / explicit upsert.
+        let mut schema_cols = Vec::new();
+        for ancestor_rc in chain.iter().rev() {
+            for (col_name, _spec) in collect_column_specs_for_class(ancestor_rc) {
+                let (dc, sql_ty) = column_datacode_and_sqlite(ancestor_rc, &col_name);
+                schema_cols.push((col_name, dc, sql_ty));
+            }
+        }
+        let mut seen = HashSet::new();
+        let mut unique = Vec::new();
+        for (n, dc, st) in schema_cols {
+            if seen.insert(n.clone()) {
+                unique.push((n, dc, st));
+            }
+        }
+        let _ = engine.register_datacode_schema_cache(&name, &unique);
     }
     Ok(())
+}
+
+fn column_datacode_and_sqlite(
+    class_rc: &std::rc::Rc<std::cell::RefCell<crate::common::value::ObjectKind>>,
+    col_name: &str,
+) -> (String, String) {
+    let key = format!("__col_{}", col_name);
+    let class = class_rc.borrow();
+    let Some(col_val) = class.str_key_get(&key).cloned() else {
+        return ("string".into(), "TEXT".into());
+    };
+    drop(class);
+    let sql_ty = column_type_to_sql(&col_val, Some(col_name));
+    // Strip CHECK clauses etc. for declared type token
+    let declared = sql_ty.split_whitespace().next().unwrap_or("TEXT");
+    let dc = if let Value::Object(rc) = &col_val {
+        let col = rc.borrow();
+        let type_val = col.str_key_get("type").cloned().unwrap_or(Value::Null);
+        drop(col);
+        match type_val {
+            Value::NativeFunction(idx) => globals::builtin_global_name(idx)
+                .map(crate::sqlite_export::type_map::orm_type_name_to_datacode)
+                .unwrap_or("string")
+                .to_string(),
+            Value::String(s) => crate::sqlite_export::type_map::orm_type_name_to_datacode(&s).to_string(),
+            _ => crate::sqlite_export::type_map::sqlite_declared_to_datacode(declared).to_string(),
+        }
+    } else {
+        crate::sqlite_export::type_map::sqlite_declared_to_datacode(declared).to_string()
+    };
+    (dc, declared.to_string())
 }
 
 /// Convert Column default/onupdate value to SQL DEFAULT clause (e.g. 0 -> "0", "user" -> "'user'", now_call -> "CURRENT_TIMESTAMP").
@@ -1305,14 +1355,7 @@ fn column_type_to_sql(col_val: &Value, sqlite_column_name: Option<&str>) -> Stri
     }
     if let Value::NativeFunction(idx) = type_val {
         if let Some(name) = globals::builtin_global_name(idx) {
-            let type_lower = name.to_lowercase();
-            return match type_lower.as_str() {
-                "int" | "integer" => "INTEGER".to_string(),
-                "float" | "real" => "REAL".to_string(),
-                "bool" | "boolean" => "INTEGER".to_string(),
-                "date" => "DATETIME".to_string(),
-                _ => "TEXT".to_string(),
-            };
+            return crate::sqlite_export::type_map::orm_type_name_to_sqlite_declared(name);
         }
         return "TEXT".to_string();
     }
@@ -1320,14 +1363,7 @@ fn column_type_to_sql(col_val: &Value, sqlite_column_name: Option<&str>) -> Stri
         return "TEXT".to_string();
     }
     let type_str = type_val.to_string();
-    let type_lower = type_str.to_lowercase();
-    match type_lower.as_str() {
-        "int" | "integer" => "INTEGER".to_string(),
-        "float" | "real" => "REAL".to_string(),
-        "bool" | "boolean" => "INTEGER".to_string(),
-        "date" => "DATETIME".to_string(),
-        _ => "TEXT".to_string(),
-    }
+    crate::sqlite_export::type_map::orm_type_name_to_sqlite_declared(&type_str)
 }
 
 /// DatabaseCluster() - creates an empty cluster of named connections.

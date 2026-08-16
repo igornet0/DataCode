@@ -47,6 +47,7 @@ pub fn compile_expr(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         | Expr::AssignOp { .. }
         | Expr::AssignArray { .. }
         | Expr::AssignArrayOp { .. }
+        | Expr::AssignTableColumn { .. }
         | Expr::UnpackAssign { .. } => assign::compile_assign(ctx, expr),
         Expr::Unary { .. } => unary::compile_unary(ctx, expr),
         Expr::Binary { .. } => binary::compile_binary(ctx, expr),
@@ -96,6 +97,12 @@ pub fn compile_expr(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
         }),
         Expr::Ireturn { line, .. } => Err(LangError::ParseError {
             message: "`ireturn` is only compiled inside stream fn body".to_string(),
+            line: *line,
+            file: ctx.source_name.map(|s| s.to_string()),
+        }),
+        Expr::TableColumnWrite { line, .. } => Err(LangError::ParseError {
+            message: "table column write (`orders![\"col\"]`) is only valid as an assignment target"
+                .to_string(),
             line: *line,
             file: ctx.source_name.map(|s| s.to_string()),
         }),

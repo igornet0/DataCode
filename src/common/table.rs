@@ -303,6 +303,28 @@ impl Table {
         matches!(self.data, TableData::View { .. })
     }
 
+    /// Identity for `relate` / `primary_key` flush: `Value::Table` clone is a deep copy (new `Rc`).
+    pub fn same_schema_binding(&self, other: &Table) -> bool {
+        if self.headers() != other.headers() || self.len() != other.len() {
+            return false;
+        }
+        match (&self.data, &other.data) {
+            (
+                TableData::Owned { flat: a, .. },
+                TableData::Owned { flat: b, .. },
+            ) => a == b,
+            (
+                TableData::View {
+                    flat_cell_ids: a, ..
+                },
+                TableData::View {
+                    flat_cell_ids: b, ..
+                },
+            ) => a == b,
+            _ => false,
+        }
+    }
+
     /// Convert a View table to Owned by loading each cell with the given callback.
     /// No-op for already Owned tables. Used so ML dataset() can call get_column on tables created by table() fast path.
     pub fn materialize_with<F>(&self, load: F) -> Self

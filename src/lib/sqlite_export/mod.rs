@@ -1,14 +1,21 @@
 // Модуль для экспорта таблиц DataCode в SQLite
 
 mod apply_sql;
+pub mod type_map;
 
-pub use apply_sql::{apply_sql_table_soft, apply_sql_transaction};
+pub use apply_sql::{apply_sql_table_soft, apply_sql_transaction, resync_datacode_schema};
+pub use crate::dcp::FkCheckMode;
 
 use crate::common::table::{Table, TableData};
 use crate::common::value::Value;
+use crate::dcp::ContentAssetStore;
+use self::type_map::{
+    ensure_system_tables_sql, infer_datacode_type_for_header, is_datacode_system_table,
+    validate_schema_type_pair, value_to_sql_output, SCHEMA_VERSION, TABLE_SCHEMA, TABLE_VERSION,
+};
 use crate::vm::Vm;
 use chrono::Utc;
-use rusqlite::types::{ToSqlOutput, ValueRef};
+use rusqlite::types::ToSqlOutput;
 use rusqlite::{params, Connection, Result as SqliteResult};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -16,28 +23,15 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::Instant;
 
-/// Адаптер для привязки [`Value`] к параметрам SQLite без боксинга на каждую ячейку.
-struct ValueParam<'a>(&'a Value);
+/// Адаптер для привязки [`Value`] к параметрам SQLite с учётом Datacode-типа колонки.
+struct ValueParam<'a> {
+    value: &'a Value,
+    datacode_type: Option<&'a str>,
+}
 
 impl rusqlite::ToSql for ValueParam<'_> {
     fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
-        Ok(match self.0 {
-            Value::Number(n) if n.fract() == 0.0 => ToSqlOutput::Owned(rusqlite::types::Value::Integer(*n as i64)),
-            Value::Number(n) => ToSqlOutput::Owned(rusqlite::types::Value::Real(*n)),
-            Value::Bool(b) => ToSqlOutput::Owned(rusqlite::types::Value::Integer(if *b {
-                1
-            } else {
-                0
-            })),
-            Value::String(s) => ToSqlOutput::Borrowed(ValueRef::Text(s.as_bytes())),
-            Value::Date(d) => ToSqlOutput::Owned(rusqlite::types::Value::Text(d.to_rfc3339())),
-            Value::Duration(d) => {
-                let sec = d.num_seconds() as f64 + d.subsec_nanos() as f64 * 1e-9;
-                ToSqlOutput::Owned(rusqlite::types::Value::Real(sec))
-            }
-            Value::Null => ToSqlOutput::Owned(rusqlite::types::Value::Null),
-            other => ToSqlOutput::Owned(rusqlite::types::Value::Text(other.to_string())),
-        })
+        Ok(value_to_sql_output(self.value, self.datacode_type))
     }
 }
 
@@ -55,7 +49,7 @@ struct PrimaryKeyInfo {
 }
 
 /// Структура для информации о внешнем ключе
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct ForeignKeyInfo {
     table_name: String,
     column_name: String,
@@ -63,14 +57,88 @@ struct ForeignKeyInfo {
     referenced_column: String,
 }
 
+/// Result of a successful SQLite export (`warning` set for `warn` / `skip` FK modes).
+#[derive(Debug, Clone, Default)]
+pub struct SqliteExportOutcome {
+    pub warning: Option<String>,
+}
+
+struct FkViolation {
+    table: String,
+    rowid: i64,
+    parent: String,
+    fkid: i64,
+    from_col: Option<String>,
+    to_col: Option<String>,
+}
+
 /// Главная функция экспорта в SQLite (глобальные таблицы VM).
-pub fn export_to_sqlite(vm: &mut Vm, output_path: &str, debug_timings: bool) -> Result<(), String> {
+/// Persist content-addressed DCP assets into `__assets` (after business tables export).
+pub fn export_content_assets(
+    db_path: &Path,
+    store: &ContentAssetStore,
+) -> Result<(), String> {
+    if store.is_empty() {
+        return Ok(());
+    }
+    let mut conn = Connection::open(db_path).map_err(|e| format!("open sqlite: {e}"))?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("begin transaction: {e}"))?;
+    tx.execute_batch(
+        "CREATE TABLE IF NOT EXISTS __assets (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            filename TEXT,
+            size INTEGER NOT NULL,
+            data BLOB NOT NULL
+        );",
+    )
+    .map_err(|e| format!("create __assets: {e}"))?;
+
+    {
+        let mut stmt = tx
+            .prepare(
+                "INSERT OR REPLACE INTO __assets (id, kind, mime_type, filename, size, data)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            )
+            .map_err(|e| format!("prepare __assets insert: {e}"))?;
+        for (id, asset) in store.iter() {
+            stmt.execute(params![
+                id,
+                asset.meta.kind,
+                asset.meta.mime_type,
+                asset.meta.filename,
+                asset.meta.size as i64,
+                asset.data.as_slice(),
+            ])
+            .map_err(|e| format!("insert __assets {id}: {e}"))?;
+        }
+    }
+    tx.commit().map_err(|e| format!("commit __assets: {e}"))?;
+    Ok(())
+}
+
+pub fn export_to_sqlite(
+    vm: &mut Vm,
+    output_path: &str,
+    debug_timings: bool,
+    fk_check: FkCheckMode,
+) -> Result<SqliteExportOutcome, String> {
     let tables_map = get_global_tables(vm)?;
     if tables_map.is_empty() {
         return Err("Нет таблиц для экспорта".to_string());
     }
     let tables: Vec<(String, Rc<RefCell<Table>>)> = tables_map.into_iter().collect();
-    export_tables_to_sqlite(vm, &tables, output_path, &HashMap::new(), debug_timings)
+    export_tables_to_sqlite(
+        vm,
+        &tables,
+        output_path,
+        &HashMap::new(),
+        debug_timings,
+        fk_check,
+    )
 }
 
 /// Экспорт указанного набора таблиц в SQLite.
@@ -80,7 +148,8 @@ pub fn export_tables_to_sqlite(
     output_path: &str,
     extra_variables: &HashMap<String, Value>,
     debug_timings: bool,
-) -> Result<(), String> {
+    fk_check: FkCheckMode,
+) -> Result<SqliteExportOutcome, String> {
     let t_total = Instant::now();
     if tables.is_empty() {
         return Err("Нет таблиц для экспорта".to_string());
@@ -129,41 +198,16 @@ pub fn export_tables_to_sqlite(
         eprintln!("[sqlite_export] detect_foreign_keys: {:?}", t.elapsed());
     }
 
-    let sorted_indices: Vec<usize> = if foreign_keys.is_empty() {
-        (0..table_infos.len()).collect()
-    } else {
-        topological_sort_tables(&table_infos, &foreign_keys)?
-    };
-
-    let mut fk_by_table: HashMap<String, Vec<&ForeignKeyInfo>> = HashMap::new();
-    for fk in &foreign_keys {
-        fk_by_table
-            .entry(fk.table_name.clone())
-            .or_insert_with(Vec::new)
-            .push(fk);
-    }
-
-    let mut pk_by_table: HashMap<String, &PrimaryKeyInfo> = HashMap::new();
-    for pk in &primary_keys {
-        pk_by_table.insert(pk.table_name.clone(), pk);
-    }
-
     let t = Instant::now();
-    let tx = conn
-        .transaction()
-        .map_err(|e| format!("Ошибка начала транзакции: {}", e))?;
-
-    for &table_idx in &sorted_indices {
-        create_and_fill_table(&tx, &table_infos[table_idx], &pk_by_table, &fk_by_table)
-            .map_err(|e| format!("Ошибка экспорта таблицы {}: {}", table_infos[table_idx].name, e))?;
-    }
-
-    create_indexes_impl(&tx, &foreign_keys)
-        .map_err(|e| format!("Ошибка создания индексов: {}", e))?;
-
-    tx.commit()
-        .map_err(|e| format!("Ошибка коммита транзакции: {}", e))?;
-
+    write_schema_and_data(
+        &mut conn,
+        vm,
+        tables,
+        &table_infos,
+        &primary_keys,
+        &foreign_keys,
+        extra_variables,
+    )?;
     if debug_timings {
         eprintln!("[sqlite_export] create tables + insert + indexes: {:?}", t.elapsed());
     }
@@ -171,34 +215,247 @@ pub fn export_tables_to_sqlite(
     conn.execute("PRAGMA foreign_keys = ON", [])
         .map_err(|e| format!("Ошибка включения FOREIGN KEY после загрузки: {}", e))?;
 
-    let mut fk_check = conn
-        .prepare("PRAGMA foreign_key_check")
-        .map_err(|e| format!("Ошибка PRAGMA foreign_key_check: {}", e))?;
-    let mut violations = fk_check
-        .query([])
-        .map_err(|e| format!("Ошибка выполнения foreign_key_check: {}", e))?;
-    if violations
-        .next()
-        .map_err(|e| format!("Ошибка чтения foreign_key_check: {}", e))?
-        .is_some()
-    {
-        return Err(
-            "Ошибка целостности: foreign_key_check обнаружил нарушения после экспорта".to_string(),
-        );
-    }
+    let violations = collect_fk_violations(&conn)?;
+    let warning = if violations.is_empty() {
+        None
+    } else {
+        match fk_check {
+            FkCheckMode::Strict => {
+                return Err(format_fk_integrity_error(&violations));
+            }
+            FkCheckMode::Skip => {
+                let msg = format_fk_mode_warning(FkCheckMode::Skip, &violations);
+                eprintln!("⚠️  {msg}");
+                Some(msg)
+            }
+            FkCheckMode::Warn => {
+                let msg = format_fk_mode_warning(FkCheckMode::Warn, &violations);
+                let skip = violated_foreign_keys(&violations);
+                let filtered: Vec<ForeignKeyInfo> = foreign_keys
+                    .iter()
+                    .filter(|fk| !skip.contains(fk))
+                    .cloned()
+                    .collect();
+                conn.execute("PRAGMA foreign_keys = OFF", [])
+                    .map_err(|e| format!("Ошибка PRAGMA foreign_keys = OFF: {e}"))?;
+                drop_exported_tables(&conn, &table_infos)?;
+                write_schema_and_data(
+                    &mut conn,
+                    vm,
+                    tables,
+                    &table_infos,
+                    &primary_keys,
+                    &filtered,
+                    extra_variables,
+                )?;
+                conn.execute("PRAGMA foreign_keys = ON", [])
+                    .map_err(|e| format!("Ошибка включения FOREIGN KEY после загрузки: {e}"))?;
+                let leftover = collect_fk_violations(&conn)?;
+                if !leftover.is_empty() {
+                    return Err(format_fk_integrity_error(&leftover));
+                }
+                eprintln!("⚠️  {msg}");
+                Some(msg)
+            }
+        }
+    };
 
-    let t = Instant::now();
-    let tables_map: HashMap<String, Rc<RefCell<Table>>> =
-        tables.iter().map(|(n, t)| (n.clone(), t.clone())).collect();
-    create_metadata_table(&conn, vm, &tables_map, extra_variables)
-        .map_err(|e| format!("Ошибка создания таблицы метаданных: {}", e))?;
     if debug_timings {
-        eprintln!("[sqlite_export] create_metadata_table: {:?}", t.elapsed());
         eprintln!("[sqlite_export] total: {:?}", t_total.elapsed());
     }
 
     println!("✅ Экспорт завершен: {}", output_path);
+    Ok(SqliteExportOutcome { warning })
+}
+
+fn write_schema_and_data(
+    conn: &mut Connection,
+    vm: &mut Vm,
+    tables: &[(String, Rc<RefCell<Table>>)],
+    table_infos: &[TableInfo],
+    primary_keys: &[PrimaryKeyInfo],
+    foreign_keys: &[ForeignKeyInfo],
+    extra_variables: &HashMap<String, Value>,
+) -> Result<(), String> {
+    let sorted_indices: Vec<usize> = if foreign_keys.is_empty() {
+        (0..table_infos.len()).collect()
+    } else {
+        topological_sort_tables(table_infos, foreign_keys)?
+    };
+
+    let mut fk_by_table: HashMap<String, Vec<&ForeignKeyInfo>> = HashMap::new();
+    for fk in foreign_keys {
+        fk_by_table
+            .entry(fk.table_name.clone())
+            .or_insert_with(Vec::new)
+            .push(fk);
+    }
+
+    let mut pk_by_table: HashMap<String, &PrimaryKeyInfo> = HashMap::new();
+    for pk in primary_keys {
+        pk_by_table.insert(pk.table_name.clone(), pk);
+    }
+
+    let tx = conn
+        .transaction()
+        .map_err(|e| format!("Ошибка начала транзакции: {}", e))?;
+
+    ensure_datacode_system_tables(&tx)
+        .map_err(|e| format!("Ошибка создания системных таблиц Datacode: {}", e))?;
+
+    for &table_idx in &sorted_indices {
+        let info = &table_infos[table_idx];
+        if is_datacode_system_table(&info.sqlite_name) {
+            return Err(format!(
+                "Нельзя экспортировать системную таблицу '{}'",
+                info.sqlite_name
+            ));
+        }
+        create_and_fill_table(&tx, info, &pk_by_table, &fk_by_table)
+            .map_err(|e| format!("Ошибка экспорта таблицы {}: {}", info.name, e))?;
+        write_table_schema_metadata(&tx, info)
+            .map_err(|e| format!("Ошибка записи _datacode_schema для {}: {}", info.name, e))?;
+    }
+
+    create_indexes_impl(&tx, foreign_keys)
+        .map_err(|e| format!("Ошибка создания индексов: {}", e))?;
+
+    let tables_map: HashMap<String, Rc<RefCell<Table>>> =
+        tables.iter().map(|(n, t)| (n.clone(), t.clone())).collect();
+    create_metadata_table_tx(&tx, vm, &tables_map, extra_variables)
+        .map_err(|e| format!("Ошибка создания таблицы метаданных: {}", e))?;
+
+    tx.commit()
+        .map_err(|e| format!("Ошибка коммита транзакции: {}", e))?;
     Ok(())
+}
+
+fn drop_exported_tables(conn: &Connection, table_infos: &[TableInfo]) -> Result<(), String> {
+    for info in table_infos {
+        conn.execute(
+            &format!("DROP TABLE IF EXISTS {}", info.sqlite_name),
+            [],
+        )
+        .map_err(|e| format!("Ошибка DROP TABLE {}: {e}", info.sqlite_name))?;
+    }
+    Ok(())
+}
+
+fn collect_fk_violations(conn: &Connection) -> Result<Vec<FkViolation>, String> {
+    let mut fk_check = conn
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(|e| format!("Ошибка PRAGMA foreign_key_check: {e}"))?;
+    let rows: Vec<(String, i64, String, i64)> = fk_check
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i64>(3)?,
+            ))
+        })
+        .map_err(|e| format!("Ошибка выполнения foreign_key_check: {e}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("Ошибка чтения foreign_key_check: {e}"))?;
+
+    let mut violations = Vec::with_capacity(rows.len());
+    for (table, rowid, parent, fkid) in rows {
+        let mut stmt = conn
+            .prepare(&format!("PRAGMA foreign_key_list(\"{table}\")"))
+            .map_err(|e| format!("Ошибка PRAGMA foreign_key_list({table}): {e}"))?;
+        let cols = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .ok()
+            .and_then(|mapped| {
+                mapped
+                    .filter_map(|r| r.ok())
+                    .find(|(id, _, _, _)| *id == fkid)
+                    .map(|(_, _, from_col, to_col)| (from_col, to_col))
+            });
+        let (from_col, to_col) = match cols {
+            Some((from_col, to_col)) => (Some(from_col), Some(to_col)),
+            None => (None, None),
+        };
+        violations.push(FkViolation {
+            table,
+            rowid,
+            parent,
+            fkid,
+            from_col,
+            to_col,
+        });
+    }
+    Ok(violations)
+}
+
+fn violated_foreign_keys(violations: &[FkViolation]) -> HashSet<ForeignKeyInfo> {
+    let mut out = HashSet::new();
+    for v in violations {
+        let Some(from_col) = v.from_col.as_ref() else {
+            continue;
+        };
+        let Some(to_col) = v.to_col.as_ref() else {
+            continue;
+        };
+        out.insert(ForeignKeyInfo {
+            table_name: v.table.clone(),
+            column_name: from_col.clone(),
+            referenced_table: v.parent.clone(),
+            referenced_column: to_col.clone(),
+        });
+    }
+    out
+}
+
+fn fk_violation_desc(v: &FkViolation) -> String {
+    match (&v.from_col, &v.to_col) {
+        (Some(from_col), Some(to_col)) => {
+            format!("{}.{from_col} -> {}({to_col})", v.table, v.parent)
+        }
+        _ => format!("{} -> {} (fkid={})", v.table, v.parent, v.fkid),
+    }
+}
+
+fn format_fk_integrity_error(violations: &[FkViolation]) -> String {
+    let sample_n = violations.len().min(8);
+    let mut details: Vec<String> = Vec::new();
+    for v in &violations[..sample_n] {
+        details.push(format!("{} (rowid={})", fk_violation_desc(v), v.rowid));
+    }
+    let more = if violations.len() > sample_n {
+        format!("; …ещё {} нарушени(й)", violations.len() - sample_n)
+    } else {
+        String::new()
+    };
+    format!(
+        "Ошибка целостности: foreign_key_check обнаружил {} нарушени(й) после экспорта: {}{}",
+        violations.len(),
+        details.join("; "),
+        more
+    )
+}
+
+fn format_fk_mode_warning(mode: FkCheckMode, violations: &[FkViolation]) -> String {
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    for v in violations {
+        *counts.entry(fk_violation_desc(v)).or_insert(0) += 1;
+    }
+    let mut parts: Vec<String> = counts
+        .into_iter()
+        .map(|(desc, n)| match mode {
+            FkCheckMode::Warn => format!("skipped {desc} ({n} orphans)"),
+            _ => format!("{desc} ({n} orphans)"),
+        })
+        .collect();
+    parts.sort();
+    format!("fk_check={}: {}", mode.as_str(), parts.join("; "))
 }
 
 /// Export a single materialized table to a new SQLite database file.
@@ -229,8 +486,12 @@ pub fn export_single_table(
         .map_err(|e| format!("Ошибка начала транзакции: {}", e))?;
     let empty_pk: HashMap<String, &PrimaryKeyInfo> = HashMap::new();
     let empty_fk: HashMap<String, Vec<&ForeignKeyInfo>> = HashMap::new();
+    ensure_datacode_system_tables(&tx)
+        .map_err(|e| format!("Ошибка системных таблиц: {}", e))?;
     create_and_fill_table(&tx, &table_info, &empty_pk, &empty_fk)
         .map_err(|e| format!("Ошибка экспорта таблицы: {}", e))?;
+    write_table_schema_metadata(&tx, &table_info)
+        .map_err(|e| format!("Ошибка _datacode_schema: {}", e))?;
     tx.commit()
         .map_err(|e| format!("Ошибка коммита транзакции: {}", e))?;
     Ok(())
@@ -268,7 +529,7 @@ pub fn get_global_tables(
 
 #[cfg(test)]
 mod tests {
-    use super::{export_to_sqlite, get_global_tables};
+    use super::{export_to_sqlite, get_global_tables, FkCheckMode};
     use rusqlite::Connection;
 
     #[test]
@@ -314,7 +575,13 @@ global orders = table([[1, 1, 100], [2, 2, 200]], ["id", "user_id", "amount"])
         let (_v, mut vm) = crate::run_with_vm(source).expect("run_with_vm should succeed");
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("export_test.db");
-        export_to_sqlite(&mut vm, db_path.to_str().unwrap(), false).expect("export");
+        export_to_sqlite(
+            &mut vm,
+            db_path.to_str().unwrap(),
+            false,
+            FkCheckMode::Strict,
+        )
+        .expect("export");
 
         let conn = Connection::open(&db_path).expect("open db");
         conn.execute("PRAGMA foreign_keys = ON", []).unwrap();
@@ -368,56 +635,6 @@ fn sanitize_table_name(name: &str) -> String {
         .collect()
 }
 
-/// Тип SQLite для колонки по данным (ранний выход при первой строке — TEXT).
-fn infer_column_type_for_header(table: &Table, header: &str) -> String {
-    let Some(col_idx) = table.headers().iter().position(|h| h == header) else {
-        return "TEXT".to_string();
-    };
-    match &table.data {
-        TableData::Owned {
-            flat,
-            num_cols,
-            ..
-        } => {
-            if *num_cols == 0 {
-                return "TEXT".to_string();
-            }
-            let nrows = flat.len() / num_cols;
-            let mut has_integer = false;
-            let mut has_float = false;
-            let mut has_bool = false;
-
-            for row in 0..nrows {
-                let value = flat.get(row * num_cols + col_idx).unwrap_or(&Value::Null);
-                match value {
-                    Value::String(_) => return "TEXT".to_string(),
-                    Value::Date(_) => return "TEXT".to_string(),
-                    Value::Duration(_) => return "REAL".to_string(),
-                    Value::Number(n) => {
-                        if n.fract() == 0.0 {
-                            has_integer = true;
-                        } else {
-                            has_float = true;
-                        }
-                    }
-                    Value::Bool(_) => has_bool = true,
-                    Value::Null => {}
-                    _ => return "TEXT".to_string(),
-                }
-            }
-
-            if has_float {
-                "REAL".to_string()
-            } else if has_integer || has_bool {
-                "INTEGER".to_string()
-            } else {
-                "TEXT".to_string()
-            }
-        }
-        TableData::View { .. } => "TEXT".to_string(),
-    }
-}
-
 fn is_integer_column_for_header(table: &Table, header: &str) -> bool {
     let Some(col_idx) = table.headers().iter().position(|h| h == header) else {
         return false;
@@ -460,16 +677,63 @@ fn is_unique_column_for_header(table: &Table, header: &str) -> bool {
                 return true;
             }
             let nrows = flat.len() / num_cols;
-            let mut seen = HashSet::new();
+            // Use Display keys: Value::Hash panics on Object/Array/Table (common in MongoDB cells).
+            let mut seen = HashSet::<String>::new();
             for row in 0..nrows {
                 let value = flat.get(row * num_cols + col_idx).unwrap_or(&Value::Null);
-                if !matches!(value, Value::Null) && !seen.insert(value) {
+                if matches!(value, Value::Null) {
+                    continue;
+                }
+                if !value_hashable_for_sqlite_unique(value) {
+                    // Nested/complex cells cannot be PK candidates.
+                    return false;
+                }
+                let key = value_unique_key(value);
+                if !seen.insert(key) {
                     return false;
                 }
             }
             true
         }
         TableData::View { .. } => false,
+    }
+}
+
+fn value_hashable_for_sqlite_unique(v: &Value) -> bool {
+    matches!(
+        v,
+        Value::Bool(_)
+            | Value::Number(_)
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::String(_)
+            | Value::Date(_)
+            | Value::Duration(_)
+            | Value::Uuid(_, _)
+            | Value::Path(_)
+            | Value::ByteBuffer(_)
+    )
+}
+
+fn value_unique_key(v: &Value) -> String {
+    match v {
+        Value::Bool(b) => format!("b:{b}"),
+        Value::Number(n) => format!("n:{n}"),
+        Value::Int(i) => format!("i:{}", i.to_display_string()),
+        Value::Float(f) => format!("f:{f:?}"),
+        Value::String(s) => format!("s:{s}"),
+        Value::Date(d) => format!("d:{}", d.to_rfc3339()),
+        Value::Duration(d) => format!("du:{}", d.num_nanoseconds().unwrap_or(0)),
+        Value::Uuid(a, b) => format!("u:{a}:{b}"),
+        Value::Path(p) => format!("p:{}", p.display()),
+        Value::ByteBuffer(b) => format!(
+            "bb:{}",
+            b.bytes[b.offset..b.offset + b.len]
+                .iter()
+                .map(|x| format!("{x:02x}"))
+                .collect::<String>()
+        ),
+        other => format!("o:{other:?}"),
     }
 }
 
@@ -487,9 +751,13 @@ fn create_and_fill_table(
 
     let headers: Vec<String> = table.headers().clone();
     let sanitized_headers: Vec<String> = headers.iter().map(|h| sanitize_column_name(h)).collect();
-    let column_types: Vec<String> = headers
+    let datacode_types: Vec<&'static str> = headers
         .iter()
-        .map(|h| infer_column_type_for_header(&table, h))
+        .map(|h| infer_datacode_type_for_header(&table, h))
+        .collect();
+    let column_types: Vec<String> = datacode_types
+        .iter()
+        .map(|dc| type_map::datacode_to_sqlite_declared(dc).to_string())
         .collect();
 
     let pk_column = pk_by_table.get(&table_info.sqlite_name);
@@ -543,7 +811,11 @@ fn create_and_fill_table(
 
     let mut stmt = tx.prepare(&insert_sql)?;
     for row in rr.iter() {
-        stmt.execute(rusqlite::params_from_iter(row.iter().map(ValueParam)))?;
+        let params_iter = row.iter().enumerate().map(|(i, v)| ValueParam {
+            value: v,
+            datacode_type: datacode_types.get(i).copied(),
+        });
+        stmt.execute(rusqlite::params_from_iter(params_iter))?;
     }
 
     Ok(())
@@ -930,9 +1202,92 @@ fn create_indexes_impl(
     Ok(())
 }
 
-/// Создание таблицы метаданных
-fn create_metadata_table(
-    conn: &Connection,
+/// Создание таблицы метаданных (внутри уже открытой транзакции — см. `create_metadata_table_tx`).
+fn ensure_datacode_system_tables(tx: &rusqlite::Transaction<'_>) -> SqliteResult<()> {
+    tx.execute_batch(ensure_system_tables_sql())?;
+    let count: i64 = tx.query_row(
+        &format!("SELECT COUNT(*) FROM {}", TABLE_VERSION),
+        [],
+        |r| r.get(0),
+    )?;
+    if count == 0 {
+        tx.execute(
+            &format!("INSERT INTO {} (version) VALUES (?1)", TABLE_VERSION),
+            params![SCHEMA_VERSION],
+        )?;
+    }
+    Ok(())
+}
+
+fn write_table_schema_metadata(
+    tx: &rusqlite::Transaction<'_>,
+    table_info: &TableInfo,
+) -> Result<(), String> {
+    let table = table_info.table.borrow();
+    let headers = table.headers().clone();
+    if headers.is_empty() {
+        return Ok(());
+    }
+    let mut stmt = tx
+        .prepare(
+            &format!(
+                "INSERT OR REPLACE INTO {}
+                (table_name, column_name, datacode_type, sqlite_type, nullable, version)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                TABLE_SCHEMA
+            ),
+        )
+        .map_err(|e| e.to_string())?;
+
+    for h in &headers {
+        let san = sanitize_column_name(h);
+        let dc = infer_datacode_type_for_header(&table, h);
+        let sql_ty = type_map::datacode_to_sqlite_declared(dc);
+        validate_schema_type_pair(dc, sql_ty)?;
+        let nullable = column_has_null(&table, h);
+        stmt.execute(params![
+            table_info.sqlite_name,
+            san,
+            dc,
+            sql_ty,
+            if nullable { 1i64 } else { 0i64 },
+            SCHEMA_VERSION
+        ])
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn column_has_null(table: &Table, header: &str) -> bool {
+    let Some(col_idx) = table.headers().iter().position(|h| h == header) else {
+        return true;
+    };
+    match &table.data {
+        TableData::Owned {
+            flat,
+            num_cols,
+            ..
+        } => {
+            if *num_cols == 0 {
+                return true;
+            }
+            let nrows = flat.len() / num_cols;
+            for row in 0..nrows {
+                if matches!(
+                    flat.get(row * num_cols + col_idx).unwrap_or(&Value::Null),
+                    Value::Null
+                ) {
+                    return true;
+                }
+            }
+            false
+        }
+        TableData::View { .. } => true,
+    }
+}
+
+fn create_metadata_table_tx(
+    conn: &rusqlite::Transaction<'_>,
     vm: &mut crate::vm::vm::Vm,
     exported_tables: &HashMap<String, Rc<RefCell<Table>>>,
     extra_variables: &HashMap<String, Value>,

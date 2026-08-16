@@ -105,6 +105,8 @@ datasource({
 
 **Required:** one of `url`, `database`, or `path` that resolves to a SQLite location.
 
+Files produced by `--build_model` / `save_sqlite` include `_datacode_schema` and `_datacode_version`. On `get_table` / `query`, Datacode restores `date` / `duration` from that metadata (falling back to declared column types like `DATE` / `DATETIME`).
+
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `type` | **yes** | — | `"sqlite"` or `"sql"` |

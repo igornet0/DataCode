@@ -4,6 +4,7 @@
 # UI operations: round, ceil, floor, abs
 #
 # data.map("Column", fn) — new table with transformed column (others unchanged).
+# orders["Column"].map(fn) — array of transformed values (for orders!["new"] = ...).
 # Reliable with natives: round, abs, int, …
 # Wrapper fn calling round(x, n) inside map — not reliable yet; see comments below.
 

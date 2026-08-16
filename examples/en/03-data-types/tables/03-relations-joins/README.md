@@ -20,7 +20,7 @@ dcr examples/en/03-data-types/tables/03-relations-joins/04-save_tables_sqlite.dc
 ## 01-relations.dc
 
 - `primary_key(col)` — mark primary key
-- `relate(col1, col2)` — declare relation between columns (for data model / export)
+- `relate(pk_col, fk_col, ...)` / `relate([...])` — declare relation(s); first = PK, rest = FKs
 
 ## 02-join-basics.dc
 

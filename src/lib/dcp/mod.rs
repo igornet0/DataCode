@@ -6,8 +6,10 @@ mod binary;
 mod checksum;
 mod compression;
 mod constants;
+mod content_asset;
 mod decoder;
 mod error;
+mod fk_check;
 mod header;
 mod index;
 mod metadata;
@@ -20,8 +22,13 @@ mod vfs;
 pub use arrow_table::{apply_source_table_columns, arrow_ipc_to_table};
 pub use asset::normalize_asset_path;
 pub use constants::{SectionType, DCP_MAGIC};
+pub use content_asset::{
+    clear_dcp_content_assets, dcp_content_assets_active, get_dcp_content_assets, parse_asset_ref,
+    set_dcp_content_assets, validate_table_asset_refs, AssetMeta, ContentAsset, ContentAssetStore,
+};
 pub use decoder::{DecodedPackage, DcpDecoder};
 pub use error::DcpError;
+pub use fk_check::FkCheckMode;
 pub use session::{
     clear_dcp_metadata, clear_dcp_session, dcp_session_active, get_dcp_metadata, set_dcp_metadata,
 };

@@ -441,6 +441,12 @@ pub enum IterableInner {
         table: Rc<RefCell<Table>>,
         index: usize,
     },
+    /// Cell-by-cell iteration over a table column ([`Value::ColumnReference`]).
+    TableColumn {
+        table: Rc<RefCell<Table>>,
+        column_name: String,
+        index: usize,
+    },
     /// `enum(table)` / lazy zip: yields `(start + n, element)` by wrapping any inner lazy iterator.
     EnumerateIter {
         source: Rc<RefCell<IterableInner>>,
@@ -527,6 +533,15 @@ impl Clone for IterableInner {
             },
             Self::TableRows { table, .. } => Self::TableRows {
                 table: table.clone(),
+                index: 0,
+            },
+            Self::TableColumn {
+                table,
+                column_name,
+                ..
+            } => Self::TableColumn {
+                table: table.clone(),
+                column_name: column_name.clone(),
                 index: 0,
             },
             Self::EnumerateIter { source, start, .. } => Self::EnumerateIter {
@@ -1420,6 +1435,7 @@ impl Value {
                     IterableInner::Enumerate { .. } => "enumerate",
                     IterableInner::Chunks { .. } => "chunk",
                     IterableInner::TableRows { .. } => "table_rows",
+                    IterableInner::TableColumn { .. } => "table_column",
                     IterableInner::EnumerateIter { .. } => "enumerate_iter",
                     IterableInner::Array { .. } | IterableInner::ArrayView { .. } => "iterable",
                     IterableInner::StreamGenerator { .. } => "stream_generator",

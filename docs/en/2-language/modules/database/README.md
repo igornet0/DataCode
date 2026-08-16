@@ -16,8 +16,10 @@ from database_engine import engine, DatabaseCluster, MetaData, Column, select
 - **Methods on engine** (e.g. `conn.execute(...)`):
   - **connect()** – returns connection (for SQLite, same as engine)
   - **execute(sql, params?)** – execute SQL, return row count
-  - **query(sql, params?)** – execute SELECT, return Table
+  - **query(sql, params?)** – execute SELECT, return Table (SQLite: typed cells via `_datacode_schema` / declared types)
   - **run(callable_or_instance)** – create_all (DDL), model instance (INSERT), select(Model) (SELECT)
+
+For SQLite, ORM `create_all` and `--build_model` export write `_datacode_schema` / `_datacode_version` alongside user tables. String cells that look like ISO dates/datetimes or numbers are auto-detected; after `__sql__`, metadata is resynced from PRAGMA.
 
 ## DatabaseCluster
 

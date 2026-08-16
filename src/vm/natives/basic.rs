@@ -154,6 +154,20 @@ pub fn native_enum(args: &[Value]) -> Value {
             start: 0,
             next_index: 0,
         }))),
+        Value::ColumnReference { table, column_name } => {
+            if !table.borrow().has_column(column_name) {
+                return Value::Null;
+            }
+            Value::Iterable(Rc::new(RefCell::new(IterableInner::EnumerateIter {
+                source: Rc::new(RefCell::new(IterableInner::TableColumn {
+                    table: Rc::clone(table),
+                    column_name: column_name.clone(),
+                    index: 0,
+                })),
+                start: 0,
+                next_index: 0,
+            })))
+        }
         _ => Value::Null,
     }
 }

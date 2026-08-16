@@ -221,6 +221,52 @@ data.add_column("Extra")   # null in all rows
 
 ---
 
+### Column `.map(function)` — transform to array
+
+Applies a function to each cell of a **column reference** and returns a materialized **`array`** (same length as the column). Unlike `table.map(column, fn)`, this does not return a table — only the transformed values.
+
+**Receiver:** `table["ColumnName"]` (column reference)
+
+**Arguments:**
+- `function` (callable) — `fn(v) => ...` or a one-argument builtin (`int`, `round`, …)
+
+**Returns:** `array`
+
+**Examples:**
+```datacode
+vat = orders["Amount"].map(fn(v) => v * 1.2)
+doubled = data["Age"].map(fn(x) => x * 2)
+```
+
+**Note:** global `map(orders["Amount"], fn)` returns a lazy **iterable**; use `array(map(...))` or `.map(fn)` on the column when you need an `array`.
+
+---
+
+### Column assignment with `!` — `orders!["new_col"] = ...`
+
+Postfix `!` after a table variable opens **column write** context. Assignment adds a new column at the end (same as `add_column`) and updates the variable in place.
+
+**Syntax:**
+```datacode
+orders!["amount_vat"] = orders["amount"].map(fn(v) => v * 1.2)
+orders!.region = ["EMEA", "APAC", "EMEA"]
+```
+
+**Rules (v1):**
+- Only **assignment** (`=`); reading `orders!["col"]` without `=` is an error.
+- Left-hand table must be a **simple variable** (not an expression).
+- If the column already exists — `ValueError`.
+- RHS: `array`, scalar, or result of `column.map(fn)`.
+
+**Compare:**
+| Expression | Result |
+|------------|--------|
+| `orders["amount"].map(fn)` | `array` of transformed values |
+| `orders!["vat"] = ...` | table with new column appended |
+| `orders.map("amount", fn)` | table with **existing** column transformed |
+
+---
+
 ### `table_map(table, column, function)` / `table.map(column, function)`
 
 Applies a function to each cell in the specified column and returns a **new table** with transformed values in that column (other columns unchanged).
@@ -659,12 +705,24 @@ Loads a table from a file path (alternative to `read` for the typed constructor)
 
 ---
 
-### `relate(col1, col2)`
+### `relate(pk_col, fk_col, ...)` / `relate([pk_col, fk_col, ...])`
 
-Declares a relationship between columns (for subsequent JOINs).
+Declares relationships between columns (for the data model / SQLite export).
+
+**Star semantics:** the **first** column is the primary-key side (target); each following column is a foreign key (source) referencing it.
+
+```datacode
+relate(users["id"], orders["user_id"])
+# same as two calls:
+relate(users["id"], orders["user_id"], invoices["user_id"])
+relate([users["id"], orders["user_id"], invoices["user_id"]])
+```
 
 **Arguments:**
-- `col1`, `col2` — column references
+- two or more column references as positional args, **or**
+- a single array of column references
+
+Fewer than 2 columns, a non-column value, or mixing an array with extra args raises `TypeError`.
 
 ---
 
@@ -692,8 +750,10 @@ Exports an array of tables to a single SQLite file. `relate` and `primary_key` r
 ```datacode
 users = table([[1, "Alice"]], ["id", "name"])
 orders = table([[1, 100]], ["user_id", "amount"])
-relate(users["id"], orders["user_id"])
-path = save_tables_sqlite([users, orders], filename="model", env="dev")
+invoices = table([[1, 10]], ["user_id", "total"])
+relate(users["id"], orders["user_id"], invoices["user_id"])
+# or: relate([users["id"], orders["user_id"], invoices["user_id"]])
+path = save_tables_sqlite([users, orders, invoices], filename="model", env="dev")
 ```
 
 See also: [creation-and-operations.md](../tables/creation-and-operations.md)

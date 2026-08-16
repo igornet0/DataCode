@@ -87,6 +87,21 @@ pub fn coerce_to_iterable_value_from_id(
         Value::Table(t) => Ok(Value::Iterable(Rc::new(RefCell::new(
             IterableInner::TableRows { table: t, index: 0 },
         )))),
+        Value::ColumnReference { table, column_name } => {
+            if !table.borrow().has_column(&column_name) {
+                return Err(runtime(
+                    0,
+                    format!("KeyError: column '{}' not found in table", column_name),
+                ));
+            }
+            Ok(Value::Iterable(Rc::new(RefCell::new(
+                IterableInner::TableColumn {
+                    table,
+                    column_name,
+                    index: 0,
+                },
+            ))))
+        }
         Value::ObjectFieldList { element_ids, .. } => Ok(Value::Iterable(Rc::new(RefCell::new(
             IterableInner::ObjectFieldList {
                 element_ids: Rc::clone(&element_ids),
@@ -132,7 +147,7 @@ pub fn coerce_to_iterable_value_from_id(
         other => Err(runtime(
             0,
             format!(
-                "for-in / iterable: expected array, array view, tuple, set, string, enumerate, iterable, or generator, got {}",
+                "for-in / iterable: expected array, array view, tuple, set, string, enumerate, iterable, generator, table, or column, got {}",
                 crate::vm::calls::get_type_name_value(&other)
             ),
         )),
@@ -226,6 +241,7 @@ pub fn iterable_materialize_capacity_hint(inner: &IterableInner) -> Option<usize
         IterableInner::Filter { .. } => None,
         IterableInner::Enumerate { data, .. } => Some(data.borrow().len()),
         IterableInner::TableRows { table, .. } => Some(table.borrow().len()),
+        IterableInner::TableColumn { table, .. } => Some(table.borrow().len()),
         IterableInner::ObjectFieldList { element_ids, .. } => Some(element_ids.len()),
         IterableInner::EnumerateIter { source, .. } => {
             iterable_materialize_capacity_hint(&source.borrow())
@@ -446,6 +462,33 @@ pub fn iterable_next(inner: &mut IterableInner, vm: &mut Vm) -> Result<Option<Va
             *index += 1;
             Ok(Some(Value::legacy_object(row_dict)))
         }
+        IterableInner::TableColumn {
+            table,
+            column_name,
+            index,
+        } => {
+            let t = table.borrow();
+            let len = t.len();
+            if *index >= len {
+                return Ok(None);
+            }
+            let cell = crate::vm::table_ops::get_cell_value(
+                &*t,
+                *index,
+                column_name,
+                vm.value_store(),
+                vm.heavy_store(),
+            );
+            drop(t);
+            let Some(cell) = cell else {
+                return Err(runtime(
+                    0,
+                    format!("internal: table column '{}' cell missing", column_name),
+                ));
+            };
+            *index += 1;
+            Ok(Some(cell))
+        }
         IterableInner::EnumerateIter {
             source,
             start,
@@ -609,6 +652,27 @@ mod tests {
             Value::Iterable(rc) => assert!(matches!(
                 *rc.borrow(),
                 IterableInner::TableRows { .. }
+            )),
+            _ => panic!("expected iterable"),
+        }
+    }
+
+    #[test]
+    fn coerce_accepts_column_reference() {
+        let t = Table::from_data(
+            vec![vec![Value::Number(1.0)], vec![Value::Number(2.0)]],
+            Some(vec!["age".to_string()]),
+        );
+        let table = Rc::new(RefCell::new(t));
+        let v = Value::ColumnReference {
+            table: Rc::clone(&table),
+            column_name: "age".to_string(),
+        };
+        let out = coerce_to_iterable_value(v).expect("coerce");
+        match out {
+            Value::Iterable(rc) => assert!(matches!(
+                *rc.borrow(),
+                IterableInner::TableColumn { .. }
             )),
             _ => panic!("expected iterable"),
         }

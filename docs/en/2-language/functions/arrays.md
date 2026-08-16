@@ -235,20 +235,23 @@ buf = array_with_capacity(1000)
 
 ---
 
-### `set()` / `set(array)`
+### `set()` / `set(iterable)`
 
-Creates a set: empty or from array elements (elements must be hashable).
+Creates a set: empty or from iterable elements (elements must be hashable).
 
 **Arguments:**
-- optionally one `array`
+- optionally one iterable: `array`, table column, `tuple`, `set`, `string`, generator, etc. (same types as `for-in` / `set.update`)
 
 **Returns:** `set`
 
 **Examples:**
 ```datacode
 s = set()
-s = set([1, 2, 2, 3])   # set with unique elements
+s = set([1, 2, 2, 3])          # set with unique elements
+s = set(orders.region_id)      # unique values from a table column
 ```
+
+A non-iterable (`set(123)`) raises `TypeError`. Iterating a **table** yields row objects (unhashable) — for unique column values use `set(table.col)`, not `set(table)`.
 
 Set methods: `.add()`, `.remove()`, `.copy()`, etc. — see [Object](../data-types/object.md).
 

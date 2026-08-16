@@ -4,11 +4,12 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::cell::RefCell;
 
-use crate::common::value::Value;
+use crate::common::value::{ByteBuffer, Value};
 use crate::dcp::{
-    apply_source_table_columns, arrow_ipc_to_table, dcp_session_active, get_dcp_metadata,
-    get_dcp_tables, get_dcp_vfs,
+    apply_source_table_columns, arrow_ipc_to_table, dcp_session_active, get_dcp_content_assets,
+    get_dcp_metadata, get_dcp_tables, get_dcp_vfs, validate_table_asset_refs,
 };
+use crate::plot::Image;
 use crate::websocket::set_native_error;
 
 fn arg_string(args: &[Value], fn_name: &str, arg_name: &str) -> Option<String> {
@@ -87,13 +88,22 @@ pub fn native_ws_source_table(args: &[Value]) -> Value {
         }
     };
 
-    match apply_source_table_columns(table, columns) {
-        Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
+    let table = match apply_source_table_columns(table, columns) {
+        Ok(t) => t,
         Err(e) => {
             set_native_error(e);
-            Value::Null
+            return Value::Null;
+        }
+    };
+
+    if let Some(store) = get_dcp_content_assets() {
+        if let Err(e) = validate_table_asset_refs(&name, &table, &store) {
+            set_native_error(e);
+            return Value::Null;
         }
     }
+
+    Value::Table(Rc::new(RefCell::new(table)))
 }
 
 /// `ws.assets()` — logical asset paths (no server filesystem paths).
@@ -149,6 +159,63 @@ pub fn native_ws_metadata_get(args: &[Value]) -> Value {
     }
 }
 
+/// `ws.content_assets()` — content-addressed asset ids (SHA-256 hex).
+pub fn native_ws_content_assets(_args: &[Value]) -> Value {
+    if !require_session() {
+        return Value::Null;
+    }
+    let ids = get_dcp_content_assets()
+        .map(|s| s.ids())
+        .unwrap_or_default();
+    let items: Vec<Value> = ids.into_iter().map(Value::String).collect();
+    Value::Array(Rc::new(RefCell::new(items)))
+}
+
+/// `ws.has_content_asset(id)`
+pub fn native_ws_has_content_asset(args: &[Value]) -> Value {
+    if !require_session() {
+        return Value::Null;
+    }
+    let Some(id) = arg_string(args, "has_content_asset", "id") else {
+        return Value::Null;
+    };
+    let has = get_dcp_content_assets()
+        .map(|s| s.contains(&id))
+        .unwrap_or(false);
+    Value::Bool(has)
+}
+
+/// `ws.content_asset(id)` — bytes, or `image` when kind/mime is image.
+pub fn native_ws_content_asset(args: &[Value]) -> Value {
+    if !require_session() {
+        return Value::Null;
+    }
+    let Some(id) = arg_string(args, "content_asset", "id") else {
+        return Value::Null;
+    };
+    let Some(store) = get_dcp_content_assets() else {
+        set_native_error(format!("content asset '{id}' not found"));
+        return Value::Null;
+    };
+    let Some(asset) = store.get(&id) else {
+        set_native_error(format!("content asset '{id}' not found"));
+        return Value::Null;
+    };
+
+    let is_image = asset.meta.kind == "image" || asset.meta.mime_type.starts_with("image/");
+    if is_image {
+        match Image::from_bytes(&asset.data) {
+            Ok(img) => Value::Image(Rc::new(RefCell::new(img))),
+            Err(e) => {
+                set_native_error(format!("Failed to decode image asset '{id}': {e}"));
+                Value::Null
+            }
+        }
+    } else {
+        Value::ByteBuffer(ByteBuffer::from_vec(asset.data.clone()))
+    }
+}
+
 /// `ws.package_info()` — safe summary without host/port/paths/secrets.
 pub fn native_ws_package_info(_args: &[Value]) -> Value {
     if !require_session() {
@@ -157,11 +224,16 @@ pub fn native_ws_package_info(_args: &[Value]) -> Value {
 
     let table_count = get_dcp_tables().map(|t| t.count()).unwrap_or(0);
     let asset_count = get_dcp_vfs().map(|v| v.asset_count()).unwrap_or(0);
+    let content_asset_count = get_dcp_content_assets().map(|s| s.len()).unwrap_or(0);
     let has_metadata = get_dcp_metadata().map(|m| !m.is_empty()).unwrap_or(false);
 
     let mut map = HashMap::new();
     map.insert("table_count".to_string(), Value::Number(table_count as f64));
     map.insert("asset_count".to_string(), Value::Number(asset_count as f64));
+    map.insert(
+        "content_asset_count".to_string(),
+        Value::Number(content_asset_count as f64),
+    );
     map.insert("has_code".to_string(), Value::Bool(true));
     map.insert("has_metadata".to_string(), Value::Bool(has_metadata));
     Value::legacy_object(map)

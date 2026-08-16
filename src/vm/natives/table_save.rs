@@ -325,8 +325,9 @@ pub fn native_save_tables_sqlite(args: &[Value]) -> Value {
         &path_str,
         &extra,
         false,
+        crate::sqlite_export::FkCheckMode::Strict,
     ) {
-        Ok(()) => Value::String(path_str),
+        Ok(_) => Value::String(path_str),
         Err(e) => save_error(e),
     }
 }

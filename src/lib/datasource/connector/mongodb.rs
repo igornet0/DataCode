@@ -283,6 +283,25 @@ impl ConnectorBackend for MongoConnector {
                 serde_json::to_string(&serde_json::json!({ "collections": names }))
                     .unwrap_or_default()
             }
+            "delete" | "delete_many" => {
+                let coll_name = self.collection_name(spec.collection.as_deref())?.to_string();
+                // Empty filter `{}` deletes all documents in the collection.
+                let filter = Self::build_filter_doc(spec.filter.as_ref(), spec.native.as_ref())?;
+                let coll = self.collection(&coll_name)?;
+                let n = block_on(async {
+                    coll.delete_many(filter)
+                        .await
+                        .map_err(map_mongo_err)
+                        .map(|r| r.deleted_count)
+                })?;
+                format!("{{\"deleted\": {}}}", n)
+            }
+            "drop" | "drop_collection" => {
+                let coll_name = self.collection_name(spec.collection.as_deref())?.to_string();
+                let coll = self.collection(&coll_name)?;
+                block_on(async { coll.drop().await.map_err(map_mongo_err) })?;
+                format!("{{\"dropped\": \"{}\"}}", coll_name)
+            }
             "find" | _ => {
                 let coll_name = self.collection_name(spec.collection.as_deref())?.to_string();
                 let filter = Self::build_filter_doc(spec.filter.as_ref(), spec.native.as_ref())?;

@@ -13,6 +13,9 @@ db.connect()
 print("ping:", db.ping())
 print("supports_aggregation:", db.capabilities.supports_aggregation)
 
+# Очистка коллекции перед повторным запуском (иначе E11000 duplicate _id)
+db.request({ op: "delete_many", filter: {}, collection: "users" })
+
 # Загрузка плоских документов
 rows = table(
     [["1", "John", 25, "Helsinki"], ["2", "Alice", 30, "Moscow"]],

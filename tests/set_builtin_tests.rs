@@ -128,20 +128,107 @@ len(s)"#,
 }
 
 #[test]
-fn set_non_array_single_arg_is_null() {
+fn set_non_iterable_single_arg_is_type_error() {
+    assert_error_contains(
+        r#"x = set(123)"#,
+        "TypeError: set() expected an iterable",
+    );
+}
+
+#[test]
+fn set_too_many_args_is_type_error() {
+    assert_error_contains(
+        r#"x = set([], [])"#,
+        "TypeError: set() expected at most 1 argument",
+    );
+}
+
+#[test]
+fn set_from_table_column() {
+    assert_number(
+        r#"
+orders = table([
+    [1, "west"],
+    [2, "east"],
+    [3, "west"],
+], ["id", "region_id"])
+s = set(orders.region_id)
+len(s)
+"#,
+        2.0,
+    );
+}
+
+#[test]
+fn set_from_table_column_for_in() {
+    assert_number(
+        r#"
+orders = table([
+    [1, "west"],
+    [2, "east"],
+    [3, "west"],
+], ["id", "region_id"])
+c = 0
+for key in set(orders.region_id) {
+    c = c + 1
+}
+c
+"#,
+        2.0,
+    );
+}
+
+#[test]
+fn set_from_table_column_membership() {
     assert_bool(
-        r#"x = set(123)
-x == null"#,
+        r#"
+orders = table([
+    [1, "west"],
+    [2, "east"],
+    [3, "west"],
+], ["id", "region_id"])
+"west" in set(orders.region_id)
+"#,
         true,
     );
 }
 
 #[test]
-fn set_too_many_args_is_null() {
-    assert_bool(
-        r#"x = set([], [])
-x == null"#,
-        true,
+fn set_from_tuple() {
+    assert_number(
+        r#"s = set((1, 2, 2, 3))
+len(s)"#,
+        3.0,
+    );
+}
+
+#[test]
+fn set_from_string() {
+    assert_number(
+        r#"s = set("aab")
+len(s)"#,
+        2.0,
+    );
+}
+
+#[test]
+fn set_from_existing_set() {
+    assert_number(
+        r#"a = set([1, 2, 2])
+b = set(a)
+len(b)"#,
+        2.0,
+    );
+}
+
+#[test]
+fn set_from_table_rows_is_unhashable() {
+    assert_error_contains(
+        r#"
+t = table([[1, "a"], [2, "b"]], ["id", "name"])
+set(t)
+"#,
+        "unhashable type",
     );
 }
 

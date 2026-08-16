@@ -107,7 +107,8 @@ Appears as the result of `t["col"]`. Not a separate literal in the language — 
 Where implemented, you can pass a column as the first argument:
 
 - **`len(col)`** — row count;
-- **`sum`**, **`average`**, **`count`**, **`unique`** — column aggregates (for numbers and unique values — see implementation).
+- **`sum`**, **`average`**, **`count`**, **`unique`** — column aggregates (for numbers and unique values — see implementation);
+- **`set(col)`** — set of unique hashable column values.
 
 Example:
 
@@ -115,6 +116,7 @@ Example:
 ages = t["age"]
 print(sum(ages))
 print(unique(ages))
+print(set(ages))
 
 ```
 

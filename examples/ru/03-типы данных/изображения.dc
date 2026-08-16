@@ -1,0 +1,5 @@
+img = read(path("./datacode logo.png"))
+# png, jpg, jpeg, gif, webp, bmp
+
+print(img)
+print(typeof(img))

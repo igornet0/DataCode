@@ -1,0 +1,21 @@
+# Transformation: column.map + table! column assignment
+# CSV: data/orders.csv
+
+orders = read(path("data/orders.csv"))
+
+print("=== column.map — array of transformed values ===")
+vat = orders["Amount"].map(fn(v) => v * 1.2)
+print("typeof vat:", typeof(vat))
+print("len vat:", len(vat))
+print("vat[0]:", vat[0])
+
+print("\n=== orders!['AmountVat'] — add column in one step ===")
+orders!["AmountVat"] = orders["Amount"].map(fn(v) => v * 1.2)
+print("columns:", orders.columns)
+print("Amount[0]:", orders["Amount"][0], "| AmountVat[0]:", orders["AmountVat"][0])
+
+print("\n=== orders!.flag — dot syntax ===")
+orders!.flag = ["A", "B", "C", "D", "E", "F"]
+print("last column:", orders.columns[len(orders.columns) - 1])
+
+print("\nDone.")

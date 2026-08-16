@@ -105,6 +105,8 @@ datasource({
 
 **Обязательно:** одно из `url`, `database` или `path`, указывающее на SQLite.
 
+Файлы от `--build_model` / `save_sqlite` содержат `_datacode_schema` и `_datacode_version`. При `get_table` / `query` Datacode восстанавливает `date` / `duration` из metadata (иначе — declared-типы вроде `DATE` / `DATETIME`).
+
 | Параметр | Обязательный | По умолчанию | Описание |
 |----------|--------------|--------------|----------|
 | `type` | **да** | — | `"sqlite"` или `"sql"` |

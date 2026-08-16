@@ -11,6 +11,7 @@ pub const CONFIG_SECTION_NAME: &str = "__config__";
 pub const VARIABLES_SECTION_NAME: &str = "__variables__";
 pub const SQL_SECTION_NAME: &str = "__sql__";
 pub const SQL_TABLE_SECTION_NAME: &str = "__sql_table__";
+pub const ASSET_INDEX_SECTION_NAME: &str = "__asset_index__";
 
 pub const MAX_PACKAGE_SIZE: usize = 100 * 1024 * 1024;
 
@@ -25,6 +26,7 @@ pub enum SectionType {
     Variables = 6,
     Sql = 7,
     SqlTable = 8,
+    AssetIndex = 9,
 }
 
 impl SectionType {
@@ -38,6 +40,7 @@ impl SectionType {
             6 => Some(Self::Variables),
             7 => Some(Self::Sql),
             8 => Some(Self::SqlTable),
+            9 => Some(Self::AssetIndex),
             _ => None,
         }
     }

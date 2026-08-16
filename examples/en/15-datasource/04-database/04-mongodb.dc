@@ -13,6 +13,9 @@ db.connect()
 print("ping:", db.ping())
 print("supports_aggregation:", db.capabilities.supports_aggregation)
 
+# Clear collection before re-run (avoids E11000 duplicate _id)
+db.request({ op: "delete_many", filter: {}, collection: "users" })
+
 rows = table(
     [["1", "John", 25, "Helsinki"], ["2", "Alice", 30, "Moscow"]],
     ["_id", "name", "age", "city"]

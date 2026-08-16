@@ -28,7 +28,7 @@
 - `suffixes` (tuple, опционально)
 
 **Связанные функции:**
-- [`relate(col1, col2)`](./таблицы.md#relatecol1-col2) — объявить связь между колонками
+- [`relate(pk_col, fk_col, ...)`](./таблицы.md#relatepk_col-fk_col--relatepk_col-fk_col-) — объявить связи (звезда: первая = PK, остальные = FK)
 - [`primary_key(col)`](./таблицы.md#primary_keycol) — пометить первичный ключ
 
 ---

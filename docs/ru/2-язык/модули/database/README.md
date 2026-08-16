@@ -17,8 +17,10 @@ from database_engine import engine, DatabaseCluster, MetaData, Column, select
 - **Методы движка** (например `conn.execute(...)`):
   - **connect()** — возвращает соединение (для SQLite то же, что и движок)
   - **execute(sql, params?)** — выполнить SQL, вернуть число затронутых строк
-  - **query(sql, params?)** — выполнить SELECT, вернуть Table
+  - **query(sql, params?)** — выполнить SELECT, вернуть Table (SQLite: типизация ячеек через `_datacode_schema` / declared types)
   - **run(callable_or_instance)** — create_all (DDL), экземпляр модели (INSERT), select(Model) (SELECT)
+
+Для SQLite ORM `create_all` и экспорт `--build_model` пишут `_datacode_schema` / `_datacode_version` рядом с пользовательскими таблицами. Строковые ячейки с ISO date/datetime и числами определяются автоматически; после `__sql__` metadata синхронизируется с PRAGMA.
 
 ## DatabaseCluster
 

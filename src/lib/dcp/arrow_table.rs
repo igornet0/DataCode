@@ -9,6 +9,8 @@ use arrow::record_batch::RecordBatch;
 
 use crate::common::table::Table;
 use crate::common::value::Value;
+use crate::sqlite_export::type_map::coerce_utf8_to_value;
+use chrono::{FixedOffset, TimeZone, Utc};
 
 pub fn arrow_ipc_to_table(bytes: &[u8]) -> Result<Table, String> {
     let batches = read_ipc_batches(bytes)?;
@@ -162,7 +164,7 @@ fn array_to_values(array: &dyn Array) -> Result<Vec<Value>, String> {
                     if arr.is_null(i) {
                         Value::Null
                     } else {
-                        Value::String(arr.value(i).to_string())
+                        coerce_utf8_to_value(arr.value(i))
                     }
                 })
                 .collect())
@@ -209,10 +211,21 @@ fn string_array_to_values(arr: &StringArray) -> Result<Vec<Value>, String> {
             if arr.is_null(i) {
                 Value::Null
             } else {
-                Value::String(arr.value(i).to_string())
+                coerce_utf8_to_value(arr.value(i))
             }
         })
         .collect())
+}
+
+fn epoch_nanos_to_date_value(nanos: i64) -> Value {
+    let secs = nanos.div_euclid(1_000_000_000);
+    let sub = nanos.rem_euclid(1_000_000_000) as u32;
+    match Utc.timestamp_opt(secs, sub) {
+        chrono::LocalResult::Single(dt) => {
+            Value::Date(dt.with_timezone(&FixedOffset::east_opt(0).unwrap()))
+        }
+        _ => Value::Null,
+    }
 }
 
 fn timestamp_array_to_values(array: &dyn Array, unit: TimeUnit) -> Result<Vec<Value>, String> {
@@ -224,7 +237,7 @@ fn timestamp_array_to_values(array: &dyn Array, unit: TimeUnit) -> Result<Vec<Va
                     if arr.is_null(i) {
                         Value::Null
                     } else {
-                        Value::Number(arr.value(i) as f64)
+                        epoch_nanos_to_date_value(arr.value(i).saturating_mul(1_000_000_000))
                     }
                 })
                 .collect())
@@ -236,7 +249,7 @@ fn timestamp_array_to_values(array: &dyn Array, unit: TimeUnit) -> Result<Vec<Va
                     if arr.is_null(i) {
                         Value::Null
                     } else {
-                        Value::Number(arr.value(i) as f64)
+                        epoch_nanos_to_date_value(arr.value(i).saturating_mul(1_000_000))
                     }
                 })
                 .collect())
@@ -248,7 +261,7 @@ fn timestamp_array_to_values(array: &dyn Array, unit: TimeUnit) -> Result<Vec<Va
                     if arr.is_null(i) {
                         Value::Null
                     } else {
-                        Value::Number(arr.value(i) as f64)
+                        epoch_nanos_to_date_value(arr.value(i).saturating_mul(1_000))
                     }
                 })
                 .collect())
@@ -260,7 +273,7 @@ fn timestamp_array_to_values(array: &dyn Array, unit: TimeUnit) -> Result<Vec<Va
                     if arr.is_null(i) {
                         Value::Null
                     } else {
-                        Value::Number(arr.value(i) as f64)
+                        epoch_nanos_to_date_value(arr.value(i))
                     }
                 })
                 .collect())
@@ -437,5 +450,26 @@ mod tests {
         let obj = Value::legacy_object(map);
         let err = apply_source_table_columns(table, Some(&obj)).unwrap_err();
         assert!(err.contains("nope"));
+    }
+
+    #[test]
+    fn coerce_utf8_sniffs_numbers_and_dates() {
+        assert!(matches!(
+            coerce_utf8_to_value("233.4"),
+            Value::Number(n) if (n - 233.4).abs() < 1e-9
+        ));
+        assert!(matches!(coerce_utf8_to_value("42"), Value::Number(n) if n == 42.0));
+        assert!(matches!(
+            coerce_utf8_to_value("2024-01-15"),
+            Value::Date(_)
+        ));
+        assert!(matches!(
+            coerce_utf8_to_value("2026-08-02T13:20:21.571Z"),
+            Value::Date(_)
+        ));
+        assert!(matches!(
+            coerce_utf8_to_value("bf96:power"),
+            Value::String(s) if s == "bf96:power"
+        ));
     }
 }

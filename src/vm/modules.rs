@@ -1102,6 +1102,9 @@ fn register_ws_module(
     natives.push(HostEntry::Extended(ws_natives::native_ws_metadata));
     natives.push(HostEntry::Extended(ws_natives::native_ws_metadata_get));
     natives.push(HostEntry::Extended(ws_natives::native_ws_package_info));
+    natives.push(HostEntry::Extended(ws_natives::native_ws_content_assets));
+    natives.push(HostEntry::Extended(ws_natives::native_ws_has_content_asset));
+    natives.push(HostEntry::Extended(ws_natives::native_ws_content_asset));
 
     let mut ws_object = HashMap::new();
     ws_object.insert("tables".to_string(), Value::NativeFunction(start));
@@ -1112,6 +1115,12 @@ fn register_ws_module(
     ws_object.insert("metadata".to_string(), Value::NativeFunction(start + 5));
     ws_object.insert("metadata_get".to_string(), Value::NativeFunction(start + 6));
     ws_object.insert("package_info".to_string(), Value::NativeFunction(start + 7));
+    ws_object.insert("content_assets".to_string(), Value::NativeFunction(start + 8));
+    ws_object.insert(
+        "has_content_asset".to_string(),
+        Value::NativeFunction(start + 9),
+    );
+    ws_object.insert("content_asset".to_string(), Value::NativeFunction(start + 10));
 
     let ws_index = if let Some(idx) = global_index_by_name(global_names, "ws") {
         if idx >= globals.len() {

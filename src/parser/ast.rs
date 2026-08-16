@@ -398,6 +398,18 @@ pub enum Expr {
         predicate: TableFilterPred,
         line: usize,
     },
+    /// Маркер записи колонки: `orders!["col"] = ...` / `orders!.col = ...`
+    TableColumnWrite {
+        inner: Box<Expr>,
+        line: usize,
+    },
+    /// Присваивание новой колонки таблице через `!`.
+    AssignTableColumn {
+        table: Box<Expr>,
+        column: Box<Expr>,
+        value: Box<Expr>,
+        line: usize,
+    },
     Property {
         object: Box<Expr>,
         name: String,
@@ -503,6 +515,8 @@ impl Expr {
             Expr::AssignArray { line, .. } => *line,
             Expr::AssignArrayOp { line, .. } => *line,
             Expr::TableFilter { line, .. } => *line,
+            Expr::TableColumnWrite { line, .. } => *line,
+            Expr::AssignTableColumn { line, .. } => *line,
             Expr::Property { line, .. } => *line,
             Expr::MethodCall { line, .. } => *line,
             Expr::This { line, .. } => *line,

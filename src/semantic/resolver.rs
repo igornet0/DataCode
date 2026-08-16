@@ -442,6 +442,19 @@ impl Resolver {
                 self.resolve_expr(table)?;
                 self.resolve_table_filter_pred(predicate)?;
             }
+            Expr::TableColumnWrite { inner, .. } => {
+                self.resolve_expr(inner)?;
+            }
+            Expr::AssignTableColumn {
+                table,
+                column,
+                value,
+                ..
+            } => {
+                self.resolve_expr(table)?;
+                self.resolve_expr(column)?;
+                self.resolve_expr(value)?;
+            }
             Expr::Property { object, .. } => {
                 self.resolve_expr(object)?;
             }

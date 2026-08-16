@@ -189,6 +189,8 @@ pub mod builtin {
     pub const RESPONSE_SAVE: usize = 160;
     pub const RESPONSE_SAVE_TEXT: usize = 161;
     pub const RESPONSE_SAVE_JSON: usize = 162;
+    /// `column.map(fn)` — via `GetArrayElement` on `Value::ColumnReference`.
+    pub const COLUMN_MAP: usize = 163;
 }
 
 /// First `table(data, headers)` fast path in `native_call/execute.rs` (uses index `45`; registry slot `45` is `any`).
@@ -196,7 +198,7 @@ pub const TABLE_DATA_HEADERS_FAST_PATH_LEGACY: usize = 45;
 
 /// Human-readable builtin name for VM profiling (`native#21` → `"abs"`).
 pub fn builtin_native_name(index: usize) -> &'static str {
-    const NAMES: [&str; builtin::RESPONSE_SAVE_JSON + 1] = [
+    const NAMES: [&str; builtin::COLUMN_MAP + 1] = [
         "print",
         "len",
         "range",
@@ -360,6 +362,7 @@ pub fn builtin_native_name(index: usize) -> &'static str {
         "response.save",
         "response.save_text",
         "response.save_json",
+        "column.map",
     ];
     NAMES.get(index).copied().unwrap_or("native")
 }

@@ -1680,6 +1680,135 @@ mod tests {
         assert_string_result(source, "int");
     }
 
+    // ========== table! column write + column.map ==========
+
+    #[test]
+    fn test_column_map_returns_array() {
+        let source = r#"
+            let t = table([[1, 10], [2, 20]], ["id", "amount"])
+            fn dbl(v) { return v * 2 }
+            typeof(t["amount"].map(dbl))
+        "#;
+        assert_string_result(source, "array");
+    }
+
+    #[test]
+    fn test_column_map_values() {
+        let source = r#"
+            let t = table([[1, 10], [2, 20]], ["id", "amount"])
+            fn dbl(v) { return v * 2 }
+            t["amount"].map(dbl)[0] + t["amount"].map(dbl)[1]
+        "#;
+        assert_number_result(source, 60.0);
+    }
+
+    #[test]
+    fn test_table_bang_bracket_assign_array() {
+        let source = r#"
+            let t = table([[1, 10], [2, 20]], ["id", "amount"])
+            t!["score"] = [100, 200]
+            t["score"][0] + t["score"][1]
+        "#;
+        assert_number_result(source, 300.0);
+    }
+
+    #[test]
+    fn test_table_bang_dot_assign_array() {
+        let source = r#"
+            let t = table([[1, 10]], ["id", "amount"])
+            t!.score = [99]
+            t["score"][0]
+        "#;
+        assert_number_result(source, 99.0);
+    }
+
+    #[test]
+    fn test_table_bang_assign_preserves_row_layout() {
+        let source = r#"
+            let orders = table([[1, 100.0], [2, 200.0], [3, 300.0]], ["id", "amount"])
+            orders!["amount_vat"] = orders["amount"].map(fn(v) => v * 1.2)
+            len(orders) + orders["id"][0] + orders["id"][1] + orders["id"][2]
+              + orders["amount"][0] + orders["amount"][1] + orders["amount"][2]
+              + orders["amount_vat"][0] + orders["amount_vat"][1] + orders["amount_vat"][2]
+        "#;
+        // 3 rows + ids(1+2+3) + amounts(100+200+300) + vats(120+240+360) = 1329
+        assert_number_result(source, 1329.0);
+    }
+
+    #[test]
+    fn test_table_bang_assign_column_order() {
+        let source = r#"
+            let orders = table([[1, 100.0]], ["id", "amount"])
+            orders!["amount_vat"] = [120.0]
+            orders.columns[0] + "|" + orders.columns[1] + "|" + orders.columns[2]
+        "#;
+        assert_string_result(source, "id|amount|amount_vat");
+    }
+
+    #[test]
+    fn test_table_bang_duplicate_column_errors() {
+        let source = r#"
+            let t = table([[1]], ["id"])
+            t!["extra"] = [1]
+            t!["extra"] = [2]
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected ValueError for duplicate column");
+    }
+
+    #[test]
+    fn test_table_bang_length_mismatch() {
+        let source = r#"
+            let t = table([[1], [2]], ["id"])
+            t!["x"] = [1]
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected error for array length mismatch");
+    }
+
+    #[test]
+    fn test_table_bang_requires_simple_variable() {
+        let source = r#"
+            let t = table([[1]], ["id"])
+            table([[9]], ["id"])!["x"] = [1]
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected parse error for non-variable table target");
+    }
+
+    #[test]
+    fn test_unary_not_still_works() {
+        let source = r#"
+            let flag = false
+            !flag
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
+    fn test_table_map_vs_column_map() {
+        let source = r#"
+            let t = table([[10]], ["amount"])
+            fn dbl(v) { return v * 2 }
+            let arr = t["amount"].map(dbl)
+            let tbl = t.map("amount", dbl)
+            typeof(arr) + "|" + typeof(tbl) + "|" + tbl["amount"][0]
+        "#;
+        assert_string_result(source, "array|table|20");
+    }
+
+    #[test]
+    fn test_table_bang_assign_multi_column_sequence() {
+        let source = r#"
+            let orders = table([[1, 100.0]], ["id", "amount"])
+            orders!["amount_vat"] = [120.0]
+            orders!["flag"] = ["yes"]
+            orders.columns[0] + "|" + orders.columns[1] + "|" + orders.columns[2] + "|" + orders.columns[3]
+              + "|" + orders["amount_vat"][0] + "|" + orders["flag"][0]
+        "#;
+        assert_string_result(source, "id|amount|amount_vat|flag|120|yes");
+    }
+
     #[test]
     fn test_table_split_column_global() {
         let source = r#"
@@ -3414,6 +3543,23 @@ mod tests {
             Ok(v) => panic!("Expected Number(1), got {:?}", v),
             Err(e) => panic!("Error: {:?}", e),
         }
+    }
+
+    #[test]
+    fn test_table_iterable_column() {
+        // Проверяем, что можно итерироваться по колонке и суммировать значения
+        let source = r#"
+            data = [[1, "Alice", 28], [2, "Bob", 35], [3, "Charlie", 42]]
+            data = table(data, ["id", "name", "age"])
+            suma = 0
+            for row in data["age"] {
+                suma += row
+            }
+
+            suma == 105 and sum(data["age"]) == 105
+        "#;
+        // Сумма должна быть 105 и сумма должна быть 105
+        assert_bool_result(source, true);
     }
 
     // ========== array.chunk(n) ==========

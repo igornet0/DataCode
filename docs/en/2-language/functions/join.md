@@ -28,7 +28,7 @@ Global table join functions. Full specification: [tables/join.md](../tables/join
 - `suffixes` (tuple, optional)
 
 **Related functions:**
-- [`relate(col1, col2)`](./tables.md#relatecol1-col2) — declare a relationship between columns
+- [`relate(pk_col, fk_col, ...)`](./tables.md#relatepk_col-fk_col--relatepk_col-fk_col-) — declare relationships (star: first = PK, rest = FKs)
 - [`primary_key(col)`](./tables.md#primary_keycol) — mark a primary key
 
 ---

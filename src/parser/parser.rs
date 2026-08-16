@@ -2218,20 +2218,56 @@ impl Parser {
                     value: Box::new(value),
                     line: equal_line,
                 });
-            } else if let Expr::Property { object, name, .. } = expr {
+            } else if let Expr::Property {
+                object,
+                name,
+                line: prop_line,
+                ..
+            } = &expr
+            {
+                if let Expr::TableColumnWrite { inner, .. } = object.as_ref() {
+                    let value = self.assignment()?;
+                    return Ok(Expr::AssignTableColumn {
+                        table: inner.clone(),
+                        column: Box::new(Expr::Literal {
+                            value: Value::String(name.clone()),
+                            line: *prop_line,
+                        }),
+                        value: Box::new(value),
+                        line: equal_line,
+                    });
+                }
                 // Присваивание к свойству: obj.field = value, node.prev.next = value, ...
                 let value = self.assignment()?;
-                let property_path = self.property_assignment_path(&*object, &name, equal_line)?;
+                let property_path =
+                    self.property_assignment_path(object, name, equal_line)?;
                 return Ok(Expr::Assign {
                     name: property_path,
                     value: Box::new(value),
                     line: equal_line,
                 });
-            } else if let Expr::ArrayIndex { array, index, .. } = expr {
+            } else if let Expr::ArrayIndex { array, index, .. } = &expr {
+                if let Expr::TableColumnWrite { inner, .. } = array.as_ref() {
+                    let IndexExpr::Scalar(column) = index else {
+                        return Err(LangError::ParseError {
+                            message: "Slice assignment is not supported for table column write"
+                                .to_string(),
+                            line: equal_line,
+                            file: self.source_name.clone(),
+                        });
+                    };
+                    let value = self.assignment()?;
+                    return Ok(Expr::AssignTableColumn {
+                        table: inner.clone(),
+                        column: column.clone(),
+                        value: Box::new(value),
+                        line: equal_line,
+                    });
+                }
                 let value = self.assignment()?;
                 return Ok(Expr::AssignArray {
-                    array,
-                    index,
+                    array: array.clone(),
+                    index: index.clone(),
                     value: Box::new(value),
                     line: equal_line,
                 });
@@ -2635,6 +2671,22 @@ impl Parser {
                         // Это не вызов функции - не обрабатываем скобки здесь
                         // Позволим более высокому уровню обработать это
                         break;
+                    }
+                }
+            }
+
+            // Postfix `!` — запись колонки таблицы: orders!["col"] / orders!.col
+            if self.check(TokenKind::Bang) {
+                if self.current + 1 < self.tokens.len() {
+                    let next = self.tokens[self.current + 1].kind.clone();
+                    if next == TokenKind::LBracket || next == TokenKind::Dot {
+                        let line = self.peek().line;
+                        self.advance();
+                        expr = Expr::TableColumnWrite {
+                            inner: Box::new(expr),
+                            line,
+                        };
+                        continue;
                     }
                 }
             }

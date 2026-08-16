@@ -3,7 +3,7 @@
 use data_code::dcp::DcpDecoder;
 use data_code::run_with_vm;
 use data_code::sqlite_export::{
-    apply_sql_table_soft, apply_sql_transaction, export_to_sqlite,
+    apply_sql_table_soft, apply_sql_transaction, export_to_sqlite, FkCheckMode,
 };
 use rusqlite::Connection;
 use std::fs;
@@ -29,7 +29,7 @@ global t = table([[1, "a"], [2, "b"]], ["id", "name"])
 
     let dir = TempDir::new().expect("tempdir");
     let db_path = dir.path().join("model.db");
-    export_to_sqlite(&mut vm, db_path.to_str().unwrap(), false).expect("export");
+    export_to_sqlite(&mut vm, db_path.to_str().unwrap(), false, FkCheckMode::Strict).expect("export");
 
     let sql = "CREATE VIEW v_names AS SELECT name FROM t;";
     apply_sql_transaction(&db_path, sql).expect("apply sql");
@@ -50,7 +50,7 @@ global t = table([[1, "a"]], ["id", "name"])
 
     let dir = TempDir::new().expect("tempdir");
     let db_path = dir.path().join("model.db");
-    export_to_sqlite(&mut vm, db_path.to_str().unwrap(), false).expect("export");
+    export_to_sqlite(&mut vm, db_path.to_str().unwrap(), false, FkCheckMode::Strict).expect("export");
     let before = fs::read(&db_path).expect("read before");
 
     let err = apply_sql_transaction(&db_path, "NOT VALID SQL;").unwrap_err();
@@ -69,7 +69,7 @@ global t = table([[1, "a"]], ["id", "name"])
 
     let dir = TempDir::new().expect("tempdir");
     let db_path = dir.path().join("model.db");
-    export_to_sqlite(&mut vm, db_path.to_str().unwrap(), false).expect("export");
+    export_to_sqlite(&mut vm, db_path.to_str().unwrap(), false, FkCheckMode::Strict).expect("export");
 
     let applied = apply_sql_table_soft(
         &db_path,
@@ -96,7 +96,7 @@ fn dcp_package_sql_matches_fixture_export_flow() {
 
     let dir = TempDir::new().expect("tempdir");
     let db_path = dir.path().join("model.db");
-    export_to_sqlite(&mut vm, db_path.to_str().unwrap(), false).expect("export");
+    export_to_sqlite(&mut vm, db_path.to_str().unwrap(), false, FkCheckMode::Strict).expect("export");
     apply_sql_transaction(&db_path, &sql).expect("apply fixture sql");
 
     let conn = Connection::open(&db_path).expect("open");

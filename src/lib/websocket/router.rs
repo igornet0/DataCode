@@ -2,8 +2,8 @@
 
 use crate::common::value::Value;
 use crate::dcp::{
-    clear_dcp_session, set_dcp_metadata, set_dcp_tables, set_dcp_vfs, DcpDecoder, DcpTables,
-    DcpVfs,
+    clear_dcp_session, get_dcp_content_assets, set_dcp_content_assets, set_dcp_metadata,
+    set_dcp_tables, set_dcp_vfs, DcpDecoder, DcpTables, DcpVfs,
 };
 use crate::run_with_vm_with_policy;
 use crate::sqlite_export;
@@ -29,6 +29,8 @@ pub struct ExecuteResponse {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sqlite_db: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -115,6 +117,7 @@ pub fn error_json(success: bool, error: &str) -> String {
         output: String::new(),
         error: Some(error.to_string()),
         sqlite_db: None,
+        warning: None,
     })
     .unwrap_or_else(|_| {
         format!(
@@ -149,6 +152,7 @@ pub fn dispatch_dcp(data: &[u8], ctx: &ClientContext) -> String {
         .filter(|m| !m.is_empty());
 
     set_dcp_vfs(Some(vfs));
+    set_dcp_content_assets(Some(decoded.content_assets));
     set_dcp_tables(Some(tables));
     set_dcp_metadata(metadata);
 
@@ -173,6 +177,7 @@ pub fn dispatch_dcp(data: &[u8], ctx: &ClientContext) -> String {
         config.execute_permission_policy,
         decoded.sql.as_deref(),
         decoded.sql_table.as_deref(),
+        decoded.fk_check,
     );
     clear_dcp_session();
     serde_json::to_string(&response)
@@ -336,6 +341,7 @@ fn execute_code(
     policy: PermissionPolicy,
     sql: Option<&str>,
     sql_table: Option<&str>,
+    fk_check: crate::dcp::FkCheckMode,
 ) -> ExecuteResponse {
     crate::vm::file_ops::set_smb_manager(smb_manager.clone());
 
@@ -354,6 +360,7 @@ fn execute_code(
     match result {
         Ok((_, mut vm)) => {
             let mut sqlite_db = None;
+            let mut warning = None;
             let sql_script = sql.map(str::trim).filter(|s| !s.is_empty());
             let sql_table_script = sql_table.map(str::trim).filter(|s| !s.is_empty());
             let needs_model = sql_script.is_some() || sql_table_script.is_some();
@@ -372,8 +379,28 @@ fn execute_code(
                             &mut vm,
                             temp_db_path.to_str().unwrap(),
                             false,
+                            fk_check,
                         ) {
-                            Ok(()) => {
+                            Ok(outcome) => {
+                                warning = outcome.warning;
+                                if let Some(store) = get_dcp_content_assets() {
+                                    if let Err(e) = sqlite_export::export_content_assets(
+                                        &temp_db_path,
+                                        &store,
+                                    ) {
+                                        let _ = fs::remove_file(&temp_db_path);
+                                        return ExecuteResponse {
+                                            success: false,
+                                            output,
+                                            error: Some(format!(
+                                                "Failed to export __assets: {e}"
+                                            )),
+                                            sqlite_db: None,
+                                            warning,
+                                        };
+                                    }
+                                }
+
                                 // Soft inserts first (warn + skip on errors).
                                 if let Some(soft) = sql_table_script {
                                     let _ =
@@ -401,6 +428,7 @@ fn execute_code(
                                                 sqlite_db: pre_sql_bytes
                                                     .as_ref()
                                                     .map(|b| encode_sqlite_db(b)),
+                                                warning,
                                             };
                                         }
                                     }
@@ -419,6 +447,7 @@ fn execute_code(
                                             "Failed to export model for SQL: {e}"
                                         )),
                                         sqlite_db: None,
+                                        warning: None,
                                     };
                                 }
                                 eprintln!("⚠️  Table export error: {e}");
@@ -435,6 +464,7 @@ fn execute_code(
                                         .to_string(),
                                 ),
                                 sqlite_db: None,
+                                warning: None,
                             };
                         }
                     }
@@ -445,6 +475,7 @@ fn execute_code(
                                 output,
                                 error: Some(format!("Failed to export model for SQL: {e}")),
                                 sqlite_db: None,
+                                warning: None,
                             };
                         }
                         eprintln!("⚠️  Table export error: {e}");
@@ -457,6 +488,7 @@ fn execute_code(
                 output,
                 error: None,
                 sqlite_db,
+                warning,
             }
         }
         Err(e) => ExecuteResponse {
@@ -464,6 +496,7 @@ fn execute_code(
             output,
             error: Some(e.to_string()),
             sqlite_db: None,
+            warning: None,
         },
     }
 }

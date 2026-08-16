@@ -1778,7 +1778,7 @@ impl Compiler {
                     self.chunk.write_with_line(OpCode::LoadLocal(index), *line);
                 }
             }
-            Expr::AssignArray { .. } | Expr::AssignArrayOp { .. } => {
+            Expr::AssignArray { .. } | Expr::AssignArrayOp { .. } | Expr::AssignTableColumn { .. } => {
                 let mut ctx = self.create_context();
                 expr::compile_expr(&mut ctx, expr)?;
             }
@@ -2195,6 +2195,10 @@ impl Compiler {
                 expr::compile_expr(&mut ctx, expr)?;
             }
             Expr::TableFilter { .. } => {
+                let mut ctx = self.create_context();
+                expr::compile_expr(&mut ctx, expr)?;
+            }
+            Expr::TableColumnWrite { .. } => {
                 let mut ctx = self.create_context();
                 expr::compile_expr(&mut ctx, expr)?;
             }

@@ -116,4 +116,11 @@ print(date("2024-01-02") - date("2024-01-01"))
 
 ## SQLite export
 
-When exporting to SQLite, **`duration`** values are stored as **REAL** (seconds, with fractional part).
+When exporting to SQLite (or writing via ORM/`database_engine`):
+
+- **`date`** (midnight UTC) → declared `DATE`, stored as `YYYY-MM-DD`
+- **`date`** with time → metadata `datetime`, declared `DATETIME`, stored as UTC `YYYY-MM-DDTHH:MM:SS.fffZ`
+- **`duration`** → declared `INTEGER` (nanoseconds as `i64`)
+- **String cells** that look like dates (`YYYY-MM-DD`), datetimes (RFC3339 / ISO), ints, or floats are auto-detected for DDL and `_datacode_schema`
+
+Column types are also recorded in `_datacode_schema` (with `_datacode_version`). On read, metadata wins; otherwise declared types from `PRAGMA table_info` are used. After a DCP `__sql__` / `__sql_table__` script, `_datacode_schema` is resynced from the final PRAGMA (TEXT columns may still be refined to `date` / `datetime` from sampled values).

@@ -329,6 +329,15 @@ pub fn compile_assign(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
             *ctx.current_line = *line;
             compile_unpack_assign(ctx, targets, value, *line)
         }
+        Expr::AssignTableColumn {
+            table,
+            column,
+            value,
+            line,
+        } => {
+            *ctx.current_line = *line;
+            compile_assign_table_column(ctx, table, column, value, *line)
+        }
         _ => Err(LangError::ParseError {
             message: "Expected Assign, AssignOp, or UnpackAssign expression".to_string(),
             line: expr.line(),
@@ -678,6 +687,75 @@ fn compile_unpack_assign(
     if let Some(last_target) = targets.last() {
         compile_load_assign_target(ctx, last_target, line)?;
     }
+
+    Ok(())
+}
+
+fn compile_assign_table_column(
+    ctx: &mut CompilationContext,
+    table: &Expr,
+    column: &Expr,
+    value: &Expr,
+    line: usize,
+) -> Result<(), LangError> {
+    let Expr::Variable { name: table_name, .. } = table else {
+        return Err(LangError::ParseError {
+            message: "table column assignment (`orders![\"col\"] = ...`) requires a simple table variable on the left"
+                .to_string(),
+            line,
+            file: ctx.source_name.map(|s| s.to_string()),
+        });
+    };
+
+    let Some(&add_column_index) = ctx.scope.globals.get("table_add_column") else {
+        return Err(LangError::ParseError {
+            message: "Function 'table_add_column' not found".to_string(),
+            line,
+            file: None,
+        });
+    };
+
+    VariableResolver::resolve_and_load(ctx, table_name, line)?;
+    expr::compile_expr(ctx, column)?;
+    expr::compile_expr(ctx, value)?;
+
+    ctx.chunk
+        .global_names
+        .insert(add_column_index, "table_add_column".to_string());
+    ctx.chunk
+        .write_with_line(OpCode::LoadGlobal(add_column_index), line);
+    ctx.chunk.write_with_line(OpCode::Call(3), line);
+
+    if let Some(local_index) = ctx.scope.resolve_local(table_name) {
+        ctx.chunk
+            .write_with_line(OpCode::StoreLocal(local_index), line);
+        ctx.chunk
+            .write_with_line(OpCode::LoadLocal(local_index), line);
+    } else if ctx.current_function.is_some()
+        && VariableResolver::try_store_explicit_global(ctx, table_name, line, true)
+    {
+    } else if ctx.current_function.is_some() {
+        let index = ctx.declare_local_for_binding(table_name);
+        ctx.chunk.write_with_line(OpCode::StoreLocal(index), line);
+        ctx.chunk.write_with_line(OpCode::LoadLocal(index), line);
+    } else if let Some(&global_index) = ctx.scope.globals.get(table_name) {
+        ctx.chunk
+            .global_names
+            .insert(global_index, table_name.clone());
+        ctx.chunk
+            .write_with_line(OpCode::StoreGlobal(global_index), line);
+        ctx.chunk
+            .write_with_line(OpCode::LoadGlobal(global_index), line);
+    } else {
+        let global_index = ctx.scope.globals.len();
+        ctx.scope.globals.insert(table_name.clone(), global_index);
+        ctx.chunk.global_names.insert(global_index, table_name.clone());
+        ctx.chunk
+            .write_with_line(OpCode::StoreGlobal(global_index), line);
+        ctx.chunk
+            .write_with_line(OpCode::LoadGlobal(global_index), line);
+    }
+    ctx.record_bound_name(table_name);
 
     Ok(())
 }

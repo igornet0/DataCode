@@ -1294,7 +1294,9 @@ fn walk_expr_assign_checks(
         | Expr::Literal { .. }
         | Expr::This { .. }
         | Expr::Super { .. }
-        | Expr::Ellipsis { .. } => {}
+        | Expr::Ellipsis { .. }
+        | Expr::TableColumnWrite { .. }
+        | Expr::AssignTableColumn { .. } => {}
     }
     Ok(())
 }

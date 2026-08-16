@@ -3,7 +3,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::dcp::{clear_dcp_tables, clear_dcp_vfs, dcp_vfs_active};
+use crate::dcp::{
+    clear_dcp_content_assets, clear_dcp_tables, clear_dcp_vfs, dcp_content_assets_active,
+    dcp_vfs_active,
+};
 
 thread_local! {
     static DCP_METADATA: RefCell<Option<HashMap<String, String>>> = RefCell::new(None);
@@ -22,11 +25,12 @@ pub fn clear_dcp_metadata() {
 }
 
 pub fn dcp_session_active() -> bool {
-    dcp_vfs_active()
+    dcp_vfs_active() || dcp_content_assets_active()
 }
 
 pub fn clear_dcp_session() {
     clear_dcp_vfs();
+    clear_dcp_content_assets();
     clear_dcp_tables();
     clear_dcp_metadata();
 }

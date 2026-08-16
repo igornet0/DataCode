@@ -1722,6 +1722,19 @@ pub(crate) fn op_get_array_element(
             );
         }
         Value::ColumnReference { table, column_name } => {
+            if let Value::String(prop) = &index_value {
+                if prop == "map" {
+                    stack::push_id(
+                        stack,
+                        store_value(
+                            Value::NativeFunction(crate::vm::native_indices::builtin::COLUMN_MAP),
+                            value_store,
+                            heavy_store,
+                        ),
+                    );
+                    return Ok(VMStatus::Continue);
+                }
+            }
             return indexing::get_column_reference(
                 line,
                 stack,

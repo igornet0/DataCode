@@ -249,6 +249,7 @@ fn walk_expr(expr: &Expr, f: &mut impl FnMut(&Expr)) {
             walk_expr(value, f);
         }
         Expr::TableFilter { .. } => {}
+        Expr::TableColumnWrite { .. } | Expr::AssignTableColumn { .. } => {}
         Expr::Property { object, .. } => walk_expr(object, f),
         Expr::MethodCall { object, args, .. } => {
             walk_expr(object, f);

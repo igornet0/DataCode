@@ -67,7 +67,7 @@ show_table(young_people)
 
 # Error handling
 try{
-    local result = read('nonexistent.txt')
+    local result = read_file('nonexistent.txt')
     print('File read:', result)
 } catch e {
     print('Error reading file:', e)

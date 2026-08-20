@@ -82,7 +82,7 @@ define docker_run
 		-e HOME=/tmp \
 		-e CARGO_HOME=/cache/cargo \
 		-e RUSTUP_HOME=/cache/rustup \
-		-e PATH=/usr/local/cargo/bin:/cache/cargo/bin:/usr/local/rustup/bin:$$PATH \
+		-e PATH="/usr/local/cargo/bin:/cache/cargo/bin:/usr/local/rustup/bin:$$PATH" \
 		-e CARGO_INCREMENTAL=0 \
 		-e RUST_BACKTRACE=1 \
 		-v "$(CURDIR)":/work \
@@ -102,7 +102,7 @@ define docker_run_root
 		-e HOME=/tmp \
 		-e CARGO_HOME=/cache/cargo \
 		-e RUSTUP_HOME=/cache/rustup \
-		-e PATH=/usr/local/cargo/bin:/cache/cargo/bin:/usr/local/rustup/bin:$$PATH \
+		-e PATH="/usr/local/cargo/bin:/cache/cargo/bin:/usr/local/rustup/bin:$$PATH" \
 		-e CARGO_INCREMENTAL=0 \
 		-e RUST_BACKTRACE=1 \
 		-v "$(CURDIR)":/work \

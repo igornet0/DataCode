@@ -276,11 +276,25 @@ pub fn set_functions(
         name_to_new_idx.insert(name.clone(), new_idx);
     }
 
-    if main_chunk.is_none() {
-        if let Some(main_function) = new_functions.first() {
-            for (idx, name) in &main_function.chunk.explicit_global_names {
-                explicit_global_names_to_add.insert(*idx, name.clone());
-            }
+    // Register explicit `global` names at VM slots (resolved by name), from main chunk and/or
+    // the first function chunk when there is no separate main chunk.
+    let mut explicit_name_list: Vec<String> = Vec::new();
+    if let Some(mc) = main_chunk.as_ref() {
+        explicit_name_list.extend(mc.explicit_global_names.values().cloned());
+    } else if let Some(main_function) = new_functions.first() {
+        explicit_name_list.extend(
+            main_function
+                .chunk
+                .explicit_global_names
+                .values()
+                .cloned(),
+        );
+    }
+    for name in explicit_name_list {
+        if let Some(&new_idx) = name_to_new_idx.get(&name) {
+            explicit_global_names_to_add.insert(new_idx, name);
+        } else if let Some((&vm_idx, _)) = global_names.iter().find(|(_, n)| *n == &name) {
+            explicit_global_names_to_add.insert(vm_idx, name);
         }
     }
 

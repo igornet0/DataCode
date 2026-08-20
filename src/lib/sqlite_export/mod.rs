@@ -567,6 +567,65 @@ print(len(users))
     }
 
     #[test]
+    fn build_model_exports_scalar_globals_to_datacode_variables() {
+        let source = r#"
+global categories = table([], ["id", "name"])
+global sum_amount_sum = 0
+sum_amount_sum = 10000
+"#;
+        let (_v, mut vm) = crate::run_with_vm(source).expect("run_with_vm should succeed");
+        assert!(
+            vm.get_explicit_global_names()
+                .values()
+                .any(|n| n == "sum_amount_sum"),
+            "expected sum_amount_sum in explicit_global_names, got {:?}",
+            vm.get_explicit_global_names().values().collect::<Vec<_>>()
+        );
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("scalars.db");
+        export_to_sqlite(
+            &mut vm,
+            db_path.to_str().unwrap(),
+            false,
+            FkCheckMode::Strict,
+        )
+        .expect("export");
+
+        let conn = Connection::open(&db_path).expect("open db");
+        let (var_type, value): (String, String) = conn
+            .query_row(
+                "SELECT variable_type, value FROM _datacode_variables WHERE variable_name = 'sum_amount_sum'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("sum_amount_sum row in _datacode_variables");
+        assert_eq!(value, "10000");
+        assert!(
+            var_type == "Int" || var_type == "Number" || var_type == "Float",
+            "unexpected type {var_type}"
+        );
+
+        let names: Vec<String> = {
+            let mut stmt = conn
+                .prepare("SELECT variable_name FROM _datacode_variables ORDER BY variable_name")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .map(|x| x.unwrap())
+                .collect()
+        };
+        assert!(
+            names.contains(&"categories".to_string()),
+            "expected categories table metadata, got {names:?}"
+        );
+        assert!(
+            names.contains(&"sum_amount_sum".to_string()),
+            "expected sum_amount_sum metadata, got {names:?}"
+        );
+    }
+
+    #[test]
     fn sqlite_export_one_pass_and_foreign_key_list() {
         let source = r#"
 global users = table([[1, "a"], [2, "b"]], ["id", "name"])

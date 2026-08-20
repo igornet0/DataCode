@@ -72,13 +72,19 @@
             <div class="console-panel" id="consolePanel">
                 <div class="console-header">
                     <span>Вывод</span>
+                    <div class="console-resize-buttons">
+                        <button type="button" class="console-resize-btn" id="consoleResizeUp" title="Увеличить высоту">▲</button>
+                        <button type="button" class="console-resize-btn" id="consoleResizeDown" title="Уменьшить высоту">▼</button>
+                    </div>
                     <button class="console-toggle" id="consoleToggle">×</button>
                 </div>
+                <div class="console-resize-handle" id="consoleResizeHandle" title="Перетащите для изменения размера"></div>
                 <div class="console-content" id="consoleContent"></div>
             </div>
         </main>
     </div>
 
+    <script src="../datacode_lang.js"></script>
     <script src="syntax-highlighter.js"></script>
     <script src="editor.js"></script>
 </body>

@@ -15,18 +15,69 @@ class DataCodeEditor {
         this.history = new Map();
         this.isUndoRedo = false; // Flag to prevent saving to history during undo/redo
         
+        // API configuration
+        this.apiBaseUrl = window.API_BASE_URL || 'http://localhost:8000';
+        this.authToken = null;
+        this.proxyEnabled = false; // ✅ Безопасный прокси вместо прямой передачи токена
+        this.pendingRequests = new Map(); // ✅ Хранилище для ожидающих запросов через прокси
+        
         this.initializeElements();
         this.attachEventListeners();
+        this.setupMessageListener();
         this.createNewTab();
         
         // Autocomplete state
         this.autocompleteVisible = false;
         this.autocompleteItems = [];
         this.autocompleteIndex = -1;
+        this.typeEnv = Object.create(null);
+        this.classInfo = Object.create(null);
+        this.memberContext = null;
         
         // Function tooltip state
         this.functionTooltip = null;
         this.tooltipTimeout = null;
+        
+        // Файлы для загрузки перед выполнением кода (массив { filename, content }[])
+        this.filesToUpload = [];
+        this.fileToUpload = null; // обратная совместимость: первый файл
+        
+        // Контекст модели данных (при открытии из виджета) — выполнение через execute-code и сохранение кода
+        this.modelId = null;
+        this.codeChangeNotifyTimeout = null;
+        this.executeForModelPending = new Map(); // requestId -> { resolve, reject }
+        
+        // Загружаем сохраненную высоту консоли
+        this.loadConsoleHeight();
+        
+        // Загружаем код из URL параметра, если есть
+        this.loadCodeFromURL();
+        
+        // Сообщаем родителю, что редактор готов к приёму SET_INITIAL_CODE_DATA (устраняет гонку с handleLoad)
+        if (window.parent && window.parent !== window) {
+            setTimeout(() => {
+                window.parent.postMessage({ type: 'EDITOR_READY' }, '*');
+            }, 0);
+        }
+    }
+    
+    /**
+     * Загружает код из URL параметра code
+     */
+    loadCodeFromURL() {
+        try {
+            const urlParams = new URLSearchParams(window.location.search);
+            const codeFromURL = urlParams.get('code');
+            if (codeFromURL) {
+                const decodedCode = decodeURIComponent(codeFromURL);
+                                // Используем setTimeout, чтобы убедиться, что редактор полностью инициализирован
+                setTimeout(() => {
+                    this.setCode(decodedCode);
+                }, 100);
+            }
+        } catch (error) {
+            console.error('[editor.js] Error loading code from URL:', error);
+        }
     }
 
     initializeElements() {
@@ -43,31 +94,41 @@ class DataCodeEditor {
         this.autocompleteList = document.getElementById('autocompleteList');
         this.consolePanel = document.getElementById('consolePanel');
         this.consoleContent = document.getElementById('consoleContent');
+        this.consoleResizeHandle = document.getElementById('consoleResizeHandle');
+        this.consoleResizeUp = document.getElementById('consoleResizeUp');
+        this.consoleResizeDown = document.getElementById('consoleResizeDown');
         
         // Buttons
         this.addTabBtn = document.getElementById('addTabBtn');
         this.compileBtn = document.getElementById('compileBtn');
         this.searchClose = document.getElementById('searchClose');
         this.consoleToggle = document.getElementById('consoleToggle');
+        
+        // Console resize state
+        this.consoleHeight = 200; // Default height in pixels
+        this.isResizing = false;
     }
 
     attachEventListeners() {
         // Editor input
-        this.editor.addEventListener('input', () => this.onEditorInput());
-        this.editor.addEventListener('scroll', () => this.onEditorScroll());
-        this.editor.addEventListener('keydown', (e) => this.onEditorKeyDown(e));
-        this.editor.addEventListener('keyup', (e) => this.onEditorKeyUp(e));
-        this.editor.addEventListener('click', () => {
+        if (this.editor) this.editor.addEventListener('input', () => this.onEditorInput());
+        if (this.editor) this.editor.addEventListener('scroll', () => this.onEditorScroll());
+        if (this.editor) this.editor.addEventListener('keydown', (e) => this.onEditorKeyDown(e));
+        if (this.editor) this.editor.addEventListener('keyup', (e) => this.onEditorKeyUp(e));
+        if (this.editor) this.editor.addEventListener('click', () => {
             this.updateCursorPosition();
             this.hideFunctionTooltip();
         });
+        if (this.editor) this.editor.addEventListener('select', () => this.updateCursorPosition());
+        if (this.editor) this.editor.addEventListener('mouseup', () => this.updateCursorPosition());
         
-        // Add hover tooltip for functions in code - using mousemove on textarea
-        this.editor.addEventListener('mousemove', (e) => {
+        // Re-sync layers when browser/page zoom or layout changes
+        this.setupLayoutSync();
+        if (this.editor) this.editor.addEventListener('mousemove', (e) => {
             this.handleFunctionHover(e);
         });
         
-        this.editor.addEventListener('mouseleave', () => {
+        if (this.editor) this.editor.addEventListener('mouseleave', () => {
             clearTimeout(this.tooltipTimeout);
             this.tooltipTimeout = setTimeout(() => {
                 this.hideFunctionTooltip();
@@ -75,36 +136,32 @@ class DataCodeEditor {
         });
         
         // Also handle hover on highlight element (backup method)
-        this.highlight.addEventListener('mouseover', (e) => {
-            // Find the closest element with builtin class (built-in functions)
-            const target = e.target.closest('.builtin');
+        if (this.highlight) this.highlight.addEventListener('mouseover', (e) => {
+            const target = e.target.closest('.builtin, .method, .variable');
             if (target) {
                 clearTimeout(this.tooltipTimeout);
-                
-                // Get function name from data attribute or text content
-                let funcName = target.getAttribute('data-function');
-                if (!funcName) {
-                    // Fallback: extract from text content
-                    funcName = target.textContent.trim();
-                    // Remove parentheses and parameters if present
-                    funcName = funcName.replace(/\(.*$/, '').trim();
-                }
-                
-                // Normalize function name to lowercase
-                funcName = funcName.toLowerCase();
-                
+                let funcName = target.getAttribute('data-function') || target.getAttribute('data-method') || target.textContent.trim();
+                funcName = funcName.replace(/\(.*$/, '').trim();
                 const funcDef = this.highlighter.getFunctionDefinition(funcName);
-                if (funcDef) {
+                const info = this.typeEnv[target.textContent.trim()];
+                const def = funcDef || (info ? {
+                    signature: `${target.textContent.trim()}: ${info.type}`,
+                    description: 'Выведенный тип переменной',
+                    parameters: [],
+                    returnType: info.type,
+                    category: 'variable'
+                } : null);
+                if (def) {
                     this.tooltipTimeout = setTimeout(() => {
-                        this.showFunctionTooltip(target, funcDef);
-                    }, 300); // Small delay before showing tooltip
+                        this.showFunctionTooltip(target, def);
+                    }, 300);
                 }
             }
         });
         
-        this.highlight.addEventListener('mouseout', (e) => {
+        if (this.highlight) this.highlight.addEventListener('mouseout', (e) => {
             // Check if we're leaving a function element
-            const target = e.target.closest('.builtin');
+            const target = e.target.closest('.builtin, .method, .variable');
             if (target) {
                 clearTimeout(this.tooltipTimeout);
                 // Small delay to allow moving to tooltip
@@ -113,7 +170,9 @@ class DataCodeEditor {
                     // Check if mouse moved to tooltip or still over function
                     if (!relatedTarget || 
                         (!relatedTarget.closest('.function-tooltip') && 
-                         !relatedTarget.closest('.builtin'))) {
+                         !relatedTarget.closest('.builtin') &&
+                         !relatedTarget.closest('.method') &&
+                         !relatedTarget.closest('.variable'))) {
                         this.hideFunctionTooltip();
                     }
                 }, 200);
@@ -136,15 +195,15 @@ class DataCodeEditor {
         });
         
         // Hide tooltip on scroll
-        this.editor.addEventListener('scroll', () => {
+        if (this.editor) this.editor.addEventListener('scroll', () => {
             this.hideFunctionTooltip();
         });
         
         // Tab management
-        this.addTabBtn.addEventListener('click', () => this.createNewTab());
+        if (this.addTabBtn) this.addTabBtn.addEventListener('click', () => this.createNewTab());
         
         // Compile button
-        this.compileBtn.addEventListener('click', () => this.compileCode());
+        if (this.compileBtn) this.compileBtn.addEventListener('click', () => this.compileCode());
         
         // Search
         document.addEventListener('keydown', (e) => {
@@ -153,16 +212,223 @@ class DataCodeEditor {
                 this.showSearchPanel();
             }
         });
-        this.searchClose.addEventListener('click', () => this.hideSearchPanel());
-        this.searchInput.addEventListener('input', () => this.performSearch());
-        document.getElementById('searchNext').addEventListener('click', () => this.searchNext());
-        document.getElementById('searchPrev').addEventListener('click', () => this.searchPrev());
+        if (this.searchClose) this.searchClose.addEventListener('click', () => this.hideSearchPanel());
+        if (this.searchInput) this.searchInput.addEventListener('input', () => this.performSearch());
+        const searchNext = document.getElementById('searchNext');
+        const searchPrev = document.getElementById('searchPrev');
+        if (searchNext) searchNext.addEventListener('click', () => this.searchNext());
+        if (searchPrev) searchPrev.addEventListener('click', () => this.searchPrev());
         
         // Console
-        this.consoleToggle.addEventListener('click', () => this.toggleConsole());
+        if (this.consoleToggle) this.consoleToggle.addEventListener('click', () => this.toggleConsole());
+        if (this.consoleResizeUp) this.consoleResizeUp.addEventListener('click', () => this.resizeConsole(50));
+        if (this.consoleResizeDown) this.consoleResizeDown.addEventListener('click', () => this.resizeConsole(-50));
+        
+        // Console resize handle (drag to resize)
+        if (this.consoleResizeHandle) this.consoleResizeHandle.addEventListener('mousedown', (e) => this.startResizeConsole(e));
+        document.addEventListener('mousemove', (e) => this.onResizeConsole(e));
+        document.addEventListener('mouseup', () => this.stopResizeConsole());
         
         // Window resize
-        window.addEventListener('resize', () => this.onResize());
+        window.addEventListener('resize', () => this.syncEditorLayout());
+    }
+
+    setupLayoutSync() {
+        const container = this.editor?.closest('.code-editor-container')
+            || this.editor?.parentElement;
+
+        if (container && typeof ResizeObserver !== 'undefined') {
+            this._layoutResizeObserver = new ResizeObserver(() => {
+                this.syncEditorLayout();
+            });
+            this._layoutResizeObserver.observe(container);
+        }
+
+        if (window.visualViewport) {
+            this._onVisualViewportChange = () => this.syncEditorLayout();
+            window.visualViewport.addEventListener('resize', this._onVisualViewportChange);
+            window.visualViewport.addEventListener('scroll', this._onVisualViewportChange);
+        }
+
+        document.addEventListener('selectionchange', () => {
+            if (!this.editor || document.activeElement !== this.editor) return;
+            this.updateCursorPosition();
+        });
+    }
+
+    syncEditorLayout() {
+        if (!this.editor) return;
+        this.onEditorScroll();
+        this.updateCursorPosition();
+    }
+
+    /**
+     * Setup message listener for communication with parent window
+     * БЕЗОПАСНОСТЬ: Проверяем origin всех входящих сообщений
+     * ✅ ИСПРАВЛЕНО: Используем безопасный прокси вместо прямой передачи токена
+     */
+    setupMessageListener() {
+        // Безопасный origin родительского окна (наш же домен)
+        const expectedOrigin = window.location.origin;
+        
+        window.addEventListener('message', (event) => {
+            // ✅ КРИТИЧНО: Проверяем origin перед обработкой сообщения
+            if (event.origin !== expectedOrigin) {
+                console.warn('Ignored message from unauthorized origin:', event.origin);
+                return;
+            }
+
+            if (!event.data || typeof event.data !== 'object') {
+                return;
+            }
+
+            // ✅ Безопасный прокси: обработка ответов от прокси
+            if (event.data.type === 'IFRAME_API_RESPONSE') {
+                const { requestId, success, data, error, status } = event.data;
+                const pendingRequest = this.pendingRequests.get(requestId);
+                
+                if (pendingRequest) {
+                    this.pendingRequests.delete(requestId);
+                    if (success) {
+                        pendingRequest.resolve({ data, status });
+                    } else {
+                        pendingRequest.reject(new Error(error?.message || 'API request failed'));
+                    }
+                }
+                return;
+            }
+
+            // ✅ Конфигурация прокси (предпочтительный метод)
+            if (event.data.type === 'API_PROXY_CONFIG') {
+                if (event.data.proxyEnabled) {
+                    this.proxyEnabled = true;
+                    if (event.data.apiBaseUrl && typeof event.data.apiBaseUrl === 'string') {
+                        this.apiBaseUrl = event.data.apiBaseUrl;
+                    }
+                                    }
+                return;
+            }
+
+            // Устаревший метод: прямая передача токена (для обратной совместимости)
+            if (event.data.type === 'API_CONFIG') {
+                console.warn('Using legacy API_CONFIG - consider using API_PROXY_CONFIG');
+                if (event.data.apiBaseUrl && typeof event.data.apiBaseUrl === 'string') {
+                    this.apiBaseUrl = event.data.apiBaseUrl;
+                }
+                if (event.data.authToken && typeof event.data.authToken === 'string') {
+                    this.authToken = event.data.authToken;
+                    this.proxyEnabled = false; // Отключаем прокси если используется прямой токен
+                }
+            }
+
+            // Обработка установки начального кода
+            if (event.data.type === 'SET_CODE') {
+                                if (event.data.code && typeof event.data.code === 'string') {
+                    this.setCode(event.data.code);
+                }
+            }
+
+            // Обработка установки массива файлов для загрузки (от DataCodeEditorWrapper)
+            if (event.data.type === 'SET_FILES_TO_UPLOAD') {
+                const files = event.data.files;
+                if (Array.isArray(files) && files.length > 0) {
+                    const valid = files.filter(f => f && f.filename && f.content);
+                    this.filesToUpload = valid;
+                    this.fileToUpload = valid.length > 0 ? valid[0] : null;
+                                    }
+            }
+            // Обработка установки одного файла для загрузки (обратная совместимость)
+            if (event.data.type === 'SET_FILE_TO_UPLOAD') {
+                                if (event.data.file && event.data.file.filename && event.data.file.content) {
+                    this.fileToUpload = event.data.file;
+                    this.filesToUpload = [event.data.file];
+                                    }
+            }
+            // Контекст модели данных: выполнение через execute-code и сохранение кода в БД
+            if (event.data.type === 'MODEL_CONTEXT' && event.data.modelId != null) {
+                this.modelId = event.data.modelId;
+                            }
+            // Начальное состояние вкладок из БД (сохранённый код)
+            if (event.data.type === 'SET_INITIAL_CODE_DATA' && event.data.code_data) {
+                const codeData = event.data.code_data;
+                const tabs = codeData.tabs;
+                const activeTab = codeData.activeTab != null ? codeData.activeTab : 0;
+                if (Array.isArray(tabs) && tabs.length > 0) {
+                    this.applyCodeData(tabs, activeTab);
+                }
+            }
+            // Ответ на EXECUTE_FOR_MODEL от родителя
+            if (event.data.type === 'EXECUTE_FOR_MODEL_RESPONSE') {
+                const requestId = event.data.requestId;
+                const pending = this.executeForModelPending.get(requestId);
+                if (pending) {
+                    this.executeForModelPending.delete(requestId);
+                    if (event.data.success) {
+                        pending.resolve({ data: event.data });
+                    } else {
+                        pending.reject(new Error(event.data.error || event.data.message || 'Execution failed'));
+                    }
+                }
+            }
+        });
+
+        // Request API configuration from parent if in iframe
+        if (window.parent && window.parent !== window) {
+            // ✅ Используем конкретный origin вместо '*'
+            window.parent.postMessage({ type: 'REQUEST_API_CONFIG' }, expectedOrigin);
+        }
+    }
+
+    /**
+     * ✅ Безопасный метод выполнения API запросов через прокси
+     */
+    async makeApiRequest(method, url, data = null) {
+        const expectedOrigin = window.location.origin;
+        
+        // Если прокси включен, используем его
+        if (this.proxyEnabled && window.parent && window.parent !== window) {
+            const requestId = `req_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+            
+            return new Promise((resolve, reject) => {
+                // Сохраняем промис для обработки ответа
+                this.pendingRequests.set(requestId, { resolve, reject });
+                
+                // Отправляем запрос через прокси
+                window.parent.postMessage({
+                    type: 'IFRAME_API_REQUEST',
+                    requestId: requestId,
+                    method: method,
+                    url: url,
+                    data: data,
+                    headers: {}
+                }, expectedOrigin);
+                
+                // Таймаут для запроса (30 секунд)
+                setTimeout(() => {
+                    if (this.pendingRequests.has(requestId)) {
+                        this.pendingRequests.delete(requestId);
+                        reject(new Error('Request timeout'));
+                    }
+                }, 30000);
+            });
+        }
+        
+        // Fallback: прямой запрос (если прокси не доступен)
+        const token = this.authToken || this.getAuthToken();
+        const response = await fetch(`${this.apiBaseUrl}${url}`, {
+            method: method,
+            headers: {
+                'Content-Type': 'application/json',
+                ...(token && { 'Authorization': `Bearer ${token}` })
+            },
+            body: data ? JSON.stringify(data) : undefined
+        });
+        
+        const result = await response.json();
+        if (!response.ok) {
+            throw new Error(result.error || result.message || 'Request failed');
+        }
+        return { data: result, status: response.status };
     }
 
     createNewTab(name = null) {
@@ -171,7 +437,8 @@ class DataCodeEditor {
         
         this.tabs.set(tabId, {
             name: tabName,
-            content: ''
+            content: '',
+            widgetId: null
         });
         
         // Initialize history for this tab
@@ -185,6 +452,128 @@ class DataCodeEditor {
         this.switchToTab(tabId);
         
         return tabId;
+    }
+
+    /**
+     * Устанавливает код в активную вкладку
+     */
+    setCode(code) {
+                
+        if (!this.activeTabId) {
+            console.warn('[editor.js] No active tab, creating new one');
+            this.createNewTab();
+        }
+        
+        const tab = this.tabs.get(this.activeTabId);
+        if (tab) {
+            tab.content = code || '';
+            this.editor.value = tab.content;
+            this.updateHighlight();
+            this.updateLineNumbers();
+            this.saveCurrentTab();
+                    } else {
+            console.error('[editor.js] Active tab not found:', this.activeTabId);
+        }
+    }
+
+    getTabIdsInOrder() {
+        if (!this.tabsList) return [];
+        return Array.from(this.tabsList.querySelectorAll('.tab-item'))
+            .map(item => item.dataset.tabId)
+            .filter(tabId => this.tabs.has(tabId));
+    }
+
+    /**
+     * Возвращает code_data: { tabs: [{ name, content, widgetId }], activeTab: number }
+     */
+    getCodeData() {
+        const tabIdsInOrder = this.getTabIdsInOrder();
+        const tabs = tabIdsInOrder.map(tabId => {
+            const tab = this.tabs.get(tabId);
+            const out = { name: tab ? tab.name : '', content: tab ? tab.content : '' };
+            if (tab?.widgetId != null) out.widgetId = tab.widgetId;
+            return out;
+        });
+        const activeIndex = this.activeTabId ? tabIdsInOrder.indexOf(this.activeTabId) : 0;
+        return { tabs, activeTab: activeIndex >= 0 ? activeIndex : 0 };
+    }
+
+    /**
+     * Собирает код из вкладок в порядке сайдбара.
+     * untilActive: с первой вкладки по активную включительно (компиляция внутри редактора).
+     */
+    getCompiledCodeFromTabs(untilActive = false) {
+        const tabIdsInOrder = this.getTabIdsInOrder();
+        if (!tabIdsInOrder.length) return '';
+        let endIndex = tabIdsInOrder.length - 1;
+        if (untilActive && this.activeTabId) {
+            const idx = tabIdsInOrder.indexOf(this.activeTabId);
+            if (idx >= 0) endIndex = idx;
+        }
+        const prefixIds = tabIdsInOrder.slice(0, endIndex + 1);
+        const codeParts = [];
+        prefixIds.forEach((tabId, index) => {
+            const tab = this.tabs.get(tabId);
+            if (tab && tab.content.trim()) {
+                if (prefixIds.length > 1) codeParts.push(`# ===== ${tab.name} =====`);
+                codeParts.push(tab.content);
+                if (index < prefixIds.length - 1) codeParts.push('');
+            }
+        });
+        return codeParts.join('\n');
+    }
+
+    /**
+     * Уведомляет родительское окно об изменении кода (для сохранения в БД)
+     */
+    notifyCodeChanged() {
+        if (window.parent === window) return;
+        const codeData = this.getCodeData();
+        const code = this.getCompiledCodeFromTabs();
+        try {
+            window.parent.postMessage({
+                type: 'CODE_CHANGED',
+                code: code,
+                code_data: codeData
+            }, window.location.origin);
+        } catch (e) {
+            console.warn('[editor.js] notifyCodeChanged postMessage failed:', e);
+        }
+    }
+
+    /**
+     * Применяет сохранённый code_data (вкладки из БД)
+     */
+    applyCodeData(tabs, activeTabIndex) {
+        if (!tabs || tabs.length === 0 || !this.tabsList) return;
+        if (this.activeTabId) this.saveCurrentTab();
+        const tabIdsToRemove = Array.from(this.tabs.keys());
+        tabIdsToRemove.forEach(tabId => {
+            const el = document.querySelector(`[data-tab-id="${tabId}"]`);
+            if (el) el.remove();
+            this.tabs.delete(tabId);
+            this.history.delete(tabId);
+        });
+        this.activeTabId = null;
+        this.tabCounter = 1;
+        let firstTabId = null;
+        tabs.forEach((t, index) => {
+            const tabId = `tab_${Date.now()}_${index}_${Math.random().toString(36).substr(2, 9)}`;
+            const tabName = t.name || `Вкладка ${index + 1}`;
+            this.tabs.set(tabId, {
+                name: tabName,
+                content: t.content || '',
+                widgetId: t.widgetId != null ? t.widgetId : null
+            });
+            this.history.set(tabId, { undo: [t.content || ''], redo: [], currentIndex: 0 });
+            this.addTabToSidebar(tabId, tabName);
+            if (index === 0) firstTabId = tabId;
+        });
+        const tabIdsInOrder = Array.from(this.tabsList.querySelectorAll('.tab-item'))
+            .map(item => item.dataset.tabId)
+            .filter(tabId => this.tabs.has(tabId));
+        const activeId = tabIdsInOrder[Math.min(activeTabIndex, tabIdsInOrder.length - 1)] || firstTabId;
+        if (activeId) this.switchToTab(activeId);
     }
 
     addTabToSidebar(tabId, tabName) {
@@ -461,6 +850,7 @@ class DataCodeEditor {
         this.updateLineNumbers();
         this.updateCursorPosition();
         this.editor.focus();
+        this.notifyCodeChanged();
     }
 
     closeTab(tabId) {
@@ -580,6 +970,14 @@ class DataCodeEditor {
             }, 300);
         }
         
+        // Уведомление родителя об изменении кода (для сохранения в БД), debounce 600 ms
+        if (window.parent && window.parent !== window) {
+            clearTimeout(this.codeChangeNotifyTimeout);
+            this.codeChangeNotifyTimeout = setTimeout(() => {
+                this.notifyCodeChanged();
+            }, 600);
+        }
+        
         this.updateAutocomplete();
     }
 
@@ -663,34 +1061,26 @@ class DataCodeEditor {
             const textBeforeCursor = value.substring(0, cursorPos);
             
             // Check for construct keywords at word boundary
-            const constructMatch = textBeforeCursor.match(/\b(for|if|else|fn|while|try)\s*$/i);
+            const constructMatch = textBeforeCursor.match(/\b(for|if|else|fn|cls|try|stream)\s*$/i);
             if (constructMatch && !this.autocompleteVisible) {
                 const keyword = constructMatch[1].toLowerCase();
                 e.preventDefault();
                 
                 let snippet = '';
                 if (keyword === 'for') {
-                    snippet = 'for ${1:item} in ${2:iterable} {\n    ${3:// code}\n}';
+                    snippet = 'for ${1:item} in ${2:iterable} {\n    ${3:# code}\n}';
                 } else if (keyword === 'if') {
-                    snippet = 'if ${1:condition} {\n    ${2:// code}\n}';
+                    snippet = 'if ${1:condition} {\n    ${2:# code}\n}';
                 } else if (keyword === 'else') {
-                    // Check if we're after an if/else if
-                    const beforeKeyword = textBeforeCursor.substring(0, textBeforeCursor.length - keyword.length - 1);
-                    if (beforeKeyword.match(/\b(if|else)\s*$/i)) {
-                        snippet = 'else if ${1:condition} {\n    ${2:// code}\n}';
-                    } else {
-                        snippet = 'else {\n    ${1:// code}\n}';
-                    }
-                } else if (keyword === 'catch') {
-                    snippet = 'catch ${1:e} {\n    ${2:// handle error}\n}';
-                } else if (keyword === 'finally') {
-                    snippet = 'finally {\n    ${1:// cleanup code}\n}';
+                    snippet = 'else {\n    ${1:# code}\n}';
                 } else if (keyword === 'fn') {
-                    snippet = 'fn ${1:name}(${2:parameters}) {\n    ${3:// code}\n    return ${4:value}\n}';
-                } else if (keyword === 'while') {
-                    snippet = 'while ${1:condition} {\n    ${2:// code}\n}';
+                    snippet = 'fn ${1:name}(${2:params}) {\n    ${3:# code}\n}';
+                } else if (keyword === 'cls') {
+                    snippet = 'cls ${1:Name} {\n    ${2:# fields}\n}';
                 } else if (keyword === 'try') {
-                    snippet = 'try {\n    ${1:// code}\n} catch ${2:e} {\n    ${3:// handle error}\n}';
+                    snippet = 'try {\n    ${1:# code}\n} catch (e) {\n    ${2:# handle}\n}';
+                } else if (keyword === 'stream') {
+                    snippet = 'stream fn ${1:name}() {\n    ${2:return 0}\n}';
                 }
                 
                 if (snippet) {
@@ -825,16 +1215,24 @@ class DataCodeEditor {
 
     updateCursorPosition() {
         const cursorPos = this.editor.selectionStart;
+        const selectionEnd = this.editor.selectionEnd;
         const value = this.editor.value;
         const textBeforeCursor = value.substring(0, cursorPos);
         const lines = textBeforeCursor.split('\n');
         const currentLine = lines.length - 1;
+
+        // Hide native caret endpoints while text is selected (avoids "double caret" look)
+        this.editor.style.caretColor = cursorPos !== selectionEnd
+            ? 'transparent'
+            : 'var(--neon-cyan)';
         
         this.updateCurrentLineHighlight(currentLine);
     }
 
     updateHighlight() {
         const code = this.editor.value;
+        const scrollTop = this.editor.scrollTop;
+        const scrollLeft = this.editor.scrollLeft;
         const highlighted = this.highlighter.highlight(code);
         
         // Wrap each line in a div for line highlighting
@@ -844,6 +1242,8 @@ class DataCodeEditor {
         ).join('');
         
         this.highlight.innerHTML = wrappedLines;
+        this.highlight.scrollTop = scrollTop;
+        this.highlight.scrollLeft = scrollLeft;
         
         // Note: Visual hover effects are handled by CSS, no need to add event listeners here
         
@@ -876,6 +1276,416 @@ class DataCodeEditor {
     }
 
     // ============================================
+    // Type inference
+    // ============================================
+
+    refreshTypeEnv(code) {
+        const inferred = this.inferLanguageContext(code || '');
+        this.typeEnv = inferred.env;
+        this.classInfo = inferred.classes;
+    }
+
+    inferLanguageContext(code) {
+        const env = Object.create(null);
+        const classes = Object.create(null);
+        const lang = typeof DATACODE_LANG !== 'undefined' ? DATACODE_LANG : null;
+        const lines = code.split('\n');
+        let currentClass = null;
+
+        const assignType = (name, info) => {
+            if (!name || this.highlighter.isKeyword(name) || this.highlighter.isBuiltin(name)) return;
+            env[name] = info;
+        };
+
+        for (let raw of lines) {
+            const hash = raw.indexOf('#');
+            const line = (hash === -1 ? raw : raw.slice(0, hash)).trim();
+            if (!line) continue;
+
+            const clsMatch = line.match(/^cls\s+([A-Za-z_][A-Za-z0-9_]*)/);
+            if (clsMatch) {
+                currentClass = clsMatch[1];
+                if (!classes[currentClass]) {
+                    classes[currentClass] = { methods: [], fields: [] };
+                }
+                continue;
+            }
+
+            const importMatch = line.match(/^import\s+([A-Za-z_][A-Za-z0-9_]*)/);
+            if (importMatch) {
+                assignType(importMatch[1], { type: 'module', module: importMatch[1] });
+                continue;
+            }
+
+            const fromMatch = line.match(/^from\s+([A-Za-z_][A-Za-z0-9_.]*)\s+import\s+(.+)$/);
+            if (fromMatch) {
+                const source = fromMatch[1].split('.')[0];
+                fromMatch[2].split(',').forEach((part) => {
+                    const bit = part.trim();
+                    if (!bit || bit === '*') return;
+                    const asMatch = bit.match(/^([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)$/);
+                    if (asMatch) {
+                        assignType(asMatch[2], { type: this.guessImportedType(source, asMatch[1]) });
+                    } else {
+                        const name = bit.match(/^[A-Za-z_][A-Za-z0-9_]*/);
+                        if (name) assignType(name[0], { type: this.guessImportedType(source, name[0]) });
+                    }
+                });
+                continue;
+            }
+
+            if (currentClass && classes[currentClass]) {
+                const fieldMatch = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_|]*)/);
+                if (fieldMatch && !line.startsWith('fn ') && !line.startsWith('new ')) {
+                    const fieldType = this.normalizeInferredType(fieldMatch[2].split('|')[0]);
+                    classes[currentClass].fields.push({ name: fieldMatch[1], type: fieldType });
+                }
+                const methodMatch = line.match(/^fn\s+(@?[A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+                if (methodMatch && !methodMatch[1].startsWith('@')) {
+                    classes[currentClass].methods.push({
+                        name: methodMatch[1],
+                        signature: `${methodMatch[1]}()`,
+                        description: `Метод класса ${currentClass}`,
+                        parameters: [],
+                        returnType: 'any',
+                        kind: 'method'
+                    });
+                }
+            }
+
+            const fnMatch = line.match(/^fn\s+([A-Za-z_][A-Za-z0-9_]*)\s*\((.*)\)/);
+            if (fnMatch) {
+                assignType(fnMatch[1], { type: 'function' });
+                this.applyParamTypes(fnMatch[2], assignType);
+            }
+
+            const forTwo = line.match(/^for\s+([A-Za-z_][A-Za-z0-9_]*)\s*,\s*([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*\{?\s*$/);
+            if (forTwo) {
+                assignType(forTwo[1], { type: 'int' });
+                const srcType = this.inferExprType(forTwo[3].replace(/\s*\{$/, ''), env, lang, classes);
+                assignType(forTwo[2], { type: this.elementType(srcType) });
+                continue;
+            }
+            const forOne = line.match(/^for\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\s+(.+?)\s*\{?\s*$/);
+            if (forOne) {
+                const srcType = this.inferExprType(forOne[2].replace(/\s*\{$/, ''), env, lang, classes);
+                assignType(forOne[1], { type: this.elementType(srcType) });
+                continue;
+            }
+
+            const unpack = line.match(/^(?:(?:let|global)\s+)?([A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)+)\s*=\s*(.+)$/);
+            if (unpack) {
+                const names = unpack[1].split(',').map((n) => n.trim());
+                const rhsType = this.inferExprType(unpack[2], env, lang, classes);
+                names.forEach((n) => assignType(n, { type: rhsType === 'tuple' ? 'any' : 'any' }));
+                continue;
+            }
+
+            const assign = line.match(/^(?:(?:let|global)\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.+)$/);
+            if (assign) {
+                assignType(assign[1], this.inferExprInfo(assign[2], env, lang, classes));
+            }
+        }
+
+        return { env, classes };
+    }
+
+    applyParamTypes(paramList, assignType) {
+        if (!paramList) return;
+        paramList.split(',').forEach((part) => {
+            const m = part.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:\s*([A-Za-z_][A-Za-z0-9_|]*)/);
+            if (m) {
+                assignType(m[1], { type: this.normalizeInferredType(m[2].split('|')[0]) });
+            }
+        });
+    }
+
+    guessImportedType(moduleName, imported) {
+        if (moduleName === 'uuid' && /^(v4|v7|random|new|parse|from_bytes)$/.test(imported)) return 'uuid';
+        return 'module';
+    }
+
+    elementType(srcType) {
+        if (srcType === 'string') return 'string';
+        if (srcType === 'table') return 'object';
+        if (srcType === 'enumerate') return 'tuple';
+        if (srcType === 'array') return 'any';
+        return 'any';
+    }
+
+    normalizeInferredType(name) {
+        const lang = typeof DATACODE_LANG !== 'undefined' ? DATACODE_LANG : null;
+        if (lang && lang.normalizeType) return lang.normalizeType(name);
+        return name;
+    }
+
+    inferExprInfo(expr, env, lang, classes) {
+        const type = this.inferExprType(expr, env, lang, classes);
+        const keys = this.inferObjectKeys(expr);
+        const className = (classes && classes[type]) ? type : null;
+        return { type: type, keys: keys, className: className };
+    }
+
+    inferObjectKeys(expr) {
+        const trimmed = String(expr || '').trim();
+        if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return null;
+        const keys = [];
+        const body = trimmed.slice(1, -1);
+        body.split(',').forEach((part) => {
+            const m = part.trim().match(/^([A-Za-z_][A-Za-z0-9_]*)\s*:/);
+            if (m) keys.push(m[1]);
+        });
+        return keys.length ? keys : null;
+    }
+
+    inferExprType(expr, env, lang, classes) {
+        if (!expr) return 'any';
+        let e = String(expr).trim().replace(/;+$/, '');
+        if (!e) return 'any';
+
+        while (e.startsWith('(') && e.endsWith(')') && this.balanced(e)) {
+            const inner = e.slice(1, -1).trim();
+            if (inner.includes(',')) return 'tuple';
+            e = inner;
+        }
+
+        if ((e.startsWith('"') && e.endsWith('"')) || (e.startsWith("'") && e.endsWith("'"))) return 'string';
+        const quoted = this.literalPrefixType(e, lang, classes, env);
+        if (quoted) return quoted;
+        const container = this.containerPrefixType(e, lang, classes, env);
+        if (container) return container;
+        if (/^(true|false)$/.test(e)) return 'bool';
+        if (e === 'null') return 'null';
+        if (/^-?\d+$/.test(e)) return 'int';
+        if (/^-?\d+\.\d+([eE][+-]?\d+)?$/.test(e)) return 'float';
+        if (e.startsWith('[') && e.endsWith(']')) return 'array';
+        if (e.startsWith('{') && e.endsWith('}')) return 'object';
+
+        const streamCall = e.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*\(.*\)\s*$/);
+        if (streamCall && env[streamCall[1]] && env[streamCall[1]].type === 'function') {
+            return 'any';
+        }
+
+        return this.inferChainType(e, env, lang, classes);
+    }
+
+    balanced(s) {
+        let depth = 0;
+        for (let i = 0; i < s.length; i++) {
+            if (s[i] === '(') depth++;
+            if (s[i] === ')') depth--;
+            if (depth < 0) return false;
+        }
+        return depth === 0;
+    }
+
+    literalPrefixType(expr, lang, classes, env) {
+        const q = expr[0];
+        if (q !== '"' && q !== "'") return null;
+        let i = 1;
+        while (i < expr.length) {
+            if (expr[i] === '\\') { i += 2; continue; }
+            if (expr[i] === q) { i++; break; }
+            i++;
+        }
+        if (i >= expr.length) return 'string';
+        const rest = expr.slice(i).trim();
+        if (!rest.startsWith('.')) return 'string';
+        return this.inferChainType('__str__' + rest, Object.assign(Object.create(null), env, { __str__: { type: 'string' } }), lang, classes);
+    }
+
+    containerPrefixType(expr, lang, classes, env) {
+        if (expr[0] !== '[' && expr[0] !== '{') return null;
+        const open = expr[0];
+        const close = open === '[' ? ']' : '}';
+        const type = open === '[' ? 'array' : 'object';
+        let depth = 0;
+        for (let i = 0; i < expr.length; i++) {
+            const ch = expr[i];
+            if (ch === '"' || ch === "'") {
+                i++;
+                while (i < expr.length && expr[i] !== ch) {
+                    if (expr[i] === '\\') i++;
+                    i++;
+                }
+                continue;
+            }
+            if (ch === open) depth++;
+            if (ch === close) {
+                depth--;
+                if (depth === 0) {
+                    const rest = expr.slice(i + 1).trim();
+                    if (!rest.startsWith('.')) return type;
+                    const dummy = open === '[' ? '__arr__' : '__obj__';
+                    return this.inferChainType(dummy + rest, Object.assign(Object.create(null), env, { [dummy]: { type: type } }), lang, classes);
+                }
+            }
+        }
+        return type;
+    }
+
+    inferChainType(expr, env, lang, classes) {
+        const parts = this.splitChain(expr);
+        if (!parts.length) return 'any';
+
+        let current = null;
+        const first = parts[0];
+        if (first.call) {
+            current = this.returnTypeOfCall(first.name, lang, classes, env);
+        } else if (env[first.name]) {
+            current = env[first.name].type;
+        } else if (classes[first.name]) {
+            current = first.call ? first.name : 'function';
+        } else {
+            current = this.returnTypeOfCall(first.name, lang, classes, env);
+        }
+
+        for (let i = 1; i < parts.length; i++) {
+            const part = parts[i];
+            current = this.returnTypeOfMember(current, part.name, lang, classes);
+        }
+        return current || 'any';
+    }
+
+    splitChain(expr) {
+        const parts = [];
+        let i = 0;
+        const s = expr.trim();
+        while (i < s.length) {
+            if (/\s/.test(s[i])) { i++; continue; }
+            if (!/[A-Za-z_]/.test(s[i])) break;
+            let j = i + 1;
+            while (j < s.length && /[A-Za-z0-9_]/.test(s[j])) j++;
+            const name = s.slice(i, j);
+            i = j;
+            while (i < s.length && /\s/.test(s[i])) i++;
+            let call = false;
+            if (s[i] === '(') {
+                call = true;
+                let depth = 0;
+                while (i < s.length) {
+                    if (s[i] === '(') depth++;
+                    if (s[i] === ')') {
+                        depth--;
+                        if (depth === 0) { i++; break; }
+                    }
+                    i++;
+                }
+            }
+            parts.push({ name, call });
+            while (i < s.length && /\s/.test(s[i])) i++;
+            if (s[i] === '.') { i++; continue; }
+            break;
+        }
+        return parts;
+    }
+
+    returnTypeOfCall(name, lang, classes, env) {
+        if (classes && classes[name]) return name;
+        if (lang && lang.returnTypes && lang.returnTypes[name]) {
+            return this.simplifyReturnType(lang.returnTypes[name]);
+        }
+        if (lang && lang.returnTypes && lang.returnTypes[name.toLowerCase()]) {
+            return this.simplifyReturnType(lang.returnTypes[name.toLowerCase()]);
+        }
+        if (env && env[name] && env[name].type === 'function') return 'any';
+        return 'any';
+    }
+
+    simplifyReturnType(type) {
+        if (!type) return 'any';
+        const first = String(type).split('|')[0].trim();
+        return this.normalizeInferredType(first);
+    }
+
+    returnTypeOfMember(currentType, member, lang, classes) {
+        if (!currentType || currentType === 'any') return 'any';
+        if (lang && lang.methodReturnTypes) {
+            const key = `${currentType}.${member}`;
+            if (lang.methodReturnTypes[key]) return this.simplifyReturnType(lang.methodReturnTypes[key]);
+        }
+        if (classes && classes[currentType]) return 'any';
+        return 'any';
+    }
+
+    getReceiverType(name) {
+        if (!name) return null;
+        if (this.typeEnv[name] && this.typeEnv[name].type) return this.typeEnv[name].type;
+        if (this.classInfo[name]) return name;
+        return null;
+    }
+
+    getMemberSuggestions(receiverName, prefix) {
+        const info = this.typeEnv[receiverName];
+        const typeName = info ? info.type : (this.classInfo[receiverName] ? receiverName : null);
+        if (!typeName || typeName === 'any') return [];
+        const prefixLower = (prefix || '').toLowerCase();
+        const items = [];
+
+        const lang = typeof DATACODE_LANG !== 'undefined' ? DATACODE_LANG : null;
+        const methods = lang && lang.getTypeMethods ? lang.getTypeMethods(typeName) : [];
+        methods.forEach((m) => {
+            if (!prefixLower || m.name.toLowerCase().startsWith(prefixLower)) {
+                items.push({
+                    name: m.name,
+                    type: 'method',
+                    kind: m.kind || 'method',
+                    description: m.description,
+                    signature: m.signature,
+                    funcDef: m,
+                    receiverType: typeName
+                });
+            }
+        });
+
+        if (info && info.keys) {
+            info.keys.forEach((key) => {
+                if (!prefixLower || key.toLowerCase().startsWith(prefixLower)) {
+                    items.push({
+                        name: key,
+                        type: 'method',
+                        kind: 'property',
+                        description: `Поле объекта`,
+                        signature: key,
+                        receiverType: 'object'
+                    });
+                }
+            });
+        }
+
+        const className = (info && info.className) || (this.classInfo[typeName] ? typeName : null);
+        if (className && this.classInfo[className]) {
+            this.classInfo[className].methods.forEach((m) => {
+                if (!prefixLower || m.name.toLowerCase().startsWith(prefixLower)) {
+                    items.push({
+                        name: m.name,
+                        type: 'method',
+                        kind: 'method',
+                        description: m.description,
+                        signature: m.signature,
+                        funcDef: m,
+                        receiverType: className
+                    });
+                }
+            });
+            this.classInfo[className].fields.forEach((f) => {
+                if (!prefixLower || f.name.toLowerCase().startsWith(prefixLower)) {
+                    items.push({
+                        name: f.name,
+                        type: 'method',
+                        kind: 'property',
+                        description: `Поле ${className}: ${f.type || 'any'}`,
+                        signature: f.name,
+                        receiverType: className
+                    });
+                }
+            });
+        }
+
+        return items.slice(0, 20);
+    }
+
+    // ============================================
     // Autocomplete
     // ============================================
 
@@ -883,22 +1693,38 @@ class DataCodeEditor {
         const cursorPos = this.editor.selectionStart;
         const value = this.editor.value;
         const textBeforeCursor = value.substring(0, cursorPos);
-        
-        // Find the current word being typed
-        const wordMatch = textBeforeCursor.match(/([a-zA-Z_][a-zA-Z0-9_]*)$/);
+        this.refreshTypeEnv(value);
+
+        const memberMatch = textBeforeCursor.match(/([A-Za-z_][A-Za-z0-9_]*)\.\s*([A-Za-z_][A-Za-z0-9_]*)?$/);
+        if (memberMatch) {
+            const receiver = memberMatch[1];
+            const prefix = memberMatch[2] || '';
+            this.memberContext = { receiver, prefix };
+            const suggestions = this.getMemberSuggestions(receiver, prefix);
+            if (suggestions.length === 0) {
+                this.hideAutocomplete();
+                return;
+            }
+            this.autocompleteItems = suggestions;
+            this.autocompleteIndex = -1;
+            this.showAutocomplete(suggestions, cursorPos);
+            return;
+        }
+
+        this.memberContext = null;
+        const wordMatch = textBeforeCursor.match(/([A-Za-z_][A-Za-z0-9_]*)$/);
         if (!wordMatch) {
             this.hideAutocomplete();
             return;
         }
-        
+
         const currentWord = wordMatch[1].toLowerCase();
         const suggestions = this.getAutocompleteSuggestions(currentWord, value);
-        
         if (suggestions.length === 0) {
             this.hideAutocomplete();
             return;
         }
-        
+
         this.autocompleteItems = suggestions;
         this.autocompleteIndex = -1;
         this.showAutocomplete(suggestions, cursorPos);
@@ -913,31 +1739,27 @@ class DataCodeEditor {
                 let description = 'Ключевое слово';
                 let snippet = keyword;
                 
-                // Special snippets for constructs
                 if (keyword === 'for') {
-                    snippet = 'for ${1:item} in ${2:iterable} {\n    ${3:// code}\n}';
-                    description = 'Цикл for...in';
+                    snippet = 'for ${1:item} in ${2:iterable} {\n    ${3:# code}\n}';
+                    description = 'Цикл for ... in';
                 } else if (keyword === 'if') {
-                    snippet = 'if ${1:condition} {\n    ${2:// code}\n}';
-                    description = 'Условная конструкция if';
+                    snippet = 'if ${1:condition} {\n    ${2:# code}\n}';
+                    description = 'Условие if';
                 } else if (keyword === 'else') {
-                    snippet = 'else {\n    ${1:// code}\n}';
+                    snippet = 'else {\n    ${1:# code}\n}';
                     description = 'Блок else';
                 } else if (keyword === 'fn') {
-                    snippet = 'fn ${1:name}(${2:parameters}) {\n    ${3:// code}\n    return ${4:value}\n}';
+                    snippet = 'fn ${1:name}(${2:params}) {\n    ${3:# code}\n}';
                     description = 'Определение функции';
-                } else if (keyword === 'while') {
-                    snippet = 'while ${1:condition} {\n    ${2:// code}\n}';
-                    description = 'Цикл while';
+                } else if (keyword === 'cls') {
+                    snippet = 'cls ${1:Name} {\n    ${2:# fields}\n}';
+                    description = 'Класс';
                 } else if (keyword === 'try') {
-                    snippet = 'try {\n    ${1:// code}\n} catch ${2:e} {\n    ${3:// handle error}\n}';
-                    description = 'Обработка ошибок try/catch';
-                } else if (keyword === 'catch') {
-                    snippet = 'catch ${1:e} {\n    ${2:// handle error}\n}';
-                    description = 'Блок catch';
-                } else if (keyword === 'finally') {
-                    snippet = 'finally {\n    ${1:// cleanup code}\n}';
-                    description = 'Блок finally';
+                    snippet = 'try {\n    ${1:# code}\n} catch (e) {\n    ${2:# handle}\n}';
+                    description = 'try / catch';
+                } else if (keyword === 'stream') {
+                    snippet = 'stream fn ${1:name}() {\n    ${2:return 0}\n}';
+                    description = 'Потоковая функция';
                 }
                 
                 suggestions.push({
@@ -954,8 +1776,8 @@ class DataCodeEditor {
             suggestions.push({
                 name: 'else if',
                 type: 'keyword',
-                description: 'Условная конструкция else if',
-                snippet: 'else if ${1:condition} {\n    ${2:// code}\n}'
+                description: 'Условие else if',
+                snippet: 'else if ${1:condition} {\n    ${2:# code}\n}'
             });
         }
         
@@ -971,7 +1793,7 @@ class DataCodeEditor {
                     signature = funcDef.signature;
                     
                     // Create snippet with named parameters
-                    if (funcDef.parameters.length > 0) {
+                    if (funcDef.parameters && funcDef.parameters.length > 0) {
                         const params = funcDef.parameters.map((param) => {
                             return `${param.name}=`;
                         }).join(', ');
@@ -989,10 +1811,22 @@ class DataCodeEditor {
             }
         });
         
-        // Variables from current code
+        Object.keys(this.typeEnv).forEach((token) => {
+            if (token.toLowerCase().startsWith(currentWord) &&
+                !suggestions.find(s => s.name.toLowerCase() === token.toLowerCase())) {
+                const info = this.typeEnv[token];
+                suggestions.push({
+                    name: token,
+                    type: 'variable',
+                    description: info && info.type ? `Переменная · ${info.type}` : 'Переменная',
+                    inferredType: info && info.type
+                });
+            }
+        });
+
         const tokens = this.highlighter.getTokens(fullCode);
         tokens.forEach(token => {
-            if (token.toLowerCase().startsWith(currentWord) && 
+            if (token.toLowerCase().startsWith(currentWord) &&
                 !suggestions.find(s => s.name.toLowerCase() === token.toLowerCase())) {
                 suggestions.push({
                     name: token,
@@ -1001,12 +1835,11 @@ class DataCodeEditor {
                 });
             }
         });
-        
-        // Sort: keywords first, then functions, then variables
+
         suggestions.sort((a, b) => {
-            const typeOrder = { keyword: 0, function: 1, variable: 2 };
-            const orderA = typeOrder[a.type] || 3;
-            const orderB = typeOrder[b.type] || 3;
+            const typeOrder = { keyword: 0, function: 1, method: 2, variable: 3 };
+            const orderA = typeOrder[a.type] || 4;
+            const orderB = typeOrder[b.type] || 4;
             if (orderA !== orderB) return orderA - orderB;
             return a.name.localeCompare(b.name);
         });
@@ -1023,21 +1856,30 @@ class DataCodeEditor {
             div.className = 'autocomplete-item';
             div.dataset.index = index;
             
-            const icon = item.type === 'keyword' ? '🔑' : 
-                        item.type === 'function' ? '⚙️' : '📝';
+            const icon = item.type === 'keyword' ? '🔑' :
+                        item.type === 'function' ? '⚙️' :
+                        item.type === 'method' ? '▸' : '📝';
             
-            // Show signature for functions
             let displayText = item.name;
-            if (item.type === 'function' && item.signature) {
+            if ((item.type === 'function' || item.type === 'method') && item.signature) {
                 displayText = item.signature;
             }
+
+            const typeBadge = item.inferredType
+                ? `<span class="autocomplete-item-type">${this.escapeHtml(item.inferredType)}</span>`
+                : (item.receiverType
+                    ? `<span class="autocomplete-item-type">${this.escapeHtml(item.receiverType)}</span>`
+                    : '');
             
             div.innerHTML = `
                 <span class="autocomplete-item-icon">${icon}</span>
                 <div class="autocomplete-item-content">
+                    <div class="autocomplete-item-title">
                     <span class="autocomplete-item-name">${this.escapeHtml(displayText)}</span>
+                    ${typeBadge}
+                    </div>
                     <span class="autocomplete-item-desc">${this.escapeHtml(item.description)}</span>
-                    ${item.funcDef && item.funcDef.parameters.length > 0 ? 
+                    ${item.funcDef && item.funcDef.parameters && item.funcDef.parameters.length > 0 ? 
                         `<div class="autocomplete-item-params">${item.funcDef.parameters.map(p => 
                             `${p.name}: ${p.type}${p.optional ? '?' : ''}`
                         ).join(', ')}</div>` : ''}
@@ -1050,7 +1892,7 @@ class DataCodeEditor {
             });
             
             // Add hover tooltip for functions
-            if (item.type === 'function' && item.funcDef) {
+            if ((item.type === 'function' || item.type === 'method') && item.funcDef) {
                 let tooltipTimeout = null;
                 div.addEventListener('mouseenter', (e) => {
                     clearTimeout(tooltipTimeout);
@@ -1134,9 +1976,22 @@ class DataCodeEditor {
         const cursorPos = this.editor.selectionStart;
         const value = this.editor.value;
         const textBeforeCursor = value.substring(0, cursorPos);
-        
+
+        if (this.memberContext) {
+            const prefix = this.memberContext.prefix || '';
+            const startPos = cursorPos - prefix.length;
+            const insert = this.formatMemberInsert(item);
+            this.editor.value = value.substring(0, startPos) + insert.text + value.substring(cursorPos);
+            this.editor.setSelectionRange(startPos + insert.cursor, startPos + insert.cursor);
+            this.hideAutocomplete();
+            this.updateHighlight();
+            this.updateLineNumbers();
+            this.saveCurrentTab();
+            return;
+        }
+
         // Find the current word
-        const wordMatch = textBeforeCursor.match(/([a-zA-Z_][a-zA-Z0-9_]*)$/);
+        const wordMatch = textBeforeCursor.match(/([A-Za-z_][A-Za-z0-9_]*)$/);
         if (!wordMatch) {
             this.hideAutocomplete();
             return;
@@ -1195,7 +2050,7 @@ class DataCodeEditor {
                     this.editor.setSelectionRange(startPos + finalSnippet.length, startPos + finalSnippet.length);
                 }
             }
-        } else if (item.type === 'function' && item.funcDef && item.funcDef.parameters.length > 0) {
+        } else if (item.type === 'function' && item.funcDef && item.funcDef.parameters && item.funcDef.parameters.length > 0) {
             // Insert function with named parameters
             const params = item.funcDef.parameters.map((param) => 
                 `${param.name}=`
@@ -1219,10 +2074,22 @@ class DataCodeEditor {
         this.saveCurrentTab();
     }
 
+    formatMemberInsert(item) {
+        if (item.kind === 'property') {
+            return { text: item.name, cursor: item.name.length };
+        }
+        const params = item.funcDef && item.funcDef.parameters ? item.funcDef.parameters : [];
+        if (params.length === 0) {
+            return { text: `${item.name}()`, cursor: item.name.length + 1 };
+        }
+        return { text: `${item.name}(`, cursor: item.name.length + 1 };
+    }
+
     hideAutocomplete() {
         this.autocompleteVisible = false;
         this.autocompletePanel.classList.remove('visible');
         this.autocompleteIndex = -1;
+        this.memberContext = null;
     }
 
     // ============================================
@@ -1300,49 +2167,36 @@ class DataCodeEditor {
             wordStart = charIndex;
         }
         
-        // Check if it's a built-in function
+        // Check if it's a built-in function, method or typed variable
         if (word && wordStart >= 0) {
+            this.refreshTypeEnv(this.editor.value);
             const funcName = word.toLowerCase();
             const funcDef = this.highlighter.getFunctionDefinition(funcName);
-            
-            if (funcDef) {
-                clearTimeout(this.tooltipTimeout);
-                
-                // Find the corresponding element in highlight for positioning
-                const highlightLines = this.highlight.querySelectorAll('.code-line');
-                const highlightLine = highlightLines[lineIndex];
-                
-                if (highlightLine) {
-                    // Find the builtin span in this line that matches our word position
-                    const builtinSpans = highlightLine.querySelectorAll('.builtin');
-                    let targetSpan = null;
-                    
-                    for (const span of builtinSpans) {
-                        const spanText = span.textContent.trim();
-                        const spanFuncName = span.getAttribute('data-function') || spanText.toLowerCase();
-                        
-                        // Check if this span contains our word and is at the right position
-                        if (spanFuncName === funcName) {
-                            // Verify position by checking if the span starts at our word position
-                            const spanParent = span.parentElement;
-                            if (spanParent) {
-                                const spanIndex = Array.from(spanParent.childNodes).indexOf(span);
-                                // Simple check: if span contains the function name, use it
-                                targetSpan = span;
-                                break;
-                            }
-                        }
-                    }
-                    
-                    if (targetSpan) {
-                        this.tooltipTimeout = setTimeout(() => {
-                            this.showFunctionTooltip(targetSpan, funcDef);
-                        }, 300);
-                        return;
-                    }
+            const beforeWord = line.substring(0, wordStart);
+            const recvMatch = beforeWord.match(/([A-Za-z_][A-Za-z0-9_]*)\.\s*$/);
+            let hoverDef = funcDef;
+
+            if (recvMatch) {
+                const recvType = this.getReceiverType(recvMatch[1]);
+                const lang = typeof DATACODE_LANG !== 'undefined' ? DATACODE_LANG : null;
+                const methods = lang && recvType ? lang.getTypeMethods(recvType) : [];
+                const found = methods.find((m) => m.name.toLowerCase() === funcName);
+                if (found) {
+                    hoverDef = Object.assign({ category: recvType }, found);
                 }
-                
-                // Fallback: create a temporary element for positioning based on calculated position
+            } else if (!hoverDef && this.typeEnv[word]) {
+                const info = this.typeEnv[word];
+                hoverDef = {
+                    signature: `${word}: ${info.type}`,
+                    description: `Выведенный тип переменной`,
+                    parameters: [],
+                    returnType: info.type,
+                    category: 'variable'
+                };
+            }
+
+            if (hoverDef) {
+                clearTimeout(this.tooltipTimeout);
                 const tempElement = document.createElement('span');
                 tempElement.style.position = 'absolute';
                 tempElement.style.left = `${rect.left + paddingLeft + (wordStart * charWidth) - scrollLeft}px`;
@@ -1350,17 +2204,17 @@ class DataCodeEditor {
                 tempElement.style.visibility = 'hidden';
                 tempElement.style.pointerEvents = 'none';
                 document.body.appendChild(tempElement);
-                
                 this.tooltipTimeout = setTimeout(() => {
-                    this.showFunctionTooltip(tempElement, funcDef);
+                    this.showFunctionTooltip(tempElement, hoverDef);
                     setTimeout(() => tempElement.remove(), 100);
                 }, 300);
-            } else {
-                clearTimeout(this.tooltipTimeout);
-                this.tooltipTimeout = setTimeout(() => {
-                    this.hideFunctionTooltip();
-                }, 200);
+                return;
             }
+
+            clearTimeout(this.tooltipTimeout);
+            this.tooltipTimeout = setTimeout(() => {
+                this.hideFunctionTooltip();
+            }, 200);
         } else {
             clearTimeout(this.tooltipTimeout);
             this.tooltipTimeout = setTimeout(() => {
@@ -1370,18 +2224,27 @@ class DataCodeEditor {
     }
 
     getCategoryName(category) {
+        const lang = typeof DATACODE_LANG !== 'undefined' ? DATACODE_LANG : null;
+        if (lang && lang.categoryNames && lang.categoryNames[category]) {
+            return lang.categoryNames[category];
+        }
         const categoryNames = {
-            'system': 'Система',
-            'file': 'Файлы',
-            'math': 'Математика',
-            'array': 'Массивы',
-            'string': 'Строки',
-            'table': 'Таблицы',
-            'filter': 'Фильтрация',
-            'iteration': 'Итерация',
-            'type': 'Преобразование типов'
+            system: 'Система',
+            file: 'Файлы',
+            math: 'Математика',
+            array: 'Массивы',
+            string: 'Строки',
+            table: 'Таблицы',
+            join: 'JOIN',
+            utility: 'Утилиты',
+            type: 'Типы',
+            datetime: 'Дата и время',
+            path: 'Пути',
+            crypto: 'Крипто и RNG',
+            variable: 'Переменная',
+            method: 'Метод'
         };
-        return categoryNames[category] || category;
+        return categoryNames[category] || category || '';
     }
 
     showFunctionTooltip(element, funcDef) {
@@ -1394,25 +2257,25 @@ class DataCodeEditor {
         const categoryName = this.getCategoryName(funcDef.category);
         tooltip.innerHTML = `
             <div class="function-tooltip-header">
-                <span class="function-tooltip-name">${this.escapeHtml(funcDef.signature)}</span>
+                <span class="function-tooltip-name">${this.escapeHtml(funcDef.signature || funcDef.name || '')}</span>
                 <span class="function-tooltip-category">${this.escapeHtml(categoryName)}</span>
             </div>
             <div class="function-tooltip-description">${this.escapeHtml(funcDef.description)}</div>
-            ${funcDef.parameters.length > 0 ? `
+            ${funcDef.parameters && funcDef.parameters.length > 0 ? `
                 <div class="function-tooltip-params">
                     <div class="function-tooltip-params-title">Параметры:</div>
                     ${funcDef.parameters.map(param => `
                         <div class="function-tooltip-param">
                             <span class="function-tooltip-param-name">${this.escapeHtml(param.name)}</span>
                             <span class="function-tooltip-param-type">${this.escapeHtml(param.type)}${param.optional ? ' (опционально)' : ''}</span>
-                            <div class="function-tooltip-param-desc">${this.escapeHtml(param.description)}</div>
+                            <div class="function-tooltip-param-desc">${this.escapeHtml(param.description || '')}</div>
                         </div>
                     `).join('')}
                 </div>
             ` : ''}
             <div class="function-tooltip-return">
                 <span class="function-tooltip-return-label">Возвращает:</span>
-                <span class="function-tooltip-return-type">${this.escapeHtml(funcDef.returnType)}</span>
+                <span class="function-tooltip-return-type">${this.escapeHtml(funcDef.returnType || '')}</span>
             </div>
         `;
         
@@ -1621,6 +2484,76 @@ class DataCodeEditor {
         this.consolePanel.classList.toggle('hidden');
     }
 
+    resizeConsole(delta) {
+        const minHeight = 100;
+        const maxHeight = window.innerHeight * 0.8; // Max 80% of viewport height
+        
+        this.consoleHeight = Math.max(minHeight, Math.min(maxHeight, this.consoleHeight + delta));
+        this.consolePanel.style.height = `${this.consoleHeight}px`;
+        
+        // Save preference to localStorage
+        try {
+            localStorage.setItem('datacode_console_height', this.consoleHeight.toString());
+        } catch (e) {
+            // Ignore localStorage errors
+        }
+    }
+
+    startResizeConsole(e) {
+        e.preventDefault();
+        this.isResizing = true;
+        if (this.consoleResizeHandle) this.consoleResizeHandle.style.cursor = 'row-resize';
+        document.body.style.cursor = 'row-resize';
+        document.body.style.userSelect = 'none';
+    }
+
+    onResizeConsole(e) {
+        if (!this.isResizing) return;
+        
+        e.preventDefault();
+        const viewportHeight = window.innerHeight;
+        const mouseY = e.clientY;
+        const panelRect = this.consolePanel.getBoundingClientRect();
+        const newHeight = viewportHeight - mouseY;
+        
+        const minHeight = 100;
+        const maxHeight = viewportHeight * 0.8;
+        
+        this.consoleHeight = Math.max(minHeight, Math.min(maxHeight, newHeight));
+        this.consolePanel.style.height = `${this.consoleHeight}px`;
+    }
+
+    stopResizeConsole() {
+        if (!this.isResizing) return;
+        
+        this.isResizing = false;
+        if (this.consoleResizeHandle) this.consoleResizeHandle.style.cursor = '';
+        document.body.style.cursor = '';
+        document.body.style.userSelect = '';
+        
+        // Save preference to localStorage
+        try {
+            localStorage.setItem('datacode_console_height', this.consoleHeight.toString());
+        } catch (e) {
+            // Ignore localStorage errors
+        }
+    }
+
+    loadConsoleHeight() {
+        try {
+            const savedHeight = localStorage.getItem('datacode_console_height');
+            if (savedHeight) {
+                const height = parseInt(savedHeight, 10);
+                if (height >= 100 && height <= window.innerHeight * 0.8) {
+                    this.consoleHeight = height;
+                    this.consolePanel.style.height = `${this.consoleHeight}px`;
+                }
+            }
+        } catch (e) {
+            // Ignore localStorage errors
+        }
+    }
+
     logToConsole(message, type = 'info') {
         const line = document.createElement('div');
         line.className = `console-line ${type}`;
@@ -1633,7 +2566,7 @@ class DataCodeEditor {
     // Compilation
     // ============================================
 
-    compileCode() {
+    async compileCode() {
         // Save current tab content before compiling
         if (this.activeTabId) {
             this.saveCurrentTab();
@@ -1650,44 +2583,142 @@ class DataCodeEditor {
             return;
         }
 
-        // Collect code from all tabs in order
-        const codeParts = [];
-        tabIdsInOrder.forEach((tabId, index) => {
-            const tab = this.tabs.get(tabId);
-            if (tab && tab.content.trim()) {
-                // Add separator with tab name if there are multiple tabs
-                if (tabIdsInOrder.length > 1) {
-                    codeParts.push(`// ===== ${tab.name} =====`);
-                }
-                codeParts.push(tab.content);
-                // Add blank line between tabs (except after last)
-                if (index < tabIdsInOrder.length - 1) {
-                    codeParts.push('');
-                }
-            }
-        });
-
-        // Combine all code
-        const compiledCode = codeParts.join('\n');
+        const activeIndex = this.activeTabId ? tabIdsInOrder.indexOf(this.activeTabId) : 0;
+        const endIndex = activeIndex >= 0 ? activeIndex : tabIdsInOrder.length - 1;
+        const compiledCode = this.getCompiledCodeFromTabs(true);
+        const activeTab = this.tabs.get(tabIdsInOrder[endIndex]);
+        const compileRangeLabel = tabIdsInOrder.length > 1
+            ? `вкладки 1–${endIndex + 1} («${activeTab?.name || ''}»)`
+            : (activeTab?.name || 'активная вкладка');
 
         // Show console if hidden
         if (this.consolePanel.classList.contains('hidden')) {
             this.consolePanel.classList.remove('hidden');
         }
 
-        // Output compiled code to console
-        this.logToConsole('=== Скомпилированный код ===', 'info');
+        // Show loading state
+        this.logToConsole(`=== Компиляция: ${compileRangeLabel} ===`, 'info');
+        this.logToConsole('Ожидание ответа от сервера...', 'info');
         this.logToConsole('', 'info');
-        
-        // Split code into lines and output each line
-        const lines = compiledCode.split('\n');
-        lines.forEach((line, index) => {
-            const lineNumber = (index + 1).toString().padStart(4, ' ');
-            this.logToConsole(`${lineNumber} | ${line}`, 'info');
-        });
-        
-        this.logToConsole('', 'info');
-        this.logToConsole(`=== Конец кода (${lines.length} строк) ===`, 'info');
+
+        // Disable compile button during execution
+        const compileBtn = this.compileBtn;
+        const originalText = compileBtn.innerHTML;
+        compileBtn.disabled = true;
+        compileBtn.style.opacity = '0.6';
+        compileBtn.innerHTML = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg>';
+
+        try {
+            // ✅ Безопасный метод: используем прокси вместо прямой передачи токена
+            const payload = {
+                code: compiledCode
+            };
+            
+            // Добавляем файлы для загрузки, если они были установлены
+            if (this.filesToUpload && this.filesToUpload.length > 0) {
+                payload.files = this.filesToUpload;
+                            } else if (this.fileToUpload) {
+                payload.files = [this.fileToUpload];
+                            }
+            
+            let result;
+            if (this.modelId != null && window.parent && window.parent !== window) {
+                const requestId = `exec_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+                const response = await new Promise((resolve, reject) => {
+                    this.executeForModelPending.set(requestId, { resolve, reject });
+                    window.parent.postMessage({
+                        type: 'EXECUTE_FOR_MODEL',
+                        requestId: requestId,
+                        modelId: this.modelId,
+                        code: payload.code,
+                        files: payload.files || null
+                    }, window.location.origin);
+                    setTimeout(() => {
+                        if (this.executeForModelPending.has(requestId)) {
+                            this.executeForModelPending.delete(requestId);
+                            reject(new Error('Request timeout'));
+                        }
+                    }, 30000);
+                });
+                result = response.data;
+            } else {
+                const res = await this.makeApiRequest('POST', '/api/datacode/execute', payload);
+                result = res.data;
+            }
+
+            // Clear previous output
+            this.consoleContent.innerHTML = '';
+
+            if (result.success) {
+                this.logToConsole('=== Выполнение завершено успешно ===', 'success');
+                this.logToConsole('', 'info');
+                
+                if (result.output) {
+                    this.logToConsole('--- Вывод ---', 'info');
+                    const outputLines = result.output.split('\n');
+                    outputLines.forEach(line => {
+                        this.logToConsole(line, 'info');
+                    });
+                    this.logToConsole('', 'info');
+                }
+            } else {
+                this.logToConsole('=== Ошибка выполнения ===', 'error');
+                this.logToConsole('', 'error');
+                
+                if (result.error) {
+                    this.logToConsole(`Ошибка: ${result.error}`, 'error');
+                }
+                
+                if (result.output) {
+                    this.logToConsole('', 'error');
+                    this.logToConsole('--- Вывод (может содержать ошибки) ---', 'error');
+                    const outputLines = result.output.split('\n');
+                    outputLines.forEach(line => {
+                        this.logToConsole(line, 'error');
+                    });
+                }
+            }
+
+            this.logToConsole('', 'info');
+            this.logToConsole('=== Конец выполнения ===', 'info');
+
+        } catch (error) {
+            this.logToConsole('=== Ошибка при отправке запроса ===', 'error');
+            this.logToConsole(`Ошибка: ${error.message}`, 'error');
+            this.logToConsole('', 'error');
+            this.logToConsole('Проверьте подключение к серверу и настройки API', 'error');
+        } finally {
+            // Re-enable compile button
+            compileBtn.disabled = false;
+            compileBtn.style.opacity = '1';
+            compileBtn.innerHTML = originalText;
+        }
+    }
+
+    /**
+     * Get authentication token from localStorage
+     * Works with parent window's localStorage if in iframe
+     */
+    getAuthToken() {
+        try {
+            // Try to get from current window's localStorage
+            if (window.localStorage) {
+                return localStorage.getItem('access_token');
+            }
+            // If in iframe, try to access parent's localStorage
+            if (window.parent && window.parent !== window) {
+                try {
+                    return window.parent.localStorage.getItem('access_token');
+                } catch (e) {
+                    // Cross-origin restriction
+                    return null;
+                }
+            }
+        } catch (e) {
+            // localStorage not available
+            return null;
+        }
+        return null;
     }
 
     // ============================================
@@ -1701,6 +2732,7 @@ class DataCodeEditor {
     }
 
     onResize() {
+        this.syncEditorLayout();
         this.updateLineNumbers();
     }
 }
@@ -1715,5 +2747,6 @@ document.addEventListener('DOMContentLoaded', () => {
         window.editor.logToConsole('Нажмите Ctrl+F для поиска', 'info');
         window.editor.logToConsole('Нажмите Ctrl+Z для отмены', 'info');
         window.editor.logToConsole('Нажмите Ctrl+Y для повтора', 'info');
+        window.editor.logToConsole('Используйте кнопки ↑/↓ или перетаскивайте верхнюю границу для изменения высоты консоли', 'info');
     }, 500);
 });

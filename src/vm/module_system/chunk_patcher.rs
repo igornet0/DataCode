@@ -313,6 +313,31 @@ pub fn update_chunk_indices_from_names(
         }
         chunk.global_names.insert(real_idx, name);
     }
+
+    // Keep explicit_global_names keys aligned with remapped VM slots (SQLite export / relate).
+    let explicit_remap: Vec<(usize, usize, String)> = chunk
+        .explicit_global_names
+        .iter()
+        .filter_map(|(old_idx, name)| {
+            old_to_real
+                .get(old_idx)
+                .map(|real_idx| (*old_idx, *real_idx, name.clone()))
+                .or_else(|| {
+                    // Name already at a real index in global_names after Phase 3
+                    global_names
+                        .iter()
+                        .filter(|(_, n)| *n == name)
+                        .map(|(idx, _)| *idx)
+                        .filter(|&idx| idx >= crate::vm::globals::BUILTIN_GLOBAL_COUNT)
+                        .min()
+                        .map(|real_idx| (*old_idx, real_idx, name.clone()))
+                })
+        })
+        .collect();
+    for (old_idx, real_idx, name) in explicit_remap {
+        chunk.explicit_global_names.remove(&old_idx);
+        chunk.explicit_global_names.insert(real_idx, name);
+    }
     if std::env::var("DATACODE_DEBUG").is_ok() {
         eprintln!("[update_chunk_indices_from_names] AFTER mapping caller_global_names keys:");
         for (idx, name) in global_names.iter() {

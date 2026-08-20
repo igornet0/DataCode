@@ -175,6 +175,11 @@ pub fn register_native_globals(
 
 /// Заполняет имена глобальных переменных из chunk.
 /// Does not overwrite: (1) builtin slots below `BUILTIN_GLOBAL_COUNT` with a different name; (2) any existing name; (3) never insert at idx >= `BUILTIN_GLOBAL_COUNT` (VM already has high slots from ensure_globals_from_chunk).
+///
+/// Explicit globals (`global x = …`) are keyed by **VM slot** resolved from `global_names` by
+/// name — not by the compiler/chunk index. Chunk indices for user vars are always
+/// `>= BUILTIN_GLOBAL_COUNT`, so inserting at the chunk index would either be skipped or
+/// point at the wrong slot (breaking SQLite `_datacode_variables` and `relate()` name lookup).
 pub fn merge_global_names(
     global_names: &mut std::collections::BTreeMap<usize, String>,
     explicit_global_names: &mut std::collections::BTreeMap<usize, String>,
@@ -199,18 +204,23 @@ pub fn merge_global_names(
         }
         global_names.insert(*idx, name.clone());
     }
-    for (idx, name) in chunk_explicit_global_names {
-        if *idx >= BUILTIN_END {
-            continue;
-        }
-        if let Some(existing) = explicit_global_names.get(idx) {
-            if existing != name {
-                continue;
-            }
-        }
+    for (_chunk_idx, name) in chunk_explicit_global_names {
         if explicit_global_names.values().any(|n| n == name) {
             continue;
         }
-        explicit_global_names.insert(*idx, name.clone());
+        let matching: Vec<usize> = global_names
+            .iter()
+            .filter(|(_, n)| *n == name)
+            .map(|(idx, _)| *idx)
+            .collect();
+        let vm_idx = matching
+            .iter()
+            .copied()
+            .filter(|&idx| idx >= BUILTIN_END)
+            .min()
+            .or_else(|| matching.into_iter().min());
+        if let Some(idx) = vm_idx {
+            explicit_global_names.insert(idx, name.clone());
+        }
     }
 }

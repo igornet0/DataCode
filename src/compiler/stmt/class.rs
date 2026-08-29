@@ -1027,9 +1027,11 @@ pub fn compile_class(
                 ctx.chunk.set_source_name(ctx.source_name);
                 let saved_function = ctx.current_function;
                 let saved_local_count = ctx.scope.local_count;
+                let saved_method_object_temps = ctx.scope.snapshot_method_object_temps();
 
                 ctx.current_function = Some(function_index);
                 ctx.scope.local_count = 0;
+                ctx.scope.reset_method_object_temps();
                 ctx.scope.begin_scope();
 
                 for param in &params {
@@ -1127,6 +1129,7 @@ pub fn compile_class(
                 ctx.scope.end_scope();
                 ctx.current_function = saved_function;
                 ctx.scope.local_count = saved_local_count;
+                ctx.scope.restore_method_object_temps(saved_method_object_temps);
 
                 ctx.chunk
                     .global_names
@@ -1778,9 +1781,11 @@ pub fn compile_class(
             ctx.chunk.set_source_name(ctx.source_name);
             let saved_function = ctx.current_function;
             let saved_local_count = ctx.scope.local_count;
+            let saved_method_object_temps = ctx.scope.snapshot_method_object_temps();
 
             ctx.current_function = Some(function_index);
             ctx.scope.local_count = 0;
+            ctx.scope.reset_method_object_temps();
             ctx.scope.begin_scope();
 
             let this_slot = ctx.scope.declare_local("this");
@@ -1865,6 +1870,7 @@ pub fn compile_class(
             ctx.scope.end_scope();
             ctx.current_function = saved_function;
             ctx.scope.local_count = saved_local_count;
+            ctx.scope.restore_method_object_temps(saved_method_object_temps);
 
             ctx.chunk
                 .global_names
@@ -1941,9 +1947,11 @@ pub fn compile_class(
             ctx.chunk.set_source_name(ctx.source_name);
             let saved_function = ctx.current_function;
             let saved_local_count = ctx.scope.local_count;
+            let saved_method_object_temps = ctx.scope.snapshot_method_object_temps();
 
             ctx.current_function = Some(function_index);
             ctx.scope.local_count = 0;
+            ctx.scope.reset_method_object_temps();
             ctx.scope.begin_scope();
 
             // Параметры конструктора будут в локальных слотах, начиная с 0
@@ -2567,6 +2575,7 @@ pub fn compile_class(
             ctx.scope.end_scope();
             ctx.current_function = saved_function;
             ctx.scope.local_count = saved_local_count;
+            ctx.scope.restore_method_object_temps(saved_method_object_temps);
 
             // Сохраняем конструктор в глобальную переменную (аналогично обычным функциям)
             let constructor_global_index = *ctx.scope.globals.get(&constructor_name).unwrap();
@@ -2614,9 +2623,11 @@ pub fn compile_class(
             nested_chunk::enter_nested_label_scope(&mut ctx.labels);
             let saved_function = ctx.current_function;
             let saved_local_count = ctx.scope.local_count;
+            let saved_method_object_temps = ctx.scope.snapshot_method_object_temps();
 
             ctx.current_function = Some(function_index);
             ctx.scope.local_count = 0;
+            ctx.scope.reset_method_object_temps();
             ctx.scope.begin_scope();
 
             // Method bodies belong to separate functions; ctor-only state must never leak here.
@@ -2657,6 +2668,7 @@ pub fn compile_class(
             ctx.scope.end_scope();
             ctx.current_function = saved_function;
             ctx.scope.local_count = saved_local_count;
+            ctx.scope.restore_method_object_temps(saved_method_object_temps);
 
             if method.is_special_method() {
                 let global_name = ctx.functions[function_index].name.clone();

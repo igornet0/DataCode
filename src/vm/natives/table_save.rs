@@ -35,13 +35,12 @@ fn check_fs_write() -> Result<(), String> {
 }
 
 fn materialize_table(table_rc: &Rc<RefCell<Table>>) -> Table {
+    if !table_rc.borrow().is_view() {
+        return table_rc.borrow().clone();
+    }
     with_current_stores(|store, heap| {
         let table_ref = table_rc.borrow();
-        if table_ref.is_view() {
-            table_ref.materialize_with(|id| load_value(id, store, heap))
-        } else {
-            table_ref.clone()
-        }
+        table_ref.materialize_with(|id| load_value(id, store, heap))
     })
 }
 
@@ -214,8 +213,14 @@ pub fn native_table_save_csv(args: &[Value]) -> Value {
         Ok(p) => p,
         Err(e) => return save_error(e),
     };
-    let table = materialize_table(table_rc);
-    match write_table_csv(&table, &path) {
+    let table_ref = table_rc.borrow();
+    let write_result = if table_ref.is_view() {
+        let table = materialize_table(table_rc);
+        write_table_csv(&table, &path)
+    } else {
+        write_table_csv(&*table_ref, &path)
+    };
+    match write_result {
         Ok(()) => Value::String(path.to_string_lossy().to_string()),
         Err(e) => save_error(e),
     }
@@ -243,8 +248,16 @@ pub fn native_table_save_sqlite(args: &[Value]) -> Value {
         Ok(p) => p,
         Err(e) => return save_error(e),
     };
-    let table = materialize_table(table_rc);
-    match export_single_table(&table, &path, &table_name) {
+    let export_result = {
+        let table_ref = table_rc.borrow();
+        if table_ref.is_view() {
+            let table = materialize_table(table_rc);
+            export_single_table(&table, &path, &table_name)
+        } else {
+            export_single_table(&*table_ref, &path, &table_name)
+        }
+    };
+    match export_result {
         Ok(()) => Value::String(path.to_string_lossy().to_string()),
         Err(e) => save_error(e),
     }

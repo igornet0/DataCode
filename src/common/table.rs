@@ -2,7 +2,21 @@
 
 use crate::common::value::Value;
 use crate::common::value_store::ValueId;
+use std::cell::RefCell;
 use std::collections::HashMap;
+use std::rc::Rc;
+
+/// Clone-on-write: detach a unique table handle before mutation.
+///
+/// After VM `load_value`, a table referenced by one heap slot plus the native
+/// argument has `strong_count == 2`. Extra aliases (`t2 = t1`) raise the count
+/// and trigger a deep copy of `TableData`.
+pub fn table_make_mut(rc: &mut Rc<RefCell<Table>>) {
+    if Rc::strong_count(rc) > 2 {
+        let cloned = rc.borrow().clone();
+        *rc = Rc::new(RefCell::new(cloned));
+    }
+}
 
 /// Table data: flat row-major storage for both View (ValueIds) and Owned (Values).
 #[derive(Debug, Clone)]
@@ -223,6 +237,33 @@ impl Table {
         }
     }
 
+    /// Empty owned table with reserved flat capacity (`row_capacity * headers.len()`).
+    pub fn with_capacity_owned(headers: Vec<String>, row_capacity: usize) -> Self {
+        let num_cols = headers.len();
+        Table {
+            data: TableData::Owned {
+                flat: Vec::with_capacity(row_capacity.saturating_mul(num_cols)),
+                num_cols,
+                headers,
+                column_cache: HashMap::new(),
+            },
+            name: None,
+        }
+    }
+
+    /// Build owned table from an already-flat row-major buffer.
+    pub fn from_flat_owned(flat: Vec<Value>, num_cols: usize, headers: Vec<String>) -> Self {
+        Table {
+            data: TableData::Owned {
+                flat,
+                num_cols,
+                headers,
+                column_cache: HashMap::new(),
+            },
+            name: None,
+        }
+    }
+
     /// Build table as view over ValueStore using flat cell IDs (rows*num_cols).
     pub fn from_row_ids(row_ids: Vec<ValueId>, headers: Vec<String>) -> Self {
         Table {
@@ -303,7 +344,7 @@ impl Table {
         matches!(self.data, TableData::View { .. })
     }
 
-    /// Identity for `relate` / `primary_key` flush: `Value::Table` clone is a deep copy (new `Rc`).
+    /// Identity for `relate` / `primary_key` flush: shared `Rc` handles compare equal by content.
     pub fn same_schema_binding(&self, other: &Table) -> bool {
         if self.headers() != other.headers() || self.len() != other.len() {
             return false;
@@ -719,6 +760,195 @@ impl Table {
                 Ok(rows.len())
             }
             TableData::View { .. } => Err("table must be owned".to_string()),
+        }
+    }
+
+    /// Clone owned flat buffer with same headers.
+    pub fn clone_flat_owned(&self) -> Option<Self> {
+        self.clone_flat_with_headers(self.headers().clone())
+    }
+
+    /// Map one column on owned storage (single flat clone, in-place column update).
+    pub fn map_column_owned<F>(&self, col_idx: usize, mut f: F) -> Option<Self>
+    where
+        F: FnMut(Value) -> Value,
+    {
+        match &self.data {
+            TableData::Owned { flat, num_cols, headers, .. } => {
+                let nc = *num_cols;
+                if nc == 0 || col_idx >= nc {
+                    return None;
+                }
+                let mut out = flat.clone();
+                let n_rows = out.len() / nc;
+                for row in 0..n_rows {
+                    let idx = row * nc + col_idx;
+                    let cell = out[idx].clone();
+                    out[idx] = f(cell);
+                }
+                Some(Table::from_flat_owned(out, nc, headers.clone()))
+            }
+            TableData::View { .. } => None,
+        }
+    }
+
+    /// Append multiple columns on owned storage in one pass.
+    pub fn append_columns_owned(
+        &self,
+        names: &[String],
+        columns: &[Vec<Value>],
+    ) -> Option<Self> {
+        match &self.data {
+            TableData::Owned { flat, num_cols, headers, .. } => {
+                let nc = *num_cols;
+                let n_rows = if nc == 0 { 0 } else { flat.len() / nc };
+                if names.len() != columns.len() {
+                    return None;
+                }
+                for col in columns {
+                    if col.len() != n_rows {
+                        return None;
+                    }
+                }
+                let n_new = names.len();
+                let new_nc = if nc == 0 { n_new.max(1) } else { nc + n_new };
+                let mut out = Vec::with_capacity(n_rows.saturating_mul(new_nc));
+                if nc == 0 {
+                    for col in columns {
+                        out.extend_from_slice(col);
+                    }
+                } else {
+                    for row in 0..n_rows {
+                        let start = row * nc;
+                        out.extend_from_slice(&flat[start..start + nc]);
+                        for col in columns {
+                            out.push(col[row].clone());
+                        }
+                    }
+                }
+                let mut new_headers = headers.clone();
+                new_headers.extend(names.iter().cloned());
+                Some(Table::from_flat_owned(out, new_nc, new_headers))
+            }
+            TableData::View { .. } => None,
+        }
+    }
+
+    /// Clone owned flat buffer with new headers (header-only transforms).
+    pub fn clone_flat_with_headers(&self, headers: Vec<String>) -> Option<Self> {
+        match &self.data {
+            TableData::Owned { flat, num_cols, .. } => {
+                Some(Table::from_flat_owned(flat.clone(), *num_cols, headers))
+            }
+            TableData::View { .. } => None,
+        }
+    }
+
+    /// Contiguous row slice on owned storage.
+    pub fn slice_rows_owned(&self, start_row: usize, row_count: usize) -> Option<Self> {
+        match &self.data {
+            TableData::Owned { flat, num_cols, headers, .. } => {
+                let nc = *num_cols;
+                if nc == 0 {
+                    return Some(Table::from_flat_owned(Vec::new(), 0, headers.clone()));
+                }
+                if row_count == 0 {
+                    return Some(Table::from_flat_owned(Vec::new(), nc, headers.clone()));
+                }
+                let start = start_row.saturating_mul(nc);
+                let end = start.saturating_add(row_count.saturating_mul(nc));
+                if end > flat.len() {
+                    return None;
+                }
+                Some(Table::from_flat_owned(
+                    flat[start..end].to_vec(),
+                    nc,
+                    headers.clone(),
+                ))
+            }
+            TableData::View { .. } => None,
+        }
+    }
+
+    /// Gather rows by index list on owned storage.
+    pub fn gather_rows_owned(&self, indices: &[usize]) -> Option<Self> {
+        match &self.data {
+            TableData::Owned { flat, num_cols, headers, .. } => {
+                let nc = *num_cols;
+                if nc == 0 {
+                    return Some(Table::from_flat_owned(Vec::new(), 0, headers.clone()));
+                }
+                let mut out = Vec::with_capacity(indices.len().saturating_mul(nc));
+                for &row in indices {
+                    let start = row.saturating_mul(nc);
+                    let end = start + nc;
+                    if end <= flat.len() {
+                        out.extend_from_slice(&flat[start..end]);
+                    }
+                }
+                Some(Table::from_flat_owned(out, nc, headers.clone()))
+            }
+            TableData::View { .. } => None,
+        }
+    }
+
+    /// Project columns on owned storage.
+    pub fn select_columns_owned(
+        &self,
+        col_indices: &[usize],
+        new_headers: Vec<String>,
+    ) -> Option<Self> {
+        match &self.data {
+            TableData::Owned { flat, num_cols, .. } => {
+                let nc = *num_cols;
+                if nc == 0 {
+                    return Some(Table::from_flat_owned(Vec::new(), 0, new_headers));
+                }
+                let n_rows = flat.len() / nc;
+                let new_nc = col_indices.len().max(1);
+                let mut out = Vec::with_capacity(n_rows.saturating_mul(new_nc));
+                for row in 0..n_rows {
+                    let base = row * nc;
+                    for &ci in col_indices {
+                        if ci >= nc {
+                            return None;
+                        }
+                        out.push(flat[base + ci].clone());
+                    }
+                }
+                Some(Table::from_flat_owned(out, new_nc, new_headers))
+            }
+            TableData::View { .. } => None,
+        }
+    }
+
+    /// Append a column on owned storage without row-major Vec allocation.
+    pub fn append_column_owned(&self, name: &str, values: &[Value]) -> Option<Self> {
+        match &self.data {
+            TableData::Owned { flat, num_cols, headers, .. } => {
+                let nc = *num_cols;
+                let n_rows = if nc == 0 { 0 } else { flat.len() / nc };
+                if values.len() != n_rows {
+                    return None;
+                }
+                let new_nc = if nc == 0 { 1 } else { nc + 1 };
+                let mut out = Vec::with_capacity(n_rows.saturating_mul(new_nc));
+                if nc == 0 {
+                    for v in values {
+                        out.push(v.clone());
+                    }
+                } else {
+                    for row in 0..n_rows {
+                        let start = row * nc;
+                        out.extend_from_slice(&flat[start..start + nc]);
+                        out.push(values[row].clone());
+                    }
+                }
+                let mut new_headers = headers.clone();
+                new_headers.push(name.to_string());
+                Some(Table::from_flat_owned(out, new_nc, new_headers))
+            }
+            TableData::View { .. } => None,
         }
     }
 }

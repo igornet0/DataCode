@@ -625,4 +625,1067 @@ a_star({rows}, {cols}, (0, 0), ({goal_r}, {goal_c}), set())
             total / RUNS as u32
         );
     }
+
+    fn bench_make_table(n: usize, id_offset: f64) -> data_code::Value {
+        use data_code::common::table::Table;
+        use data_code::Value;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let mut rows = Vec::with_capacity(n);
+        for i in 0..n {
+            let id = id_offset + i as f64;
+            rows.push(vec![
+                Value::Number(id),
+                Value::Number(id * 2.0),
+                Value::String("x".to_string()),
+            ]);
+        }
+        Value::Table(Rc::new(RefCell::new(Table::from_data(
+            rows,
+            Some(vec!["id".into(), "val".into(), "tag".into()]),
+        ))))
+    }
+
+    fn bench_table_len(v: &data_code::Value) -> usize {
+        match v {
+            data_code::Value::Table(t) => t.borrow().len(),
+            _ => 0,
+        }
+    }
+
+    fn bench_assert_table(v: &data_code::Value) -> usize {
+        match v {
+            data_code::Value::Table(t) => t.borrow().len(),
+            _ => panic!("expected table, got {:?}", v),
+        }
+    }
+
+    fn bench_equi_join_pair(n: usize) -> [data_code::Value; 4] {
+        use data_code::Value;
+        let left = bench_make_table(n, 0.0);
+        let right = bench_make_table(n, 0.0);
+        [
+            left,
+            right,
+            Value::String("id".to_string()),
+            Value::String("id".to_string()),
+        ]
+    }
+
+    fn bench_make_asof_table(n: usize, time_bias: f64) -> data_code::Value {
+        use data_code::common::table::Table;
+        use data_code::Value;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let mut rows = Vec::with_capacity(n);
+        for i in 0..n {
+            let group = (i % 100) as f64;
+            let time = i as f64 + time_bias;
+            rows.push(vec![
+                Value::Number(group),
+                Value::Number(time),
+                Value::String("x".to_string()),
+            ]);
+        }
+        Value::Table(Rc::new(RefCell::new(Table::from_data(
+            rows,
+            Some(vec!["group".into(), "time".into(), "tag".into()]),
+        ))))
+    }
+
+    macro_rules! bench_equi_join {
+        ($name:ident, $native:path, $n:expr, $expected:expr, $label:expr) => {
+            #[test]
+            fn $name() {
+                const N: usize = $n;
+                let args = bench_equi_join_pair(N);
+                let start = Instant::now();
+                let joined = $native(&args);
+                let elapsed = start.elapsed();
+                let rows = bench_assert_table(&joined);
+                assert_eq!(rows, $expected, "unexpected row count for {}", $label);
+                println!(
+                    "{}: {} x {} -> {} rows in {:?}",
+                    stringify!($name),
+                    N,
+                    N,
+                    rows,
+                    elapsed
+                );
+            }
+        };
+    }
+
+    bench_equi_join!(
+        bench_left_join_large,
+        data_code::vm::natives::native_left_join,
+        50_000,
+        50_000,
+        "left_join"
+    );
+    bench_equi_join!(
+        bench_right_join_large,
+        data_code::vm::natives::native_right_join,
+        50_000,
+        50_000,
+        "right_join"
+    );
+    bench_equi_join!(
+        bench_full_join_large,
+        data_code::vm::natives::native_full_join,
+        50_000,
+        50_000,
+        "full_join"
+    );
+    bench_equi_join!(
+        bench_semi_join_large,
+        data_code::vm::natives::native_semi_join,
+        50_000,
+        50_000,
+        "semi_join"
+    );
+
+    /// Anti join on identical keys: no left-only rows.
+    #[test]
+    fn bench_anti_join_large() {
+        use data_code::vm::natives::native_anti_join;
+
+        const N: usize = 50_000;
+        let args = bench_equi_join_pair(N);
+        let start = Instant::now();
+        let joined = native_anti_join(&args);
+        let elapsed = start.elapsed();
+        let rows = bench_table_len(&joined);
+        assert_eq!(rows, 0, "anti_join on full key overlap should be empty");
+        println!(
+            "bench_anti_join_large: {} x {} -> {} rows in {:?}",
+            N, N, rows, elapsed
+        );
+    }
+
+    /// Positional zip: min(left, right) rows.
+    #[test]
+    fn bench_zip_join_large() {
+        use data_code::vm::natives::native_zip_join;
+
+        const N: usize = 50_000;
+        let left = bench_make_table(N, 0.0);
+        let right = bench_make_table(N, 0.0);
+        let args = [left, right];
+
+        let start = Instant::now();
+        let joined = native_zip_join(&args);
+        let elapsed = start.elapsed();
+        let rows = bench_assert_table(&joined);
+        assert_eq!(rows, N);
+        println!(
+            "bench_zip_join_large: {} x {} -> {} rows in {:?}",
+            N, N, rows, elapsed
+        );
+    }
+
+    /// Cartesian product — keep modest (1M output rows).
+    #[test]
+    fn bench_cross_join_1k() {
+        use data_code::vm::natives::native_cross_join;
+
+        const N: usize = 1_000;
+        let left = bench_make_table(N, 0.0);
+        let right = bench_make_table(N, 0.0);
+        let args = [left, right];
+
+        let start = Instant::now();
+        let joined = native_cross_join(&args);
+        let elapsed = start.elapsed();
+        let rows = bench_assert_table(&joined);
+        assert_eq!(rows, N * N);
+        println!(
+            "bench_cross_join_1k: {} x {} -> {} rows in {:?}",
+            N, N, rows, elapsed
+        );
+    }
+
+    /// ASOF with `by` + `direction=backward` on 50k rows (100 groups).
+    #[test]
+    fn bench_asof_join_large() {
+        use data_code::vm::natives::native_asof_join;
+        use data_code::Value;
+
+        const N: usize = 50_000;
+        let left = bench_make_asof_table(N, 0.0);
+        let right = bench_make_asof_table(N, -0.5);
+        let args = [
+            left,
+            right,
+            Value::String("time".to_string()),
+            Value::String("group".to_string()),
+            Value::String("backward".to_string()),
+        ];
+
+        let start = Instant::now();
+        let joined = native_asof_join(&args);
+        let elapsed = start.elapsed();
+        let rows = bench_assert_table(&joined);
+        assert_eq!(rows, N);
+        println!(
+            "bench_asof_join_large: {} x {}, by=group, direction=backward -> {} rows in {:?}",
+            N, N, rows, elapsed
+        );
+    }
+
+    /// Non-equi nested-loop join (`id == id`). Smaller N — O(n²).
+    #[test]
+    fn bench_join_on_equi_medium() {
+        use data_code::vm::natives::native_join_on;
+        use data_code::Value;
+
+        const N: usize = 2_000;
+        let left = bench_make_table(N, 0.0);
+        let right = bench_make_table(N, 0.0);
+        let args = [
+            left,
+            right,
+            Value::String("id == id".to_string()),
+            Value::String("inner".to_string()),
+        ];
+
+        let start = Instant::now();
+        let joined = native_join_on(&args);
+        let elapsed = start.elapsed();
+        let rows = bench_assert_table(&joined);
+        assert_eq!(rows, N);
+        println!(
+            "bench_join_on_equi_medium: {} x {}, id == id -> {} rows in {:?}",
+            N, N, rows, elapsed
+        );
+    }
+
+    /// Lateral apply: one output row per left row (VM + user function).
+    #[test]
+    fn bench_apply_join_medium() {
+        const N: u32 = 5_000;
+        let source = format!(
+            r#"
+fn one_row(row) {{
+    return table([[row[0]]], ["out"])
+}}
+let rows = []
+for i in range({N}) {{
+    push(rows, [i, "x"])
+}}
+let left = table(rows, ["id", "tag"])
+len(apply_join(left, one_row))
+"#
+        );
+
+        let start = Instant::now();
+        let result = run(&source).expect("bench_apply_join_medium");
+        let elapsed = start.elapsed();
+        match result {
+            data_code::Value::Number(n) => {
+                assert_eq!(n as u32, N, "apply_join row count");
+                println!(
+                    "bench_apply_join_medium: {} left rows -> {} rows in {:?}",
+                    N, n, elapsed
+                );
+            }
+            v => panic!("expected row count, got {:?}", v),
+        }
+    }
+
+    /// Inner join then rename overlapping columns via suffixes.
+    #[test]
+    fn bench_inner_join_then_suffixes_large() {
+        use data_code::vm::natives::{native_inner_join, native_table_suffixes};
+        use data_code::Value;
+
+        const N: usize = 50_000;
+        let args = bench_equi_join_pair(N);
+
+        let join_start = Instant::now();
+        let joined = native_inner_join(&args);
+        let join_elapsed = join_start.elapsed();
+        let joined_rows = bench_assert_table(&joined);
+        assert_eq!(joined_rows, N);
+
+        let suffix_args = [
+            joined,
+            Value::String("_l".to_string()),
+            Value::String("_r".to_string()),
+        ];
+        let suffix_start = Instant::now();
+        let suffixed = native_table_suffixes(&suffix_args);
+        let suffix_elapsed = suffix_start.elapsed();
+        let _ = bench_assert_table(&suffixed);
+
+        println!(
+            "bench_inner_join_then_suffixes_large: join {} rows in {:?}, suffixes in {:?}, total {:?}",
+            joined_rows,
+            join_elapsed,
+            suffix_elapsed,
+            join_elapsed + suffix_elapsed
+        );
+    }
+
+    /// Same-schema vertical concat: 3 tables × 50k rows.
+    #[test]
+    fn bench_merge_tables_large() {
+        use data_code::vm::natives::native_merge_tables;
+        use data_code::Value;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        const N: usize = 50_000;
+        let t1 = bench_make_table(N, 0.0);
+        let t2 = bench_make_table(N, N as f64);
+        let t3 = bench_make_table(N, (2 * N) as f64);
+        let args = [Value::Array(Rc::new(RefCell::new(vec![t1, t2, t3])))];
+
+        let start = Instant::now();
+        let merged = native_merge_tables(&args);
+        let elapsed = start.elapsed();
+        let rows = bench_table_len(&merged);
+        assert_eq!(rows, N * 3, "expected {} merged rows", N * 3);
+        println!(
+            "bench_merge_tables_large: {} rows x 3 tables -> {} rows in {:?}",
+            N, rows, elapsed
+        );
+    }
+
+    /// Outer merge with almost-identical schemas (id,val,tag vs id,val,extra).
+    #[test]
+    fn bench_merge_tables_outer_mismatch() {
+        use data_code::common::table::Table;
+        use data_code::vm::natives::native_merge_tables;
+        use data_code::Value;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        const N: usize = 50_000;
+        let t1 = bench_make_table(N, 0.0);
+        let mut rows2 = Vec::with_capacity(N);
+        for i in 0..N {
+            let id = N as f64 + i as f64;
+            rows2.push(vec![
+                Value::Number(id),
+                Value::Number(id * 2.0),
+                Value::String("y".to_string()),
+            ]);
+        }
+        let t2 = Value::Table(Rc::new(RefCell::new(Table::from_data(
+            rows2,
+            Some(vec!["id".into(), "val".into(), "extra".into()]),
+        ))));
+        let args = [
+            Value::Array(Rc::new(RefCell::new(vec![t1, t2]))),
+            Value::String("outer".to_string()),
+        ];
+
+        let start = Instant::now();
+        let merged = native_merge_tables(&args);
+        let elapsed = start.elapsed();
+        let rows = bench_table_len(&merged);
+        assert_eq!(rows, N * 2, "expected {} merged rows", N * 2);
+        println!(
+            "bench_merge_tables_outer_mismatch: {}+{} rows -> {} rows in {:?}",
+            N, N, rows, elapsed
+        );
+    }
+
+    /// Equi inner join on `id`: 50k × 50k, 1:1 matches.
+    #[test]
+    fn bench_inner_join_large() {
+        use data_code::vm::natives::native_inner_join;
+        use data_code::Value;
+
+        const N: usize = 50_000;
+        let left = bench_make_table(N, 0.0);
+        let right = bench_make_table(N, 0.0);
+        let args = [
+            left,
+            right,
+            Value::String("id".to_string()),
+            Value::String("id".to_string()),
+        ];
+
+        let start = Instant::now();
+        let joined = native_inner_join(&args);
+        let elapsed = start.elapsed();
+        let rows = bench_table_len(&joined);
+        assert_eq!(rows, N, "expected {} joined rows", N);
+        println!(
+            "bench_inner_join_large: {} x {} -> {} rows in {:?}",
+            N, N, rows, elapsed
+        );
+    }
+
+    // --- Table ops (filter / slice / transform) benchmarks ---
+    // Run: cargo test --release profiling_benchmarks::tests::bench_table_ -- --nocapture
+
+    const TABLE_OPS_N: usize = 50_000;
+
+    fn bench_make_table_with_nulls(n: usize) -> data_code::Value {
+        use data_code::common::table::Table;
+        use data_code::Value;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let mut rows = Vec::with_capacity(n);
+        for i in 0..n {
+            let id = i as f64;
+            let val = if i % 10 == 0 {
+                Value::Null
+            } else {
+                Value::Number(id * 2.0)
+            };
+            rows.push(vec![Value::Number(id), val, Value::String("x".to_string())]);
+        }
+        Value::Table(Rc::new(RefCell::new(Table::from_data(
+            rows,
+            Some(vec!["id".into(), "val".into(), "tag".into()]),
+        ))))
+    }
+
+    macro_rules! bench_table_op {
+        ($name:ident, $setup:expr, $body:expr, $label:expr) => {
+            #[test]
+            fn $name() {
+                const N: usize = TABLE_OPS_N;
+                let setup = $setup;
+                let start = Instant::now();
+                let result = $body;
+                let elapsed = start.elapsed();
+                let rows = bench_assert_table(&result);
+                println!("{}: {} rows in {:?} ({})", stringify!($name), rows, elapsed, $label);
+                let _ = (N, setup);
+            }
+        };
+    }
+
+    bench_table_op!(
+        bench_table_head_large,
+        bench_make_table(TABLE_OPS_N, 0.0),
+        {
+            use data_code::vm::natives::native_table_head;
+            use data_code::Value;
+            let table = bench_make_table(TABLE_OPS_N, 0.0);
+            native_table_head(&[table, Value::Number(5_000.0)])
+        },
+        "head 5000 of 50k"
+    );
+
+    bench_table_op!(
+        bench_table_tail_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_tail;
+            use data_code::Value;
+            let table = bench_make_table(TABLE_OPS_N, 0.0);
+            native_table_tail(&[table, Value::Number(5_000.0)])
+        },
+        "tail 5000 of 50k"
+    );
+
+    bench_table_op!(
+        bench_table_select_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_select;
+            use data_code::Value;
+            use std::cell::RefCell;
+            use std::rc::Rc;
+            let table = bench_make_table(TABLE_OPS_N, 0.0);
+            let cols = Value::Array(Rc::new(RefCell::new(vec![
+                Value::String("id".into()),
+                Value::String("val".into()),
+            ])));
+            native_table_select(&[table, cols])
+        },
+        "select 2 of 3 cols"
+    );
+
+    bench_table_op!(
+        bench_table_where_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_where;
+            use data_code::Value;
+            let table = bench_make_table(TABLE_OPS_N, 0.0);
+            native_table_where(&[
+                table,
+                Value::String("id".into()),
+                Value::String(">".into()),
+                Value::Number(25_000.0),
+            ])
+        },
+        "where id > 25000"
+    );
+
+    bench_table_op!(
+        bench_table_sort_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_sort;
+            use data_code::Value;
+            let table = bench_make_table(TABLE_OPS_N, 0.0);
+            native_table_sort(&[table, Value::String("id".into()), Value::Bool(true)])
+        },
+        "sort by id asc"
+    );
+
+    bench_table_op!(
+        bench_table_drop_nulls_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_drop_nulls;
+            let table = bench_make_table_with_nulls(TABLE_OPS_N);
+            native_table_drop_nulls(&[table])
+        },
+        "drop_nulls all columns"
+    );
+
+    bench_table_op!(
+        bench_table_distinct_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_distinct;
+            let table = bench_make_table(TABLE_OPS_N, 0.0);
+            native_table_distinct(&[table])
+        },
+        "distinct all columns"
+    );
+
+    bench_table_op!(
+        bench_table_rename_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_rename;
+            use data_code::Value;
+            let table = bench_make_table(TABLE_OPS_N, 0.0);
+            native_table_rename(&[
+                table,
+                Value::String("id".into()),
+                Value::String("identifier".into()),
+            ])
+        },
+        "rename single column"
+    );
+
+    bench_table_op!(
+        bench_table_drop_column_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_drop_column;
+            use data_code::Value;
+            let table = bench_make_table(TABLE_OPS_N, 0.0);
+            native_table_drop_column(&[table, Value::String("tag".into())])
+        },
+        "drop one column"
+    );
+
+    bench_table_op!(
+        bench_table_row_number_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_row_number;
+            let table = bench_make_table(TABLE_OPS_N, 0.0);
+            native_table_row_number(&[table])
+        },
+        "row_number"
+    );
+
+    bench_table_op!(
+        bench_table_add_column_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_add_column;
+            use data_code::Value;
+            let table = bench_make_table(TABLE_OPS_N, 0.0);
+            native_table_add_column(&[
+                table,
+                Value::String("idx".into()),
+                Value::Number(0.0),
+            ])
+        },
+        "add scalar column"
+    );
+
+    /// View table from arrays → merge → push chain (script path).
+    #[test]
+    fn bench_view_table_merge_push_large() {
+        const N: u32 = 10_000;
+        let source = format!(
+            r#"
+let n = {n}
+let t = table([range(n), range(n)], ["id", "val"])
+let f = table_where(t, "id", ">", n / 2)
+let s = table_select(f, ["id", "val"])
+let _ = s.push([n, n])
+len(s)
+"#,
+            n = N
+        );
+        let start = Instant::now();
+        let r = run(&source);
+        let elapsed = start.elapsed();
+        assert!(r.is_ok(), "run failed: {:?}", r);
+        if let Ok(data_code::Value::Number(v)) = r {
+            // range(n) is 0..n-1; id > n/2 yields (n/2 - 1) rows, +1 push
+            let expected = (N / 2) as u32;
+            assert_eq!(v as u32, expected, "expected {} rows", expected);
+        }
+        println!(
+            "bench_view_table_merge_push_large: view where→select→push in {:?}",
+            elapsed
+        );
+    }
+
+    /// aggregate_group via native (count by id).
+    #[test]
+    fn bench_table_aggregate_group_large() {
+        use data_code::vm::natives::native_table_aggregate_group;
+        use data_code::Value;
+        use std::collections::HashMap;
+
+        const N: usize = TABLE_OPS_N;
+        let table = bench_make_table(N, 0.0);
+        let mut spec = HashMap::new();
+        spec.insert("group".to_string(), Value::String("id".into()));
+        spec.insert("cnt".to_string(), Value::String("count".into()));
+        let spec_val = Value::legacy_object(spec);
+
+        let start = Instant::now();
+        let result = native_table_aggregate_group(&[table, spec_val]);
+        let elapsed = start.elapsed();
+        let rows = bench_assert_table(&result);
+        assert_eq!(rows, N, "expected one row per unique id");
+        println!(
+            "bench_table_aggregate_group_large: {} groups in {:?}",
+            rows, elapsed
+        );
+    }
+
+    // --- Wave 2: map / transform / aggregate / I/O / relations ---
+
+    fn bench_make_table_splittable(n: usize) -> data_code::Value {
+        use data_code::common::table::Table;
+        use data_code::Value;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let mut rows = Vec::with_capacity(n);
+        for i in 0..n {
+            let id = i as f64;
+            rows.push(vec![
+                Value::Number(id),
+                Value::Number(id * 2.0),
+                Value::String(format!("a|{}", i % 100)),
+            ]);
+        }
+        Value::Table(Rc::new(RefCell::new(Table::from_data(
+            rows,
+            Some(vec!["id".into(), "val".into(), "tag".into()]),
+        ))))
+    }
+
+    fn bench_write_csv_fixture(n: usize) -> std::path::PathBuf {
+        use data_code::common::table_csv_export::write_table_csv;
+        let table_val = bench_make_table(n, 0.0);
+        let data_code::Value::Table(t) = table_val else {
+            panic!("expected table");
+        };
+        let path = std::env::temp_dir().join(format!("dc_bench_read_{}_{}.csv", n, std::process::id()));
+        write_table_csv(&t.borrow(), &path).expect("write fixture csv");
+        path
+    }
+
+    bench_table_op!(
+        bench_table_value_map_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_value_map;
+            use data_code::Value;
+            use std::collections::HashMap;
+            let table = bench_make_table(TABLE_OPS_N, 0.0);
+            let mut mappings = HashMap::new();
+            mappings.insert("x".to_string(), Value::String("X".into()));
+            let spec = Value::legacy_object(mappings);
+            native_table_value_map(&[table, Value::String("tag".into()), spec])
+        },
+        "value_map tag x->X"
+    );
+
+    #[test]
+    fn bench_table_map_abs_large() {
+        use data_code::run;
+        use data_code::Value;
+
+        let source = format!(
+            r#"
+let n = {n}
+let ids = range(n)
+let vals = range(n)
+let t = table([ids, vals], ["id", "val"])
+let m = table_map(t, "val", abs)
+len(m)
+"#,
+            n = TABLE_OPS_N
+        );
+        let start = Instant::now();
+        let r = run(&source);
+        let elapsed = start.elapsed();
+        assert!(r.is_ok(), "run failed: {:?}", r);
+        if let Ok(Value::Number(v)) = r {
+            assert_eq!(v as usize, TABLE_OPS_N);
+        }
+        println!(
+            "bench_table_map_abs_large: {} rows in {:?} (map abs(val))",
+            TABLE_OPS_N,
+            elapsed
+        );
+    }
+
+    bench_table_op!(
+        bench_table_split_column_delim_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_split_column;
+            use data_code::Value;
+            use std::cell::RefCell;
+            use std::rc::Rc;
+            let table = bench_make_table_splittable(TABLE_OPS_N);
+            let new_cols = Value::Array(Rc::new(RefCell::new(vec![
+                Value::String("part_a".into()),
+                Value::String("part_b".into()),
+            ])));
+            native_table_split_column(&[
+                table,
+                Value::String("tag".into()),
+                Value::String("|".into()),
+                new_cols,
+            ])
+        },
+        "split_column tag by |"
+    );
+
+    bench_table_op!(
+        bench_table_join_columns_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_join_columns;
+            use data_code::Value;
+            use std::cell::RefCell;
+            use std::rc::Rc;
+            let table = bench_make_table(TABLE_OPS_N, 0.0);
+            native_table_join_columns(&[
+                table,
+                Value::Array(Rc::new(RefCell::new(vec![
+                    Value::String("id".into()),
+                    Value::String("val".into()),
+                ]))),
+                Value::String("joined".into()),
+                Value::String(",".into()),
+            ])
+        },
+        "join_columns id+val"
+    );
+
+    bench_table_op!(
+        bench_table_aggregate_large,
+        (),
+        {
+            use data_code::vm::natives::native_table_aggregate;
+            use data_code::Value;
+            use std::collections::HashMap;
+            let table = bench_make_table(TABLE_OPS_N, 0.0);
+            let mut spec = HashMap::new();
+            let mut sum_spec = HashMap::new();
+            sum_spec.insert("op".to_string(), Value::String("sum".into()));
+            sum_spec.insert("column".to_string(), Value::String("val".into()));
+            spec.insert("total".to_string(), Value::legacy_object(sum_spec));
+            let spec_val = Value::legacy_object(spec);
+            native_table_aggregate(&[table, spec_val])
+        },
+        "aggregate sum(val)"
+    );
+
+    #[test]
+    fn bench_table_read_csv_large() {
+        use data_code::file_io::read_value;
+        use data_code::Value;
+        use std::fs;
+
+        const N: usize = TABLE_OPS_N;
+        let path = bench_write_csv_fixture(N);
+        let args = [Value::String(path.to_string_lossy().to_string())];
+        let start = Instant::now();
+        let result = read_value(&args);
+        let elapsed = start.elapsed();
+        let _ = fs::remove_file(&path);
+        let rows = match result {
+            Ok(Value::Table(t)) => t.borrow().len(),
+            other => panic!("expected table from read, got {:?}", other),
+        };
+        assert_eq!(rows, N);
+        println!(
+            "bench_table_read_csv_large: {} rows in {:?}",
+            rows, elapsed
+        );
+    }
+
+    #[test]
+    fn bench_table_save_csv_large() {
+        use data_code::vm::natives::table_save::native_table_save_csv;
+        use data_code::Value;
+        use std::fs;
+
+        const N: usize = TABLE_OPS_N;
+        let table = bench_make_table(N, 0.0);
+        let path = std::env::temp_dir().join(format!(
+            "dc_bench_save_{}_{}.csv",
+            N,
+            std::process::id()
+        ));
+        let start = Instant::now();
+        let result = native_table_save_csv(&[table, Value::String(path.to_string_lossy().to_string())]);
+        let elapsed = start.elapsed();
+        let _ = fs::remove_file(&path);
+        assert!(matches!(result, Value::String(_)), "save failed: {:?}", result);
+        println!(
+            "bench_table_save_csv_large: {} rows in {:?}",
+            N, elapsed
+        );
+    }
+
+    #[test]
+    fn bench_relate_primary_key_large() {
+        use data_code::vm::natives::{native_primary_key, native_relate};
+        use data_code::Value;
+        use std::rc::Rc;
+
+        const N: usize = TABLE_OPS_N;
+        let left = bench_make_table(N, 0.0);
+        let right = bench_make_table(N, 0.0);
+        let pk_col = Value::ColumnReference {
+            table: match &left {
+                data_code::Value::Table(t) => Rc::clone(t),
+                _ => panic!("table"),
+            },
+            column_name: "id".into(),
+        };
+        let fk_col = Value::ColumnReference {
+            table: match &right {
+                data_code::Value::Table(t) => Rc::clone(t),
+                _ => panic!("table"),
+            },
+            column_name: "id".into(),
+        };
+
+        let start = Instant::now();
+        for _ in 0..100 {
+            let _ = native_primary_key(&[pk_col.clone()]);
+            let _ = native_relate(&[pk_col.clone(), fk_col.clone()]);
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "bench_relate_primary_key_large: 100x relate+pk on {} rows in {:?}",
+            N, elapsed
+        );
+    }
+
+    // --- Method-call receiver temp slot strategy benchmarks ---
+    // Run: cargo test --release profiling_benchmarks::tests::bench_method_object -- --nocapture
+    // Compare strategies:
+    //   default (depth stack)
+    //   --features method_object_per_call
+    //   --features method_object_shared (incorrect for nested calls)
+
+    const METHOD_OBJECT_N: u32 = 1_000_000;
+    const METHOD_OBJECT_LOOP: u32 = 100_000;
+    const METHOD_OBJECT_NESTED: u32 = 100_000;
+
+    fn max_local_index_in_chunk(chunk: &data_code::Chunk) -> usize {
+        use data_code::bytecode::OpCode;
+        let mut max_idx = 0usize;
+        for op in &chunk.code {
+            match op {
+                OpCode::LoadLocal(i) | OpCode::StoreLocal(i) => {
+                    max_idx = max_idx.max(*i);
+                }
+                _ => {}
+            }
+        }
+        max_idx + 1
+    }
+
+    fn max_locals_in_compiled(source: &str) -> usize {
+        let (_main, functions) = data_code::compile(source).expect("compile");
+        functions
+            .iter()
+            .map(|f| max_local_index_in_chunk(&f.chunk))
+            .max()
+            .unwrap_or(0)
+    }
+
+    fn script_method_object_nested_loop(n: u32) -> String {
+        format!(
+            r#"
+cls Ring {{
+    new Ring(cap: int) {{
+        this.buf = []
+        for _ in range(cap) {{ this.buf.push(null) }}
+        this.head = 0
+        this.count = 0
+    }}
+    fn _capacity() -> int {{ return len(this.buf) }}
+    fn to_list() -> list {{
+        result = []
+        for i in range(this.count) {{
+            result.push(this.buf[(this.head + i) % this._capacity()])
+        }}
+        return result
+    }}
+    fn fill(n: int) {{
+        for i in range(n) {{
+            this.buf[this.head] = i
+            this.head = (this.head + 1) % this._capacity()
+            this.count = this.count + 1
+        }}
+    }}
+}}
+r = Ring({n})
+r.fill({n})
+len(r.to_list())
+"#,
+            n = n
+        )
+    }
+
+    fn script_method_object_flat_loop(n: u32) -> String {
+        format!(
+            r#"
+cls Acc {{
+    new Acc() {{ this.buf = [] }}
+    fn push_many(n: int) {{
+        for i in range(n) {{ this.buf.push(i) }}
+    }}
+    fn len() {{ return len(this.buf) }}
+}}
+a = Acc()
+a.push_many({n})
+a.len()
+"#,
+            n = n
+        )
+    }
+
+    fn script_method_object_many_sites(sites: usize) -> String {
+        let mut body = String::from("fn many_pushes() {\n    a = []\n");
+        for i in 0..sites {
+            body.push_str(&format!("    a.push({})\n", i));
+        }
+        body.push_str("    return len(a)\n}\nmany_pushes()\n");
+        body
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_method_object_nested_1m() {
+        let n = METHOD_OBJECT_NESTED;
+        let source = script_method_object_nested_loop(n);
+        let locals = max_locals_in_compiled(&source);
+        let start = Instant::now();
+        let r = run(&source);
+        let elapsed = start.elapsed();
+        assert!(r.is_ok(), "run failed: {:?}", r);
+        if let Ok(data_code::Value::Number(v)) = r {
+            assert_eq!(v, n as f64);
+        }
+        println!(
+            "bench_method_object_nested_1m: {} rows (nested _capacity in index), max_locals={}, {:?}",
+            n, locals, elapsed
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn bench_method_object_flat_1m() {
+        let n = METHOD_OBJECT_LOOP;
+        let source = script_method_object_flat_loop(n);
+        let locals = max_locals_in_compiled(&source);
+        let start = Instant::now();
+        let r = run(&source);
+        let elapsed = start.elapsed();
+        assert!(r.is_ok(), "run failed: {:?}", r);
+        if let Ok(data_code::Value::Number(v)) = r {
+            assert_eq!(v, n as f64);
+        }
+        println!(
+            "bench_method_object_flat_1m: {} pushes, max_locals={}, {:?}",
+            n, locals, elapsed
+        );
+    }
+
+    /// Full 1M push loop — slow (~30–40 min release). Run manually for large-scale timing.
+    #[test]
+    #[ignore]
+    fn bench_method_object_flat_1m_full() {
+        let n = METHOD_OBJECT_N;
+        let source = script_method_object_flat_loop(n);
+        let start = Instant::now();
+        let r = run(&source);
+        let elapsed = start.elapsed();
+        assert!(r.is_ok(), "run failed: {:?}", r);
+        println!(
+            "bench_method_object_flat_1m_full: {} pushes in {:?}",
+            n, elapsed
+        );
+    }
+
+    #[test]
+    fn bench_method_object_many_sites_locals() {
+        const SITES: usize = 2_000;
+        let source = script_method_object_many_sites(SITES);
+        let locals = max_locals_in_compiled(&source);
+        let start = Instant::now();
+        let r = run(&source);
+        let elapsed = start.elapsed();
+        assert!(r.is_ok(), "run failed: {:?}", r);
+        if let Ok(data_code::Value::Number(v)) = r {
+            assert_eq!(v, SITES as f64);
+        }
+        println!(
+            "bench_method_object_many_sites_locals: {} call sites, max_locals={}, {:?}",
+            SITES, locals, elapsed
+        );
+    }
+
+    #[test]
+    fn bench_method_object_table_where_1m() {
+        use data_code::vm::natives::native_table_where;
+        use data_code::Value;
+        const N: usize = 1_000_000;
+        let mut rows = Vec::with_capacity(N);
+        for i in 0..N {
+            rows.push(vec![Value::Number(i as f64), Value::Number((i % 2) as f64)]);
+        }
+        use data_code::common::table::Table;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+        let table = Value::Table(Rc::new(RefCell::new(Table::from_data(
+            rows,
+            Some(vec!["id".into(), "parity".into()]),
+        ))));
+        let pred = Value::String("parity == 0".into());
+        let start = Instant::now();
+        let out = native_table_where(&[table, pred]);
+        let elapsed = start.elapsed();
+        let kept = bench_table_len(&out);
+        println!(
+            "bench_method_object_table_where_1m: {} rows -> {} kept in {:?} (native path, slots N/A)",
+            N, kept, elapsed
+        );
+    }
 }

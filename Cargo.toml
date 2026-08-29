@@ -12,7 +12,7 @@ exclude = [
 
 [package]
 name = "data-code"
-version = "2.4.4"
+version = "2.4.5"
 edition = "2021"
 description = "ДатаКод - Интерактивный язык программирования для быстрой обработки данных"
 license = "MIT"
@@ -31,6 +31,9 @@ archive-rar = ["dep:unrar-ng"]
 legacy_vm_merge = []
 metal = []
 deferred_stack_gc = []
+# Method-call receiver temp slot strategy (for perf experiments; default = depth stack).
+method_object_per_call = []   # legacy: one new local per method call site
+method_object_shared = []     # broken: single reused slot (nested calls corrupt receiver)
 
 [lib]
 name = "data_code"

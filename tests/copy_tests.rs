@@ -122,6 +122,54 @@ fn copy_set_deep_new_container() {
 }
 
 #[test]
+fn copy_table_independence() {
+    assert_number(
+        r#"
+        t1 = table([[1, "Alice"]], ["id", "name"])
+        t2 = copy(t1)
+        t2.add_row([2, "Bob"])
+        len(t1)
+        "#,
+        1.0,
+    );
+    assert_number(
+        r#"
+        t1 = table([[1, "Alice"]], ["id", "name"])
+        t2 = copy(t1)
+        t2.add_row([2, "Bob"])
+        len(t2)
+        "#,
+        2.0,
+    );
+}
+
+#[test]
+fn copy_table_vs_alias() {
+    assert_number(
+        r#"
+        t1 = table([[1, "Alice"]], ["id", "name"])
+        alias = t1
+        cloned = copy(t1)
+        alias.add_row([2, "Bob"])
+        cloned.add_row([3, "Charlie"])
+        len(t1)
+        "#,
+        1.0,
+    );
+    assert_number(
+        r#"
+        t1 = table([[1, "Alice"]], ["id", "name"])
+        alias = t1
+        cloned = copy(t1)
+        alias.add_row([2, "Bob"])
+        cloned.add_row([3, "Charlie"])
+        len(cloned)
+        "#,
+        2.0,
+    );
+}
+
+#[test]
 fn set_copy_matches_global_copy() {
     assert_number(
         r#"

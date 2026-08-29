@@ -427,38 +427,6 @@ pub(super) fn try_table_legacy_fast_path(
         stack::push_id(stack, headers_id);
         return None;
     };
-    let num_cols = row_slots
-        .first()
-        .and_then(|row_tv| {
-            if row_tv.is_heap() {
-                value_store.get(row_tv.get_heap_id()).and_then(|c| match c {
-                    ValueCell::Array(s) => Some(s.len()),
-                    _ => None,
-                })
-            } else {
-                None
-            }
-        })
-        .unwrap_or(0);
-    let mut flat_cell_ids = Vec::with_capacity(row_slots.len() * num_cols.max(1));
-    for row_tv in row_slots.iter() {
-        if row_tv.is_heap() {
-            let row_id = row_tv.get_heap_id();
-            let cell_slots: Vec<TaggedValue> = value_store
-                .get(row_id)
-                .and_then(|c| {
-                    if let ValueCell::Array(s) = c {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
-                })
-                .unwrap_or_default();
-            for slot in cell_slots.iter() {
-                flat_cell_ids.push(tagged_to_value_id(*slot, value_store));
-            }
-        }
-    }
     let headers: Vec<String> = {
         let header_slots: Vec<TaggedValue> = value_store
             .get(headers_id)
@@ -483,12 +451,25 @@ pub(super) fn try_table_legacy_fast_path(
             });
         }
         if v.is_empty() {
-            (0..num_cols).map(|i| format!("Column_{}", i)).collect()
+            (0..1).map(|i| format!("Column_{}", i)).collect()
         } else {
             v
         }
     };
-    let table = Table::from_flat_view(flat_cell_ids, headers.len().max(1), headers);
+    let header_count = headers.len().max(1);
+    let Some((flat_cell_ids, num_cols)) =
+        crate::vm::table_ops::build_view_flat_from_row_slots(
+            &row_slots,
+            header_count,
+            value_store,
+            heavy_store,
+        )
+    else {
+        stack::push_id(stack, data_id);
+        stack::push_id(stack, headers_id);
+        return None;
+    };
+    let table = Table::from_flat_view(flat_cell_ids, num_cols, headers);
     let table_val = Value::Table(Rc::new(RefCell::new(table)));
     let heavy_idx = heavy_store.push(table_val);
     let result_id = value_store.allocate(ValueCell::Heavy(heavy_idx));

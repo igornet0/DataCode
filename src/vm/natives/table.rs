@@ -1,7 +1,8 @@
 // Table manipulation native functions
 
 use crate::common::table::Table;
-use crate::common::value::Value;
+use crate::common::range_args::range_len;
+use crate::common::value::{IterableInner, Value};
 use std::cell::RefCell;
 use std::fs;
 use std::io;
@@ -12,6 +13,47 @@ use std::rc::Rc;
 use super::file::{format_path_for_error, resolve_path_in_session};
 
 pub use super::date_format::try_parse_date;
+
+fn column_source_len(v: &Value) -> Option<usize> {
+    match v {
+        Value::Array(a) => Some(a.borrow().len()),
+        Value::Iterable(rc) => match &*rc.borrow() {
+            IterableInner::Range {
+                current,
+                end,
+                step,
+            } => Some(range_len(*current, *end, *step)),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+fn column_source_get(v: &Value, row: usize) -> Value {
+    match v {
+        Value::Array(a) => a
+            .borrow()
+            .get(row)
+            .cloned()
+            .unwrap_or(Value::Null),
+        Value::Iterable(rc) => match &*rc.borrow() {
+            IterableInner::Range {
+                current,
+                end,
+                step,
+            } => {
+                let val = current + row as i64 * step;
+                if (*step > 0 && val >= *end) || (*step < 0 && val <= *end) {
+                    Value::Null
+                } else {
+                    Value::Number(val as f64)
+                }
+            }
+            _ => Value::Null,
+        },
+        _ => Value::Null,
+    }
+}
 
 pub fn native_table_add_row(args: &[Value]) -> Value {
     use crate::vm::store_convert::load_value;
@@ -68,25 +110,6 @@ pub fn native_table(args: &[Value]) -> Value {
         return Value::Null;
     }
 
-    // Первый аргумент - данные (массив массивов). Table::from_data stores rows only; columns built lazily.
-    let data = match &args[0] {
-        Value::Array(arr) => {
-            let arr_ref = arr.borrow();
-            let mut rows = Vec::with_capacity(arr_ref.len());
-            for row_val in arr_ref.iter() {
-                match row_val {
-                    Value::Array(row) => rows.push(row.borrow().clone()),
-                    _ => {
-                        // Если элемент не массив, создаем строку с одним элементом
-                        rows.push(vec![row_val.clone()]);
-                    }
-                }
-            }
-            rows
-        }
-        _ => return Value::Null,
-    };
-
     // Второй аргумент (опциональный) - заголовки
     let headers = if args.len() > 1 {
         match &args[1] {
@@ -105,6 +128,53 @@ pub fn native_table(args: &[Value]) -> Value {
         }
     } else {
         None
+    };
+
+    // Column-oriented `table([col1, col2, …], headers)` — transpose to rows.
+    if let (Some(ref hdrs), Value::Array(outer)) = (&headers, &args[0]) {
+        let outer_ref = outer.borrow();
+        if !outer_ref.is_empty() && !hdrs.is_empty() && outer_ref.len() == hdrs.len() {
+            let col_lens: Vec<usize> = outer_ref
+                .iter()
+                .filter_map(|v| column_source_len(v))
+                .collect();
+            if col_lens.len() == hdrs.len() {
+                let n_rows = col_lens[0];
+                let column_oriented =
+                    n_rows > 0 && col_lens.iter().all(|&l| l == n_rows) && n_rows != hdrs.len();
+                if column_oriented {
+                    let mut rows = Vec::with_capacity(n_rows);
+                    for r in 0..n_rows {
+                        let mut row = Vec::with_capacity(hdrs.len());
+                        for col in outer_ref.iter() {
+                            row.push(column_source_get(col, r));
+                        }
+                        rows.push(row);
+                    }
+                    let table = Table::from_data(rows, headers);
+                    return Value::Table(Rc::new(RefCell::new(table)));
+                }
+            }
+        }
+    }
+
+    // Первый аргумент - данные (массив массивов). Table::from_data stores rows only; columns built lazily.
+    let data = match &args[0] {
+        Value::Array(arr) => {
+            let arr_ref = arr.borrow();
+            let mut rows = Vec::with_capacity(arr_ref.len());
+            for row_val in arr_ref.iter() {
+                match row_val {
+                    Value::Array(row) => rows.push(row.borrow().clone()),
+                    _ => {
+                        // Если элемент не массив, создаем строку с одним элементом
+                        rows.push(vec![row_val.clone()]);
+                    }
+                }
+            }
+            rows
+        }
+        _ => return Value::Null,
     };
 
     let table = Table::from_data(data, headers);
@@ -612,6 +682,8 @@ pub fn native_table_head(args: &[Value]) -> Value {
                     }
                     rows
                 })
+            } else if let Some(t) = table_ref.slice_rows_owned(0, take_n) {
+                return Value::Table(Rc::new(RefCell::new(t)));
             } else {
                 let mut new_rows = Vec::with_capacity(take_n);
                 for i in 0..take_n {
@@ -663,6 +735,8 @@ pub fn native_table_tail(args: &[Value]) -> Value {
                     }
                     rows
                 })
+            } else if let Some(t) = table_ref.slice_rows_owned(start_idx, take_n) {
+                return Value::Table(Rc::new(RefCell::new(t)));
             } else {
                 let mut new_rows = Vec::with_capacity(take_n);
                 for i in start_idx..row_count {
@@ -748,6 +822,12 @@ pub fn table_select_impl(table: &Table, columns: Vec<String>) -> Result<Table, V
         col_indices.push(idx);
     }
 
+    if !table.is_view() {
+        if let Some(t) = table.select_columns_owned(&col_indices, columns.clone()) {
+            return Ok(t);
+        }
+    }
+
     let new_rows: Vec<Vec<Value>> = if table.is_view() {
         crate::vm::vm::with_current_stores(|store, heap| {
             let n_rows = table.len();
@@ -783,7 +863,6 @@ pub fn table_select_impl(table: &Table, columns: Vec<String>) -> Result<Table, V
 /// Rename columns via object map or single old/new pair.
 pub fn table_rename_impl(table: &Table, rename_arg: &Value, new_name: Option<&str>) -> Result<Table, Value> {
     let headers = table.headers().clone();
-    let rows = materialize_table_rows(table);
 
     if let Some(new) = new_name {
         let old = match rename_arg {
@@ -804,8 +883,16 @@ pub fn table_rename_impl(table: &Table, rename_arg: &Value, new_name: Option<&st
             .iter()
             .map(|h| if h == old { new.to_string() } else { h.clone() })
             .collect();
+        if !table.is_view() {
+            if let Some(t) = table.clone_flat_with_headers(new_headers.clone()) {
+                return Ok(t);
+            }
+        }
+        let rows = materialize_table_rows(table);
         return Ok(Table::from_data(rows, Some(new_headers)));
     }
+
+    let rows = materialize_table_rows(table);
 
     match rename_arg {
         Value::Object(_) => {
@@ -868,6 +955,12 @@ pub fn table_add_column_impl(
         }
         Some(scalar) => vec![scalar.clone(); n_rows],
     };
+
+    if !table.is_view() {
+        if let Some(t) = table.append_column_owned(name, &column_values) {
+            return Ok(t);
+        }
+    }
 
     let rows = materialize_table_rows(table);
     let mut new_headers = headers.to_vec();
@@ -978,6 +1071,16 @@ pub fn table_value_map_impl(table: &Table, column: &str, mappings: &Value) -> Re
         )));
     };
     let rules = parse_value_map_rules(mappings)?;
+    if !table.is_view() {
+        if let Some(t) = table.map_column_owned(col_idx, |current| {
+            rules
+                .iter()
+                .find_map(|(from, to)| (current == *from).then(|| to.clone()))
+                .unwrap_or(current)
+        }) {
+            return Ok(t);
+        }
+    }
     let rows = materialize_table_rows(table);
     let mapped_rows: Vec<Vec<Value>> = rows
         .into_iter()
@@ -1010,8 +1113,45 @@ pub fn table_map_impl(table: &Table, column: &str, func: &Value) -> Result<Table
 
     validate_map_callback(func)?;
 
-    let rows = materialize_table_rows(table);
     let vm_ptr = current_vm_ptr();
+    if !table.is_view() {
+        if let crate::common::table::TableData::Owned {
+            flat,
+            num_cols,
+            headers,
+            ..
+        } = &table.data
+        {
+            let nc = *num_cols;
+            let mut out = flat.clone();
+            let n_rows = if nc == 0 { 0 } else { out.len() / nc };
+            for row in 0..n_rows {
+                let idx = row * nc + col_idx;
+                let cell = out[idx].clone();
+                if let Some(vm_ptr) = vm_ptr {
+                    VM_CALL_CONTEXT.with(|ctx| {
+                        *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+                    });
+                }
+                let new_val = match invoke_value_callable(func, &[cell]) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let message = match e {
+                            LangError::LexError { message, .. }
+                            | LangError::ParseError { message, .. }
+                            | LangError::SemanticError { message, .. }
+                            | LangError::RuntimeError { message, .. } => message,
+                        };
+                        return Err(table_col_error(message));
+                    }
+                };
+                out[idx] = new_val;
+            }
+            return Ok(Table::from_flat_owned(out, nc, headers.clone()));
+        }
+    }
+
+    let rows = materialize_table_rows(table);
     let mut mapped_rows = Vec::with_capacity(rows.len());
 
     for mut row in rows {
@@ -1143,8 +1283,37 @@ pub fn table_split_column_delim_impl(
         }
     }
 
-    let rows = materialize_table_rows(table);
     let n_cols = new_names.len();
+    let n_rows = table.len();
+
+    if !table.is_view() {
+        let mut column_values: Vec<Vec<Value>> = vec![Vec::with_capacity(n_rows); n_cols];
+        for row_idx in 0..n_rows {
+            let owned_storage;
+            let text: &str = match table.get_row(row_idx).and_then(|r| r.get(col_idx)) {
+                Some(Value::String(s)) => s,
+                Some(other) => {
+                    owned_storage = other.to_string();
+                    &owned_storage
+                }
+                None => "",
+            };
+            let parts: Vec<&str> = text.split(delimiter).collect();
+            for (j, col) in column_values.iter_mut().enumerate() {
+                col.push(
+                    parts
+                        .get(j)
+                        .map(|p| Value::String(p.to_string()))
+                        .unwrap_or_else(|| Value::String(String::new())),
+                );
+            }
+        }
+        if let Some(t) = table.append_columns_owned(new_names, &column_values) {
+            return Ok(t);
+        }
+    }
+
+    let rows = materialize_table_rows(table);
     let mut column_values: Vec<Vec<Value>> = vec![Vec::with_capacity(rows.len()); n_cols];
 
     for row in &rows {
@@ -1293,6 +1462,26 @@ pub fn table_join_columns_impl(
             )));
         };
         col_indices.push(idx);
+    }
+
+    if !table.is_view() {
+        let n_rows = table.len();
+        let mut merged: Vec<Value> = Vec::with_capacity(n_rows);
+        for row in 0..n_rows {
+            let parts: Vec<String> = col_indices
+                .iter()
+                .filter_map(|&i| {
+                    table
+                        .get_row(row)
+                        .and_then(|r| r.get(i))
+                        .map(|v| v.to_string())
+                })
+                .collect();
+            merged.push(Value::String(parts.join(delimiter)));
+        }
+        if let Some(t) = table.append_column_owned(new_name, &merged) {
+            return Ok(t);
+        }
     }
 
     let rows = materialize_table_rows(table);
@@ -1582,6 +1771,10 @@ pub fn native_table_sort(args: &[Value]) -> Value {
                     crate::vm::table_ops::get_column(&mut *t, &column_name, store, heap)
                 })
                 .unwrap_or_default()
+            } else if let Some(cv) = table.borrow().column_view(&column_name) {
+                (0..cv.len())
+                    .filter_map(|i| cv.get_owned(i))
+                    .collect()
             } else {
                 table
                     .borrow_mut()
@@ -1602,6 +1795,13 @@ pub fn native_table_sort(args: &[Value]) -> Value {
                     cmp.reverse()
                 }
             });
+
+            if !is_view {
+                let table_ref = table.borrow();
+                if let Some(t) = table_ref.gather_rows_owned(&indices) {
+                    return Value::Table(Rc::new(RefCell::new(t)));
+                }
+            }
 
             let new_rows: Vec<Vec<Value>> = if is_view {
                 crate::vm::vm::with_current_stores(|store, heap| {
@@ -1642,6 +1842,10 @@ pub fn table_where_impl(
             crate::vm::table_ops::get_column(&mut *t, column_name, store, heap)
         })
         .unwrap_or_default()
+    } else if let Some(cv) = table.borrow().column_view(column_name) {
+        (0..cv.len())
+            .filter_map(|i| cv.get_owned(i))
+            .collect()
     } else {
         table
             .borrow_mut()
@@ -1670,6 +1874,13 @@ pub fn table_where_impl(
         })
         .map(|(i, _)| i)
         .collect();
+
+    if !is_view {
+        let table_ref = table.borrow();
+        if let Some(t) = table_ref.gather_rows_owned(&matching_indices) {
+            return Value::Table(Rc::new(RefCell::new(t)));
+        }
+    }
 
     let new_rows: Vec<Vec<Value>> = if is_view {
         crate::vm::vm::with_current_stores(|store, heap| {
@@ -2029,6 +2240,125 @@ fn aggregate_column_values(
         .collect())
 }
 
+fn aggregate_column_values_from_table(
+    table: &Table,
+    column: &str,
+    row_indices: Option<&[usize]>,
+) -> Result<Vec<Value>, Value> {
+    let Some(col_idx) = table.headers().iter().position(|h| h == column) else {
+        return Err(aggregate_error(format!(
+            "KeyError: column '{}' not found in table",
+            column
+        )));
+    };
+    if let Some(idxs) = row_indices {
+        Ok(idxs
+            .iter()
+            .filter_map(|&ri| {
+                table
+                    .get_row(ri)
+                    .and_then(|r| r.get(col_idx).cloned())
+            })
+            .collect())
+    } else if let Some(cv) = table.column_view(column) {
+        Ok((0..cv.len()).filter_map(|i| cv.get_owned(i)).collect())
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn apply_aggregate_op_on_table(
+    item: &AggregateSpecItem,
+    table: &Table,
+    row_indices: Option<&[usize]>,
+    vm_ptr: Option<*mut crate::vm::vm::Vm>,
+) -> Result<Value, Value> {
+    use super::utils::invoke_value_callable;
+    use crate::common::error::LangError;
+    use crate::vm::vm::{VmExecutionContext, VM_CALL_CONTEXT};
+
+    let row_count = row_indices.map(|i| i.len()).unwrap_or_else(|| table.len());
+    let col_values = if let Some(col) = item.column.as_deref() {
+        aggregate_column_values_from_table(table, col, row_indices)?
+    } else {
+        Vec::new()
+    };
+
+    match item.op.as_str() {
+        "count" => Ok(Value::Number(row_count as f64)),
+        "count_distinct" => {
+            let mut set = std::collections::HashSet::new();
+            for v in &col_values {
+                set.insert(v.to_string());
+            }
+            Ok(Value::Number(set.len() as f64))
+        }
+        "sum" => Ok(Value::Number(
+            numbers_from_values(&col_values).iter().sum::<f64>(),
+        )),
+        "avg" => {
+            let nums = numbers_from_values(&col_values);
+            if nums.is_empty() {
+                Ok(Value::Number(0.0))
+            } else {
+                Ok(Value::Number(nums.iter().sum::<f64>() / nums.len() as f64))
+            }
+        }
+        "min" => Ok(col_values
+            .iter()
+            .cloned()
+            .min_by(compare_values)
+            .unwrap_or(Value::Null)),
+        "max" => Ok(col_values
+            .iter()
+            .cloned()
+            .max_by(compare_values)
+            .unwrap_or(Value::Null)),
+        "first" => Ok(col_values.first().cloned().unwrap_or(Value::Null)),
+        "last" => Ok(col_values.last().cloned().unwrap_or(Value::Null)),
+        "median" => Ok(aggregate_median(&col_values)),
+        "mode" => Ok(aggregate_mode(&col_values)),
+        "stddev" => Ok(aggregate_stddev(&col_values)),
+        "variance" => Ok(aggregate_variance(&col_values)),
+        "percentile" => aggregate_percentile(&col_values, item.p.unwrap_or(0.5)),
+        "list" => Ok(Value::Array(Rc::new(RefCell::new(col_values)))),
+        "any" => {
+            let where_fn = item.where_fn.as_ref().ok_or_else(|| {
+                aggregate_error("TypeError: aggregate op 'any' requires field 'where'")
+            })?;
+            let mut ok = false;
+            for v in &col_values {
+                if let Some(vm_ptr) = vm_ptr {
+                    VM_CALL_CONTEXT.with(|ctx| {
+                        *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+                    });
+                }
+                let pred_res = invoke_value_callable(where_fn, std::slice::from_ref(v)).map_err(|e| {
+                    let message = match e {
+                        LangError::LexError { message, .. }
+                        | LangError::ParseError { message, .. }
+                        | LangError::SemanticError { message, .. }
+                        | LangError::RuntimeError { message, .. } => message,
+                    };
+                    aggregate_error(format!(
+                        "TypeError: aggregate any(where) callback failed: {}",
+                        message
+                    ))
+                })?;
+                if pred_res.is_truthy() {
+                    ok = true;
+                    break;
+                }
+            }
+            Ok(Value::Bool(ok))
+        }
+        _ => Err(aggregate_error(format!(
+            "TypeError: unsupported aggregate op '{}'",
+            item.op
+        ))),
+    }
+}
+
 fn apply_aggregate_op(
     item: &AggregateSpecItem,
     headers: &[String],
@@ -2124,12 +2454,26 @@ pub fn table_aggregate_impl(table: &Table, spec: &Value) -> Result<Table, Value>
     use crate::vm::vm::current_vm_ptr;
 
     let parsed = parse_agg_spec(spec)?;
-    let headers = table.headers().to_vec();
-    let rows = materialize_table_rows(table);
     let vm_ptr = current_vm_ptr();
 
     let mut out_headers: Vec<String> = Vec::with_capacity(parsed.len());
     let mut out_row: Vec<Value> = Vec::with_capacity(parsed.len());
+
+    if !table.is_view() {
+        for item in parsed {
+            out_headers.push(item.output.clone());
+            out_row.push(apply_aggregate_op_on_table(
+                &item,
+                table,
+                None,
+                vm_ptr,
+            )?);
+        }
+        return Ok(Table::from_data(vec![out_row], Some(out_headers)));
+    }
+
+    let headers = table.headers().to_vec();
+    let rows = materialize_table_rows(table);
 
     for item in parsed {
         out_headers.push(item.output.clone());
@@ -2145,7 +2489,6 @@ pub fn table_aggregate_group_impl(table: &Table, spec: &Value) -> Result<Table, 
 
     let headers = table.headers().to_vec();
     let (group_columns, agg_items) = parse_aggregate_group_spec(spec, &headers)?;
-    let rows = materialize_table_rows(table);
     let vm_ptr = current_vm_ptr();
 
     let group_indices: Vec<usize> = group_columns
@@ -2160,6 +2503,54 @@ pub fn table_aggregate_group_impl(table: &Table, spec: &Value) -> Result<Table, 
 
     let mut buckets: Vec<(Vec<Value>, Vec<usize>)> = Vec::new();
     let mut bucket_index: HashMap<String, usize> = HashMap::new();
+
+    if !table.is_view() {
+        for row_idx in 0..table.len() {
+            let key_values: Vec<Value> = group_indices
+                .iter()
+                .map(|&idx| {
+                    table
+                        .get_row(row_idx)
+                        .and_then(|r| r.get(idx).cloned())
+                        .unwrap_or(Value::Null)
+                })
+                .collect();
+            let key = key_values
+                .iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join("\x1f");
+            if let Some(&bucket_idx) = bucket_index.get(&key) {
+                buckets[bucket_idx].1.push(row_idx);
+            } else {
+                let bucket_idx = buckets.len();
+                bucket_index.insert(key, bucket_idx);
+                buckets.push((key_values, vec![row_idx]));
+            }
+        }
+
+        let mut out_headers = group_columns.clone();
+        out_headers.extend(agg_items.iter().map(|item| item.output.clone()));
+        let mut out_rows: Vec<Vec<Value>> = Vec::with_capacity(buckets.len());
+
+        for (key_values, row_indices) in buckets {
+            let mut out_row = key_values;
+            for item in &agg_items {
+                out_row.push(apply_aggregate_op_on_table(
+                    item,
+                    table,
+                    Some(&row_indices),
+                    vm_ptr,
+                )?);
+            }
+            out_rows.push(out_row);
+        }
+
+        return Ok(Table::from_data(out_rows, Some(out_headers)));
+    }
+
+    let rows = materialize_table_rows(table);
+
     for (row_idx, row) in rows.iter().enumerate() {
         let key_values: Vec<Value> = group_indices
             .iter()
@@ -2385,6 +2776,13 @@ pub fn table_drop_nulls_impl(
             .collect()
     };
 
+    if !is_view {
+        let table_ref = table.borrow();
+        if let Some(t) = table_ref.gather_rows_owned(&matching_indices) {
+            return Value::Table(Rc::new(RefCell::new(t)));
+        }
+    }
+
     let new_rows: Vec<Vec<Value>> = if is_view {
         crate::vm::vm::with_current_stores(|store, heap| {
             let t = table.borrow();
@@ -2597,7 +2995,6 @@ pub fn native_table_distinct(args: &[Value]) -> Value {
 
     let table_ref = table.borrow();
     let headers = table_ref.headers().to_vec();
-    let rows = materialize_table_rows(&table_ref);
     let selected_indices: Option<Vec<usize>> = if let Some(columns_arg) = args.get(1) {
         let names = match parse_column_name_list(columns_arg, &headers) {
             Ok(n) => n,
@@ -2614,6 +3011,30 @@ pub fn native_table_distinct(args: &[Value]) -> Value {
         None
     };
 
+    if !table_ref.is_view() {
+        let n_rows = table_ref.len();
+        let mut seen: HashSet<Vec<String>> = HashSet::new();
+        let mut keep_indices = Vec::with_capacity(n_rows);
+        for i in 0..n_rows {
+            if let Some(row) = table_ref.get_row(i) {
+                let key: Vec<String> = match &selected_indices {
+                    Some(indices) => indices
+                        .iter()
+                        .map(|&ci| row.get(ci).cloned().unwrap_or(Value::Null).to_string())
+                        .collect(),
+                    None => row.iter().map(|v| v.to_string()).collect(),
+                };
+                if seen.insert(key) {
+                    keep_indices.push(i);
+                }
+            }
+        }
+        if let Some(t) = table_ref.gather_rows_owned(&keep_indices) {
+            return Value::Table(Rc::new(RefCell::new(t)));
+        }
+    }
+
+    let rows = materialize_table_rows(&table_ref);
     let mut seen: HashSet<Vec<String>> = HashSet::new();
     let mut out_rows: Vec<Vec<Value>> = Vec::with_capacity(rows.len());
     for row in rows {
@@ -2780,24 +3201,30 @@ pub fn native_show_table(args: &[Value]) -> Value {
 }
 
 pub fn native_merge_tables(args: &[Value]) -> Value {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
 
     if args.is_empty() {
         return Value::Null;
     }
 
-    // Извлекаем массив таблиц
-    let tables_array = match &args[0] {
-        Value::Array(arr) => arr.borrow().clone(),
+    let table_handles: Vec<Rc<RefCell<Table>>> = match &args[0] {
+        Value::Array(arr) => {
+            let arr_ref = arr.borrow();
+            if arr_ref.is_empty() {
+                return Value::Null;
+            }
+            let mut out = Vec::with_capacity(arr_ref.len());
+            for val in arr_ref.iter() {
+                match val {
+                    Value::Table(t) => out.push(Rc::clone(t)),
+                    _ => return Value::Null,
+                }
+            }
+            out
+        }
         _ => return Value::Null,
     };
 
-    // Обработка пустого массива
-    if tables_array.is_empty() {
-        return Value::Null;
-    }
-
-    // Определяем режим (по умолчанию "outer")
     let mode = if args.len() > 1 {
         match &args[1] {
             Value::String(s) => s.as_str(),
@@ -2807,47 +3234,33 @@ pub fn native_merge_tables(args: &[Value]) -> Value {
         "outer"
     };
 
-    // Извлекаем таблицы из массива
-    let mut tables = Vec::new();
-    for val in &tables_array {
-        match val {
-            Value::Table(table) => {
-                tables.push(table.clone());
+    if table_handles.len() == 1 {
+        return Value::Table(Rc::clone(&table_handles[0]));
+    }
+
+    let same_schema = {
+        let first_headers = table_handles[0].borrow();
+        let headers = first_headers.headers();
+        table_handles[1..]
+            .iter()
+            .all(|t| t.borrow().headers() == headers)
+    };
+
+    if same_schema {
+        let headers = table_handles[0].borrow().headers().clone();
+        let total_rows: usize = table_handles.iter().map(|t| t.borrow().len()).sum();
+        let mut dest = Table::with_capacity_owned(headers, total_rows);
+        for t in &table_handles {
+            if merge_append_table(&mut dest, &t.borrow()).is_err() {
+                return Value::Null;
             }
-            _ => return Value::Null, // Все элементы должны быть таблицами
         }
+        return Value::Table(Rc::new(RefCell::new(dest)));
     }
 
-    // Если только одна таблица, возвращаем её копию
-    if tables.len() == 1 {
-        let table_ref = tables[0].borrow();
-        let rows: Vec<Vec<Value>> = if let Some(rr) = table_ref.rows_ref() {
-            rr.to_vec()
-        } else {
-            crate::vm::vm::with_current_stores(|store, heap| {
-                (0..table_ref.len())
-                    .filter_map(|i| crate::vm::table_ops::get_row(&*table_ref, i, store, heap))
-                    .collect()
-            })
-        };
-        let new_table = Table::from_data(rows, Some(table_ref.headers().clone()));
-        return Value::Table(Rc::new(RefCell::new(new_table)));
-    }
-
-    // Собираем все уникальные колонки
     let mut all_columns_set = HashSet::new();
     let mut column_order = Vec::new();
-
-    // Сначала добавляем колонки первой таблицы для сохранения порядка
-    let first_table = tables[0].borrow();
-    for header in first_table.headers() {
-        if all_columns_set.insert(header.clone()) {
-            column_order.push(header.clone());
-        }
-    }
-
-    // Затем добавляем колонки из остальных таблиц
-    for table_rc in &tables[1..] {
+    for table_rc in &table_handles {
         let table_ref = table_rc.borrow();
         for header in table_ref.headers() {
             if all_columns_set.insert(header.clone()) {
@@ -2856,63 +3269,91 @@ pub fn native_merge_tables(args: &[Value]) -> Value {
         }
     }
 
-    // Для inner mode - оставляем только колонки, присутствующие во всех таблицах
     let result_columns = if mode == "inner" {
-        let mut common_columns = Vec::new();
-        for col in &column_order {
-            let mut in_all = true;
-            for table_rc in &tables {
-                let table_ref = table_rc.borrow();
-                if !table_ref.headers().contains(col) {
-                    in_all = false;
-                    break;
-                }
-            }
-            if in_all {
-                common_columns.push(col.clone());
-            }
-        }
-        common_columns
+        column_order
+            .into_iter()
+            .filter(|col| {
+                table_handles
+                    .iter()
+                    .all(|t| t.borrow().headers().iter().any(|h| h == col))
+            })
+            .collect::<Vec<_>>()
     } else {
         column_order
     };
 
-    // Создаем объединенные строки
-    let mut merged_rows = Vec::new();
+    let total_rows: usize = table_handles.iter().map(|t| t.borrow().len()).sum();
+    let n_cols = result_columns.len();
+    let mut flat = Vec::with_capacity(total_rows.saturating_mul(n_cols));
 
-    for table_rc in &tables {
-        let table_ref = table_rc.borrow();
+    for table_rc in &table_handles {
+        let src = table_rc.borrow();
+        let src_index: HashMap<&str, usize> = src
+            .headers()
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (h.as_str(), i))
+            .collect();
+        let col_map: Vec<Option<usize>> = result_columns
+            .iter()
+            .map(|c| src_index.get(c.as_str()).copied())
+            .collect();
 
-        let rows: Vec<Vec<Value>> = if let Some(rr) = table_ref.rows_ref() {
-            rr.iter().map(|r| r.to_vec()).collect()
-        } else {
-            crate::vm::vm::with_current_stores(|store, heap| {
-                (0..table_ref.len())
-                    .filter_map(|i| crate::vm::table_ops::get_row(&*table_ref, i, store, heap))
-                    .collect()
-            })
-        };
-
-        for row in rows {
-            let mut new_row = Vec::new();
-
-            for col_name in &result_columns {
-                if let Some(col_idx) = table_ref.headers().iter().position(|h| h == col_name) {
-                    if col_idx < row.len() {
-                        new_row.push(row[col_idx].clone());
-                    } else {
-                        new_row.push(Value::Null);
+        if let Some(src_flat) = src.owned_flat() {
+            let src_cols = src.owned_num_cols().unwrap_or(0);
+            let n = src.len();
+            for row in 0..n {
+                for src_c in &col_map {
+                    match src_c {
+                        Some(si) if src_cols > 0 => {
+                            let idx = row * src_cols + *si;
+                            if idx < src_flat.len() {
+                                flat.push(src_flat[idx].clone());
+                            } else {
+                                flat.push(Value::Null);
+                            }
+                        }
+                        _ => flat.push(Value::Null),
                     }
-                } else {
-                    new_row.push(Value::Null);
                 }
             }
-
-            merged_rows.push(new_row);
+        } else {
+            crate::vm::vm::with_current_stores(|store, heap| {
+                for i in 0..src.len() {
+                    let row = crate::vm::table_ops::get_row(&src, i, store, heap).unwrap_or_default();
+                    for src_c in &col_map {
+                        match src_c {
+                            Some(si) if *si < row.len() => flat.push(row[*si].clone()),
+                            _ => flat.push(Value::Null),
+                        }
+                    }
+                }
+            });
         }
     }
 
-    // Создаем результирующую таблицу
-    let merged_table = Table::from_data(merged_rows, Some(result_columns));
-    Value::Table(Rc::new(RefCell::new(merged_table)))
+    Value::Table(Rc::new(RefCell::new(Table::from_flat_owned(
+        flat,
+        n_cols,
+        result_columns,
+    ))))
+}
+
+fn merge_append_table(dest: &mut Table, src: &Table) -> Result<(), String> {
+    if let Some(chunk) = src.owned_flat() {
+        dest.append_flat_chunk(chunk).map(|_| ())
+    } else {
+        crate::vm::vm::with_current_stores(|store, heap| {
+            let n = src.len();
+            let cols = dest.owned_num_cols().unwrap_or(0);
+            let mut chunk = Vec::with_capacity(n.saturating_mul(cols));
+            for i in 0..n {
+                match crate::vm::table_ops::get_row(src, i, store, heap) {
+                    Some(row) => chunk.extend(row),
+                    None => return Err("failed to read source row".to_string()),
+                }
+            }
+            dest.append_flat_chunk(&chunk).map(|_| ())
+        })
+    }
 }

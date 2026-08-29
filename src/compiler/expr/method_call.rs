@@ -263,16 +263,18 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
                 arg_slots.push(slot);
             }
             expr::compile_expr(ctx, object)?;
-            let temp_object_slot = ctx.scope.declare_local("__method_object");
+            let temp_object_slot = ctx.scope.begin_method_object_temp();
             ctx.chunk
                 .write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
-            compile_db_receiver_method_with_arg_slots(
+            let result = compile_db_receiver_method_with_arg_slots(
                 ctx,
                 method,
                 &arg_slots,
                 temp_object_slot,
                 *line,
-            )
+            );
+            ctx.scope.release_method_object_temp();
+            result
         } else {
             // Общий случай: компилируем объект и вызываем compile_generic_method
             debug_println!("[DEBUG compile_method_call] Метод '{}' не распознан как метод класса, используем compile_generic_method", method);
@@ -325,11 +327,12 @@ fn compile_suffixes_method(
     }
 
     // Table is already on the stack; stack layout before Call: table, left_suffix, right_suffix, native_fn.
-    let temp_object_slot = ctx.scope.declare_local("__method_object");
+    let temp_object_slot = ctx.scope.begin_method_object_temp();
     ctx.chunk
         .write_with_line(OpCode::StoreLocal(temp_object_slot), line);
 
     let Some(&function_index) = ctx.scope.globals.get("table_suffixes") else {
+        ctx.scope.release_method_object_temp();
         return Err(LangError::ParseError {
             message: "Function 'table_suffixes' not found".to_string(),
             line,
@@ -345,6 +348,7 @@ fn compile_suffixes_method(
     ctx.chunk
         .write_with_line(OpCode::LoadGlobal(function_index), line);
     ctx.chunk.write_with_line(OpCode::Call(3), line);
+    ctx.scope.release_method_object_temp();
     Ok(())
 }
 
@@ -362,7 +366,7 @@ fn compile_join_method(
         });
     };
 
-    let temp_object_slot = ctx.scope.declare_local("__method_object");
+    let temp_object_slot = ctx.scope.begin_method_object_temp();
     ctx.chunk
         .write_with_line(OpCode::StoreLocal(temp_object_slot), line);
 
@@ -375,6 +379,7 @@ fn compile_join_method(
         .write_with_line(OpCode::LoadGlobal(function_index), line);
     ctx.chunk
         .write_with_line(OpCode::Call(args.len() + 1), line);
+    ctx.scope.release_method_object_temp();
     Ok(())
 }
 
@@ -424,7 +429,7 @@ fn compile_generic_method(
     line: usize,
 ) -> Result<(), LangError> {
     // Сохраняем объект во временную переменную
-    let temp_object_slot = ctx.scope.declare_local("__method_object");
+    let temp_object_slot = ctx.scope.begin_method_object_temp();
     ctx.chunk
         .write_with_line(OpCode::StoreLocal(temp_object_slot), line);
 
@@ -436,11 +441,9 @@ fn compile_generic_method(
             | "replace" | "capitalize"
     );
 
-    if is_axis_method {
-        return compile_axis_method(ctx, method, args, temp_object_slot, line);
-    }
-
-    if let Some(reg) = ctx.native_call_param_registry {
+    let result = if is_axis_method {
+        compile_axis_method(ctx, method, args, temp_object_slot, line)
+    } else if let Some(reg) = ctx.native_call_param_registry {
         if let Some(export_key) = reg.export_for_method(method) {
             if ambiguous_plugin_method_use_module_path(ctx, args, export_key) {
                 let param_owned = reg.get(export_key).map(|s| s.to_vec());
@@ -453,7 +456,7 @@ fn compile_generic_method(
                 } else {
                     Some(param_refs.as_slice())
                 };
-                return compile_module_method(
+                compile_module_method(
                     ctx,
                     method,
                     args,
@@ -461,16 +464,25 @@ fn compile_generic_method(
                     line,
                     override_native,
                     Some(object),
-                );
+                )
+            } else if is_string_method {
+                compile_string_method(ctx, method, args, temp_object_slot, line)
+            } else {
+                compile_module_method(ctx, method, args, temp_object_slot, line, None, Some(object))
             }
+        } else if is_string_method {
+            compile_string_method(ctx, method, args, temp_object_slot, line)
+        } else {
+            compile_module_method(ctx, method, args, temp_object_slot, line, None, Some(object))
         }
-    }
-
-    if is_string_method {
+    } else if is_string_method {
         compile_string_method(ctx, method, args, temp_object_slot, line)
     } else {
         compile_module_method(ctx, method, args, temp_object_slot, line, None, Some(object))
-    }
+    };
+
+    ctx.scope.release_method_object_temp();
+    result
 }
 
 fn compile_axis_method(

@@ -4,7 +4,7 @@
 use crate::common::error::{ErrorType, LangError};
 use crate::common::numeric::{divmod_f64, divmod_i64, integer_value_as_i64_if_whole, tagged_integral_canonical_if_whole};
 use crate::common::value::Value;
-use crate::common::value_store::ValueStore;
+use crate::common::value_store::{ValueCell, ValueStore};
 use crate::common::TaggedValue;
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
@@ -15,6 +15,37 @@ use crate::vm::store_convert::{load_value, slot_to_value, store_value};
 use crate::vm::types::VMStatus;
 
 use super::helpers::pop_to_value_id;
+
+/// If `tv` is a table already bound in another local slot, store a new Heavy
+/// handle that shares the same `Rc` so later CoW mutations do not alias `t1`.
+fn fork_table_if_slot_aliased(
+    tv: TaggedValue,
+    slots: &[TaggedValue],
+    dest_index: usize,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+) -> TaggedValue {
+    if !tv.is_heap() {
+        return tv;
+    }
+    let id = tv.get_heap_id();
+    let is_table = matches!(
+        value_store.get(id),
+        Some(ValueCell::Heavy(h)) if matches!(heavy_store.get(*h), Some(Value::Table(_)))
+    );
+    if !is_table {
+        return tv;
+    }
+    let aliased = slots
+        .iter()
+        .enumerate()
+        .any(|(i, s)| i != dest_index && s.is_heap() && s.get_heap_id() == id);
+    if !aliased {
+        return tv;
+    }
+    let val = load_value(id, value_store, heavy_store);
+    TaggedValue::from_heap(store_value(val, value_store, heavy_store))
+}
 
 /// Format a value for string interpolation with a spec like ".2f" or ".0f".
 fn format_value_interp(value: &Value, spec: &str) -> String {
@@ -96,6 +127,10 @@ pub fn op_store_local(
 ) -> Result<VMStatus, LangError> {
     let tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let tv = crate::vm::array_view::materialize_tagged_if_array_view(tv, value_store, heavy_store);
+    let tv = {
+        let slots = frames.last().map(|f| f.slots.as_slice()).unwrap_or(&[]);
+        fork_table_if_slot_aliased(tv, slots, index, value_store, heavy_store)
+    };
     let frame = frames.last_mut().unwrap();
     if frame.load_local_cache_slot == Some(index) {
         frame.load_local_cache_slot = None;

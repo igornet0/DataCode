@@ -687,6 +687,36 @@ mod tests {
     }
 
     #[test]
+    fn test_table_column_oriented_from_ranges() {
+        let source = r#"
+            let n = 50
+            let t = table([range(n), range(n)], ["id", "val"])
+            len(t)
+        "#;
+        assert_number_result(source, 50.0);
+    }
+
+    #[test]
+    fn test_native_table_column_oriented_direct() {
+        use data_code::vm::natives::native_table;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let n = 50usize;
+        let col: Vec<Value> = (0..n).map(|i| Value::Number(i as f64)).collect();
+        let col_arr = Value::Array(Rc::new(RefCell::new(col)));
+        let data = Value::Array(Rc::new(RefCell::new(vec![col_arr.clone(), col_arr])));
+        let headers = Value::Array(Rc::new(RefCell::new(vec![
+            Value::String("id".into()),
+            Value::String("val".into()),
+        ])));
+        match native_table(&[data, headers]) {
+            Value::Table(t) => assert_eq!(t.borrow().len(), n),
+            other => panic!("expected table, got {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_table_head() {
         // Получение первых n строк
         let source = r#"
@@ -3658,5 +3688,224 @@ mod tests {
             v.chunk(3)[1][0]
         "#;
         assert_number_result(source, 40.0);
+    }
+
+    // ========== merge_tables ==========
+
+    #[test]
+    fn test_merge_tables_same_schema() {
+        let source = r#"
+            let t1 = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+            let t2 = table([[3, "Charlie"]], ["id", "name"])
+            let merged = merge_tables([t1, t2])
+            len(merged)
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_merge_tables_same_schema_inner_mode() {
+        let source = r#"
+            let t1 = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+            let t2 = table([[3, "Charlie"]], ["id", "name"])
+            let merged = merge_tables([t1, t2], "inner")
+            len(merged)
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_merge_tables_outer_mismatch_columns() {
+        let source = r#"
+            let t1 = table([[1, "Alice"]], ["id", "name"])
+            let t2 = table([[2, 30]], ["id", "age"])
+            let merged = merge_tables([t1, t2], "outer")
+            len(merged) + len(merged.columns)
+        "#;
+        // 2 rows + 3 columns (id, name, age)
+        assert_number_result(source, 5.0);
+    }
+
+    #[test]
+    fn test_merge_tables_outer_null_padding() {
+        let source = r#"
+            let t1 = table([[1, "Alice"]], ["id", "name"])
+            let t2 = table([[2, 30]], ["id", "age"])
+            let merged = merge_tables([t1, t2], "outer")
+            merged.columns[0] + "," + merged.columns[1] + "," + merged.columns[2]
+        "#;
+        assert_string_result(source, "id,name,age");
+    }
+
+    #[test]
+    fn test_merge_tables_inner_keeps_common_columns() {
+        let source = r#"
+            let t1 = table([[1, "Alice"]], ["id", "name"])
+            let t2 = table([[2, 30]], ["id", "age"])
+            let merged = merge_tables([t1, t2], "inner")
+            merged.columns[0]
+        "#;
+        assert_string_result(source, "id");
+    }
+
+    #[test]
+    fn test_merge_tables_inner_common_column_count() {
+        let source = r#"
+            let t1 = table([[1, "Alice"]], ["id", "name"])
+            let t2 = table([[2, 30]], ["id", "age"])
+            let merged = merge_tables([t1, t2], "inner")
+            len(merged.columns)
+        "#;
+        assert_number_result(source, 1.0);
+    }
+
+    #[test]
+    fn test_merge_tables_empty_array_is_null() {
+        let source = r#"
+            merge_tables([])
+        "#;
+        assert_null_result(source);
+    }
+
+    #[test]
+    fn test_merge_tables_single_table() {
+        let source = r#"
+            let t1 = table([[1, "Alice"], [2, "Bob"]], ["id", "name"])
+            let merged = merge_tables([t1])
+            len(merged)
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_merge_tables_empty_tables() {
+        let source = r#"
+            let t1 = table([], ["id", "name"])
+            let t2 = table([], ["id", "name"])
+            let merged = merge_tables([t1, t2])
+            len(merged)
+        "#;
+        assert_number_result(source, 0.0);
+    }
+
+    #[test]
+    fn test_table_alias_add_row_does_not_mutate_original() {
+        let source = r#"
+            let t1 = table([[1, "Alice"]], ["id", "name"])
+            let t2 = t1
+            t2.add_row([2, "Bob"])
+            len(t1)
+        "#;
+        assert_number_result(source, 1.0);
+    }
+
+    #[test]
+    fn test_table_alias_add_row_updates_copy() {
+        let source = r#"
+            let t1 = table([[1, "Alice"]], ["id", "name"])
+            let t2 = t1
+            t2.add_row([2, "Bob"])
+            len(t2)
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_alias_push_does_not_mutate_original() {
+        let source = r#"
+            let t1 = table([[1, "Alice"]], ["id", "name"])
+            let t2 = t1
+            t2.push({id: 2, name: "Bob"})
+            len(t1)
+        "#;
+        assert_number_result(source, 1.0);
+    }
+
+    #[test]
+    fn test_table_alias_push_updates_copy() {
+        let source = r#"
+            let t1 = table([[1, "Alice"]], ["id", "name"])
+            let t2 = t1
+            t2.push({id: 2, name: "Bob"})
+            len(t2)
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_alias_bang_assign_does_not_mutate_original() {
+        let source = r#"
+            let t1 = table([[1, 10]], ["id", "amount"])
+            let t2 = t1
+            t2!["score"] = [100]
+            len(t1.columns)
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_alias_bang_assign_updates_copy() {
+        let source = r#"
+            let t1 = table([[1, 10]], ["id", "amount"])
+            let t2 = t1
+            t2!["score"] = [100]
+            len(t2.columns) + t2["score"][0]
+        "#;
+        assert_number_result(source, 103.0);
+    }
+
+    #[test]
+    fn test_table_alias_bang_assign_on_original_does_not_mutate_copy() {
+        let source = r#"
+            let t1 = table([[1, 10]], ["id", "amount"])
+            let t2 = t1
+            t1!["score"] = [100]
+            len(t2.columns)
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_table_alias_rename_reassign_does_not_mutate_original() {
+        let source = r#"
+            let t1 = table([[1, "Alice"]], ["id", "name"])
+            let t2 = t1
+            t2 = t2.rename("name", "full_name")
+            t1.columns[1]
+        "#;
+        assert_string_result(source, "name");
+    }
+
+    #[test]
+    fn test_table_alias_rename_reassign_updates_copy() {
+        let source = r#"
+            let t1 = table([[1, "Alice"]], ["id", "name"])
+            let t2 = t1
+            t2 = t2.rename("name", "full_name")
+            t2.columns[1]
+        "#;
+        assert_string_result(source, "full_name");
+    }
+
+    #[test]
+    fn test_table_alias_drop_column_reassign_does_not_mutate_original() {
+        let source = r#"
+            let t1 = table([[1, "Alice", 25]], ["id", "name", "age"])
+            let t2 = t1
+            t2 = t2.drop_column("age")
+            len(t1.columns)
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_table_alias_drop_column_reassign_updates_copy() {
+        let source = r#"
+            let t1 = table([[1, "Alice", 25]], ["id", "name", "age"])
+            let t2 = t1
+            t2 = t2.drop_column("age")
+            len(t2.columns)
+        "#;
+        assert_number_result(source, 2.0);
     }
 }

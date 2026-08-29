@@ -19,6 +19,7 @@ use crate::vm::store_convert::{
     load_value, slot_to_value, store_value, store_value_arena, tagged_to_value_id_arena,
 };
 use crate::vm::types::VMStatus;
+use std::rc::Rc;
 
 /// Execute LoadGlobal(index).
 #[allow(clippy::too_many_arguments)]
@@ -658,12 +659,23 @@ pub(crate) fn op_store_global(
         if let Some(var_name) = var_name {
             table_rc.borrow_mut().set_name(var_name.clone());
         }
-        // Table is already in heap; no need to store_value again.
+        let already_bound = globals.iter().enumerate().any(|(i, slot)| {
+            i != index && matches!(slot, GlobalSlot::Heap(id) if *id == value_id)
+        });
+        let store_id = if already_bound {
+            store_value(
+                Value::Table(Rc::clone(table_rc)),
+                value_store,
+                heavy_store,
+            )
+        } else {
+            value_id
+        };
         if index >= globals.len() {
             globals.resize(index + 1, default_global_slot());
         }
-        globals[index] = GlobalSlot::Heap(value_id);
-        sync_module_export(load_value(value_id, value_store, heavy_store));
+        globals[index] = GlobalSlot::Heap(store_id);
+        sync_module_export(load_value(store_id, value_store, heavy_store));
         return Ok(VMStatus::Continue);
     }
     let (super_name, class_name, class_meta_opt) = if let Value::Object(class_rc) = &value {

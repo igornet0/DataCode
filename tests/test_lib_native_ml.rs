@@ -13,6 +13,21 @@ use data_code::common::value::Value;
 use data_code::run_with_base_path;
 use data_code::vm::file_import;
 
+fn datacode_sdk_submodule_present() -> bool {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("datacode_sdk")
+        .join("Cargo.toml")
+        .is_file()
+}
+
+fn skip_without_datacode_sdk() -> bool {
+    if datacode_sdk_submodule_present() {
+        return false;
+    }
+    eprintln!("skip: datacode_sdk submodule absent (main branch layout)");
+    true
+}
+
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -101,6 +116,9 @@ fn vm_smoke_without_ml_native() {
 
 #[test]
 fn native_ml_module_plugin_opaque_smoke() {
+    if skip_without_datacode_sdk() {
+        return;
+    }
     let _g = DPM_PATHS_TEST_LOCK.lock().expect("lock");
     build_ml_native_cdylib().expect("build ml cdylib");
     let copied = copy_dylib_to_packages_ml().expect("copy dylib to packages/ml");

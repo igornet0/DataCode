@@ -221,10 +221,10 @@ fn render_template(tpl: &str, vars: &HashMap<String, String>) -> String {
     out
 }
 
-/// Load embedded template (built from repo root).
+/// Load embedded template (built from repo root `crates/templates/`).
 macro_rules! embed_tpl {
     ($path:literal) => {
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), $path))
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/crates", $path))
     };
 }
 

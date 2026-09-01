@@ -16,6 +16,13 @@ use data_code::vm::module_object::BUILTIN_END;
 use data_code::vm::native_loader::try_load_native_module;
 use libloading::Library;
 
+fn datacode_sdk_submodule_present() -> bool {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("datacode_sdk")
+        .join("Cargo.toml")
+        .is_file()
+}
+
 fn manifest_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests")
@@ -77,8 +84,26 @@ fn build_math_native_cdylib() -> Result<(), String> {
     Ok(())
 }
 
+fn datacode_sdk_submodule_present() -> bool {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("datacode_sdk")
+        .join("Cargo.toml")
+        .is_file()
+}
+
+fn skip_without_datacode_sdk() -> bool {
+    if datacode_sdk_submodule_present() {
+        return false;
+    }
+    eprintln!("skip: datacode_sdk submodule absent (main branch layout)");
+    true
+}
+
 #[test]
 fn try_load_native_module_direct_smoke() {
+    if skip_without_datacode_sdk() {
+        return;
+    }
     let _g = DPM_PATHS_TEST_LOCK.lock().expect("lock");
     build_math_native_cdylib().expect("build");
     let tmp = tempfile::tempdir().expect("tempdir");
@@ -119,6 +144,9 @@ fn vm_smoke_without_native_module_path() {
 
 #[test]
 fn native_math_module_via_dpm_packages_layout() {
+    if skip_without_datacode_sdk() {
+        return;
+    }
     let _g = DPM_PATHS_TEST_LOCK.lock().expect("lock");
     build_math_native_cdylib().expect("build math_native cdylib");
     let copied = copy_dylib_to_packages_layout().expect("copy dylib to packages layout");
@@ -140,6 +168,9 @@ add(2, 3) + mul(2, 5)
 
 #[test]
 fn native_math_module_iterable_arg_materializes_to_array() {
+    if skip_without_datacode_sdk() {
+        return;
+    }
     let _g = DPM_PATHS_TEST_LOCK.lock().expect("lock");
     build_math_native_cdylib().expect("build math_native cdylib");
     let copied = copy_dylib_to_packages_layout().expect("copy dylib to packages layout");
@@ -161,6 +192,9 @@ sum_array(map([1, 2, 3], fn(x) => x * 2))
 
 #[test]
 fn native_math_module_loose_dylib_next_to_base() {
+    if skip_without_datacode_sdk() {
+        return;
+    }
     let _g = DPM_PATHS_TEST_LOCK.lock().expect("lock");
     build_math_native_cdylib().expect("build math_native cdylib");
     let src = release_dylib_path();

@@ -67,6 +67,7 @@ pub fn compile_lambda(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
         let saved_function = ctx.current_function;
         let enclosing_function_index = saved_function.unwrap_or(usize::MAX);
         let saved_local_count = ctx.scope.local_count;
+        let saved_method_object_temps = ctx.scope.snapshot_method_object_temps();
 
         let saved_label_counter = ctx.labels.label_counter;
         let saved_labels = ctx.labels.labels.clone();
@@ -79,6 +80,7 @@ pub fn compile_lambda(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
 
         ctx.current_function = Some(function_index);
         ctx.scope.local_count = 0;
+        ctx.scope.reset_method_object_temps();
         ctx.exception_handlers.clear();
         ctx.error_type_table.clear();
 
@@ -161,6 +163,7 @@ pub fn compile_lambda(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), L
         *ctx.error_type_table = saved_error_type_table;
         ctx.current_function = saved_function;
         ctx.scope.local_count = saved_local_count;
+        ctx.scope.restore_method_object_temps(saved_method_object_temps);
 
         ctx.labels.label_counter = saved_label_counter;
         ctx.labels.labels = saved_labels;

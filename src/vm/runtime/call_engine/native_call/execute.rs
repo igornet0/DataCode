@@ -1,7 +1,7 @@
 //! Execution of native (builtin and ABI) function calls.
 
 use crate::common::error::ErrorType;
-use crate::common::table::Table;
+use crate::common::table::{table_make_mut, Table};
 use crate::common::{
     error::LangError,
     value::{ObjectKind, Value},
@@ -298,7 +298,8 @@ pub(crate) fn execute_native_call(
                 heavy_store,
             );
         }
-        // Fast path table(data, headers)
+        // Fast path table(data, headers). Legacy bytecode index 45 is handled earlier
+        // via `try_table_legacy_fast_path` — do not match it here (that slot is `sort` today).
         if native_index == builtin::TABLE && arity == 2 {
             let headers_tv = stack::pop_direct(stack).unwrap_or(TaggedValue::null());
             let data_tv = stack::pop_direct(stack).unwrap_or(TaggedValue::null());
@@ -312,61 +313,27 @@ pub(crate) fn execute_native_call(
                 }
             });
             if let Some(row_slots) = row_slots_opt2 {
-                let num_cols = row_slots
-                    .first()
-                    .and_then(|row_tv| {
-                        if row_tv.is_heap() {
-                            value_store.get(row_tv.get_heap_id()).and_then(|c| match c {
-                                ValueCell::Array(slots) => Some(slots.len()),
-                                _ => None,
-                            })
-                        } else {
-                            None
-                        }
-                    })
-                    .unwrap_or(0);
-                if num_cols > 0 && !row_slots.is_empty() {
-                    let mut flat_cell_ids = Vec::with_capacity(row_slots.len() * num_cols);
-                    let mut ok = true;
-                    for row_tv in row_slots.iter() {
-                        if !row_tv.is_heap() {
-                            ok = false;
-                            break;
-                        }
-                        let row_id = row_tv.get_heap_id();
-                        let cell_slots: Vec<TaggedValue> = value_store
-                            .get(row_id)
-                            .and_then(|c| {
-                                if let ValueCell::Array(s) = c {
-                                    Some(s.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .unwrap_or_default();
-                        if cell_slots.len() >= num_cols {
-                            for slot in cell_slots.iter().take(num_cols) {
-                                flat_cell_ids.push(tagged_to_value_id(*slot, value_store));
-                            }
-                        } else {
-                            ok = false;
-                            break;
-                        }
-                    }
-                    if ok && flat_cell_ids.len() == row_slots.len() * num_cols {
-                        let headers_val = load_value(headers_id, value_store, heavy_store);
-                        let header_strings: Vec<String> = match &headers_val {
-                            Value::Array(rc) => rc.borrow().iter().map(|v| v.to_string()).collect(),
-                            _ => Vec::new(),
-                        };
-                        if header_strings.len() >= num_cols {
-                            let table =
-                                Table::from_flat_view(flat_cell_ids, num_cols, header_strings);
-                            let idx = heavy_store.push(Value::Table(Rc::new(RefCell::new(table))));
-                            let result_id = value_store.allocate(ValueCell::Heavy(idx));
-                            stack::push_id(stack, result_id);
-                            return Ok(VMStatus::Continue);
-                        }
+                let headers_val = load_value(headers_id, value_store, heavy_store);
+                let header_strings: Vec<String> = match &headers_val {
+                    Value::Array(rc) => rc.borrow().iter().map(|v| v.to_string()).collect(),
+                    _ => Vec::new(),
+                };
+                let header_count = header_strings.len().max(1);
+                if let Some((flat_cell_ids, num_cols)) =
+                    crate::vm::table_ops::build_view_flat_from_row_slots(
+                        &row_slots,
+                        header_count,
+                        value_store,
+                        heavy_store,
+                    )
+                {
+                    if !header_strings.is_empty() {
+                        let table =
+                            Table::from_flat_view(flat_cell_ids, num_cols, header_strings);
+                        let idx = heavy_store.push(Value::Table(Rc::new(RefCell::new(table))));
+                        let result_id = value_store.allocate(ValueCell::Heavy(idx));
+                        stack::push_id(stack, result_id);
+                        return Ok(VMStatus::Continue);
                     }
                 }
             }
@@ -396,6 +363,12 @@ pub(crate) fn execute_native_call(
         reusable_native_arg_ids.reverse();
         native_args_buffer.reverse();
         native_arg_ids = Some(reusable_native_arg_ids);
+    }
+
+    if native_index == builtin::TABLE_ADD_ROW || native_index == builtin::TABLE_PUSH {
+        if let Some(Value::Table(rc)) = native_args_buffer.get_mut(0) {
+            table_make_mut(rc);
+        }
     }
 
     let prev_ctx = VM_CALL_CONTEXT.with(|ctx| {

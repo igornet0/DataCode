@@ -1628,8 +1628,8 @@ impl Clone for Value {
             Value::Date(d) => Value::Date(*d),
             Value::Duration(d) => Value::Duration(*d),
             Value::Table(table) => {
-                // Создаем новый Rc с глубокой копией таблицы
-                Value::Table(Rc::new(RefCell::new(table.borrow().clone())))
+                // Share the table handle; mutating natives clone-on-write via `table_make_mut`.
+                Value::Table(Rc::clone(table))
             }
             Value::ColumnReference { table, column_name } => {
                 // Для ColumnReference клонируем ссылку на таблицу и имя колонки

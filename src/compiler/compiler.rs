@@ -1217,8 +1217,10 @@ impl Compiler {
                 let saved_function = self.current_function;
                 let enclosing_function_index = saved_function.unwrap_or(usize::MAX);
                 let saved_local_count = self.scope.local_count;
+                let saved_method_object_temps = self.scope.snapshot_method_object_temps();
                 self.current_function = Some(function_index);
                 self.scope.local_count = 0;
+                self.scope.reset_method_object_temps();
                 // Очищаем обработчики и таблицу типов ошибок для новой функции
                 self.exception_handlers.clear();
                 self.error_type_table.clear();
@@ -1329,6 +1331,7 @@ impl Compiler {
                 self.error_type_table = saved_error_type_table;
                 self.current_function = saved_function;
                 self.scope.local_count = saved_local_count;
+                self.scope.restore_method_object_temps(saved_method_object_temps);
 
                 // Сохраняем функцию в глобальную таблицу (уже сделано в первом проходе)
                 let global_index = *self.scope.globals.get(name).unwrap();
@@ -2267,7 +2270,7 @@ impl Compiler {
                     }
 
                     // Сохраняем объект (таблицу) во временную локальную переменную
-                    let temp_object_slot = self.declare_local("__method_object");
+                    let temp_object_slot = self.scope.begin_method_object_temp();
                     self.chunk
                         .write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
 
@@ -2320,12 +2323,14 @@ impl Compiler {
                         // Вызываем функцию с 3 аргументами: table, left_suffix, right_suffix
                         self.chunk.write_with_line(OpCode::Call(3), *line);
                     } else {
+                        self.scope.release_method_object_temp();
                         return Err(LangError::ParseError {
                             message: "Function 'table_suffixes' not found".to_string(),
                             line: *line,
                             file: None,
                         });
                     }
+                    self.scope.release_method_object_temp();
                 } else if matches!(
                     method.as_str(),
                     "inner_join"
@@ -2343,7 +2348,7 @@ impl Compiler {
                     // JOIN методы для таблиц
                     // Объект уже на стеке. Нужно вызвать функцию с объектом как первым аргументом.
                     // Сохраняем объект во временную локальную переменную
-                    let temp_object_slot = self.declare_local("__method_object");
+                    let temp_object_slot = self.scope.begin_method_object_temp();
                     self.chunk
                         .write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
 
@@ -2410,18 +2415,20 @@ impl Compiler {
                         self.chunk
                             .write_with_line(OpCode::Call(args.len() + 1), *line);
                     } else {
+                        self.scope.release_method_object_temp();
                         return Err(LangError::ParseError {
                             message: format!("Function '{}' not found", function_name),
                             line: *line,
                             file: None,
                         });
                     }
+                    self.scope.release_method_object_temp();
                 } else {
                     // Общий случай: метод может быть нативной функцией или обычной функцией в объекте
                     // Объект уже на стеке. Нужно получить свойство (метод) и вызвать его.
                     // Для обычных объектов: получаем свойство объекта
                     // Сначала сохраняем объект во временную переменную
-                    let temp_object_slot = self.declare_local("__method_object");
+                    let temp_object_slot = self.scope.begin_method_object_temp();
                     self.chunk
                         .write_with_line(OpCode::StoreLocal(temp_object_slot), *line);
 
@@ -2539,6 +2546,7 @@ impl Compiler {
                         self.chunk
                             .write_with_line(OpCode::Call(1 + resolved_args.len()), *line);
                     }
+                    self.scope.release_method_object_temp();
                 }
             }
             Expr::InterpolatedString { segments, line } => {

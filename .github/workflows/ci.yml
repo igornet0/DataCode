@@ -11,8 +11,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: false
           fetch-depth: 0
+      - run: chmod +x scripts/init-submodules.sh && ./scripts/init-submodules.sh
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo test -p data-code --no-run
       - run: cargo test -p data-code

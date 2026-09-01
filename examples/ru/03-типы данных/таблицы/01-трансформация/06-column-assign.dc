@@ -14,6 +14,12 @@ orders!["AmountVat"] = orders["Amount"].map(fn(v) => v * 1.2)
 print("columns:", orders.columns)
 print("Amount[0]:", orders["Amount"][0], "| AmountVat[0]:", orders["AmountVat"][0])
 
+print("\n=== orders!['avg_check'] — формула из нескольких колонок ===")
+checks = table([[1, 2, 10], [2, 4, 20]], ["id", "quantity", "total"])
+checks!["avg_check"] = checks[["total", "quantity"]].map(fn(v, q) => v / q)
+print("typeof columns ref:", typeof(checks[["total", "quantity"]]))
+print("avg_check[0]:", checks["avg_check"][0], "| avg_check[1]:", checks["avg_check"][1])
+
 print("\n=== orders!.flag — синтаксис через точку ===")
 orders!.flag = ["A", "B", "C", "D", "E", "F"]
 print("last column:", orders.columns[len(orders.columns) - 1])

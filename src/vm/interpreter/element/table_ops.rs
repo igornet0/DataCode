@@ -309,6 +309,84 @@ pub fn get_table(
                 }
             }
         }
+        Value::Array(arr) => {
+            let names_result: Result<Vec<String>, (String, crate::common::error::ErrorType)> = {
+                let items = arr.borrow();
+                if items.len() < 2 {
+                    Err((
+                        "TypeError: table[[...]] requires at least 2 column names; use table[\"col\"] for a single column".to_string(),
+                        crate::common::error::ErrorType::TypeError,
+                    ))
+                } else {
+                    let mut names = Vec::with_capacity(items.len());
+                    let mut type_err = false;
+                    for v in items.iter() {
+                        match v {
+                            Value::String(s) => names.push(s.clone()),
+                            _ => {
+                                type_err = true;
+                                break;
+                            }
+                        }
+                    }
+                    if type_err {
+                        Err((
+                            "TypeError: table[[...]] column names must be strings".to_string(),
+                            crate::common::error::ErrorType::TypeError,
+                        ))
+                    } else {
+                        let table_ref = table.borrow();
+                        let missing = names
+                            .iter()
+                            .find(|name| !table_ref.has_column(name))
+                            .cloned();
+                        drop(table_ref);
+                        if let Some(name) = missing {
+                            Err((
+                                format!("KeyError: column '{}' not found in table", name),
+                                crate::common::error::ErrorType::KeyError,
+                            ))
+                        } else {
+                            Ok(names)
+                        }
+                    }
+                }
+            };
+            match names_result {
+                Ok(column_names) => {
+                    stack::push_id(
+                        stack,
+                        store_value(
+                            Value::ColumnsReference {
+                                table: table.clone(),
+                                column_names,
+                            },
+                            value_store,
+                            heavy_store,
+                        ),
+                    );
+                }
+                Err((message, err_type)) => {
+                    let error = ExceptionHandler::runtime_error_with_type(
+                        &frames,
+                        message,
+                        line,
+                        err_type,
+                    );
+                    match ExceptionHandler::handle_exception(
+                        stack,
+                        frames,
+                        exception_handlers,
+                        error,
+                        value_store,
+                        heavy_store,
+                    ) {
+                        Ok(()) => return Ok(VMStatus::Continue),
+                        Err(e) => return Err(e),
+                    }
+                }
+            }
+        }
         Value::Number(n) => {
             let idx = n as i64;
             if idx < 0 {
@@ -393,7 +471,7 @@ pub fn get_table(
         _ => {
             let error = ExceptionHandler::runtime_error(
                 &frames,
-                "Table index must be a string (column name) or number (row index)".to_string(),
+                "Table index must be a string (column name), array of column names, or number (row index)".to_string(),
                 line,
             );
             match ExceptionHandler::handle_exception(

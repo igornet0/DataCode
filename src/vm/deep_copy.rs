@@ -171,6 +171,20 @@ fn deep_copy_impl(value: &Value, ctx: &mut DeepCopyCtx<'_>) -> Result<Value, Str
             })
         }
 
+        Value::ColumnsReference {
+            table,
+            column_names,
+        } => {
+            let copied_table = match deep_copy_impl(&Value::Table(table.clone()), ctx)? {
+                Value::Table(rc) => rc,
+                _ => return Err("copy() internal error: columns reference table".to_string()),
+            };
+            Ok(Value::ColumnsReference {
+                table: copied_table,
+                column_names: column_names.clone(),
+            })
+        }
+
         Value::Function(_)
         | Value::ModuleFunction { .. }
         | Value::NativeFunction(_)

@@ -15,7 +15,7 @@ The result is a string such as `"int"`, `"array"`, `"table"`.
 - **Numbers:** no fractional part → `"int"`, with fractional part → `"float"`.
 - **Strings:** the same string in memory may be classified as `"date"` (if the start looks like `YYYY-MM-DD`), as `"money"` (if it contains `$`, `EUR`, `€`), or as plain `"string"`.
 - **Plugin object:** if `__plugin_namespace` is set, `typeof` may return that name instead of `"object"`.
-- **Non-obvious names:** database engine — `"database_engine"`, cluster — `"database_cluster"`, table column reference — `"column"`.
+- **Non-obvious names:** database engine — `"database_engine"`, cluster — `"database_cluster"`, table column reference — `"column"`, multi-column reference — `"columns"`.
 
 ### Examples
 
@@ -62,6 +62,7 @@ Returns **`true`** if value `x` matches the specified type, and **`false`** othe
 | Dictionary object | `"object"`, `"dict"`, `"dictionary"` |
 | Class object inheriting Table | `"table"` (if `__extends_table` is set on the object) |
 | Table column | `"column"` |
+| Several table columns | `"columns"` |
 | `null` | `"null"`, `"none"` |
 | Any function | `"function"` |
 | Path | `"path"` |

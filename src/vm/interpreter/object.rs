@@ -437,6 +437,16 @@ pub(crate) fn op_get_array_length(
                 }
             }
         }
+        Value::ColumnsReference { table, .. } => {
+            stack::push_id(
+                stack,
+                store_value(
+                    Value::Number(table.borrow().len() as f64),
+                    value_store,
+                    heavy_store,
+                ),
+            );
+        }
         Value::PluginOpaque { .. } => {
             if let Some(v) = plugin_opaque_len_via_plugin_call(&array) {
                 stack::push_id(stack, store_value(v, value_store, heavy_store));

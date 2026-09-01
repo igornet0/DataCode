@@ -21,6 +21,40 @@ from database_engine import engine, DatabaseCluster, MetaData, Column, select
 
 For SQLite, ORM `create_all` and `--build_model` export write `_datacode_schema` / `_datacode_version` alongside user tables. String cells that look like ISO dates/datetimes or numbers are auto-detected; after `__sql__`, metadata is resynced from PRAGMA.
 
+## Introspection
+
+Catalog methods are the same on every SQL backend. SQLite, PostgreSQL, MySQL and MSSQL each implement them against their own system catalogs.
+
+- **schemas()** – catalog schemas (SQLite: `main` / `temp` / attached DBs; PostgreSQL: user schemas; MySQL: databases; MSSQL: schemas)
+- **tables(schema?)** – user tables as objects `{ name, schema, type }`. Omit `schema` to use the backend default (`main`, `public`, current database, `dbo`)
+- **views(schema?)** – views in the same shape
+- **columns(table, schema?)** – `{ name, type, nullable, default, datacode_type? }`
+- **indexes(table, schema?)** – `{ name, columns, unique, primary }`
+- **primary_key(table, schema?)** – primary-key index object, or `null`
+- **foreign_keys(table, schema?)** – `{ name, columns, referenced_table, referenced_schema, referenced_columns }`
+- **inspect()** – full tree: `inspect.schemas[].tables[]` / `views[]` with nested columns, indexes, primary_key, foreign_keys
+- **table(name, schema?)** – `SELECT *` into a Datacode `Table`
+
+System tables (`sqlite_*`, `_datacode_*`) are omitted from `tables()`.
+
+```datacode
+from database_engine import engine
+
+conn = engine("sqlite:///:memory:").connect()
+conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", [])
+
+for t in conn.tables() {
+    print(t.name)
+}
+
+for c in conn.columns("users") {
+    print(c.name, c["type"], c.nullable)
+}
+
+users = conn.table("users")
+info = conn.inspect()
+```
+
 ## DatabaseCluster
 
 A cluster holds named database connections so you can add several engines and use them by name.

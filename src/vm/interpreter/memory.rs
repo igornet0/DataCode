@@ -628,6 +628,7 @@ pub(crate) fn op_store_global(
                 | ValueCell::Path(_)
                 | ValueCell::Uuid(_, _)
                 | ValueCell::ColumnReference { .. }
+                | ValueCell::ColumnsReference { .. }
                 | ValueCell::PluginOpaque { .. }
                 | ValueCell::Window(_)
                 | ValueCell::Enumerate { .. }

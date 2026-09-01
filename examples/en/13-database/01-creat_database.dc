@@ -12,6 +12,11 @@ print("Connected:", conn)
 conn.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)", [])
 print("Table created")
 
+print("Tables in database:")
+for t in conn.tables() {
+    print(" ", t.name)
+}
+
 # Insert
 conn.execute("INSERT INTO users (name) VALUES (?)", ["Alice"])
 conn.execute("INSERT INTO users (name) VALUES (?)", ["Bob"])

@@ -514,6 +514,15 @@ fn register_database_module(
     natives.push(HostEntry::Extended(natives::native_cluster_add));
     natives.push(HostEntry::Extended(natives::native_cluster_get));
     natives.push(HostEntry::Extended(natives::native_cluster_names));
+    natives.push(HostEntry::Extended(natives::native_engine_schemas));
+    natives.push(HostEntry::Extended(natives::native_engine_tables));
+    natives.push(HostEntry::Extended(natives::native_engine_views));
+    natives.push(HostEntry::Extended(natives::native_engine_columns));
+    natives.push(HostEntry::Extended(natives::native_engine_indexes));
+    natives.push(HostEntry::Extended(natives::native_engine_primary_key));
+    natives.push(HostEntry::Extended(natives::native_engine_foreign_keys));
+    natives.push(HostEntry::Extended(natives::native_engine_inspect));
+    natives.push(HostEntry::Extended(natives::native_engine_table));
 
     let sqenum_add_idx = natives.len();
     natives.push(HostEntry::Extended(sqenum::native_sqenum_add_member));

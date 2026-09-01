@@ -7,6 +7,7 @@ Folder: [`examples/en/13-database/`](../../../examples/en/13-database/)
 |---|------|-------|---------------|
 | 01 | `01-creat_database.dc` | SQLite in-memory, CREATE/INSERT/SELECT | [modules/database](../2-language/modules/database/README.md) |
 | 02 | `02-cluster-example.dc` | cluster / advanced scenario | [modules/database](../2-language/modules/database/README.md) |
+| 03 | `03-introspection.dc` | schemas / tables / columns / inspect | [modules/database](../2-language/modules/database/README.md) |
 
 ```bash
 datacode examples/en/13-database/01-creat_database.dc

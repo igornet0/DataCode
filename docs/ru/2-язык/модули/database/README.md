@@ -22,6 +22,40 @@ from database_engine import engine, DatabaseCluster, MetaData, Column, select
 
 Для SQLite ORM `create_all` и экспорт `--build_model` пишут `_datacode_schema` / `_datacode_version` рядом с пользовательскими таблицами. Строковые ячейки с ISO date/datetime и числами определяются автоматически; после `__sql__` metadata синхронизируется с PRAGMA.
 
+## Интроспекция
+
+Методы каталога одинаковы для всех SQL-бэкендов. SQLite, PostgreSQL, MySQL и MSSQL реализуют их через свои системные каталоги.
+
+- **schemas()** — схемы каталога (SQLite: `main` / `temp` / attached; PostgreSQL: пользовательские схемы; MySQL: базы; MSSQL: схемы)
+- **tables(schema?)** — пользовательские таблицы как объекты `{ name, schema, type }`. Без `schema` берётся схема по умолчанию (`main`, `public`, текущая БД, `dbo`)
+- **views(schema?)** — представления в том же формате
+- **columns(table, schema?)** — `{ name, type, nullable, default, datacode_type? }`
+- **indexes(table, schema?)** — `{ name, columns, unique, primary }`
+- **primary_key(table, schema?)** — объект первичного ключа или `null`
+- **foreign_keys(table, schema?)** — `{ name, columns, referenced_table, referenced_schema, referenced_columns }`
+- **inspect()** — полное дерево: `inspect.schemas[].tables[]` / `views[]` с вложенными columns, indexes, primary_key, foreign_keys
+- **table(name, schema?)** — `SELECT *` в Datacode-таблицу `Table`
+
+Системные таблицы (`sqlite_*`, `_datacode_*`) в `tables()` не попадают.
+
+```datacode
+from database_engine import engine
+
+conn = engine("sqlite:///:memory:").connect()
+conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", [])
+
+for t in conn.tables() {
+    print(t.name)
+}
+
+for c in conn.columns("users") {
+    print(c.name, c["type"], c.nullable)
+}
+
+users = conn.table("users")
+info = conn.inspect()
+```
+
 ## DatabaseCluster
 
 Кластер хранит именованные подключения к БД: можно добавить несколько движков и обращаться к ним по имени.

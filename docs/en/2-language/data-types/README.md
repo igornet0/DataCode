@@ -46,6 +46,7 @@ Implementation details: the `Value` type in `src/common/value.rs`, indexing in `
 | UUID | `uuid` | [uuid.md](uuid.md) |
 | Table | `table` | [table.md](table.md) |
 | Column `t["col"]` | `column` | [table.md](table.md) |
+| Columns `t[["a","b"]]` | `columns` | [table.md](table.md) |
 | Dictionary / class instance | `object` (or plugin name) | [object.md](object.md) |
 | Function | `function` | [functions.md](functions.md) |
 | Plugin object | from plugin / `plugin_opaque` | [graphics-databases-plugins.md](graphics-databases-plugins.md) |

@@ -3,6 +3,7 @@
 use crate::common::value::{ObjectKind, Value};
 use crate::database_engine::cluster::DatabaseCluster;
 use crate::database_engine::engine::DatabaseEngine;
+use crate::database_engine::introspection;
 use crate::database_engine::sqenum;
 use crate::vm::globals;
 use crate::vm::natives::utils::{call_user_function, invoke_value_callable, resolve_global_by_name};
@@ -217,6 +218,185 @@ pub fn native_engine_query(args: &[Value]) -> Value {
             Value::Null
         }
     }
+}
+
+fn optional_schema_arg(args: &[Value], idx: usize) -> Option<String> {
+    args.get(idx).and_then(|v| match v {
+        Value::Null => None,
+        _ => get_string(v),
+    })
+}
+
+fn with_engine<F>(args: &[Value], method: &str, f: F) -> Value
+where
+    F: FnOnce(&mut DatabaseEngine) -> Result<Value, String>,
+{
+    let mut engine = match get_engine_mut(args) {
+        Some(e) => e,
+        None => {
+            crate::websocket::set_native_error(format!(
+                "engine.{}: first argument must be a database engine",
+                method
+            ));
+            return Value::Null;
+        }
+    };
+    match f(&mut engine) {
+        Ok(v) => v,
+        Err(e) => {
+            crate::websocket::set_native_error(format!("engine.{}: {}", method, e));
+            Value::Null
+        }
+    }
+}
+
+/// schemas() — catalog schemas / attached databases.
+pub fn native_engine_schemas(args: &[Value]) -> Value {
+    with_engine(args, "schemas", |e| {
+        Ok(introspection::schema_array(e.schemas()?))
+    })
+}
+
+/// tables(schema?) — user tables in the default or given schema.
+pub fn native_engine_tables(args: &[Value]) -> Value {
+    let schema = optional_schema_arg(args, 1);
+    with_engine(args, "tables", |e| {
+        Ok(introspection::table_array(e.tables(schema.as_deref())?))
+    })
+}
+
+/// views(schema?) — views in the default or given schema.
+pub fn native_engine_views(args: &[Value]) -> Value {
+    let schema = optional_schema_arg(args, 1);
+    with_engine(args, "views", |e| {
+        Ok(introspection::table_array(e.views(schema.as_deref())?))
+    })
+}
+
+/// columns(table, schema?) — column metadata for a relation.
+pub fn native_engine_columns(args: &[Value]) -> Value {
+    if args.len() < 2 {
+        crate::websocket::set_native_error(
+            "engine.columns requires (engine, table [, schema])".to_string(),
+        );
+        return Value::Null;
+    }
+    let table = match get_string(&args[1]) {
+        Some(s) => s,
+        None => {
+            crate::websocket::set_native_error("engine.columns: table must be a string".to_string());
+            return Value::Null;
+        }
+    };
+    let schema = optional_schema_arg(args, 2);
+    with_engine(args, "columns", |e| {
+        Ok(introspection::column_array(
+            e.columns(&table, schema.as_deref())?,
+        ))
+    })
+}
+
+/// indexes(table, schema?)
+pub fn native_engine_indexes(args: &[Value]) -> Value {
+    if args.len() < 2 {
+        crate::websocket::set_native_error(
+            "engine.indexes requires (engine, table [, schema])".to_string(),
+        );
+        return Value::Null;
+    }
+    let table = match get_string(&args[1]) {
+        Some(s) => s,
+        None => {
+            crate::websocket::set_native_error("engine.indexes: table must be a string".to_string());
+            return Value::Null;
+        }
+    };
+    let schema = optional_schema_arg(args, 2);
+    with_engine(args, "indexes", |e| {
+        Ok(introspection::index_array(
+            e.indexes(&table, schema.as_deref())?,
+        ))
+    })
+}
+
+/// primary_key(table, schema?)
+pub fn native_engine_primary_key(args: &[Value]) -> Value {
+    if args.len() < 2 {
+        crate::websocket::set_native_error(
+            "engine.primary_key requires (engine, table [, schema])".to_string(),
+        );
+        return Value::Null;
+    }
+    let table = match get_string(&args[1]) {
+        Some(s) => s,
+        None => {
+            crate::websocket::set_native_error(
+                "engine.primary_key: table must be a string".to_string(),
+            );
+            return Value::Null;
+        }
+    };
+    let schema = optional_schema_arg(args, 2);
+    with_engine(args, "primary_key", |e| {
+        Ok(introspection::optional_index(
+            e.primary_key(&table, schema.as_deref())?,
+        ))
+    })
+}
+
+/// foreign_keys(table, schema?)
+pub fn native_engine_foreign_keys(args: &[Value]) -> Value {
+    if args.len() < 2 {
+        crate::websocket::set_native_error(
+            "engine.foreign_keys requires (engine, table [, schema])".to_string(),
+        );
+        return Value::Null;
+    }
+    let table = match get_string(&args[1]) {
+        Some(s) => s,
+        None => {
+            crate::websocket::set_native_error(
+                "engine.foreign_keys: table must be a string".to_string(),
+            );
+            return Value::Null;
+        }
+    };
+    let schema = optional_schema_arg(args, 2);
+    with_engine(args, "foreign_keys", |e| {
+        Ok(introspection::foreign_key_array(
+            e.foreign_keys(&table, schema.as_deref())?,
+        ))
+    })
+}
+
+/// inspect() — full catalog tree.
+pub fn native_engine_inspect(args: &[Value]) -> Value {
+    with_engine(args, "inspect", |e| {
+        Ok(introspection::inspect_object(e.inspect()?))
+    })
+}
+
+/// table(name, schema?) — SELECT * FROM relation, return Datacode Table.
+pub fn native_engine_table(args: &[Value]) -> Value {
+    if args.len() < 2 {
+        crate::websocket::set_native_error(
+            "engine.table requires (engine, name [, schema])".to_string(),
+        );
+        return Value::Null;
+    }
+    let name = match get_string(&args[1]) {
+        Some(s) => s,
+        None => {
+            crate::websocket::set_native_error("engine.table: name must be a string".to_string());
+            return Value::Null;
+        }
+    };
+    let schema = optional_schema_arg(args, 2);
+    with_engine(args, "table", |e| {
+        Ok(Value::Table(Rc::new(RefCell::new(
+            e.table(&name, schema.as_deref())?,
+        ))))
+    })
 }
 
 /// MetaData(schema?, quote_schema?, naming_convention?, info?) - creates metadata object for ORM

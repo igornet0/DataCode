@@ -55,6 +55,7 @@ pub fn is_mutable_value(v: &Value) -> bool {
         | Value::ModuleFunction { .. }
         | Value::NativeFunction(_)
         | Value::ColumnReference { .. }
+        | Value::ColumnsReference { .. }
         | Value::PluginOpaque { .. }
         | Value::Window(_)
         | Value::Image(_)

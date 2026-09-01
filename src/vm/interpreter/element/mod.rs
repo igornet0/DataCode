@@ -1747,6 +1747,38 @@ pub(crate) fn op_get_array_element(
                 index_value,
             );
         }
+        Value::ColumnsReference { .. } => {
+            if let Value::String(prop) = &index_value {
+                if prop == "map" {
+                    stack::push_id(
+                        stack,
+                        store_value(
+                            Value::NativeFunction(crate::vm::native_indices::builtin::COLUMNS_MAP),
+                            value_store,
+                            heavy_store,
+                        ),
+                    );
+                    return Ok(VMStatus::Continue);
+                }
+            }
+            let error = ExceptionHandler::runtime_error_with_type(
+                &frames,
+                "TypeError: columns reference does not support cell indexing; use .map(fn)".to_string(),
+                line,
+                crate::common::error::ErrorType::TypeError,
+            );
+            return match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
+                Ok(()) => Ok(VMStatus::Continue),
+                Err(e) => Err(e),
+            };
+        }
         Value::Path(path) => {
             return indexing::get_path(
                 line,

@@ -34,6 +34,7 @@ print(t["columns"])              # array of column names
 | Expression | Result |
 |------------|--------|
 | `t["column_name"]` | **Column** (lazy reference): then `col[i]` for a cell |
+| `t[["col1", "col2"]]` | **Columns** reference for row-wise `.map(fn)` (not a sub-table; use `.select([...])` to project) |
 | `t["rows"]` | Array of rows (each row — array or object of fields) |
 | `t["columns"]` | Array of strings — column names |
 | `t[0]`, `t[1]`, … | **Object** (dictionary) for one row: key = column name |
@@ -119,6 +120,20 @@ print(unique(ages))
 print(set(ages))
 
 ```
+
+---
+
+## Several columns (`columns`)
+
+Appears as the result of `t[["col1", "col2", ...]]` (at least two names). Used to build a per-row formula from several fields.
+
+`typeof(cols)` → `"columns"`.
+
+```dc
+orders!["avg_check"] = orders[["total", "quantity"]].map(fn(v, q) => v / q)
+```
+
+Indexing cells of a columns reference (`cols[0]`) is not supported; use `.map(fn)` or `map(cols, fn)`.
 
 ---
 

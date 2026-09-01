@@ -82,6 +82,9 @@ pub fn native_len(args: &[Value]) -> Value {
                         .unwrap_or(Value::Null)
                 })
             }
+            Value::ColumnsReference { table, .. } => {
+                Value::Number(table.borrow().len() as f64)
+            }
             Value::PluginOpaque { .. } => {
                 crate::vm::interpreter::object::plugin_opaque_len_via_plugin_call(arg)
                     .unwrap_or(Value::Null)
@@ -162,6 +165,27 @@ pub fn native_enum(args: &[Value]) -> Value {
                 source: Rc::new(RefCell::new(IterableInner::TableColumn {
                     table: Rc::clone(table),
                     column_name: column_name.clone(),
+                    index: 0,
+                })),
+                start: 0,
+                next_index: 0,
+            })))
+        }
+        Value::ColumnsReference {
+            table,
+            column_names,
+        } => {
+            let t = table.borrow();
+            for name in column_names {
+                if !t.has_column(name) {
+                    return Value::Null;
+                }
+            }
+            drop(t);
+            Value::Iterable(Rc::new(RefCell::new(IterableInner::EnumerateIter {
+                source: Rc::new(RefCell::new(IterableInner::TableColumns {
+                    table: Rc::clone(table),
+                    column_names: column_names.clone(),
                     index: 0,
                 })),
                 start: 0,
@@ -668,6 +692,7 @@ pub fn native_typeof(args: &[Value]) -> Value {
         Value::Object(_) => crate::vm::type_compat::primitive_display_value_type(&args[0]),
         Value::Set(_) => "set",
         Value::ColumnReference { .. } => "column",
+        Value::ColumnsReference { .. } => "columns",
         Value::Null => "null",
         Value::Function(_) | Value::ModuleFunction { .. } => "function",
         Value::NativeFunction(_) => "function",
@@ -851,6 +876,7 @@ fn native_isinstance_impl(args: &[Value]) -> Value {
         }
         Value::Set(_) => type_name_lower == "set",
         Value::ColumnReference { .. } => type_name_lower == "column",
+        Value::ColumnsReference { .. } => type_name_lower == "columns",
         Value::Null => type_name_lower == "null" || type_name_lower == "none",
         Value::Function(_) | Value::ModuleFunction { .. } | Value::NativeFunction(_) => {
             type_name_lower == "function"

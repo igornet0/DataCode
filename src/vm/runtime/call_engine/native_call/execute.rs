@@ -232,6 +232,15 @@ pub(crate) fn execute_native_call(
     let is_db_execute = native_ptr == Some(db_natives::native_engine_execute as *const ());
     let is_db_query = native_ptr == Some(db_natives::native_engine_query as *const ());
     let is_db_run = native_ptr == Some(db_natives::native_engine_run as *const ());
+    let is_db_schemas = native_ptr == Some(db_natives::native_engine_schemas as *const ());
+    let is_db_tables = native_ptr == Some(db_natives::native_engine_tables as *const ());
+    let is_db_views = native_ptr == Some(db_natives::native_engine_views as *const ());
+    let is_db_columns = native_ptr == Some(db_natives::native_engine_columns as *const ());
+    let is_db_indexes = native_ptr == Some(db_natives::native_engine_indexes as *const ());
+    let is_db_primary_key = native_ptr == Some(db_natives::native_engine_primary_key as *const ());
+    let is_db_foreign_keys = native_ptr == Some(db_natives::native_engine_foreign_keys as *const ());
+    let is_db_inspect = native_ptr == Some(db_natives::native_engine_inspect as *const ());
+    let is_db_table = native_ptr == Some(db_natives::native_engine_table as *const ());
     let is_db_cluster_add = native_ptr == Some(db_natives::native_cluster_add as *const ());
     let is_db_cluster_get = native_ptr == Some(db_natives::native_cluster_get as *const ());
     let is_db_cluster_names = native_ptr == Some(db_natives::native_cluster_names as *const ());
@@ -240,6 +249,15 @@ pub(crate) fn execute_native_call(
         || is_db_execute
         || is_db_query
         || is_db_run
+        || is_db_schemas
+        || is_db_tables
+        || is_db_views
+        || is_db_columns
+        || is_db_indexes
+        || is_db_primary_key
+        || is_db_foreign_keys
+        || is_db_inspect
+        || is_db_table
         || is_db_cluster_add
         || is_db_cluster_get
         || is_db_cluster_names;

@@ -29,6 +29,40 @@ impl HostFunction for MapHostFunction {
         unsafe {
             let vm = &mut *vm_ptr;
             let (slot, arity) = value_to_callable_slot(f, vm)?;
+            if let Value::ColumnsReference {
+                table,
+                column_names,
+            } = coll
+            {
+                let n = column_names.len();
+                if arity as usize != n {
+                    return Err(runtime(
+                        0,
+                        format!(
+                            "map callback must have {} parameters (one per column), got arity {}",
+                            n, arity
+                        ),
+                    ));
+                }
+                {
+                    let t = table.borrow();
+                    for name in column_names {
+                        if !t.has_column(name) {
+                            return Err(runtime(
+                                0,
+                                format!("KeyError: column '{}' not found in table", name),
+                            ));
+                        }
+                    }
+                }
+                let wrapped = IterableInner::ColumnsMap {
+                    table: Rc::clone(table),
+                    column_names: column_names.clone(),
+                    func: slot,
+                    index: 0,
+                };
+                return Ok(Value::Iterable(Rc::new(RefCell::new(wrapped))));
+            }
             if arity != 1 && arity != 2 {
                 return Err(runtime(
                     0,

@@ -84,13 +84,6 @@ fn build_math_native_cdylib() -> Result<(), String> {
     Ok(())
 }
 
-fn datacode_sdk_submodule_present() -> bool {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("datacode_sdk")
-        .join("Cargo.toml")
-        .is_file()
-}
-
 fn skip_without_datacode_sdk() -> bool {
     if datacode_sdk_submodule_present() {
         return false;
@@ -100,6 +93,7 @@ fn skip_without_datacode_sdk() -> bool {
 }
 
 #[test]
+#[ignore = "datacode_sdk submodule is not present in the main branch layout"]
 fn try_load_native_module_direct_smoke() {
     if skip_without_datacode_sdk() {
         return;

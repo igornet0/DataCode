@@ -115,6 +115,7 @@ fn vm_smoke_without_ml_native() {
 }
 
 #[test]
+#[ignore = "datacode_sdk submodule is not present in the main branch layout"]
 fn native_ml_module_plugin_opaque_smoke() {
     if skip_without_datacode_sdk() {
         return;

@@ -1,0 +1,13 @@
+for i, x in enum([10, 20, 30]) {
+    print(i, x);
+}
+print("---");
+for i, s in enum(["a", "b", "c"]) {
+    print(i, s);
+}
+print("---");
+for i, s in enum("abc") {
+    print(i, s);
+}
+print("---");
+print(len(enum([1, 2, 3])));

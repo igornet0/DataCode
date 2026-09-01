@@ -1,0 +1,19 @@
+database = {
+    type = "sqlite"
+    driver = "sqlite3"
+
+    host = "localhost"
+    port = 0
+    name = "mydb.sqlite"
+
+    user = ""
+    password = ""
+
+    pool = {
+        enabled = true
+        size = 5
+        max_overflow = 10
+    }
+
+    async = false
+}

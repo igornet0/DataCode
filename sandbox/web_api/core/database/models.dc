@@ -1,0 +1,25 @@
+from core.database.base import Base, Column
+
+cls User(Base) {
+
+    id: Column[int] = Column(int, primary_key=true, autoincrement=true)
+    login: Column[str] = Column(str[50], unique=true)
+    name: Column[str] = Column(str[50])
+    password: Column[str] = Column(str[100])
+    email: Column[str] = Column(str[50], unique=true)
+
+    balance: Column[float] = Column(float, default=0)
+
+    role: Column[str] = Column(str[50], default="user")
+
+    is_active: Column[bool] = Column(bool, default=true)
+    is_superuser: Column[bool] = Column(bool, default=false)
+
+    is_verified: Column[bool] = Column(bool, default=false)
+
+    is_2fa_enabled: Column[bool] = Column(bool, default=false)
+    is_2fa_verified: Column[bool] = Column(bool, default=false)
+    
+    avatar: Column[(str | null)] = Column(str[255], nullable=true, default=null)
+}
+

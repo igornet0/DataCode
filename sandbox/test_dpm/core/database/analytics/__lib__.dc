@@ -1,0 +1,6 @@
+# Connection: analytics
+# Use: from core.database.analytics import get_connection
+
+from core.database.analytics.config import database
+from core.database.analytics.engine import create_engine
+from core.database.analytics.connection import get_connection

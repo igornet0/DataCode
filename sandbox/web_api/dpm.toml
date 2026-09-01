@@ -1,0 +1,21 @@
+[project]
+name = "web_api"
+version = "0.1.0"
+authors = ["igornet0"]
+datacode = ">=2.0.0"
+
+[environment]
+python = false
+wasm = false
+target = "native"
+profile = "release"
+
+[dependencies]
+
+[migrations]
+folder = "core/migrations"    # папка с миграциями (по умолчанию dpmm)
+table = "dc_migrations"  # таблица для отслеживания применённых миграций (по умолчанию dpm_table)
+
+[lock]
+file = "dpm.lock"
+checksum = true

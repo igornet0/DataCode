@@ -1,0 +1,25 @@
+# Example DataCode HTTP app with @route handlers
+# Run: datacode-server app.dc   or  datacode --http app.dc
+
+@route("GET", "/")
+fn index(req) {
+    # req has: method, path, headers, query, body
+    return "Hello"
+}
+
+@route("GET", "/health")
+fn health(req) {
+    return {"status": 200, "body": "OK"}
+}
+
+@route("GET", "/api/hello")
+fn api_hello(req) {
+    return {"status": 200, "body": "Hello API"}
+}
+
+@route("GET", "/users/{id}")
+fn get_user(req) {
+    # req.params has path params, req.query has query string
+    id = req.params.id
+    return {"status": 200, "body": "User " + id}
+}

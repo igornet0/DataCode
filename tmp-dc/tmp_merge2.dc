@@ -1,0 +1,30 @@
+import heapq
+cls PriorityQueue {
+    private:
+        heap: list[tuple]
+    new PriorityQueue() { this.heap = [] }
+    public:
+    fn push(priority, item) { heapq.heappush(this.heap, (priority, item)) }
+    fn pop_with_priority() { return heapq.heappop(this.heap) }
+    fn is_empty() -> bool { return len(this.heap) == 0 }
+}
+lists = [[1, 4, 7], [2, 5, 8], [3, 6, 9]]
+pq = PriorityQueue()
+for i in range(len(lists)) {
+    pq.push(lists[i][0], (i, 0))
+}
+result = []
+while !pq.is_empty() {
+    item = pq.pop_with_priority()
+    print("item=", item, "type item[1]=", typeof(item[1]))
+    val = item[1]
+    list_idx, elem_idx = val[0], val[1]
+    got = lists[list_idx][elem_idx]
+    print("  idx=", list_idx, elem_idx, "got=", got)
+    result.push(got)
+    next_idx = elem_idx + 1
+    if next_idx < len(lists[list_idx]) {
+        pq.push(lists[list_idx][next_idx], (list_idx, next_idx))
+    }
+}
+print("result=", result)

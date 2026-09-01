@@ -1,0 +1,24 @@
+from core.config import get_settings, load_settings
+from core.database import create_engine
+
+fn main(env) {
+
+    load_settings(env)
+
+    settings = get_settings()
+
+    print(settings.env)
+    print(settings.debug)
+    print(settings.db.url)
+    print("-"*10)
+    print(settings.secret.get_code())
+
+    db = create_engine()
+    print(db)
+
+}
+
+fn __main__(env: "dev" | "prod" = "dev") {
+    print("env - ${env}")
+    main(env)
+}

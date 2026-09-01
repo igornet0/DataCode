@@ -1,0 +1,6 @@
+global h = duration(hours=1)
+global t = now()
+print(typeof(h))
+print(t + h)
+print((t + h) - t)
+print(date("2024-01-02") - date("2024-01-01"))

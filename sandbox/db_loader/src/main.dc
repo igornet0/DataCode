@@ -1,0 +1,71 @@
+from database_engine import engine, Column, MetaData, now_call, select
+
+# SQLite (файловая БД)
+sqlite_url = "sqlite:///mydb.sqlite"
+sqlite_engine = engine(sqlite_url, echo=true, echo_pool=false, pool_size=5, max_overflow=10)
+
+naming_convention = {
+        "ix": "ix_%(column_0_label)s",
+        "uq": "uq_%(table_name)s_%(column_0_N_name)s",
+        "ck": "ck_%(table_name)s_%(constraint_name)s",
+        "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+        "pk": "pk_%(table_name)s",
+    }
+
+@Abstract
+cls Base(Table) {
+
+    created: Column[date] = Column(date, default=now_call)
+    updated: Column[date] = Column(date, default=now_call, onupdate=now_call)
+
+public:
+    metadata = MetaData(
+        naming_convention=naming_convention,
+    )
+
+    fn __tablename__(@class) -> str:
+        return f"{camel_case_to_snake_case(@class.name)}s"
+
+}
+
+class User(Base):
+
+    id: Column[int] = Column(primary_key=true, autoincrement=true)
+    login: Column[str] = Column(str[50], unique=true)
+    name: Column[str] = Column(str[50])
+    password: Column[str] = Column(str[100])
+    email: Column[str] = Column(str[50], unique=true)
+
+    balance: Column[float] = Column(float, default=0)
+
+    role: Column[str] = Column(str[50], default="user")
+
+    is_active: Column[bool] = Column(bool, default=true)
+    is_superuser: Column[bool] = Column(bool, default=false)
+
+    is_verified: Column[bool] = Column(bool, default=false)
+
+    is_2fa_enabled: Column[bool] = Column(bool, default=false)
+    is_2fa_verified: Column[bool] = Column(bool, default=false)
+    
+    avatar: Column[str | null] = Column(str[255], nullable=true, default=null)
+
+# Connect (for SQLite, returns same engine)
+conn = db.connect()
+print("Connected:", conn)
+
+# Create table
+conn.run(Base.metadata.create_all)
+print("Table created")
+
+# Insert
+conn.run(User(name="Alice", login="login1", email="email1", password="password_hash1"))
+conn.run(User(name="Bob", login="login2", email="email2", password="password_hash2"))
+print("Inserted rows")
+
+# Query
+t = conn.run(select(User)) # t = conn.query("SELECT * FROM users", [])
+print("Query result:", t)
+print("Rows:", t.rows)
+
+#conn.run_sync(Base.metadata.create_all)

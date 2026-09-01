@@ -1,0 +1,10 @@
+fn __main__() {
+    dist = [0, 0, 0, 0]
+    u = 3
+    pu = 0
+    a = dist[u] + 1
+    bad = dist[pu] == dist[u] + 1
+    good = dist[pu] == a
+    print(bad)
+    print(good)
+}

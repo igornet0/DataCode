@@ -1,0 +1,48 @@
+# ===== Категории =====
+# Interactive data source — auto-generated
+
+# Schema: id (number (nullable)), name (string (nullable)), type (string (nullable))
+
+global categories = table([], ["id", "name", "type", "amount"])
+print("categories: ", table_info(categories))
+
+
+# ===== Транзакции =====
+# Interactive data source — auto-generated
+
+# Schema: id (number), date (date), amount (number), category_id (number), description (string)
+
+global transactions = table([], ["id", "date", "amount", "category_id", "description"])
+print("transactions: ", table_info(transactions))
+
+# ===== Связь транзакций с категориями =====
+# Relationship: Связь транзакций с категориями
+# 1:N — relate(PK, FK…) first arg is primary key, rest are foreign keys on it
+primary_key(categories["id"])
+relate(categories["id"], transactions["category_id"])
+
+
+# ===== Фильтр транзакций =====
+# Filter: Фильтр транзакций
+# Input table: transactions
+transactions = transactions["amount" >= 0]
+print("transactions: ", table_info(transactions))
+
+# ===== Агрегация по категориям =====
+# Aggregate: Агрегация по категориям
+# Input table: transactions
+global transactions_category = transactions.aggregate_group({
+  group: "category_id",
+  amount_sum: { op: "sum", column: "amount" }
+})
+print("transactions_category: ", table_info(transactions_category))
+
+# ===== Баланс =====
+# Formula: Баланс
+# Input table: transactions_category
+# variables: global sum_amount_sum
+# --- global variables (SQLite export) ---
+global sum_amount_sum = sum(transactions_category["amount_sum"])
+
+sum_amount_sum = 10000
+print("sum_amount_sum: ", sum_amount_sum)

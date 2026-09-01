@@ -1,0 +1,18 @@
+import heapq
+cls PQ {
+    heap: list[tuple]
+    new PQ() { this.heap = [] }
+    fn push(p, item) { heapq.heappush(this.heap, (p, item)) }
+}
+pq = PQ()
+pq.push(1, "x")
+pq.push(2, "y")
+print("len=", len(pq.heap))
+print("direct pop=", heapq.heappop(pq.heap))
+print("len2=", len(pq.heap))
+
+pq2 = PQ()
+pq2.push(5, "low")
+pq2.push(1, "critical")
+entry = heapq.heappop(pq2.heap)
+print("entry=", entry, "entry[1]=", entry[1])

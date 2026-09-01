@@ -1,0 +1,4 @@
+"""
+Simple test
+"""
+print("Hello")

@@ -1,0 +1,10 @@
+cls ClassTEst {
+
+    fn test_name_class(@class) {
+        return @class.name
+    }
+}
+
+c = ClassTEst()
+
+print(c.test_name_class())

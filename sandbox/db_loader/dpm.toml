@@ -1,0 +1,12 @@
+[project]
+name = "db_loader"
+version = "0.1.0"
+datacode = ">=2.0.0"
+
+[dependencies]
+
+[dpm_database]
+
+
+[lock]
+file = "dpm.lock"

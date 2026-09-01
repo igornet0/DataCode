@@ -1,0 +1,33 @@
+
+tb = read("./line_data.csv")
+
+print(sum(tb["value"]))
+print(average(tb["value"]))
+print(sum(tb["value"]) / average(tb["value"]))
+
+print(len(tb))
+print("-"*10)
+
+print(max(tb["timestamp"]))
+print(min(tb["timestamp"]))
+print("-"*10)
+
+
+print(table_info(tb))
+
+try {
+    for i, data in enum(tb) {
+        print(data)
+    }
+} catch e {
+    print("Cath ${e}")
+}
+
+try {
+    for data in tb {
+        print(data)
+    }
+} catch e {
+    print("Cath ${e}")
+}
+

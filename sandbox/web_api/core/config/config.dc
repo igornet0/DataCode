@@ -1,0 +1,31 @@
+from settings_env import Settings, Config, Field
+
+cls Security(Settings) {
+
+    model_config = Config(env_prefix="SECURITY__", extra="ignore")
+
+    private:
+        code: str = Field(...)
+
+    public:
+        fn get_code() {
+            return this.code
+        }
+}
+
+cls DatabaseConfig(Settings) {
+    model_config = Config(env_prefix="DB__", extra="ignore")
+
+    url: str = Field(...)
+    type: str = Field(default="sqlite")
+}
+
+cls ConfigApp(Settings) {
+
+    env: str = Field(...)
+    debug: bool = Field(default=true)
+    
+    secret: Security = Field(default_factory=Security)
+    db: DatabaseConfig = Field(default_factory=DatabaseConfig)
+}
+

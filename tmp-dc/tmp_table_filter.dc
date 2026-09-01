@@ -1,0 +1,5 @@
+let data = [[1, "Alice", 28], [2, "Bob", 35], [3, "Charlie", 42]]
+let headers = ["id", "name", "age"]
+let my_table = table(data, headers)
+let filtered = my_table["age" > 30]
+len(filtered["age"])

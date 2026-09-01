@@ -1,0 +1,38 @@
+import heapq
+INF = float(inf)
+fn build_weighted_graph() {
+    n = 5
+    edges = [(0, 1, 4.0), (0, 2, 1.0), (1, 3, 1.0), (2, 1, 2.0), (2, 3, 5.0), (3, 4, 3.0)]
+    graph = {}
+    for i in range(n) { graph[i] = [] }
+    for e in edges { graph[e[0]].push((e[1], e[2])) }
+    return (n, graph)
+}
+fn dijkstra(graph: dict[int, list[tuple[int, float]]], n: int, source: int) -> tuple[dict[int, float], dict[int, int]] {
+    dist = {}
+    parent = {}
+    for i in range(n) { dist[i] = INF; parent[i] = null }
+    dist[source] = 0.0
+    heap = [(0.0, source)]
+    iter = 0
+    while len(heap) > 0 {
+        iter += 1
+        d, u = heapq.heappop(heap)
+        if d > dist[u]: continue
+        for edge in graph.get(u, []) {
+            v, w = edge[0], edge[1]
+            nd = d + w
+            if nd < dist[v] {
+                dist[v] = nd
+                parent[v] = u
+                heapq.heappush(heap, (nd, v))
+            }
+        }
+        if iter > 10 { break }
+    }
+    return (dist, parent)
+}
+fn __main__() {
+n, graph = build_weighted_graph()
+print(dijkstra(graph, n, 0))
+}

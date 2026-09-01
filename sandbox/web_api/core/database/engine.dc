@@ -1,0 +1,15 @@
+# Import module DataCode
+from database_engine import engine
+
+# Import local models
+from core.config import get_settings
+from core.database.models import Base
+
+fn create_engine() {
+
+    s = get_settings()
+    print("create_engine - ${s.db.url=}")
+    db = engine(s.db.url, echo=true, echo_pool=false, pool_size=5, max_overflow=10)
+    db.run(Base.metadata.create_all)
+    return db 
+}

@@ -1,0 +1,27 @@
+fn test_union(t: "dev" | "prod" = "dev") {
+    print(t)
+}
+
+fn test_union1(t: ("dev" | "prod") = "dev") {
+    print(t)
+}
+
+fn test_union2(t: ["dev", "prod"] = "dev") {
+    print(t)
+}
+
+test_union("dev")
+
+test_union1("dev")
+
+test_union2("dev")
+
+try {
+    test_union2("lrlrl")
+} catch e {
+    print(e)
+}
+
+#fn __main__(count: int = 3) {
+#    print("Count is:", count)
+#}

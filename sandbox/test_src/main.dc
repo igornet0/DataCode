@@ -1,0 +1,7 @@
+
+fn __main__(count: int = 5) {
+    bot = create_bot(env("BOT_TOKEN"))
+    on_command("/start", fn() { send_message("Hello!") })
+    run_polling(bot)
+
+}

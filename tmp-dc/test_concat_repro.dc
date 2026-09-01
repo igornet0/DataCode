@@ -1,0 +1,8 @@
+fn f() { return [0, 1, 2] }
+labels = [1, 2, 3]
+titles = []
+for i in range(3) {
+    title = "y: " + str(labels[i]) + " pred: " + str(f()[0])
+    push(titles, title)
+}
+print(titles)

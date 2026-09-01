@@ -1,0 +1,7 @@
+
+fn __main__() {
+    data = Data(0, "Test", 100)
+    print(data.getBalance())
+    data.deposit(10)
+    print(data.getBalance())
+}

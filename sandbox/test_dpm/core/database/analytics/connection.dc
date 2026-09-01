@@ -1,0 +1,5 @@
+from core.database.analytics.engine import create_engine
+
+fn get_connection() {
+    return create_engine()
+}

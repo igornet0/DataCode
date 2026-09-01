@@ -1,0 +1,13 @@
+global x = 1
+let y = 2
+fn outer() {
+    x = 10
+    y = 20
+    fn inner() {
+        x = 100
+        y = 200
+        return x + y
+    }
+    return inner() + x + y
+}
+print(outer() + x + y)

@@ -1,0 +1,12 @@
+
+cls SettingsBot {
+    name: str
+    token: str
+}
+
+cls Settings {
+public:
+    bot: SettingsBot 
+
+    
+}

@@ -1,0 +1,15 @@
+fn factorial(n) {
+    """
+    Calculate factorial of n
+    Examples:
+        >>> factorial(5)
+        120
+    """
+    if n <= 1 {
+        return 1
+    }
+    return n * factorial(n - 1)
+}
+
+let fact5 = factorial(5)
+print("Factorial of 5:", fact5)

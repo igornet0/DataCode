@@ -1,2 +1,0 @@
-fn test_union(t: "dev" | "prod" = "dev") { print(t) }
-test_union("other")

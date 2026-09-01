@@ -1,6 +1,0 @@
-graph = {}
-for i in range(3) { graph[i] = [] }
-graph[0].push(99)
-print("g0=", graph[0])
-print("g1=", graph[1])
-print("g2=", graph[2])

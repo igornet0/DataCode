@@ -1,3 +1,0 @@
-s = [1,2,4,5]
-
-for x in s: print("${x in s},${x not in s}")

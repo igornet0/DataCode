@@ -1,6 +1,0 @@
-import heapq
-h = []
-heapq.heappush(h, (0.0, 0))
-heapq.heappush(h, (1.0, 1))
-d, u = heapq.heappop(h)
-print("d=", d, "u=", u, typeof(u))

@@ -1,9 +1,0 @@
-from core.database.adapters.base import BaseAdapter
-from core.database.adapters.sqlite import SqliteAdapter
-
-fn get_adapter(db_type, driver) {
-    if db_type == "sqlite" {
-        return SqliteAdapter()
-    }
-    raise NotImplementedError()
-}

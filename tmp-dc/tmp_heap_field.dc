@@ -1,5 +1,0 @@
-import heapq
-cls PQ { heap: list[tuple], new PQ() { this.heap = [] } }
-pq = PQ()
-heapq.heappush(pq.heap, (1, "x"))
-print(heapq.heappop(pq.heap))

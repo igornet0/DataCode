@@ -1,9 +1,0 @@
-keys = [1, 2, 3, 4, 5]
-left = keys[:2]
-right = keys[2:]
-keys = keys[:2]
-print("keys after assign=", keys, "len=", len(keys))
-keys.push(99)
-print("keys after push=", keys, "len=", len(keys))
-print("left=", left, "len left=", len(left))
-print("right=", right, "len right=", len(right))

@@ -1,8 +1,0 @@
-from core.database.adapters.base import BaseAdapter
-
-cls MongodbAdapter(BaseAdapter) {
-    fn connect(config) {
-        # mongodb connection logic
-        raise NotImplementedError()
-    }
-}

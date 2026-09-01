@@ -13,13 +13,17 @@ root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
 if git config -f .gitmodules --get submodule.datacode_abi.url >/dev/null 2>&1; then
-    echo "init-submodules: main layout — datacode_abi (direct)"
-    git submodule update --init datacode_abi
+    abi_path="$(git config -f .gitmodules --get submodule.datacode_abi.path)"
+    echo "init-submodules: main layout — datacode_abi at ${abi_path}"
+    git submodule sync -- "${abi_path}"
+    git submodule update --init -- "${abi_path}"
 else
     echo "init-submodules: dev layout — datacode_sdk (recursive, includes datacode_abi)"
     git submodule update --init --recursive datacode_sdk
 fi
 
 if git config -f .gitmodules --get submodule.datacode_registry_index.url >/dev/null 2>&1; then
-    git submodule update --init datacode_registry_index
+    registry_path="$(git config -f .gitmodules --get submodule.datacode_registry_index.path)"
+    git submodule sync -- "${registry_path}"
+    git submodule update --init -- "${registry_path}"
 fi

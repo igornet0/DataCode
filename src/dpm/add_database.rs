@@ -12,7 +12,7 @@ use super::init_database::get_adapter_template;
 
 macro_rules! embed_tpl {
     ($path:literal) => {
-        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), $path))
+        include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/crates", $path))
     };
 }
 

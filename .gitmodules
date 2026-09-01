@@ -1,8 +1,8 @@
-[submodule "datacode_sdk"]
-	path = datacode_sdk
-	url = https://github.com/igornet0/Datacode-sdk.git
-	branch = main
 [submodule "datacode_registry_index"]
 	path = datacode_registry_index
 	url = https://github.com/igornet0/Datacode-registry-index
+	branch = main
+[submodule "datacode_abi"]
+	path = crates/datacode_abi
+	url = https://github.com/igornet0/Datacode-abi.git
 	branch = main

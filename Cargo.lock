@@ -1576,15 +1576,6 @@ name = "datacode_abi"
 version = "1.9.0"
 
 [[package]]
-name = "datacode_sdk"
-version = "1.1.4"
-dependencies = [
- "datacode_abi",
- "libc",
- "paste",
-]
-
-[[package]]
 name = "debug_unsafe"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4080,12 +4071,6 @@ dependencies = [
  "rand_core 0.6.4",
  "subtle",
 ]
-
-[[package]]
-name = "paste"
-version = "1.0.15"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
 name = "pbkdf2"

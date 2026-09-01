@@ -1,0 +1,50 @@
+from database_engine import engine
+
+db = engine("sqlite:///:memory:", false, false, 5, 10)
+conn = db.connect()
+
+conn.execute("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT)", [])
+conn.execute("CREATE TABLE IF NOT EXISTS orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, FOREIGN KEY (user_id) REFERENCES users(id))", [])
+conn.execute("INSERT INTO users (name) VALUES (?)", ["Alice"])
+conn.execute("INSERT INTO users (name) VALUES (?)", ["Bob"])
+conn.execute("CREATE VIEW user_names AS SELECT name FROM users", [])
+
+print("schemas:")
+for s in conn.schemas() {
+    print(" ", s.name)
+}
+
+print("tables:")
+for t in conn.tables() {
+    print(" ", t.schema + "." + t.name, t["type"])
+}
+
+print("views:")
+for v in conn.views() {
+    print(" ", v.name)
+}
+
+print("columns(users):")
+for c in conn.columns("users") {
+    print(" ", c.name, c["type"], "nullable=" + str(c.nullable))
+}
+
+print("primary_key(users):", conn.primary_key("users"))
+print("indexes(users):", conn.indexes("users"))
+print("foreign_keys(orders):", conn.foreign_keys("orders"))
+
+info = conn.inspect()
+print("inspect schemas:", len(info.schemas))
+for schema in info.schemas {
+    print("schema", schema.name)
+    for table in schema.tables {
+        print("  table", table.name)
+        for col in table.columns {
+            print("    ", col.name, col["type"])
+        }
+    }
+}
+
+users = conn.table("users")
+print("users rows:", users.rows)
+show_table(users)

@@ -7,6 +7,7 @@
 |---|------|------|--------------|
 | 01 | `01-создание-базы-данных.dc` | SQLite in-memory, CREATE/INSERT/SELECT | [модули/database](../2-язык/модули/database/README.md) |
 | 02 | `02-кластер-пример.dc` | кластер / расширенный сценарий | [модули/database](../2-язык/модули/database/README.md) |
+| 03 | `03-интроспекция.dc` | schemas / tables / columns / inspect | [модули/database](../2-язык/модули/database/README.md) |
 
 ```bash
 datacode examples/ru/13-database/01-создание-базы-данных.dc

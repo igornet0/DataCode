@@ -242,6 +242,33 @@ doubled = data["Age"].map(fn(x) => x * 2)
 
 ---
 
+### Multi-column `.map(function)` — formula from several columns
+
+`table[["col1", "col2", ...]]` is a **columns reference** (`typeof` → `"columns"`), not a sub-table. Use `.select(["col1", "col2"])` when you need a projected table.
+
+`.map(fn)` zips the named columns row-wise and calls `fn` with one argument per column. Arity of `fn` must match the number of columns. Returns a materialized **`array`**.
+
+**Receiver:** `table[["col1", "col2", ...]]` (at least two column names)
+
+**Arguments:**
+- `function` (callable) — `fn(v1, v2, ...) => ...` with arity equal to the number of columns
+
+**Returns:** `array`
+
+**Examples:**
+```datacode
+orders!["avg_check"] = orders[["total", "quantity"]].map(fn(v, q) => v / q)
+
+# lazy iterable (same zip semantics)
+checks = array(map(orders[["total", "quantity"]], fn(v, q) => v / q))
+```
+
+**Errors:**
+- `TypeError` — fewer than two names (`table[["col"]]`), non-string names, or callback arity mismatch
+- `KeyError` — a named column does not exist
+
+---
+
 ### Column assignment with `!` — `orders!["new_col"] = ...`
 
 Postfix `!` after a table variable opens **column write** context. Assignment adds a new column at the end (same as `add_column`) and updates the variable in place.
@@ -256,12 +283,13 @@ orders!.region = ["EMEA", "APAC", "EMEA"]
 - Only **assignment** (`=`); reading `orders!["col"]` without `=` is an error.
 - Left-hand table must be a **simple variable** (not an expression).
 - If the column already exists — `ValueError`.
-- RHS: `array`, scalar, or result of `column.map(fn)`.
+- RHS: `array`, scalar, or result of `column.map(fn)` / `columns.map(fn)`.
 
 **Compare:**
 | Expression | Result |
 |------------|--------|
 | `orders["amount"].map(fn)` | `array` of transformed values |
+| `orders[["a","b"]].map(fn)` | `array` from a row-wise zip of columns |
 | `orders!["vat"] = ...` | table with new column appended |
 | `orders.map("amount", fn)` | table with **existing** column transformed |
 

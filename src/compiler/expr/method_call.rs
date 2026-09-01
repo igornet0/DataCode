@@ -250,7 +250,20 @@ pub fn compile_method_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<
         // затем receiver, чтобы StoreLocal(receiver) не перезаписывал слот переменной-аргумента (например create_all).
         let is_db_receiver = matches!(
             method.as_str(),
-            "names" | "connect" | "execute" | "query" | "run"
+            "names"
+                | "connect"
+                | "execute"
+                | "query"
+                | "run"
+                | "schemas"
+                | "tables"
+                | "views"
+                | "columns"
+                | "indexes"
+                | "primary_key"
+                | "foreign_keys"
+                | "inspect"
+                | "table"
         ) || (method == "get" && get_method_uses_db_receiver_path(call_args))
             || (method == "add"
                 && (call_args.len() >= 2 || get_method_uses_db_receiver_path(call_args)));

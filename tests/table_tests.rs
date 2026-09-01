@@ -1828,6 +1828,93 @@ mod tests {
     }
 
     #[test]
+    fn test_columns_reference_typeof() {
+        let source = r#"
+            let orders = table([[1, 10, 2], [2, 20, 4]], ["id", "total", "qty"])
+            typeof(orders[["total", "qty"]])
+        "#;
+        assert_string_result(source, "columns");
+    }
+
+    #[test]
+    fn test_columns_map_avg_check() {
+        let source = r#"
+            let orders = table([[1, 10, 2], [2, 20, 4]], ["id", "total", "qty"])
+            orders!["avg_check"] = orders[["total", "qty"]].map(fn(v, q) => v / q)
+            orders["avg_check"][0] + orders["avg_check"][1]
+        "#;
+        assert_number_result(source, 10.0);
+    }
+
+    #[test]
+    fn test_columns_map_arity_mismatch() {
+        let source = r#"
+            let orders = table([[1, 10, 2]], ["id", "total", "qty"])
+            orders[["total", "qty"]].map(fn(v) => v)
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected TypeError for arity mismatch");
+    }
+
+    #[test]
+    fn test_columns_map_missing_column() {
+        let source = r#"
+            let orders = table([[1, 10]], ["id", "total"])
+            orders[["total", "qty"]]
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected KeyError for missing column");
+    }
+
+    #[test]
+    fn test_columns_lazy_map() {
+        let source = r#"
+            let orders = table([[1, 10, 2], [2, 20, 4]], ["id", "total", "qty"])
+            let out = array(map(orders[["total", "qty"]], fn(v, q) => v / q))
+            out[0] + out[1]
+        "#;
+        assert_number_result(source, 10.0);
+    }
+
+    #[test]
+    fn test_single_column_array_index_errors() {
+        let source = r#"
+            let orders = table([[1, 10]], ["id", "total"])
+            orders[["total"]]
+        "#;
+        let result = run_and_get_result(source);
+        assert!(result.is_err(), "Expected TypeError for single-column array index");
+    }
+
+    #[test]
+    fn test_columns_map_preserves_row_count() {
+        let source = r#"
+            let orders = table([[1, 10, 2], [2, 20, 4], [3, 30, 5]], ["id", "total", "qty"])
+            orders!["avg_check"] = orders[["total", "qty"]].map(fn(v, q) => v / q)
+            len(orders) + len(orders["avg_check"])
+        "#;
+        assert_number_result(source, 6.0);
+    }
+
+    #[test]
+    fn test_columns_map_three_args() {
+        let source = r#"
+            let t = table([[1, 2, 3], [4, 5, 6]], ["a", "b", "c"])
+            t[["a", "b", "c"]].map(fn(x, y, z) => x + y + z)[1]
+        "#;
+        assert_number_result(source, 15.0);
+    }
+
+    #[test]
+    fn test_columns_isinstance() {
+        let source = r#"
+            let t = table([[1, 2]], ["a", "b"])
+            isinstance(t[["a", "b"]], "columns")
+        "#;
+        assert_bool_result(source, true);
+    }
+
+    #[test]
     fn test_table_bang_assign_multi_column_sequence() {
         let source = r#"
             let orders = table([[1, 100.0]], ["id", "amount"])

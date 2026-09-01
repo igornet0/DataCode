@@ -249,6 +249,15 @@ pub fn get_database_engine(
                 db_natives::native_engine_query as *const (),
                 db_natives::native_engine_run as *const (),
             );
+            let schemas_fn = db_natives::native_engine_schemas as *const ();
+            let tables_fn = db_natives::native_engine_tables as *const ();
+            let views_fn = db_natives::native_engine_views as *const ();
+            let columns_fn = db_natives::native_engine_columns as *const ();
+            let indexes_fn = db_natives::native_engine_indexes as *const ();
+            let primary_key_fn = db_natives::native_engine_primary_key as *const ();
+            let foreign_keys_fn = db_natives::native_engine_foreign_keys as *const ();
+            let inspect_fn = db_natives::native_engine_inspect as *const ();
+            let table_fn = db_natives::native_engine_table as *const ();
             let method_index = match property_name.as_str() {
                 "connect" => natives
                     .iter()
@@ -258,11 +267,32 @@ pub fn get_database_engine(
                     .position(|e| e.as_fn_ptr() == Some(execute_fn)),
                 "query" => natives.iter().position(|e| e.as_fn_ptr() == Some(query_fn)),
                 "run" => natives.iter().position(|e| e.as_fn_ptr() == Some(run_fn)),
+                "schemas" => natives
+                    .iter()
+                    .position(|e| e.as_fn_ptr() == Some(schemas_fn)),
+                "tables" => natives.iter().position(|e| e.as_fn_ptr() == Some(tables_fn)),
+                "views" => natives.iter().position(|e| e.as_fn_ptr() == Some(views_fn)),
+                "columns" => natives
+                    .iter()
+                    .position(|e| e.as_fn_ptr() == Some(columns_fn)),
+                "indexes" => natives
+                    .iter()
+                    .position(|e| e.as_fn_ptr() == Some(indexes_fn)),
+                "primary_key" => natives
+                    .iter()
+                    .position(|e| e.as_fn_ptr() == Some(primary_key_fn)),
+                "foreign_keys" => natives
+                    .iter()
+                    .position(|e| e.as_fn_ptr() == Some(foreign_keys_fn)),
+                "inspect" => natives
+                    .iter()
+                    .position(|e| e.as_fn_ptr() == Some(inspect_fn)),
+                "table" => natives.iter().position(|e| e.as_fn_ptr() == Some(table_fn)),
                 _ => {
                     let error = ExceptionHandler::runtime_error(
                         &frames,
                         format!(
-                            "DatabaseEngine has no property '{}'. Available: connect, execute, query, run",
+                            "DatabaseEngine has no property '{}'. Available: connect, execute, query, run, schemas, tables, views, columns, indexes, primary_key, foreign_keys, inspect, table",
                             property_name
                         ),
                         line,
@@ -307,7 +337,7 @@ pub fn get_database_engine(
         _ => {
             let error = ExceptionHandler::runtime_error(
                 &frames,
-                "DatabaseEngine property access requires string key (connect, execute, query, run)"
+                "DatabaseEngine property access requires string key (connect, execute, query, run, schemas, tables, views, columns, indexes, primary_key, foreign_keys, inspect, table)"
                     .to_string(),
                 line,
             );

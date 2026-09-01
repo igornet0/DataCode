@@ -469,6 +469,9 @@ pub fn register_builtin_natives(natives: &mut Vec<HostEntry>) {
     natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
         natives::native_column_map,
     )))); // column.map(fn)
+    natives.push(HostEntry::Builtin(Arc::new(FnWrapper(
+        natives::native_columns_map,
+    )))); // columns.map(fn)
 }
 
 #[cfg(test)]
@@ -479,11 +482,11 @@ mod tests {
     fn builtin_register_len_matches_native_indices_constants() {
         let mut natives = Vec::new();
         register_builtin_natives(&mut natives);
-        let expected = crate::vm::native_indices::builtin::COLUMN_MAP + 1;
+        let expected = crate::vm::native_indices::builtin::COLUMNS_MAP + 1;
         assert_eq!(
             natives.len(),
             expected,
-            "builtin native count must match native_indices::builtin (last index RESPONSE_SAVE_JSON)"
+            "builtin native count must match native_indices::builtin (last index COLUMNS_MAP)"
         );
     }
 }

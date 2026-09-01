@@ -1129,4 +1129,221 @@ mod tests {
             "expected error when enum column value is not in the set"
         );
     }
+
+    // ========== Introspection API ==========
+
+    fn introspection_fixture() -> &'static str {
+        r#"
+            from database_engine import engine
+            let db = engine("sqlite:///:memory:")
+            let conn = db.connect()
+            conn.execute("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT)", [])
+            conn.execute("CREATE TABLE orders (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, FOREIGN KEY (user_id) REFERENCES users(id))", [])
+            conn.execute("INSERT INTO users (name) VALUES (?)", ["Alice"])
+            conn.execute("INSERT INTO users (name) VALUES (?)", ["Bob"])
+            conn.execute("CREATE VIEW user_names AS SELECT name FROM users", [])
+            conn.execute("CREATE INDEX idx_users_name ON users(name)", [])
+        "#
+    }
+
+    #[test]
+    fn test_schemas_includes_main() {
+        let source = format!(
+            r#"
+            {}
+            let names = []
+            for s in conn.schemas() {{
+                names.push(s.name)
+            }}
+            "main" in names and "temp" in names
+            "#,
+            introspection_fixture()
+        );
+        assert_bool_result(&source, true);
+    }
+
+    #[test]
+    fn test_tables_lists_user_tables_and_hides_system() {
+        let source = format!(
+            r#"
+            {}
+            let names = []
+            for t in conn.tables() {{
+                names.push(t.name)
+            }}
+            "users" in names and "orders" in names and ("sqlite_sequence" in names) == false and ("_datacode_schema" in names) == false
+            "#,
+            introspection_fixture()
+        );
+        assert_bool_result(&source, true);
+    }
+
+    #[test]
+    fn test_tables_have_schema_and_type() {
+        let source = format!(
+            r#"
+            {}
+            let t = conn.tables()[0]
+            t.schema == "main" and t["type"] == "table"
+            "#,
+            introspection_fixture()
+        );
+        assert_bool_result(&source, true);
+    }
+
+    #[test]
+    fn test_views_lists_user_names() {
+        let source = format!(
+            r#"
+            {}
+            let names = []
+            for v in conn.views() {{
+                names.push(v.name)
+            }}
+            "user_names" in names
+            "#,
+            introspection_fixture()
+        );
+        assert_bool_result(&source, true);
+    }
+
+    #[test]
+    fn test_columns_users() {
+        let source = format!(
+            r#"
+            {}
+            let cols = conn.columns("users")
+            let names = []
+            for c in cols {{
+                names.push(c.name)
+            }}
+            "id" in names and "name" in names and cols[0].name == "id"
+            "#,
+            introspection_fixture()
+        );
+        assert_bool_result(&source, true);
+    }
+
+    #[test]
+    fn test_primary_key_users() {
+        let source = format!(
+            r#"
+            {}
+            let pk = conn.primary_key("users")
+            pk != null and pk.primary == true and pk.columns[0] == "id"
+            "#,
+            introspection_fixture()
+        );
+        assert_bool_result(&source, true);
+    }
+
+    #[test]
+    fn test_indexes_include_name_index() {
+        let source = format!(
+            r#"
+            {}
+            let names = []
+            for i in conn.indexes("users") {{
+                names.push(i.name)
+            }}
+            "idx_users_name" in names
+            "#,
+            introspection_fixture()
+        );
+        assert_bool_result(&source, true);
+    }
+
+    #[test]
+    fn test_foreign_keys_orders() {
+        let source = format!(
+            r#"
+            {}
+            let fks = conn.foreign_keys("orders")
+            len(fks) >= 1 and fks[0].referenced_table == "users" and fks[0].columns[0] == "user_id"
+            "#,
+            introspection_fixture()
+        );
+        assert_bool_result(&source, true);
+    }
+
+    #[test]
+    fn test_inspect_nested_tree() {
+        let source = format!(
+            r#"
+            {}
+            let info = conn.inspect()
+            let found_users = false
+            for s in info.schemas {{
+                if s.name == "main" {{
+                    for t in s.tables {{
+                        if t.name == "users" {{
+                            found_users = len(t.columns) >= 2
+                        }}
+                    }}
+                }}
+            }}
+            found_users
+            "#,
+            introspection_fixture()
+        );
+        assert_bool_result(&source, true);
+    }
+
+    #[test]
+    fn test_table_loads_rows() {
+        let source = format!(
+            r#"
+            {}
+            let users = conn.table("users")
+            typeof(users) == "table" and len(users.rows) == 2
+            "#,
+            introspection_fixture()
+        );
+        assert_bool_result(&source, true);
+    }
+
+    #[test]
+    #[ignore = "requires DATACODE_TEST_PG_URL"]
+    fn test_postgres_introspection() {
+        let url = std::env::var("DATACODE_TEST_PG_URL").expect("DATACODE_TEST_PG_URL");
+        let url = url.replace('\\', "\\\\").replace('"', "\\\"");
+        let source = format!(
+            r#"
+            from database_engine import engine
+            let conn = engine("{url}")
+            len(conn.schemas()) >= 1
+            "#
+        );
+        assert_bool_result(&source, true);
+    }
+
+    #[test]
+    #[ignore = "requires DATACODE_TEST_MYSQL_URL"]
+    fn test_mysql_introspection() {
+        let url = std::env::var("DATACODE_TEST_MYSQL_URL").expect("DATACODE_TEST_MYSQL_URL");
+        let url = url.replace('\\', "\\\\").replace('"', "\\\"");
+        let source = format!(
+            r#"
+            from database_engine import engine
+            let conn = engine("{url}")
+            len(conn.schemas()) >= 1
+            "#
+        );
+        assert_bool_result(&source, true);
+    }
+
+    #[test]
+    #[ignore = "requires DATACODE_TEST_MSSQL_URL"]
+    fn test_mssql_introspection() {
+        let url = std::env::var("DATACODE_TEST_MSSQL_URL").expect("DATACODE_TEST_MSSQL_URL");
+        let url = url.replace('\\', "\\\\").replace('"', "\\\"");
+        let source = format!(
+            r#"
+            from database_engine import engine
+            let conn = engine("{url}")
+            len(conn.schemas()) >= 1
+            "#
+        );
+        assert_bool_result(&source, true);
+    }
 }

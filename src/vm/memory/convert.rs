@@ -526,6 +526,17 @@ pub fn store_value(v: Value, store: &mut ValueStore, heap: &mut HeavyStore) -> V
                 column_name,
             })
         }
+        Value::ColumnsReference {
+            table,
+            column_names,
+        } => {
+            let table_val = Value::Table(table);
+            let idx = heap.push(table_val);
+            store.allocate(ValueCell::ColumnsReference {
+                table_handle: idx,
+                column_names,
+            })
+        }
         Value::PluginOpaque { tag, id } => {
             if tag == crate::grid::GRID_I32_TAG || tag == crate::grid::GRID_U8_TAG {
                 return id as ValueId;
@@ -814,6 +825,20 @@ fn load_value_inner(
                 Value::ColumnReference {
                     table: rc,
                     column_name: column_name.clone(),
+                }
+            } else {
+                Value::Null
+            }
+        }
+        ValueCell::ColumnsReference {
+            table_handle,
+            column_names,
+        } => {
+            let table_val = heap.get(*table_handle).cloned().unwrap_or(Value::Null);
+            if let Value::Table(rc) = table_val {
+                Value::ColumnsReference {
+                    table: rc,
+                    column_names: column_names.clone(),
                 }
             } else {
                 Value::Null
@@ -1148,6 +1173,17 @@ pub fn store_value_arena(v: Value, store: &mut ValueStore, heap: &mut HeavyStore
             store.allocate_arena(ValueCell::ColumnReference {
                 table_handle: idx,
                 column_name,
+            })
+        }
+        Value::ColumnsReference {
+            table,
+            column_names,
+        } => {
+            let table_val = Value::Table(table);
+            let idx = heap.push(table_val);
+            store.allocate_arena(ValueCell::ColumnsReference {
+                table_handle: idx,
+                column_names,
             })
         }
         Value::PluginOpaque { tag, id } => {

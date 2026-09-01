@@ -171,6 +171,11 @@ pub enum Value {
         table: Rc<RefCell<Table>>,
         column_name: String,
     },
+    /// Zip of two or more table columns for row-wise `.map(fn)`.
+    ColumnsReference {
+        table: Rc<RefCell<Table>>,
+        column_names: Vec<String>,
+    },
     /// Opaque plugin-owned object (`tag` + `id`); semantics defined by the plugin (e.g. dylib).
     PluginOpaque {
         tag: u8,
@@ -447,6 +452,19 @@ pub enum IterableInner {
         column_name: String,
         index: usize,
     },
+    /// Row-wise zip of several columns ([`Value::ColumnsReference`]); yields an array of cells.
+    TableColumns {
+        table: Rc<RefCell<Table>>,
+        column_names: Vec<String>,
+        index: usize,
+    },
+    /// Lazy `map(fn)` over [`Value::ColumnsReference`]: one callback per row, arity = column count.
+    ColumnsMap {
+        table: Rc<RefCell<Table>>,
+        column_names: Vec<String>,
+        func: CallableSlot,
+        index: usize,
+    },
     /// `enum(table)` / lazy zip: yields `(start + n, element)` by wrapping any inner lazy iterator.
     EnumerateIter {
         source: Rc<RefCell<IterableInner>>,
@@ -542,6 +560,26 @@ impl Clone for IterableInner {
             } => Self::TableColumn {
                 table: table.clone(),
                 column_name: column_name.clone(),
+                index: 0,
+            },
+            Self::TableColumns {
+                table,
+                column_names,
+                ..
+            } => Self::TableColumns {
+                table: table.clone(),
+                column_names: column_names.clone(),
+                index: 0,
+            },
+            Self::ColumnsMap {
+                table,
+                column_names,
+                func,
+                ..
+            } => Self::ColumnsMap {
+                table: table.clone(),
+                column_names: column_names.clone(),
+                func: func.clone(),
                 index: 0,
             },
             Self::EnumerateIter { source, start, .. } => Self::EnumerateIter {
@@ -733,6 +771,14 @@ impl std::fmt::Debug for Value {
                     .debug_struct("ColumnReference")
                     .field("table", table)
                     .field("column_name", column_name)
+                    .finish(),
+                Value::ColumnsReference {
+                    table,
+                    column_names,
+                } => f
+                    .debug_struct("ColumnsReference")
+                    .field("table", table)
+                    .field("column_names", column_names)
                     .finish(),
                 Value::PluginOpaque { tag, id } => f
                     .debug_struct("PluginOpaque")
@@ -1102,6 +1148,16 @@ impl PartialEq for Value {
                     column_name: col_b,
                 },
             ) => Rc::ptr_eq(a, b) && col_a == col_b,
+            (
+                Value::ColumnsReference {
+                    table: a,
+                    column_names: cols_a,
+                },
+                Value::ColumnsReference {
+                    table: b,
+                    column_names: cols_b,
+                },
+            ) => Rc::ptr_eq(a, b) && cols_a == cols_b,
             (Value::PluginOpaque { tag: ta, id: ia }, Value::PluginOpaque { tag: tb, id: ib }) => {
                 ta == tb && ia == ib
             }
@@ -1217,6 +1273,9 @@ impl Value {
                 } else {
                     false
                 }
+            }
+            Value::ColumnsReference { table, column_names } => {
+                !table.borrow().is_empty() && column_names.len() >= 2
             }
             Value::PluginOpaque { .. } => true,
             Value::Window(_) => true,
@@ -1350,6 +1409,19 @@ impl Value {
                     )
                 }
             }
+            Value::ColumnsReference {
+                table,
+                column_names,
+            } => {
+                let t = table.borrow();
+                let name = t.name.as_deref().unwrap_or("table");
+                format!(
+                    "<columns: {}.[{}] ({} rows)>",
+                    name,
+                    column_names.join(", "),
+                    t.len()
+                )
+            }
             Value::Set(s) => format!("set(<{} elements>)", s.borrow().len()),
             Value::Object(map_rc) => {
                 if let Some(s) = crate::vm::special_methods::try_instance_string(self) {
@@ -1436,6 +1508,8 @@ impl Value {
                     IterableInner::Chunks { .. } => "chunk",
                     IterableInner::TableRows { .. } => "table_rows",
                     IterableInner::TableColumn { .. } => "table_column",
+                    IterableInner::TableColumns { .. } => "table_columns",
+                    IterableInner::ColumnsMap { .. } => "columns_map",
                     IterableInner::EnumerateIter { .. } => "enumerate_iter",
                     IterableInner::Array { .. } | IterableInner::ArrayView { .. } => "iterable",
                     IterableInner::StreamGenerator { .. } => "stream_generator",
@@ -1638,6 +1712,13 @@ impl Clone for Value {
                     column_name: column_name.clone(),
                 }
             }
+            Value::ColumnsReference {
+                table,
+                column_names,
+            } => Value::ColumnsReference {
+                table: table.clone(),
+                column_names: column_names.clone(),
+            },
             Value::Object(map_rc) => {
                 // Клонируем Rc (shallow copy), чтобы изменения сохранялись
                 Value::Object(map_rc.clone())

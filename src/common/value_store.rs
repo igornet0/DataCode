@@ -230,6 +230,10 @@ pub enum ValueCell {
         table_handle: usize,
         column_name: String,
     },
+    ColumnsReference {
+        table_handle: usize,
+        column_names: Vec<String>,
+    },
     /// Opaque plugin object (tag + id)
     PluginOpaque {
         tag: u8,

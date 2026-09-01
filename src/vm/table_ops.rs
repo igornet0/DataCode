@@ -40,6 +40,21 @@ pub fn get_cell_value(
     }
 }
 
+/// Cells from `col_names` at `row_index`, in that order. `None` if any column or cell is missing.
+pub fn row_cells(
+    table: &Table,
+    row_index: usize,
+    col_names: &[String],
+    store: &ValueStore,
+    heap: &HeavyStore,
+) -> Option<Vec<Value>> {
+    let mut out = Vec::with_capacity(col_names.len());
+    for name in col_names {
+        out.push(get_cell_value(table, row_index, name, store, heap)?);
+    }
+    Some(out)
+}
+
 #[inline]
 pub fn column_len(table: &Table, col_name: &str) -> Option<usize> {
     if table.has_column(col_name) {

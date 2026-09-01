@@ -977,9 +977,18 @@ pub fn table_add_column_impl(
     Ok(Table::from_data(new_rows, Some(new_headers)))
 }
 
-fn validate_map_callback(func: &Value) -> Result<(), Value> {
+fn validate_map_callback(func: &Value, expected_arity: usize) -> Result<(), Value> {
     match func {
-        Value::NativeFunction(_) => Ok(()),
+        Value::NativeFunction(_) => {
+            if expected_arity == 1 {
+                Ok(())
+            } else {
+                Err(table_col_error(format!(
+                    "TypeError: map callback must have arity {}, got 1",
+                    expected_arity
+                )))
+            }
+        }
         Value::Function(fn_idx) => {
             let Some(vm_ptr) = crate::vm::vm::current_vm_ptr() else {
                 return Err(table_col_error("map: VM context not available"));
@@ -991,10 +1000,10 @@ fn validate_map_callback(func: &Value) -> Result<(), Value> {
                     .get(*fn_idx)
                     .map(|fun| fun.arity)
                     .unwrap_or(0);
-                if arity != 1 {
+                if arity != expected_arity {
                     return Err(table_col_error(format!(
-                        "TypeError: map callback must have arity 1, got {}",
-                        arity
+                        "TypeError: map callback must have arity {}, got {}",
+                        expected_arity, arity
                     )));
                 }
             }
@@ -1111,7 +1120,7 @@ pub fn table_map_impl(table: &Table, column: &str, func: &Value) -> Result<Table
         )));
     };
 
-    validate_map_callback(func)?;
+    validate_map_callback(func, 1)?;
 
     let vm_ptr = current_vm_ptr();
     if !table.is_view() {
@@ -1197,7 +1206,7 @@ pub fn column_map_impl(
         )));
     }
 
-    validate_map_callback(func)?;
+    validate_map_callback(func, 1)?;
 
     let rows = materialize_table_rows(table);
     let headers = table.headers();
@@ -1243,6 +1252,89 @@ pub fn native_column_map(args: &[Value]) -> Value {
         return table_col_error("TypeError: column.map() expects a column reference as receiver");
     };
     match column_map_impl(&table.borrow(), column_name, &args[1]) {
+        Ok(vals) => Value::Array(Rc::new(RefCell::new(vals))),
+        Err(v) => v,
+    }
+}
+
+/// Apply `fn` to zipped cells of several columns; returns a materialized array.
+pub fn columns_map_impl(
+    table: &Table,
+    column_names: &[String],
+    func: &Value,
+) -> Result<Vec<Value>, Value> {
+    use super::utils::invoke_value_callable;
+    use crate::common::error::LangError;
+    use crate::vm::vm::{current_vm_ptr, VmExecutionContext, VM_CALL_CONTEXT};
+
+    if column_names.len() < 2 {
+        return Err(table_col_error(
+            "TypeError: columns.map() requires at least 2 columns",
+        ));
+    }
+    for name in column_names {
+        if !table.has_column(name) {
+            return Err(table_col_error(format!(
+                "KeyError: column '{}' not found in table",
+                name
+            )));
+        }
+    }
+
+    validate_map_callback(func, column_names.len())?;
+
+    let n_rows = table.len();
+    let vm_ptr = current_vm_ptr();
+    let mut out = Vec::with_capacity(n_rows);
+
+    for row_i in 0..n_rows {
+        let args = crate::vm::vm::with_current_stores(|store, heap| {
+            crate::vm::table_ops::row_cells(table, row_i, column_names, store, heap)
+        })
+        .ok_or_else(|| {
+            table_col_error(format!(
+                "internal: missing cell at row {} for columns {:?}",
+                row_i, column_names
+            ))
+        })?;
+        if let Some(vm_ptr) = vm_ptr {
+            VM_CALL_CONTEXT.with(|ctx| {
+                *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+            });
+        }
+        let new_val = match invoke_value_callable(func, &args) {
+            Ok(v) => v,
+            Err(e) => {
+                let message = match e {
+                    LangError::LexError { message, .. }
+                    | LangError::ParseError { message, .. }
+                    | LangError::SemanticError { message, .. }
+                    | LangError::RuntimeError { message, .. } => message,
+                };
+                return Err(table_col_error(message));
+            }
+        };
+        out.push(new_val);
+    }
+
+    Ok(out)
+}
+
+/// `columns.map(fn)` — materialized array from a multi-column reference.
+pub fn native_columns_map(args: &[Value]) -> Value {
+    if args.len() != 2 {
+        return table_col_error("TypeError: columns.map() expects 1 argument (function)");
+    }
+    let Value::ColumnsReference {
+        table,
+        column_names,
+    } = &args[0]
+    else {
+        return table_col_error(
+            "TypeError: columns.map() expects a columns reference as receiver",
+        );
+    };
+    match columns_map_impl(&table.borrow(), column_names, &args[1]) {
         Ok(vals) => Value::Array(Rc::new(RefCell::new(vals))),
         Err(v) => v,
     }
@@ -1383,7 +1475,7 @@ pub fn table_split_column_impl(
         }
     }
 
-    validate_map_callback(iter_fn)?;
+    validate_map_callback(iter_fn, 1)?;
 
     let rows = materialize_table_rows(table);
     let n_cols = new_names.len();

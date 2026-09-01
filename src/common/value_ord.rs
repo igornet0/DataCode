@@ -37,6 +37,7 @@ pub fn value_ord_type_name(v: &Value) -> &'static str {
         Value::Enumerate { .. } => "enumerate",
         Value::Generator(_) => "generator",
         Value::ColumnReference { .. } => "column",
+        Value::ColumnsReference { .. } => "columns",
         Value::PluginOpaque { .. } => "plugin_opaque",
         Value::Window(_) => "window",
         Value::Image(_) => "image",

@@ -1,0 +1,52 @@
+fn prognoz_create(capital: int, prognoz_procent_iter: int, prognoz_iter, orders: table = null) {
+
+    prognoz = {}
+
+    for iter in range(1, prognoz_iter+1) {
+
+        if orders["week" == iter] {
+            """ 
+                Ошибка выполнения: error[E0400]: KeyError: amount
+                --> line 10
+                |
+
+                stack trace:
+                --> line 10 in prognoz_create
+                --> line 40 in __main__
+                --> /:40 in <main>
+            """
+        
+            for order in orders["week" == iter] {
+                print(order)
+                print(typeof(order["amount"]))
+                print("[ORDER]   ${iter}: ${capital=:.2f} ${order.amount}")
+                capital += order.amount
+            }
+        }
+
+        prognoz_profit = (capital / 100) * prognoz_procent_iter
+        print("[PROGNOZ] ${iter}: ${capital=:.2f} +${prognoz_profit:.2f}")
+        capital += prognoz_profit
+
+        prognoz[iter] = capital
+
+    }
+
+    return prognoz
+}
+
+fn __main__(path_fact_capital: str, path_orders: str){
+    print("${path_fact_capital=} ${path_orders=}")
+
+    fact_capital = read_file(path_fact_capital)
+    print(table_info(fact_capital))
+
+    orders = read_file(path_orders)
+    print(table_info(orders))
+
+    capital = 140
+    prognoz_procent_week = 6
+    prognoz_week = 12
+
+    prognoz_create(capital, prognoz_procent_week, prognoz_week, orders)
+}

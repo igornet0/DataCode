@@ -165,23 +165,20 @@ fn execute_file(config: cli::FileExecutionConfig) {
     // Читаем файл по разрешённому пути (каноническому), чтобы при --base-dir использовался правильный файл
     match fs::read_to_string(script_path_for_read) {
         Ok(source) => {
-            // argv для скрипта: по каждому параметру fn __main__(a, b, ...) — --a=value или позиция, при отсутствии — default из сигнатуры
-            let script_args: Vec<String> =
-                if let Some(params) = data_code::get_main_entry_params(&source) {
-                    let mut argv = Vec::with_capacity(params.len());
-                    for (i, (name, default)) in params.iter().enumerate() {
-                        let v = cli::extract_param_args(&config.raw_args, name)
-                            .into_iter()
-                            .next()
-                            .or_else(|| config.script_args.get(i).cloned())
-                            .or_else(|| default.as_ref().map(|val| val.to_string()));
-                        if let Some(s) = v {
-                            argv.push(s);
-                        }
-                    }
-                    argv
+            // argv для скрипта: по каждому параметру fn __main__(a, b, ...) — --a=value / --flag или позиция.
+            // Непереданные параметры = None: default из сигнатуры подставит run_api (с исходным типом).
+            let script_args: Vec<Option<String>> =
+                if let Some(params) = data_code::get_main_entry_signature(&source) {
+                    let specs: Vec<cli::MainArgSpec> = params
+                        .iter()
+                        .map(|p| cli::MainArgSpec {
+                            name: &p.name,
+                            is_bool: p.is_bool(),
+                        })
+                        .collect();
+                    cli::map_main_args(&config.raw_args, &config.script_args, &specs)
                 } else {
-                    config.script_args.clone()
+                    config.script_args.iter().cloned().map(Some).collect()
                 };
             if config.debug {
                 eprintln!(
@@ -206,7 +203,7 @@ fn execute_file(config: cli::FileExecutionConfig) {
 
             if config.build_model {
                 // Execute with SQLite export
-                match data_code::run_with_vm_with_args_and_lib(
+                match data_code::run_with_vm_with_main_args_and_lib(
                     &source,
                     Some(script_args),
                     lib_path.as_deref(),
@@ -254,7 +251,7 @@ fn execute_file(config: cli::FileExecutionConfig) {
                 // Normal execution without export
                 if config.no_gui {
                     // Run in main thread: script output (print) is visible; no plot windows
-                    match data_code::run_with_vm_with_args_and_lib(
+                    match data_code::run_with_vm_with_main_args_and_lib(
                         &source,
                         Some(script_args),
                         lib_path.as_deref(),
@@ -286,7 +283,7 @@ fn execute_file(config: cli::FileExecutionConfig) {
 
                         // Используем run_with_vm_with_args_and_lib для передачи пути к __lib__.dc и base_path
                         // __lib__.dc будет выполнен внутри GUI потока перед основным скриптом
-                        data_code::run_with_vm_with_args_and_lib(
+                        data_code::run_with_vm_with_main_args_and_lib(
                             &source_clone,
                             Some(script_args_clone),
                             lib_path_clone.as_deref(),

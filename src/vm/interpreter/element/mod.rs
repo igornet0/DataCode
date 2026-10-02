@@ -80,6 +80,39 @@ pub(crate) fn object_map_needs_visibility_checks(
     false
 }
 
+/// Build a `KeyError` message that also lists the plain dict/row's currently available
+/// string keys, so a mismatch (typo, untrimmed whitespace, wrong case) is visible without
+/// needing a separate `print(obj)`/`table_info(...)` call. Looks `container_id` back up in
+/// `store` itself (rather than taking a borrowed `&ObjectMap`) so callers can invoke this
+/// after a `&mut ValueStore` borrow (e.g. a failed key lookup) has already ended.
+fn format_key_error(
+    container_id: ValueId,
+    missing_key: &Value,
+    store: &ValueStore,
+    heap: &HeavyStore,
+) -> String {
+    let Some(ValueCell::Object(omap)) = store.get(container_id) else {
+        return format!("KeyError: {}", missing_key.to_string());
+    };
+    let mut available: Vec<String> = omap
+        .iter_entries()
+        .filter_map(|(_, key_id, _)| match load_value(key_id, store, heap) {
+            Value::String(s) => Some(s),
+            _ => None,
+        })
+        .collect();
+    available.sort();
+    if available.is_empty() {
+        format!("KeyError: {}", missing_key.to_string())
+    } else {
+        format!(
+            "KeyError: {} (available keys: {})",
+            missing_key.to_string(),
+            available.join(", ")
+        )
+    }
+}
+
 /// True when the map has an own callable property `prop` (`NativeFunction` / `Function` / `ModuleFunction`).
 #[inline]
 fn object_map_has_own_callable_prop(
@@ -933,7 +966,7 @@ pub(crate) fn op_get_array_element(
                         None => {
                             let error = ExceptionHandler::runtime_error_with_type(
                                 &frames,
-                                format!("KeyError: {}", key_material.to_string()),
+                                format_key_error(container_id, &key_material, value_store, heavy_store),
                                 line,
                                 ErrorType::KeyError,
                             );
@@ -1148,7 +1181,7 @@ pub(crate) fn op_get_array_element(
                 None => {
                     let error = ExceptionHandler::runtime_error_with_type(
                         &frames,
-                        format!("KeyError: {}", key_material.to_string()),
+                        format_key_error(container_id, &key_material, value_store, heavy_store),
                         line,
                         ErrorType::KeyError,
                     );

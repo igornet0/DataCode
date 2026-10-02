@@ -101,9 +101,9 @@ fn read_tabular_csv(
     opts: &ReadOptions,
 ) -> Result<Value, String> {
     let table = if opts.uses_transpose() {
-        read_csv_bytes_raw(bytes).map_err(|e| err(path, ext, e.to_string()))?
+        read_csv_bytes_raw(bytes, opts.trim).map_err(|e| err(path, ext, e.to_string()))?
     } else {
-        read_csv_bytes(bytes).map_err(|e| err(path, ext, e.to_string()))?
+        read_csv_bytes(bytes, opts.trim).map_err(|e| err(path, ext, e.to_string()))?
     };
 
     let filtered = if opts.uses_transpose() {

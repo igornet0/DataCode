@@ -2,12 +2,29 @@
 
 use crate::common::value::Value;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ReadOptions {
     pub header_row: usize,
     pub sheet_name: Option<String>,
     pub header_filter: Option<Value>,
     pub header_t_filter: Option<Value>,
+    /// Trim whitespace around CSV headers/fields (`csv::Trim::All`). Defaults to `true`:
+    /// CSV written as `col1, col2` (comma followed by space) is a common human-written style,
+    /// and the `csv` crate does not trim it by default, which silently breaks exact-name
+    /// lookups like `row["col2"]`. Set to `false` to preserve literal whitespace.
+    pub trim: bool,
+}
+
+impl Default for ReadOptions {
+    fn default() -> Self {
+        ReadOptions {
+            header_row: 0,
+            sheet_name: None,
+            header_filter: None,
+            header_t_filter: None,
+            trim: true,
+        }
+    }
 }
 
 impl ReadOptions {
@@ -100,6 +117,11 @@ pub fn read_options_from_args(args: &[Value]) -> Result<ReadOptions, String> {
                 }
             }
         }
+    }
+
+    // 6th named slot: trim (bool). Absent/Null keeps the default (`true`).
+    if let Some(Value::Bool(b)) = args.get(5) {
+        opts.trim = *b;
     }
 
     Ok(opts)

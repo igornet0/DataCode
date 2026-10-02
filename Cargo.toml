@@ -11,7 +11,7 @@ exclude = [
 
 [package]
 name = "data-code"
-version = "2.4.6"
+version = "2.4.7"
 edition = "2021"
 description = "ДатаКод - Интерактивный язык программирования для быстрой обработки данных"
 license = "MIT"

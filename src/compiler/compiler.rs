@@ -367,10 +367,11 @@ impl Compiler {
                         // (для значения по умолчанию это обычно не нужно, но для argv[i] нужно)
                         if let Some(param_type) = main_function.param_types.get(i) {
                             if let Some(type_parts) = param_type {
-                                let has_num = TypePart::slice_walk_type_names(type_parts, &mut |s| {
-                                    s == "int" || s == "float" || s == "num" || s == "number"
-                                });
-                                if has_num {
+                                // Значения argv уже приведены к типам в run_api (coerce_main_arg); int() оставлен
+                                // только для чистого `int`, чтобы float/num не усекались.
+                                let has_int = TypePart::slice_walk_type_names(type_parts, &mut |s| s == "int");
+                                let has_other = TypePart::slice_walk_type_names(type_parts, &mut |s| s != "int");
+                                if has_int && !has_other {
                                     if let Some(&int_global_index) = self.scope.globals.get("int") {
                                         self.chunk.write_with_line(
                                             OpCode::LoadGlobal(int_global_index),

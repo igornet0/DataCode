@@ -57,10 +57,10 @@ mod run_api;
 pub use bytecode::Chunk;
 pub use common::{error::LangError, value::Value};
 pub use run_api::{
-    compile, extract_globals_from_vm, get_main_entry_params, run, run_debug, run_lib_file,
+    compile, extract_globals_from_vm, get_main_entry_params, get_main_entry_signature, run, run_debug, run_lib_file,
     run_with_base_path, run_with_existing_vm, run_with_options, run_with_vm, run_with_vm_and_path,
-    run_with_vm_with_args, run_with_vm_with_args_and_lib, run_with_vm_with_policy, PreloadContext,
-    RunOptions,
+    run_with_vm_with_args, run_with_vm_with_args_and_lib, run_with_vm_with_main_args_and_lib,
+    run_with_vm_with_policy, MainParam, PreloadContext, RunOptions,
 };
 pub use vm::PermissionPolicy;
 pub use vm::Vm;

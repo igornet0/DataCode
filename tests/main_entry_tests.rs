@@ -2,7 +2,11 @@
 
 #[cfg(test)]
 mod tests {
-    use data_code::{get_main_entry_params, run_with_vm_with_args, Value};
+    use data_code::infra::cli::{map_main_args, MainArgSpec};
+    use data_code::{
+        get_main_entry_params, get_main_entry_signature, run_with_vm_with_args,
+        run_with_vm_with_main_args_and_lib, Value,
+    };
 
     fn assert_number(value: Value, expected: f64) {
         match value.as_ieee_f64() {
@@ -541,5 +545,131 @@ mod tests {
         let result = run_with_vm_with_args(source, None);
         let (value, _vm) = result.expect("run should succeed");
         assert!(matches!(value, Value::Null));
+    }
+
+    // ========== Типизированные аргументы __main__ (bool / float / пропуски) ==========
+
+    const TYPED_MAIN: &str = r#"
+        fn __main__(path: str, flag: bool = false, capital: int = 140, rate: float = 1.5) {
+            return [path, flag, capital, rate, typeof(flag)]
+        }
+    "#;
+
+    fn run_typed(args: Vec<Option<&str>>) -> Result<Vec<Value>, String> {
+        let args = args.into_iter().map(|a| a.map(str::to_string)).collect();
+        let (value, _vm) = run_with_vm_with_main_args_and_lib(TYPED_MAIN, Some(args), None, None, None)
+            .map_err(|e| e.to_string())?;
+        match value {
+            Value::Array(a) => Ok(a.borrow().clone()),
+            v => panic!("expected Array, got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn test_main_bool_default_not_passed() {
+        let r = run_typed(vec![Some("a.csv")]).expect("run should succeed");
+        assert!(matches!(r[1], Value::Bool(false)), "flag = {:?}", r[1]);
+        assert_number(r[2].clone(), 140.0);
+        assert_number(r[3].clone(), 1.5);
+    }
+
+    #[test]
+    fn test_main_bool_parsed_from_string() {
+        for (raw, expected) in [("true", true), ("1", true), ("yes", true), ("False", false), ("no", false)] {
+            let r = run_typed(vec![Some("a.csv"), Some(raw)]).expect("run should succeed");
+            assert!(matches!(r[1], Value::Bool(b) if b == expected), "{} -> {:?}", raw, r[1]);
+        }
+    }
+
+    #[test]
+    fn test_main_bool_invalid_is_type_error() {
+        let err = run_typed(vec![Some("a.csv"), Some("abc")]).expect_err("must fail");
+        assert!(err.contains("cannot convert 'abc' to bool"), "{}", err);
+    }
+
+    #[test]
+    fn test_main_float_not_truncated() {
+        let r = run_typed(vec![Some("a.csv"), None, None, Some("2.5")]).expect("run should succeed");
+        assert_number(r[3].clone(), 2.5);
+    }
+
+    #[test]
+    fn test_main_gap_uses_default() {
+        // flag пропущен (None) в середине — подставляется default false, capital = 200
+        let r = run_typed(vec![Some("a.csv"), None, Some("200")]).expect("run should succeed");
+        assert!(matches!(r[1], Value::Bool(false)));
+        assert_number(r[2].clone(), 200.0);
+    }
+
+    #[test]
+    fn test_main_string_args_api_still_coerces_bool() {
+        let (value, _vm) = run_with_vm_with_args(
+            TYPED_MAIN,
+            Some(vec!["a.csv".to_string(), "true".to_string()]),
+        )
+        .expect("run should succeed");
+        match value {
+            Value::Array(a) => assert!(matches!(a.borrow()[1], Value::Bool(true))),
+            v => panic!("expected Array, got {:?}", v),
+        }
+    }
+
+    #[test]
+    fn test_get_main_entry_signature_types() {
+        let params = get_main_entry_signature(TYPED_MAIN).expect("__main__ should be found");
+        assert_eq!(params.len(), 4);
+        assert!(params[1].is_bool());
+        assert!(!params[0].is_bool());
+        assert_eq!(params[1].default, Some(Value::Bool(false)));
+    }
+
+    // ========== Сопоставление CLI-аргументов ==========
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn specs() -> Vec<MainArgSpec<'static>> {
+        vec![
+            MainArgSpec { name: "path", is_bool: false },
+            MainArgSpec { name: "flag", is_bool: true },
+            MainArgSpec { name: "capital", is_bool: false },
+        ]
+    }
+
+    #[test]
+    fn test_cli_positional_only() {
+        let raw = strs(&["datacode", "main.dc", "a.csv"]);
+        let out = map_main_args(&raw, &strs(&["a.csv"]), &specs());
+        assert_eq!(out, vec![Some("a.csv".to_string())]);
+    }
+
+    #[test]
+    fn test_cli_bare_bool_flag_and_no_flag() {
+        let raw = strs(&["datacode", "main.dc", "a.csv", "--flag"]);
+        let out = map_main_args(&raw, &strs(&["a.csv"]), &specs());
+        assert_eq!(out, vec![Some("a.csv".to_string()), Some("true".to_string())]);
+
+        let raw = strs(&["datacode", "main.dc", "--no-flag", "a.csv"]);
+        let out = map_main_args(&raw, &strs(&["a.csv"]), &specs());
+        assert_eq!(out, vec![Some("a.csv".to_string()), Some("false".to_string())]);
+    }
+
+    #[test]
+    fn test_cli_named_value_not_duplicated_as_positional() {
+        // `--capital 200`: 200 не должен стать значением flag
+        let raw = strs(&["datacode", "main.dc", "a.csv", "--capital", "200"]);
+        let out = map_main_args(&raw, &strs(&["a.csv", "200"]), &specs());
+        assert_eq!(out, vec![Some("a.csv".to_string()), None, Some("200".to_string())]);
+    }
+
+    #[test]
+    fn test_cli_named_eq_with_positional() {
+        let raw = strs(&["datacode", "main.dc", "--path=x.csv", "--flag=false", "300"]);
+        let out = map_main_args(&raw, &strs(&["300"]), &specs());
+        assert_eq!(
+            out,
+            vec![Some("x.csv".to_string()), Some("false".to_string()), Some("300".to_string())]
+        );
     }
 }

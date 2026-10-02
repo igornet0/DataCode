@@ -1,0 +1,21 @@
+cls Point {
+    public:
+        x: int
+        y: int
+    new Point(x, y) {
+        this.x = x
+        this.y = y
+    }
+
+}
+
+p = Point(10, 20)
+h = p.__class.new_2([12,2,14,1])
+print("-"*20)
+
+print(p.x, p.y)
+print(p)
+
+print("-"*20)
+print(h.x, h.y)
+print(h)

@@ -1,0 +1,31 @@
+print("=== Datacode input() demonstration ===")
+print("")
+
+# String input
+name = input("Enter your name: ")
+print("Hello, " + name)
+
+print("")
+
+# Integer input
+age = int(input("Enter your age: "))
+print("Your age is: " + age)
+
+print("")
+
+# Multiple inputs
+city = input("Enter your city: ")
+country = input("Enter your country: ")
+
+print("Location: " + city + ", " + country)
+
+print("")
+
+# Input in expression
+number = float(input("Enter a number: "))
+result = number * 2
+
+print("Double: " + result)
+
+print("")
+print("=== Demo completed ===")

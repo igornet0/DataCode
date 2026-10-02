@@ -304,6 +304,24 @@ pub fn run_with_vm_with_args_and_lib(
     base_path: Option<&std::path::Path>,
     source_name: Option<&std::path::Path>,
 ) -> Result<(Value, Vm), LangError> {
+    run_with_vm_with_main_args_and_lib(
+        source,
+        args.map(|a| a.into_iter().map(Some).collect()),
+        lib_path,
+        base_path,
+        source_name,
+    )
+}
+
+/// Как `run_with_vm_with_args_and_lib`, но `None` в argv означает «аргумент не передан» —
+/// соответствующий параметр `fn __main__` получает значение по умолчанию из сигнатуры.
+pub fn run_with_vm_with_main_args_and_lib(
+    source: &str,
+    args: Option<Vec<Option<String>>>,
+    lib_path: Option<&std::path::Path>,
+    base_path: Option<&std::path::Path>,
+    source_name: Option<&std::path::Path>,
+) -> Result<(Value, Vm), LangError> {
     run_with_vm_internal_with_args(
         source,
         args,
@@ -361,6 +379,143 @@ fn expr_default_to_value(expr: &parser::ast::Expr) -> Option<Value> {
     } else {
         None
     }
+}
+
+/// Параметр `fn __main__` для CLI: имя, имена типов из аннотации и литеральный default.
+#[derive(Debug, Clone)]
+pub struct MainParam {
+    pub name: String,
+    pub type_names: Vec<String>,
+    pub default: Option<Value>,
+}
+
+impl MainParam {
+    /// Параметр объявлен как `bool` (в т.ч. в union) — допускает CLI-флаг без значения.
+    pub fn is_bool(&self) -> bool {
+        self.type_names.iter().any(|t| t == "bool" || t == "boolean")
+    }
+}
+
+/// Сигнатура `fn __main__(...)` с типами параметров (None, если `__main__` нет).
+pub fn get_main_entry_signature(source: &str) -> Option<Vec<MainParam>> {
+    use lexer::Lexer;
+    use parser::ast::{Stmt, TypePart};
+    use parser::Parser;
+    let mut lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().ok()?;
+    let preload = PreloadContext::new_for_tokens(&tokens, None).ok()?;
+    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, preload.operator_registry);
+    let ast = parser.parse().ok()?;
+    for stmt in &ast {
+        if let Stmt::Function { name, params, .. } = stmt {
+            if name == "__main__" {
+                return Some(
+                    params
+                        .iter()
+                        .map(|p| {
+                            let mut type_names = Vec::new();
+                            if let Some(parts) = &p.type_annotation {
+                                TypePart::slice_walk_type_names(parts, &mut |s| {
+                                    type_names.push(s.to_string());
+                                    false
+                                });
+                            }
+                            MainParam {
+                                name: p.name.clone(),
+                                type_names,
+                                default: p.default_value.as_ref().and_then(expr_default_to_value),
+                            }
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
+    None
+}
+
+/// Приводит строку из CLI к типу i-го параметра `fn __main__`.
+/// Нетипизированные параметры и параметры вне сигнатуры остаются строками (совместимость с `argv[i]`).
+fn coerce_main_arg(
+    main_fn: Option<&bytecode::Function>,
+    i: usize,
+    raw: Option<&str>,
+) -> Result<Value, LangError> {
+    use crate::common::error::ErrorType;
+    use parser::ast::TypePart;
+    let param = main_fn.filter(|f| i < f.arity);
+    let type_names: Vec<String> = param
+        .and_then(|f| f.param_types.get(i).cloned().flatten())
+        .map(|parts| {
+            let mut names = Vec::new();
+            TypePart::slice_walk_type_names(&parts, &mut |s| {
+                names.push(s.to_string());
+                false
+            });
+            names
+        })
+        .unwrap_or_default();
+    let has = |set: &[&str]| type_names.iter().any(|t| set.contains(&t.as_str()));
+
+    let Some(raw) = raw else {
+        // Аргумент не передан: default из сигнатуры, иначе «нулевое» значение по типу.
+        if let Some(Some(v)) = param.and_then(|f| f.default_values.get(i)) {
+            return Ok(v.clone());
+        }
+        return Ok(if has(&["int", "float", "num", "number"]) {
+            Value::Number(0.0)
+        } else if has(&["str", "string"]) {
+            Value::String(String::new())
+        } else if has(&["bool", "boolean"]) {
+            Value::Bool(false)
+        } else {
+            Value::Null
+        });
+    };
+    if type_names.is_empty() || has(&["str", "string", "any"]) {
+        return Ok(Value::String(raw.to_string()));
+    }
+    let s = raw.trim();
+    let lower = s.to_ascii_lowercase();
+    if has(&["bool", "boolean"]) {
+        match lower.as_str() {
+            "true" | "1" | "yes" | "y" | "on" => return Ok(Value::Bool(true)),
+            "false" | "0" | "no" | "n" | "off" => return Ok(Value::Bool(false)),
+            _ => {}
+        }
+    }
+    if has(&["int"]) {
+        if let Ok(n) = s.parse::<i64>() {
+            return Ok(Value::Number(n as f64));
+        }
+    }
+    if has(&["float", "num", "number"]) {
+        if let Ok(n) = s.parse::<f64>() {
+            return Ok(Value::Number(n));
+        }
+    }
+    if has(&["null"]) && matches!(lower.as_str(), "null" | "none" | "") {
+        return Ok(Value::Null);
+    }
+    let known = ["bool", "boolean", "int", "float", "num", "number", "null"];
+    if type_names.iter().all(|t| known.contains(&t.as_str())) {
+        let param_name = param
+            .and_then(|f| f.param_names.get(i))
+            .map(|s| s.as_str())
+            .unwrap_or("unknown");
+        return Err(LangError::runtime_error_with_type(
+            format!(
+                "Argument '{}': cannot convert '{}' to {}",
+                param_name,
+                raw,
+                type_names.join(" | ")
+            ),
+            0,
+            ErrorType::TypeError,
+        ));
+    }
+    // Прочие типы (литеральные union, классы, коллекции): оставляем строку, их проверит вызов __main__.
+    Ok(Value::String(raw.to_string()))
 }
 
 /// Параметры `fn __main__(...)` для CLI: имена и опциональные значения по умолчанию (только литералы).
@@ -588,7 +743,7 @@ fn run_with_vm_internal(source: &str) -> Result<(Value, Vm), LangError> {
 /// * `source_name` - путь к исходному файлу для сообщений об ошибках.
 fn run_with_vm_internal_with_args(
     source: &str,
-    args: Option<Vec<String>>,
+    args: Option<Vec<Option<String>>>,
     lib_path: Option<&std::path::Path>,
     explicit_base_path: Option<std::path::PathBuf>,
     source_name: Option<std::path::PathBuf>,
@@ -801,10 +956,14 @@ fn run_with_vm_internal_with_args(
     vm.ensure_globals_from_chunk(&chunk);
     // Единственный слот "argv": сохраняем индекс и пушим в конец; перед run пишем по этому индексу.
     let script_args = args.unwrap_or_default();
+    // Значения argv для параметров `fn __main__` приводятся к объявленным типам (bool/int/float/null),
+    // пропуски (None) заполняются значением по умолчанию из сигнатуры.
+    let main_fn = functions.iter().find(|f| f.name == "__main__");
     let argv: Vec<Value> = script_args
         .iter()
-        .map(|s| Value::String(s.clone()))
-        .collect();
+        .enumerate()
+        .map(|(i, s)| coerce_main_arg(main_fn, i, s.as_deref()))
+        .collect::<Result<_, _>>()?;
     let argv_array = Value::Array(Rc::new(RefCell::new(argv)));
     let argv_id = vm.with_stores_mut(|store, heap| {
         crate::vm::store_convert::store_value(argv_array, store, heap)

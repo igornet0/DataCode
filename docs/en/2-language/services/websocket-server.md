@@ -23,6 +23,17 @@ Each client connection runs in a sandbox (`getcwd()` empty, paths relative to DC
 
 Local `save()` / file writes are **blocked** in DCP WebSocket sessions.
 
+**Session sandbox** (applies to every DCP package and `@ws_route` handler):
+
+| Area | Behavior in a session |
+|------|-----------------------|
+| Paths | Every path a built-in returns, prints or reports in an error is relative to the session root (`./data/a.csv`). `path(...).exists`, `.is_file`, `.is_dir` check the package VFS, never the server disk |
+| Writes | `save()`, `save_csv`, `save_sqlite`, `save_tables_sqlite`, `response.save*`, archive `extract`, `system.fs.write`, file-based `sqlite:` connections are denied under **any** `execute_policy` (protects the server disk). `sqlite::memory:` is allowed |
+| Host details | `system.env.get_home_dir()` / `get_temp_dir()` return `"./"`; `get_username()`, `get_hostname()`, `system.env.get(...)`, `system.net.get_ip()` return `null`; `system.net.get_interfaces()` returns `[]` |
+| Permissions | `execute_policy` defaults to **`restricted`**: `system.fs.read`, `system.process.exec`, `system.env.set_env`, `web.http`, `web.browser` are denied |
+
+`configure({"execute_policy": "allow_all"})` in `ws_app.dc` is an explicit developer decision that re-enables `fs.read`, `process.exec`, `env.set_env` and network access for client code. Writes and host details stay sandboxed.
+
 ### Application script (`ws_app.dc`)
 
 Optional setup script. Runs once at startup before accepting connections.
@@ -42,7 +53,7 @@ fn ping(req) {
 
 | Function | Description |
 |----------|-------------|
-| `websocket.configure({...})` | `execute_policy`: `"allow_all"` (default) or `"restricted"` |
+| `websocket.configure({...})` | `execute_policy`: `"restricted"` (default) or `"allow_all"`. Applies to every client connection |
 | `websocket.disable_builtin("type")` | Disable built-in JSON handler (e.g. `smb_connect`) |
 | `websocket.enable_builtin("type")` | Re-enable |
 

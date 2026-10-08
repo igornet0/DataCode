@@ -132,6 +132,7 @@ impl Archive {
     }
 
     pub fn extract(&mut self, dest: &Path) -> Result<(), String> {
+        crate::file_io::ensure_write_allowed()?;
         self.ensure_open()?;
         self.backend
             .extract_all(dest)

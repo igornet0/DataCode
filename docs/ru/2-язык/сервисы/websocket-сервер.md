@@ -18,6 +18,17 @@ datacode examples/ru/07-websocket/dc/ws_app.dc --websocket --host 0.0.0.0 --port
 
 Локальная запись через `save()` **запрещена** в DCP WebSocket-сессиях.
 
+**Песочница сессии** (каждый DCP-пакет и обработчик `@ws_route`):
+
+| Область | Поведение в сессии |
+|---------|--------------------|
+| Пути | Любой путь, который встроенная функция возвращает, печатает или пишет в ошибке, — относительно корня сессии (`./data/a.csv`). `path(...).exists`, `.is_file`, `.is_dir` проверяют VFS пакета, а не диск сервера |
+| Запись | `save()`, `save_csv`, `save_sqlite`, `save_tables_sqlite`, `response.save*`, `extract` архива, `system.fs.write`, файловые подключения `sqlite:` запрещены при **любой** `execute_policy` (защита диска сервера). `sqlite::memory:` разрешён |
+| Сведения о хосте | `system.env.get_home_dir()` / `get_temp_dir()` возвращают `"./"`; `get_username()`, `get_hostname()`, `system.env.get(...)`, `system.net.get_ip()` — `null`; `system.net.get_interfaces()` — `[]` |
+| Разрешения | `execute_policy` по умолчанию **`restricted`**: запрещены `system.fs.read`, `system.process.exec`, `system.env.set_env`, `web.http`, `web.browser` |
+
+`configure({"execute_policy": "allow_all"})` в `ws_app.dc` — осознанное решение разработчика: оно снова открывает клиентскому коду `fs.read`, `process.exec`, `env.set_env` и сеть. Запись и сведения о хосте остаются в песочнице.
+
 ### Скрипт приложения (`ws_app.dc`)
 
 Опциональный скрипт настройки. Выполняется один раз при старте.
@@ -35,7 +46,7 @@ fn ping(req) {
 
 | Функция | Описание |
 |---------|----------|
-| `websocket.configure({...})` | `execute_policy`: `"allow_all"` или `"restricted"` |
+| `websocket.configure({...})` | `execute_policy`: `"restricted"` (по умолчанию) или `"allow_all"`. Действует для всех клиентских соединений |
 | `websocket.disable_builtin("type")` | Отключить встроенный JSON-обработчик |
 | `websocket.enable_builtin("type")` | Включить обратно |
 

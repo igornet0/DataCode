@@ -28,6 +28,28 @@ pub fn native_getcwd(_args: &[Value]) -> Value {
     }
 }
 
+/// `(exists, is_file, is_dir)` for a `Path` property lookup.
+///
+/// Inside a WebSocket session the answer comes from the DCP package VFS only:
+/// the server disk is never probed, so `exists` cannot be used to explore it.
+pub fn path_status(path: &PathBuf) -> (bool, bool, bool) {
+    if let Some(vfs) = crate::dcp::get_dcp_vfs() {
+        let Ok(key) = crate::dcp::normalize_vfs_path(path) else {
+            return (false, false, false);
+        };
+        if key.is_empty() {
+            return (true, false, true);
+        }
+        let is_file = vfs.contains_file(&key);
+        let is_dir = !is_file && vfs.is_dir(&key);
+        return (is_file || is_dir, is_file, is_dir);
+    }
+    if crate::websocket::client_sandbox_active() {
+        return (false, false, false);
+    }
+    (path.exists(), path.is_file(), path.is_dir())
+}
+
 /// Безопасное форматирование пути для сообщений об ошибках
 /// В режиме --use-ve преобразует полный путь в относительный
 pub fn format_path_for_error(path: &PathBuf) -> String {

@@ -105,6 +105,21 @@ pub fn read_bytes_from_path(path: &PathBuf) -> Result<Vec<u8>, String> {
     })
 }
 
+/// Error returned by every write attempt inside a WebSocket session.
+pub const SESSION_WRITE_DENIED: &str =
+    "Write not allowed in DCP WebSocket session: files cannot be created on the server";
+
+/// Single gate for creating or writing files. Inside a WebSocket session writes
+/// are denied regardless of the permission policy, so clients cannot fill or
+/// overwrite the server disk.
+pub fn ensure_write_allowed() -> Result<(), String> {
+    if crate::websocket::client_sandbox_active() {
+        Err(SESSION_WRITE_DENIED.to_string())
+    } else {
+        Ok(())
+    }
+}
+
 pub fn write_bytes_to_path(path: &PathBuf, data: &[u8]) -> Result<PathBuf, String> {
     let file_path_str = path.to_string_lossy().to_string();
     if file_path_str.starts_with("lib://") {
@@ -113,9 +128,7 @@ pub fn write_bytes_to_path(path: &PathBuf, data: &[u8]) -> Result<PathBuf, Strin
             file_path_str
         ));
     }
-    if crate::dcp::dcp_vfs_active() {
-        return Err("Write not allowed in DCP WebSocket session".to_string());
-    }
+    ensure_write_allowed()?;
     let resolved = resolve_local_path(path)?;
     if let Some(parent) = resolved.parent() {
         if !parent.as_os_str().is_empty() && parent != Path::new(".") {

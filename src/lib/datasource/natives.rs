@@ -224,6 +224,9 @@ pub fn native_response_save(args: &[Value]) -> Value {
     if args.len() < 2 {
         return set_error("save() expects a path argument");
     }
+    if let Err(e) = crate::file_io::ensure_write_allowed() {
+        return set_error(e);
+    }
     let rc = match response_from_args(args) {
         Ok(r) => r,
         Err(e) => return set_error(e),
@@ -242,6 +245,9 @@ pub fn native_response_save(args: &[Value]) -> Value {
 pub fn native_response_save_text(args: &[Value]) -> Value {
     if args.len() < 2 {
         return set_error("save_text() expects a path argument");
+    }
+    if let Err(e) = crate::file_io::ensure_write_allowed() {
+        return set_error(e);
     }
     let rc = match response_from_args(args) {
         Ok(r) => r,
@@ -265,6 +271,9 @@ pub fn native_response_save_text(args: &[Value]) -> Value {
 pub fn native_response_save_json(args: &[Value]) -> Value {
     if args.len() < 2 {
         return set_error("save_json() expects a path argument");
+    }
+    if let Err(e) = crate::file_io::ensure_write_allowed() {
+        return set_error(e);
     }
     let rc = match response_from_args(args) {
         Ok(r) => r,

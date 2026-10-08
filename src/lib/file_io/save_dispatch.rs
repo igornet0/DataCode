@@ -3,7 +3,9 @@
 use crate::common::table::Table;
 use crate::common::table_csv_export::write_table_csv;
 use crate::common::value::{ObjectKind, Value};
-use crate::file_io::path_input::{extension_lower, format_path_for_error, path_from_value, write_bytes_to_path};
+use crate::file_io::path_input::{
+    ensure_write_allowed, extension_lower, format_path_for_error, path_from_value, write_bytes_to_path,
+};
 use crate::file_io::value_serde::{
     value_to_json_string_pretty, value_to_toml_string_pretty, value_to_xml_string,
     value_to_yaml_string,
@@ -62,6 +64,7 @@ fn incompatible(path: &PathBuf, ext: &str, ty: &str) -> String {
 }
 
 pub fn save_value(data: &Value, path_arg: &Value) -> Result<String, String> {
+    ensure_write_allowed()?;
     let path = path_from_value(path_arg)?;
     let ext = extension_lower(&path);
     let ty = type_name_for_error(data);

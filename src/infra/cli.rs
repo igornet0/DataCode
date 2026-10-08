@@ -114,6 +114,8 @@ pub fn print_help() {
     println!("    - DCP assets are read from in-memory VFS (no temp_sessions folder)");
     println!("    - getcwd() returns empty string");
     println!("    - Local save()/write is blocked in DCP WebSocket sessions");
+    println!("    - execute_policy is \"restricted\" by default; opt in with configure({{\"execute_policy\": \"allow_all\"}})");
+    println!("    - Host details (home, temp, user, host, env, IP) are hidden from client code");
     println!("  • Send binary WebSocket frame with raw .dcp package bytes (magic DCPK)");
     println!(
         "  • Receive JSON: {{\"success\": true, \"output\": \"...\", \"error\": null}}"

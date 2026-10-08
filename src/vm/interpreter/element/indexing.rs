@@ -32,13 +32,13 @@ pub fn get_path(
             "is_file" => {
                 stack::push_id(
                     stack,
-                    store_value(Value::Bool(path.is_file()), value_store, heavy_store),
+                    store_value(Value::Bool(crate::vm::natives::file::path_status(&path.to_path_buf()).1), value_store, heavy_store),
                 );
             }
             "is_dir" => {
                 stack::push_id(
                     stack,
-                    store_value(Value::Bool(path.is_dir()), value_store, heavy_store),
+                    store_value(Value::Bool(crate::vm::natives::file::path_status(&path.to_path_buf()).2), value_store, heavy_store),
                 );
             }
             "extension" => {
@@ -74,7 +74,7 @@ pub fn get_path(
             "exists" => {
                 stack::push_id(
                     stack,
-                    store_value(Value::Bool(path.exists()), value_store, heavy_store),
+                    store_value(Value::Bool(crate::vm::natives::file::path_status(&path.to_path_buf()).0), value_store, heavy_store),
                 );
             }
             _ => {

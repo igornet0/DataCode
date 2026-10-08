@@ -98,6 +98,10 @@ impl DatabaseEngine {
         let lower = url.to_ascii_lowercase();
         let (backend, dialect) = if lower.starts_with("sqlite:") {
             let path = parse_sqlite_path(&url)?;
+            // Opening a file database creates it on disk: only in-memory inside a session.
+            if path.as_os_str() != ":memory:" {
+                crate::file_io::ensure_write_allowed()?;
+            }
             let conn =
                 Connection::open(&path).map_err(|e| format!("SQLite connection failed: {}", e))?;
             conn.execute("PRAGMA foreign_keys = ON", [])

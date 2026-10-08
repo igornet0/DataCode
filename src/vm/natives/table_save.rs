@@ -20,6 +20,7 @@ fn save_error(msg: impl Into<String>) -> Value {
 }
 
 fn check_fs_write() -> Result<(), String> {
+    crate::file_io::ensure_write_allowed()?;
     let Some(ptr) = current_vm_ptr() else {
         return Ok(());
     };

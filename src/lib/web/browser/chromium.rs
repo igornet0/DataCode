@@ -272,6 +272,7 @@ impl BrowserDriver for ChromiumDriver {
     }
 
     fn screenshot(&mut self, path: &str, selector: Option<&str>) -> Result<(), WebError> {
+        crate::file_io::ensure_write_allowed().map_err(WebError::io)?;
         self.ensure_open()?;
         let page = self.page.clone();
         let path = path.to_string();

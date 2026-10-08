@@ -11,5 +11,8 @@ mod xml_value;
 pub use read_dispatch::{read_bytes_from_memory, read_value};
 pub use read_options::ReadOptions;
 pub use save_dispatch::save_value;
-pub use path_input::{parse_lib_smb_path, path_from_value, read_bytes_from_path, write_bytes_to_path};
+pub use path_input::{
+    ensure_write_allowed, parse_lib_smb_path, path_from_value, read_bytes_from_path,
+    write_bytes_to_path, SESSION_WRITE_DENIED,
+};
 pub use table_readers::apply_header_filter;

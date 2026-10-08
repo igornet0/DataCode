@@ -27,6 +27,15 @@ fn deny_value(perm: &str) -> Value {
     Value::String(format!("permission denied: {}", perm))
 }
 
+/// Inside a WebSocket session client code must not learn anything about the
+/// server host: paths become the virtual-env root, identities become null.
+fn in_session() -> bool {
+    crate::websocket::client_sandbox_active()
+}
+
+/// Virtual-env root shown instead of a server directory.
+const SESSION_ROOT: &str = "./";
+
 fn arg_string(args: &[Value], i: usize) -> Option<String> {
     match args.get(i)? {
         Value::String(s) => Some(s.clone()),
@@ -57,6 +66,9 @@ pub fn native_system_get_os_version(_args: &[Value]) -> Value {
 }
 
 pub fn native_system_get_hostname(_args: &[Value]) -> Value {
+    if in_session() {
+        return Value::Null;
+    }
     let h = hostname::get()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|_| String::new());
@@ -64,6 +76,9 @@ pub fn native_system_get_hostname(_args: &[Value]) -> Value {
 }
 
 pub fn native_system_get_username(_args: &[Value]) -> Value {
+    if in_session() {
+        return Value::Null;
+    }
     let u = if cfg!(windows) {
         std::env::var("USERNAME")
     } else {
@@ -74,6 +89,9 @@ pub fn native_system_get_username(_args: &[Value]) -> Value {
 }
 
 pub fn native_system_get_home_dir(_args: &[Value]) -> Value {
+    if in_session() {
+        return Value::String(SESSION_ROOT.to_string());
+    }
     let h = dirs::home_dir()
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| String::new());
@@ -81,11 +99,18 @@ pub fn native_system_get_home_dir(_args: &[Value]) -> Value {
 }
 
 pub fn native_system_get_temp_dir(_args: &[Value]) -> Value {
+    if in_session() {
+        return Value::String(SESSION_ROOT.to_string());
+    }
     let t = std::env::temp_dir().to_string_lossy().into_owned();
     Value::String(t)
 }
 
 pub fn native_system_env_get(args: &[Value]) -> Value {
+    // Server environment (DB passwords, tokens, paths) never reaches client code.
+    if in_session() {
+        return Value::Null;
+    }
     let key = match arg_string(args, 0) {
         Some(k) => k,
         None => return Value::Null,
@@ -361,6 +386,9 @@ pub fn native_system_log_debug(args: &[Value]) -> Value {
 // --- net (30..31) ---
 
 pub fn native_system_net_get_ip(_args: &[Value]) -> Value {
+    if in_session() {
+        return Value::Null;
+    }
     match local_ip_address::local_ip() {
         Ok(ip) => Value::String(ip.to_string()),
         Err(_) => Value::Null,
@@ -369,6 +397,9 @@ pub fn native_system_net_get_ip(_args: &[Value]) -> Value {
 
 pub fn native_system_net_get_interfaces(_args: &[Value]) -> Value {
     let mut rows: Vec<Value> = Vec::new();
+    if in_session() {
+        return Value::Array(Rc::new(RefCell::new(rows)));
+    }
     if let Ok(ifaces) = if_addrs::get_if_addrs() {
         for iface in ifaces {
             let mut m = std::collections::HashMap::new();
@@ -438,6 +469,9 @@ pub fn native_system_fs_read(args: &[Value]) -> Value {
 }
 
 pub fn native_system_fs_write(args: &[Value]) -> Value {
+    if let Err(e) = crate::file_io::ensure_write_allowed() {
+        return Value::String(e);
+    }
     if !check_perm(PermissionPolicy::FS_WRITE) {
         return deny_value(PermissionPolicy::FS_WRITE);
     }

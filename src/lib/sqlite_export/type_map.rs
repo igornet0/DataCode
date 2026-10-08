@@ -137,9 +137,53 @@ pub fn sqlite_declared_to_datacode(decl: &str) -> &'static str {
     }
 }
 
+/// Largest integer an `f64` holds exactly (2^53). `Value::Number` is `f64`, so a
+/// longer integer string (ids, card numbers) would silently lose digits.
+const MAX_EXACT_F64_INT: i64 = 1 << 53;
+
+/// Canonical numeric text: what a number formats back to unchanged.
+///
+/// Rejects shapes where converting to a number loses information: leading
+/// zeros (`007`, `00.5`), an explicit `+` (`+79161234567`), bare `.5` / `5.`,
+/// and integers beyond 2^53. Such strings are identifiers, codes or phone
+/// numbers and must stay text.
+fn sniff_canonical_number(s: &str) -> Option<&'static str> {
+    let body = s.strip_prefix('-').unwrap_or(s);
+    let (mantissa, exponent) = match body.find(['e', 'E']) {
+        Some(pos) => (&body[..pos], Some(&body[pos + 1..])),
+        None => (body, None),
+    };
+    let (int_part, frac_part) = match mantissa.split_once('.') {
+        Some((i, f)) => (i, Some(f)),
+        None => (mantissa, None),
+    };
+    let all_digits = |t: &str| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit());
+    if !all_digits(int_part) || (int_part.len() > 1 && int_part.starts_with('0')) {
+        return None;
+    }
+    if let Some(frac) = frac_part {
+        if !all_digits(frac) {
+            return None;
+        }
+    }
+    if let Some(exp) = exponent {
+        let digits = exp.strip_prefix(['+', '-']).unwrap_or(exp);
+        if !all_digits(digits) {
+            return None;
+        }
+    }
+    if frac_part.is_none() && exponent.is_none() {
+        let n = s.parse::<i64>().ok()?;
+        return (n.unsigned_abs() <= MAX_EXACT_F64_INT as u64).then_some("int");
+    }
+    s.parse::<f64>().ok().filter(|f| f.is_finite()).map(|_| "float")
+}
+
 /// Content-based sniff for string cells (export / Arrow Utf8).
 ///
 /// Returns `None` for empty/whitespace (treat as NULL skip) or unrecognized text.
+/// Numbers are recognized only in canonical form (see [`sniff_canonical_number`]):
+/// `"007"`, `"+7916…"` and `"001.20"` stay text.
 pub fn sniff_string_datacode_type(s: &str) -> Option<&'static str> {
     let s = s.trim();
     if s.is_empty() {
@@ -161,19 +205,43 @@ pub fn sniff_string_datacode_type(s: &str) -> Option<&'static str> {
             return Some("datetime");
         }
     }
-    // Integer literal (no decimal / exponent)
-    if !s.contains('.') && !s.contains('e') && !s.contains('E') {
-        if s.parse::<i64>().is_ok() {
-            return Some("int");
+    sniff_canonical_number(s)
+}
+
+/// Column type for Arrow Utf8 cells: every non-empty cell must sniff to a
+/// compatible type, otherwise the whole column stays `"string"`. Deciding per
+/// column (not per cell) keeps a column of codes like `["007", "12"]` uniform.
+pub fn infer_utf8_column_type<'a>(cells: impl IntoIterator<Item = Option<&'a str>>) -> &'static str {
+    let mut flags = InferFlags::default();
+    for cell in cells.into_iter().flatten() {
+        if cell.trim().is_empty() {
+            continue;
+        }
+        match sniff_string_datacode_type(cell) {
+            Some(ty) if accumulate_inferred_type(&mut flags, ty) => {}
+            _ => return "string",
         }
     }
-    // Float literal
-    if let Ok(f) = s.parse::<f64>() {
-        if f.is_finite() {
-            return Some("float");
-        }
+    resolve_infer_flags(&flags)
+}
+
+/// Convert one Utf8 cell to its column type from [`infer_utf8_column_type`].
+/// Empty cells in a typed column become `Null`; a `"string"` column keeps text as is.
+pub fn coerce_utf8_cell(s: &str, column_type: &str) -> Value {
+    if column_type == "string" {
+        return Value::String(s.to_string());
     }
-    None
+    let t = s.trim();
+    if t.is_empty() {
+        return Value::Null;
+    }
+    let converted = match column_type {
+        "int" | "float" => t.parse::<f64>().ok().map(Value::Number),
+        "date" => parse_date(t),
+        "datetime" => parse_datetime(t).or_else(|| parse_date(t)),
+        _ => None,
+    };
+    converted.unwrap_or_else(|| Value::String(s.to_string()))
 }
 
 /// Coerce a Utf8 cell into a typed Value when sniff succeeds.
@@ -875,6 +943,36 @@ mod tests {
         assert_eq!(sniff_string_datacode_type("233.4"), Some("float"));
         assert_eq!(sniff_string_datacode_type("bf96cfeb:power"), None);
         assert_eq!(sniff_string_datacode_type("  "), None);
+    }
+
+    #[test]
+    fn sniff_keeps_identifier_like_numbers_as_text() {
+        for s in ["007", "01234", "+79161234567", "001.20", "00.5", ".5", "5.", "+1", "1e", "12345678901234567890"] {
+            assert_eq!(sniff_string_datacode_type(s), None, "{s:?} must stay text");
+        }
+        assert_eq!(sniff_string_datacode_type("9007199254740993"), None, "beyond 2^53");
+        assert_eq!(sniff_string_datacode_type("9007199254740992"), Some("int"));
+        for s in ["0", "-0", "12", "-42", "79161234567", "89161234567"] {
+            assert_eq!(sniff_string_datacode_type(s), Some("int"), "{s:?}");
+        }
+        for s in ["0.5", "-3.25", "1.50", "1e5", "2.5E-3", "10.0"] {
+            assert_eq!(sniff_string_datacode_type(s), Some("float"), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn utf8_column_type_is_decided_for_the_whole_column() {
+        assert_eq!(infer_utf8_column_type([Some("1"), Some("2"), None, Some("")]), "int");
+        assert_eq!(infer_utf8_column_type([Some("1"), Some("2.5")]), "float");
+        assert_eq!(infer_utf8_column_type([Some("12"), Some("007")]), "string");
+        assert_eq!(infer_utf8_column_type([Some("12"), Some("abc")]), "string");
+        assert_eq!(infer_utf8_column_type([Some("2024-01-15"), Some("2024-02-01")]), "date");
+        assert_eq!(infer_utf8_column_type([None, Some(" ")]), "string");
+
+        assert!(matches!(coerce_utf8_cell("007", "string"), Value::String(ref v) if v == "007"));
+        assert!(matches!(coerce_utf8_cell("12", "int"), Value::Number(n) if n == 12.0));
+        assert!(matches!(coerce_utf8_cell("", "int"), Value::Null));
+        assert!(matches!(coerce_utf8_cell("", "string"), Value::String(ref v) if v.is_empty()));
     }
 
     #[test]

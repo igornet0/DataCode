@@ -78,6 +78,13 @@ dcp create -o job.dcp --code script.dc --assets-dir ./data
 
 With `--build_model`, successful runs may include `sqlite_db` (base64-encoded SQLite file).
 
+`sqlite_db` contains only tables declared `global`. Script-local variables (intermediate steps, `src = source_table(...)`) are not exported, matching scalars in `_datacode_variables`. Reassigning a global (`orders = orders[...]`) exports its latest value.
+
+```dc
+global orders = table([[1, 10]], ["id", "amount"])   # in sqlite_db
+tmp = orders["amount" > 5]                            # not exported
+```
+
 ### FK check mode (`__config__`)
 
 The DCP package may include a **`__config__`** section (`SectionType.CONFIG = 5`) with JSON `{"fk_check":"warn"}`. The server CLI flag is unchanged: `datacode --websocket --build_model` without this section is **`strict`**.
@@ -181,6 +188,8 @@ global renamed = source_table("orders", {"id": null, "value": "amount"})
 - `columns` omitted or `null` — all columns
 - Array of strings — select columns in array order; **error** if a name is missing
 - Object — select only listed keys; string value renames, `null` keeps the name; **error** if a key is missing
+
+**Types of Arrow `Utf8` columns.** The type is inferred for the whole column. A column becomes numeric (or a date) only if **every** non-empty value is a canonical number (or date); empty cells in such a column become `null`. Otherwise the whole column stays text. Numbers with a leading zero (`007`, `001.20`), an explicit `+` (`+79161234567`) or integers beyond 2^53 are not canonical, so codes, phone numbers, ZIP codes and long ids keep every character in the VM and in the SQLite export (`TEXT` column). Send Arrow `Int64` / `Float64` columns to get numbers unconditionally.
 
 **Content-addressed assets:** table cells may store UTF-8 refs `asset://{sha256}`. Bytes live in ASSET sections named `assets/{sha256}` (deduped by hash). Path-based VFS assets (for `read(path(...))`) remain separate. With `--build_model`, content assets are written to SQLite table `__assets` (`id`, `kind`, `mime_type`, `filename`, `size`, `data`); business columns keep the `asset://` text.
 

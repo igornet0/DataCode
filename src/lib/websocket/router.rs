@@ -366,7 +366,7 @@ fn execute_code(
             let needs_model = sql_script.is_some() || sql_table_script.is_some();
 
             if build_model {
-                match sqlite_export::get_global_tables(&mut vm) {
+                match sqlite_export::get_exported_tables(&mut vm) {
                     Ok(tables) if !tables.is_empty() => {
                         let timestamp = SystemTime::now()
                             .duration_since(UNIX_EPOCH)

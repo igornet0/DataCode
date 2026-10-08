@@ -2,14 +2,14 @@
 
 use std::io::Cursor;
 
-use arrow::array::{Array, AsArray, StringArray};
+use arrow::array::{Array, AsArray};
 use arrow::datatypes::{DataType, TimeUnit};
 use arrow::ipc::reader::{FileReader, StreamReader};
 use arrow::record_batch::RecordBatch;
 
 use crate::common::table::Table;
 use crate::common::value::Value;
-use crate::sqlite_export::type_map::coerce_utf8_to_value;
+use crate::sqlite_export::type_map::{coerce_utf8_cell, infer_utf8_column_type};
 use chrono::{FixedOffset, TimeZone, Utc};
 
 pub fn arrow_ipc_to_table(bytes: &[u8]) -> Result<Table, String> {
@@ -156,19 +156,8 @@ fn array_to_values(array: &dyn Array) -> Result<Vec<Value>, String> {
                 })
                 .collect())
         }
-        DataType::Utf8 => string_array_to_values(array.as_string::<i32>()),
-        DataType::LargeUtf8 => {
-            let arr = array.as_string::<i64>();
-            Ok((0..arr.len())
-                .map(|i| {
-                    if arr.is_null(i) {
-                        Value::Null
-                    } else {
-                        coerce_utf8_to_value(arr.value(i))
-                    }
-                })
-                .collect())
-        }
+        DataType::Utf8 => Ok(string_array_to_values(array.as_string::<i32>())),
+        DataType::LargeUtf8 => Ok(string_array_to_values(array.as_string::<i64>())),
         DataType::Date32 => {
             let arr = array.as_primitive::<arrow::datatypes::Date32Type>();
             Ok((0..arr.len())
@@ -205,16 +194,20 @@ fn array_to_values(array: &dyn Array) -> Result<Vec<Value>, String> {
     }
 }
 
-fn string_array_to_values(arr: &StringArray) -> Result<Vec<Value>, String> {
-    Ok((0..arr.len())
-        .map(|i| {
-            if arr.is_null(i) {
-                Value::Null
-            } else {
-                coerce_utf8_to_value(arr.value(i))
-            }
+/// Utf8 columns: the type is decided for the whole column, so numbers sent as
+/// text (`"12"`, `"2.5"`) still arrive as numbers while a column holding any
+/// identifier-like value (`"007"`, `"+7916…"`) stays text in every row.
+fn string_array_to_values<O: arrow::array::OffsetSizeTrait>(
+    arr: &arrow::array::GenericStringArray<O>,
+) -> Vec<Value> {
+    let cell = |i: usize| (!arr.is_null(i)).then(|| arr.value(i));
+    let column_type = infer_utf8_column_type((0..arr.len()).map(cell));
+    (0..arr.len())
+        .map(|i| match cell(i) {
+            Some(text) => coerce_utf8_cell(text, column_type),
+            None => Value::Null,
         })
-        .collect())
+        .collect()
 }
 
 fn epoch_nanos_to_date_value(nanos: i64) -> Value {
@@ -375,6 +368,8 @@ pub fn apply_source_table_columns(table: Table, columns: Option<&Value>) -> Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sqlite_export::type_map::coerce_utf8_to_value;
+    use arrow::array::{LargeStringArray, StringArray};
     use std::collections::HashMap;
     use std::rc::Rc;
     use std::cell::RefCell;
@@ -471,5 +466,24 @@ mod tests {
             coerce_utf8_to_value("bf96:power"),
             Value::String(s) if s == "bf96:power"
         ));
+        assert!(matches!(coerce_utf8_to_value("007"), Value::String(s) if s == "007"));
+    }
+
+    #[test]
+    fn utf8_column_with_identifier_stays_text_in_every_row() {
+        let arr = StringArray::from(vec![Some("007"), Some("12"), None]);
+        let values = string_array_to_values(&arr);
+        assert!(matches!(&values[0], Value::String(s) if s == "007"));
+        assert!(matches!(&values[1], Value::String(s) if s == "12"));
+        assert!(matches!(values[2], Value::Null));
+    }
+
+    #[test]
+    fn utf8_numeric_column_becomes_numbers() {
+        let arr = LargeStringArray::from(vec![Some("12"), Some("2.5"), Some("")]);
+        let values = string_array_to_values(&arr);
+        assert!(matches!(values[0], Value::Number(n) if n == 12.0));
+        assert!(matches!(values[1], Value::Number(n) if n == 2.5));
+        assert!(matches!(values[2], Value::Null));
     }
 }

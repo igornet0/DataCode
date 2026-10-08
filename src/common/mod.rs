@@ -2,6 +2,7 @@ pub mod numeric;
 pub mod constructor_overload;
 pub mod range_args;
 pub mod error;
+pub mod format_spec;
 pub mod integral_map;
 pub mod object_map;
 pub mod set_map;

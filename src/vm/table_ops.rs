@@ -4,7 +4,7 @@ use crate::common::range_args::range_len;
 use crate::common::TaggedValue;
 use crate::common::table::{Table, TableData};
 use crate::common::value::{IterableInner, Value};
-use crate::common::value_store::{ValueCell, ValueId, ValueStore, NULL_VALUE_ID};
+use crate::common::value_store::{ValueId, ValueStore, NULL_VALUE_ID};
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::store_convert::{load_value, store_value, tagged_to_value_id};
 
@@ -240,7 +240,7 @@ pub fn build_view_flat_from_row_slots(
     let column_oriented =
         row_slots.len() == header_count && row_slots.len() != first_len;
 
-    let mut flat_values: Vec<Value> = if column_oriented {
+    let flat_values: Vec<Value> = if column_oriented {
         let n_cols = header_count;
         let n_rows = first_len;
         for &row_tv in row_slots.iter() {

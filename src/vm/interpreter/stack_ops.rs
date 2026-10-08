@@ -47,23 +47,6 @@ fn fork_table_if_slot_aliased(
     TaggedValue::from_heap(store_value(val, value_store, heavy_store))
 }
 
-/// Format a value for string interpolation with a spec like ".2f" or ".0f".
-fn format_value_interp(value: &Value, spec: &str) -> String {
-    let spec = spec.trim();
-    if let Some(rest) = spec.strip_prefix('.') {
-        if let Some(dot_f) = rest.find('f') {
-            let prec_str = &rest[..dot_f];
-            if prec_str.chars().all(|c| c.is_ascii_digit()) {
-                let prec: usize = prec_str.parse().unwrap_or(6);
-                if let Some(n) = value.as_ieee_f64() {
-                    return format!("{:.*}", prec, n);
-                }
-            }
-        }
-    }
-    value.to_string()
-}
-
 pub fn op_constant(
     index: usize,
     stack: &mut Vec<TaggedValue>,
@@ -254,7 +237,7 @@ pub fn op_format_interp(
         Value::String(s) => s,
         _ => String::new(),
     };
-    let result = format_value_interp(&value, &format_spec);
+    let result = crate::common::format_spec::format_interpolated(&value, &format_spec);
     let result_id = store_value(Value::String(result), value_store, heavy_store);
     stack::push_id(stack, result_id);
     Ok(VMStatus::Continue)

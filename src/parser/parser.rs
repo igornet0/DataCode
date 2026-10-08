@@ -1890,7 +1890,7 @@ impl Parser {
         (expr_content, include_name, format_spec)
     }
 
-    /// True when text after a top-level `:` looks like a printf-style format, not slice syntax.
+    /// True when text after a top-level `:` looks like a Python-style format spec (e.g. `.2f`, `9.2f`, `>10`), not slice syntax.
     fn looks_like_format_spec(spec: &str) -> bool {
         let s = spec.trim();
         if s.is_empty() || s.ends_with(']') {
@@ -1900,6 +1900,7 @@ impl Parser {
         matches!(first, '.' | ',' | '+' | '#' | '0')
             || first.is_ascii_digit()
             || "fdeFgGeExXos%".contains(first)
+            || crate::common::format_spec::FormatSpec::parse(s).is_some()
     }
 
     /// Unescape literal segments: lexer \$ pushes placeholder \u{E000}; we replace it with "$" (the "{" is already in the string)

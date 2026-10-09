@@ -236,10 +236,10 @@ pub fn native_response_save(args: &[Value]) -> Value {
         Err(e) => return set_error(e),
     };
     let resp = rc.borrow();
-    if let Err(e) = write_bytes_to_path(&path, &resp.body) {
-        return set_error(e);
+    match write_bytes_to_path(&path, &resp.body) {
+        Ok(written) => Value::String(crate::file_io::display_written_path(&written)),
+        Err(e) => set_error(e),
     }
-    Value::String(path.to_string_lossy().into_owned())
 }
 
 pub fn native_response_save_text(args: &[Value]) -> Value {
@@ -262,10 +262,10 @@ pub fn native_response_save_text(args: &[Value]) -> Value {
         Ok(t) => t,
         Err(e) => return set_error(e),
     };
-    if let Err(e) = std::fs::write(&path, text) {
-        return set_error(e.to_string());
+    match write_bytes_to_path(&path, text.as_bytes()) {
+        Ok(written) => Value::String(crate::file_io::display_written_path(&written)),
+        Err(e) => set_error(e),
     }
-    Value::String(path.to_string_lossy().into_owned())
 }
 
 pub fn native_response_save_json(args: &[Value]) -> Value {
@@ -296,10 +296,10 @@ pub fn native_response_save_json(args: &[Value]) -> Value {
         Ok(s) => s,
         Err(e) => return set_error(e.message()),
     };
-    if let Err(e) = std::fs::write(&path, pretty) {
-        return set_error(e.to_string());
+    match write_bytes_to_path(&path, pretty.as_bytes()) {
+        Ok(written) => Value::String(crate::file_io::display_written_path(&written)),
+        Err(e) => set_error(e),
     }
-    Value::String(path.to_string_lossy().into_owned())
 }
 
 /// Build headers object for response property access.

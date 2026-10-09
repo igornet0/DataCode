@@ -272,10 +272,16 @@ impl BrowserDriver for ChromiumDriver {
     }
 
     fn screenshot(&mut self, path: &str, selector: Option<&str>) -> Result<(), WebError> {
-        crate::file_io::ensure_write_allowed().map_err(WebError::io)?;
+        let path = if crate::websocket::client_sandbox_active() {
+            crate::file_io::resolve_write_path(std::path::Path::new(path))
+                .map_err(WebError::io)?
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            path.to_string()
+        };
         self.ensure_open()?;
         let page = self.page.clone();
-        let path = path.to_string();
         let sel = selector.map(|s| Self::css_or_xpath(s));
         block_on(async move {
             let bytes = if let Some(sel) = sel {

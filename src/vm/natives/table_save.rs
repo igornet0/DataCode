@@ -6,7 +6,6 @@ use crate::common::value::Value;
 use crate::common::value_store::{ValueCell, ValueStore};
 use crate::file_io::path_from_value;
 use crate::sqlite_export::export_single_table;
-use crate::vm::natives::file::resolve_path_in_session;
 use crate::vm::permission_policy::PermissionPolicy;
 use crate::vm::store_convert::load_value;
 use crate::vm::vm::{current_vm_ptr, with_current_stores};
@@ -20,7 +19,11 @@ fn save_error(msg: impl Into<String>) -> Value {
 }
 
 fn check_fs_write() -> Result<(), String> {
-    crate::file_io::ensure_write_allowed()?;
+    // In a session writes are confined to the session folder: the ws_app.dc
+    // `allow_write` switch decides, not the system fs.write permission.
+    if crate::websocket::client_sandbox_active() {
+        return crate::file_io::ensure_write_allowed();
+    }
     let Some(ptr) = current_vm_ptr() else {
         return Ok(());
     };
@@ -59,10 +62,10 @@ fn ensure_parent_dir(path: &Path) -> Result<(), String> {
 
 fn resolve_output_path(arg: &Value, default_ext: &str) -> Result<PathBuf, String> {
     let mut path = path_from_value(arg).map_err(|_| "path must be a string".to_string())?;
-    path = resolve_path_in_session(&path)?;
     if path.extension().is_none() {
         path.set_extension(default_ext);
     }
+    path = crate::file_io::resolve_write_path(&path)?;
     ensure_parent_dir(&path)?;
     Ok(path)
 }
@@ -222,7 +225,10 @@ pub fn native_table_save_csv(args: &[Value]) -> Value {
         write_table_csv(&*table_ref, &path)
     };
     match write_result {
-        Ok(()) => Value::String(path.to_string_lossy().to_string()),
+        Ok(()) => match crate::file_io::finish_write(&path) {
+            Ok(()) => Value::String(crate::file_io::display_written_path(&path)),
+            Err(e) => save_error(e),
+        },
         Err(e) => save_error(e),
     }
 }
@@ -259,7 +265,10 @@ pub fn native_table_save_sqlite(args: &[Value]) -> Value {
         }
     };
     match export_result {
-        Ok(()) => Value::String(path.to_string_lossy().to_string()),
+        Ok(()) => match crate::file_io::finish_write(&path) {
+            Ok(()) => Value::String(crate::file_io::display_written_path(&path)),
+            Err(e) => save_error(e),
+        },
         Err(e) => save_error(e),
     }
 }
@@ -341,7 +350,10 @@ pub fn native_save_tables_sqlite(args: &[Value]) -> Value {
         false,
         crate::sqlite_export::FkCheckMode::Strict,
     ) {
-        Ok(_) => Value::String(path_str),
+        Ok(_) => match crate::file_io::finish_write(&path) {
+            Ok(()) => Value::String(crate::file_io::display_written_path(&path)),
+            Err(e) => save_error(e),
+        },
         Err(e) => save_error(e),
     }
 }

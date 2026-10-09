@@ -9,6 +9,7 @@ pub mod config;
 pub mod natives;
 pub mod output_capture;
 pub mod router;
+pub mod session_ve;
 pub mod smb;
 pub mod ws_natives;
 
@@ -180,6 +181,7 @@ fn cleanup_client(smb_manager: &Arc<Mutex<SmbManager>>) {
     drop(manager);
 
     crate::vm::file_ops::clear_smb_manager();
+    session_ve::cleanup_ve_dir();
     clear_dcp_session();
     crate::web::cleanup_all();
     set_use_ve(false);

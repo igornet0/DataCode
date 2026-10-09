@@ -3,6 +3,7 @@
 use data_code::websocket::router::{dispatch_dcp, ClientContext};
 use data_code::websocket::set_use_ve;
 use data_code::websocket::smb::SmbManager;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 // ---------------------------------------------------------------------------
@@ -97,3 +98,50 @@ pub fn run_session(code: &str, assets: &[(&str, &[u8])]) -> Response {
     }
 }
 
+/// Absolute locations of this machine that must never reach a client.
+pub fn server_paths() -> Vec<String> {
+    let mut paths: Vec<PathBuf> = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")), std::env::temp_dir()];
+    if let Ok(cwd) = std::env::current_dir() {
+        paths.push(cwd);
+    }
+    if let Some(home) = dirs::home_dir() {
+        paths.push(home);
+    }
+    let mut out = Vec::new();
+    for p in paths {
+        if let Ok(canonical) = p.canonicalize() {
+            out.push(canonical.to_string_lossy().into_owned());
+        }
+        out.push(p.to_string_lossy().into_owned());
+    }
+    out.retain(|s| s.len() > 1);
+    out.iter_mut().for_each(|s| {
+        while s.len() > 1 && s.ends_with('/') {
+            s.pop();
+        }
+    });
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// OS-level roots that indicate a server path even when not one of ours.
+pub const SERVER_PATH_MARKERS: &[&str] = &["/Users/", "/home/", "/private/var/", "/var/folders/", "/root/"];
+
+pub fn assert_no_server_path(resp: &Response, what: &str) {
+    let mut leaks: Vec<String> = server_paths()
+        .into_iter()
+        .filter(|p| resp.raw.contains(p.as_str()))
+        .collect();
+    leaks.extend(
+        SERVER_PATH_MARKERS
+            .iter()
+            .filter(|m| resp.raw.contains(*m))
+            .map(|m| m.to_string()),
+    );
+    assert!(
+        leaks.is_empty(),
+        "{what}: server path disclosed {leaks:?}\nresponse: {}",
+        resp.raw
+    );
+}

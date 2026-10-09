@@ -75,12 +75,27 @@ pub fn read_bytes_from_path(path: &PathBuf) -> Result<Vec<u8>, String> {
         if key.is_empty() {
             return Err("Path is a directory, not a file".to_string());
         }
-        return vfs.get(&key).map(|b| b.to_vec()).ok_or_else(|| {
-            format!(
-                "File does not exist: {}",
-                crate::dcp::format_logical_path(&key)
-            )
-        });
+        if let Some(bytes) = vfs.get(&key) {
+            return Ok(bytes.to_vec());
+        }
+        // A file written earlier in this session (session folder).
+        if let Some(real) = crate::websocket::session_ve::resolve_read_path(Path::new(&key)) {
+            return std::fs::read(&real).map_err(|e| e.to_string());
+        }
+        return Err(format!(
+            "File does not exist: {}",
+            crate::dcp::format_logical_path(&key)
+        ));
+    }
+
+    if crate::websocket::client_sandbox_active() {
+        return match crate::websocket::session_ve::resolve_read_path(path) {
+            Some(real) => std::fs::read(&real).map_err(|e| e.to_string()),
+            None => Err(format!(
+                "File does not exist: ./{}",
+                path.to_string_lossy().trim_start_matches("./")
+            )),
+        };
     }
 
     let resolved = resolve_local_path(path)?;
@@ -110,13 +125,41 @@ pub const SESSION_WRITE_DENIED: &str =
     "Write not allowed in DCP WebSocket session: files cannot be created on the server";
 
 /// Single gate for creating or writing files. Inside a WebSocket session writes
-/// are denied regardless of the permission policy, so clients cannot fill or
-/// overwrite the server disk.
+/// are denied regardless of the permission policy, unless ws_app.dc enabled
+/// `allow_write` — then they land in the session folder (see [`resolve_write_path`]).
 pub fn ensure_write_allowed() -> Result<(), String> {
-    if crate::websocket::client_sandbox_active() {
+    if crate::websocket::client_sandbox_active() && !crate::websocket::app::app_config().allow_write {
         Err(SESSION_WRITE_DENIED.to_string())
     } else {
         Ok(())
+    }
+}
+
+/// Real destination of a write. Outside a session: the usual resolution.
+/// In a session: denied by default, or the session folder when enabled.
+pub fn resolve_write_path(path: &Path) -> Result<PathBuf, String> {
+    if !crate::websocket::client_sandbox_active() {
+        return resolve_local_path(&path.to_path_buf());
+    }
+    ensure_write_allowed()?;
+    crate::websocket::session_ve::resolve_write_path(path)
+}
+
+/// Call after writing to a path from [`resolve_write_path`] (session quota).
+pub fn finish_write(written: &Path) -> Result<(), String> {
+    if crate::websocket::client_sandbox_active() {
+        crate::websocket::session_ve::enforce_quota_after_write(written)
+    } else {
+        Ok(())
+    }
+}
+
+/// Path to return to client code for a written file (`./out.csv` in a session).
+pub fn display_written_path(real: &Path) -> String {
+    if crate::websocket::client_sandbox_active() {
+        crate::websocket::session_ve::display_path(real)
+    } else {
+        real.to_string_lossy().into_owned()
     }
 }
 
@@ -128,8 +171,7 @@ pub fn write_bytes_to_path(path: &PathBuf, data: &[u8]) -> Result<PathBuf, Strin
             file_path_str
         ));
     }
-    ensure_write_allowed()?;
-    let resolved = resolve_local_path(path)?;
+    let resolved = resolve_write_path(path)?;
     if let Some(parent) = resolved.parent() {
         if !parent.as_os_str().is_empty() && parent != Path::new(".") {
             if !parent.exists() {
@@ -153,6 +195,7 @@ pub fn write_bytes_to_path(path: &PathBuf, data: &[u8]) -> Result<PathBuf, Strin
             e
         )
     })?;
+    finish_write(&resolved)?;
     Ok(resolved)
 }
 

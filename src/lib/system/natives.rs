@@ -469,8 +469,15 @@ pub fn native_system_fs_read(args: &[Value]) -> Value {
 }
 
 pub fn native_system_fs_write(args: &[Value]) -> Value {
-    if let Err(e) = crate::file_io::ensure_write_allowed() {
-        return Value::String(e);
+    // In a session: denied, or confined to the session folder when enabled.
+    if in_session() {
+        let (Some(path), Some(content)) = (arg_string(args, 0), arg_string(args, 1)) else {
+            return Value::String("system.fs.write: expected path and content".to_string());
+        };
+        return match crate::file_io::write_bytes_to_path(&std::path::PathBuf::from(path), content.as_bytes()) {
+            Ok(_) => Value::Null,
+            Err(e) => Value::String(format!("system.fs.write: {}", e)),
+        };
     }
     if !check_perm(PermissionPolicy::FS_WRITE) {
         return deny_value(PermissionPolicy::FS_WRITE);

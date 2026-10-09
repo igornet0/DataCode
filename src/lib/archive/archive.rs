@@ -132,11 +132,17 @@ impl Archive {
     }
 
     pub fn extract(&mut self, dest: &Path) -> Result<(), String> {
-        crate::file_io::ensure_write_allowed()?;
+        // In a session the destination is a folder inside the session root.
+        let dest = if crate::websocket::client_sandbox_active() {
+            crate::file_io::resolve_write_path(dest)?
+        } else {
+            dest.to_path_buf()
+        };
         self.ensure_open()?;
         self.backend
-            .extract_all(dest)
-            .map_err(|e| e.display())
+            .extract_all(&dest)
+            .map_err(|e| e.display())?;
+        crate::file_io::finish_write(&dest)
     }
 
     pub fn close(&mut self) {

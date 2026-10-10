@@ -317,3 +317,27 @@ fn hostname_of_this_machine() -> String {
         .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
         .unwrap_or_default()
 }
+
+// ---------------------------------------------------------------------------
+// Imports: a session cannot load `.dc` modules from the server disk
+// ---------------------------------------------------------------------------
+
+#[test]
+fn session_cannot_import_modules_from_server_disk() {
+    let name = "dc_security_probe_module";
+    let file = std::env::current_dir().unwrap().join(format!("{name}.dc"));
+    let _probe = CwdProbe::new(&[&format!("{name}.dc")]);
+    std::fs::write(&file, "SECRET = \"server-module-secret\"\n").unwrap();
+    for code in [
+        format!("import {name}\nprint({name}.SECRET)"),
+        format!("from {name} import SECRET\nprint(SECRET)"),
+    ] {
+        let resp = run_session(&code, &[]);
+        assert_no_server_path(&resp, "import from server disk");
+        assert!(
+            !resp.raw.contains("server-module-secret"),
+            "a session imported a module from the server disk: {}",
+            resp.raw
+        );
+    }
+}

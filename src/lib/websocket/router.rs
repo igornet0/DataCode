@@ -334,6 +334,23 @@ fn encode_sqlite_db(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
+/// Clears the thread's module base path for a session and restores it afterwards.
+struct SessionBasePathGuard(Option<std::path::PathBuf>);
+
+impl SessionBasePathGuard {
+    fn clear() -> Self {
+        let saved = crate::vm::file_import::get_base_path();
+        crate::vm::file_import::set_base_path(None);
+        SessionBasePathGuard(saved)
+    }
+}
+
+impl Drop for SessionBasePathGuard {
+    fn drop(&mut self) {
+        crate::vm::file_import::set_base_path(self.0.take());
+    }
+}
+
 fn execute_code(
     code: &str,
     smb_manager: &Arc<Mutex<SmbManager>>,
@@ -347,6 +364,10 @@ fn execute_code(
 
     let output_capture = OutputCapture::new();
     output_capture.set_capture(true);
+
+    // Client code has no base directory: loading ws_app.dc on this thread pointed the base path
+    // at the app directory, and a session must not import the developer's `.dc` modules from it.
+    let _no_base_path = SessionBasePathGuard::clear();
 
     let result = if policy == PermissionPolicy::AllowAll {
         crate::run_with_vm(code)

@@ -12,7 +12,7 @@ Recommended to follow **in order by number** — like lessons.
 | 03 | Arrays `[…]`, slices, comprehension | [03-arrays.md](./03-arrays.md) |
 | 04 | Conditions `if` / `else` | [04-if-else.md](./04-if-else.md) |
 | 05 | Loops `while` and `for … in …` | [05-loops.md](./05-loops.md) |
-| 06 | Functions `fn`, `return` | [06-functions.md](./06-functions.md) |
+| 06 | Functions `fn`, `return`, `*args` / `**kwargs` | [06-functions.md](./06-functions.md) |
 | 07 | Type annotations | [07-typed-functions.md](./07-typed-functions.md) |
 | 08 | Stream functions `stream fn` | [08-stream-functions.md](./08-stream-functions.md) |
 | 09 | Classes `cls`, `new`, `super` | [09-classes.md](./09-classes.md) |

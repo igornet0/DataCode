@@ -1,0 +1,67 @@
+# Variable number of arguments: *args and **kwargs
+# Packing extra arguments and unpacking at the call site
+
+# *args collects extra positional arguments into an array
+fn total(*nums) {
+    s = 0
+    for n in nums {
+        s = s + n
+    }
+    return s
+}
+
+print("total() =", total())
+print("total(1, 2, 3) =", total(1, 2, 3))
+
+# Regular parameters, defaults and *args together
+fn log(level, prefix = ">", *parts) {
+    return prefix + " " + level + ": " + join(parts, " ")
+}
+
+print(log("INFO"))
+print(log("INFO", "#", "server", "started"))
+
+# **kwargs collects extra named arguments into an object (dict)
+fn connect(host, **opts) {
+    port = opts.get("port", 5432)
+    return host + ":" + str(port) + " options: " + str(len(opts))
+}
+
+print(connect("db"))
+print(connect("db", port = 6000, ssl = true))
+
+# Iterating kwargs: keys via .keys, membership via in
+fn describe(**opts) {
+    for key in opts.keys {
+        print("  ", key, "=", opts[key])
+    }
+    return "debug" in opts
+}
+
+print("debug passed:", describe(debug = true, level = 3))
+
+# Unpacking at the call site: * for an array, ** for an object
+fn point(x, y, z) {
+    return [x, y, z]
+}
+
+coords = [1, 2]
+print(point(0, *coords))
+print(point(*[1], *[2, 3]))
+print(point(1, **{"y": 20, "z": 30}))
+
+# Forwarding all arguments to another function
+fn inner(a, b, **opts) {
+    return [a, b, opts]
+}
+
+fn wrapper(*args, **kwargs) {
+    return inner(*args, **kwargs)
+}
+
+print(wrapper(1, 2, mode = "fast"))
+
+# Argument binding errors (for functions of this file — at compile time):
+# point(1, x = 2, z = 3)  -> Function 'point' got multiple values for argument 'x'
+# point(1, 2, w = 3)      -> Function 'point' got an unexpected keyword argument 'w'
+# connect()               -> Function 'connect' missing required argument 'host'

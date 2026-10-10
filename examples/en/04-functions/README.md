@@ -74,6 +74,20 @@ datacode examples/en/05-functions/typed_functions.dc
 datacode examples/en/05-functions/stream_functions.dc
 ```
 
+### 6. `variadic_arguments.dc` - Variable number of arguments
+**Description**: Demonstrates `*args` / `**kwargs` parameters and `*` / `**` unpacking at the call site.
+
+**What you'll learn**:
+- Collecting extra positional arguments with `*args` and named ones with `**kwargs`
+- Combining regular parameters, defaults, `*args` and `**kwargs`
+- Spreading an array with `*` and an object with `**` in a call
+- Forwarding all arguments to another function
+
+**Run**:
+```bash
+datacode examples/en/04-functions/variadic_arguments.dc
+```
+
 ## 🎯 Concepts Covered
 
 ### Function Declaration

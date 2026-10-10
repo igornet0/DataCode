@@ -1,0 +1,67 @@
+# Переменное число аргументов: *args и **kwargs
+# Демонстрация упаковки лишних аргументов и распаковки при вызове
+
+# *args собирает лишние позиционные аргументы в массив
+fn total(*nums) {
+    s = 0
+    for n in nums {
+        s = s + n
+    }
+    return s
+}
+
+print("total() =", total())
+print("total(1, 2, 3) =", total(1, 2, 3))
+
+# Обычные параметры, значения по умолчанию и *args вместе
+fn log(level, prefix = ">", *parts) {
+    return prefix + " " + level + ": " + join(parts, " ")
+}
+
+print(log("INFO"))
+print(log("INFO", "#", "сервер", "запущен"))
+
+# **kwargs собирает лишние именованные аргументы в объект (словарь)
+fn connect(host, **opts) {
+    port = opts.get("port", 5432)
+    return host + ":" + str(port) + " опций: " + str(len(opts))
+}
+
+print(connect("db"))
+print(connect("db", port = 6000, ssl = true))
+
+# Перебор kwargs: ключи через .keys, проверка наличия через in
+fn describe(**opts) {
+    for key in opts.keys {
+        print("  ", key, "=", opts[key])
+    }
+    return "debug" in opts
+}
+
+print("debug передан:", describe(debug = true, level = 3))
+
+# Распаковка при вызове: * для массива, ** для объекта
+fn point(x, y, z) {
+    return [x, y, z]
+}
+
+coords = [1, 2]
+print(point(0, *coords))
+print(point(*[1], *[2, 3]))
+print(point(1, **{"y": 20, "z": 30}))
+
+# Проброс всех аргументов в другую функцию
+fn inner(a, b, **opts) {
+    return [a, b, opts]
+}
+
+fn wrapper(*args, **kwargs) {
+    return inner(*args, **kwargs)
+}
+
+print(wrapper(1, 2, mode = "fast"))
+
+# Ошибки связывания аргументов (для функций этого файла — ещё при компиляции):
+# point(1, x = 2, z = 3)  -> Function 'point' got multiple values for argument 'x'
+# point(1, 2, w = 3)      -> Function 'point' got an unexpected keyword argument 'w'
+# connect()               -> Function 'connect' missing required argument 'host'

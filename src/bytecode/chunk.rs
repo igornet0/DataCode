@@ -24,6 +24,43 @@ pub struct Chunk {
     pub global_names: std::collections::BTreeMap<usize, String>, // Маппинг индексов глобальных переменных на их имена (BTreeMap для детерминированного порядка итерации)
     pub explicit_global_names: std::collections::BTreeMap<usize, String>, // Маппинг индексов переменных, явно объявленных с ключевым словом 'global'
     pub source_name: Option<String>, // Путь к исходному файлу для сообщений об ошибках
+    /// Dedup index for [`Chunk::add_constant`] (scalar constants -> index). Built lazily from
+    /// `constants[..const_index_len]`, so chunks assembled elsewhere (e.g. from `.dcb`) need nothing.
+    pub const_index: ConstIndex,
+}
+
+/// Hash index of scalar constants. Entries are verified on hit, so a constant changed in place
+/// (function relocation) can only cause a missed dedup (a duplicate constant), never a wrong one.
+#[derive(Debug, Clone, Default)]
+pub struct ConstIndex {
+    map: std::collections::HashMap<ConstKey, usize>,
+    indexed_len: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ConstKey {
+    Null,
+    Bool(bool),
+    Int(crate::common::numeric::IntValue),
+    FloatBits(u64),
+    NumberBits(u64),
+    Str(String),
+    Function(usize),
+    Native(usize),
+}
+
+fn const_key(value: &Value) -> Option<ConstKey> {
+    Some(match value {
+        Value::Null => ConstKey::Null,
+        Value::Bool(b) => ConstKey::Bool(*b),
+        Value::Int(i) => ConstKey::Int(*i),
+        Value::Float(f) => ConstKey::FloatBits(f.to_f64_bits_for_stack()),
+        Value::Number(n) => ConstKey::NumberBits(n.to_bits()),
+        Value::String(s) => ConstKey::Str(s.clone()),
+        Value::Function(i) => ConstKey::Function(*i),
+        Value::NativeFunction(i) => ConstKey::Native(*i),
+        _ => return None,
+    })
 }
 
 impl Chunk {
@@ -37,6 +74,7 @@ impl Chunk {
             global_names: std::collections::BTreeMap::new(),
             explicit_global_names: std::collections::BTreeMap::new(),
             source_name: None,
+            const_index: ConstIndex::default(),
         }
     }
 
@@ -62,9 +100,10 @@ impl Chunk {
     }
 
     pub fn add_constant(&mut self, value: Value) -> usize {
-        // Оптимизация: проверяем, есть ли уже такая константа.
-        // Object / Array: only dedupe by Rc identity — deep `==` can recurse on cyclic graphs (e.g. SQLEnum class ↔ members),
-        // and separate Array Rc`s must not merge just because contents compare equal (mutable RefCell<Vec> is shared across opcode refs).
+        // Dedup scalar constants through a hash index (a linear search made compiling long
+        // literals O(n^2)). Object / Array: only dedupe by Rc identity — deep `==` can recurse on
+        // cyclic graphs (e.g. SQLEnum class ↔ members), and separate Array Rc`s must not merge just
+        // because contents compare equal (mutable RefCell<Vec> is shared across opcode refs).
         match &value {
             Value::Object(rc) => {
                 if let Some(index) = self.constants.iter().position(|v| {
@@ -89,6 +128,19 @@ impl Chunk {
                 }
             }
             _ => {
+                if let Some(key) = const_key(&value) {
+                    self.index_new_constants();
+                    if let Some(&index) = self.const_index.map.get(&key) {
+                        if self.constants.get(index).and_then(const_key).as_ref() == Some(&key) {
+                            return index;
+                        }
+                    }
+                    self.constants.push(value);
+                    let index = self.constants.len() - 1;
+                    self.const_index.map.insert(key, index);
+                    self.const_index.indexed_len = self.constants.len();
+                    return index;
+                }
                 if let Some(index) = self.constants.iter().position(|v| v == &value) {
                     return index;
                 }
@@ -96,6 +148,16 @@ impl Chunk {
         }
         self.constants.push(value);
         self.constants.len() - 1
+    }
+
+    fn index_new_constants(&mut self) {
+        let start = self.const_index.indexed_len.min(self.constants.len());
+        for (i, c) in self.constants.iter().enumerate().skip(start) {
+            if let Some(key) = const_key(c) {
+                self.const_index.map.entry(key).or_insert(i);
+            }
+        }
+        self.const_index.indexed_len = self.constants.len();
     }
 
     /// Returns true if every Constant(index) in code has index < constants.len().

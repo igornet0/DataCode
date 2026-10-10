@@ -572,6 +572,7 @@ fn ser_to_chunk(ser: &SerChunk) -> Chunk {
         global_names: ser.global_names.clone(),
         explicit_global_names: ser.explicit_global_names.clone(),
         source_name: ser.source_name.clone(),
+        const_index: Default::default(),
     }
 }
 

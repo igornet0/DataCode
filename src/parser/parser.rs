@@ -23,6 +23,46 @@ pub struct Parser {
     /// Lazily loaded from [`Self::source_name`] for Python `:` indented blocks.
     source_lines: Option<Vec<String>>,
     operator_registry: SharedOperatorRegistry,
+    /// `paren_context[pos]` = [`Parser::is_inside_parentheses_at`]`(pos)`, precomputed in one pass
+    /// (the backward scan per expression was O(n^2) on long literals). `None`: unbalanced `)`
+    /// before `pos`, answered by the scan.
+    paren_context: Vec<Option<bool>>,
+}
+
+/// One forward pass equivalent to the backward scan of [`Parser::is_inside_parentheses_at`]:
+/// a stack of unmatched `(` and boundary tokens (`;`, `{`, `}`, `fn`); `)` closes the nearest `(`
+/// together with the boundaries opened after it. Inside parentheses = the top is a `(`.
+fn compute_paren_context(tokens: &[Token]) -> Vec<Option<bool>> {
+    let mut out = Vec::with_capacity(tokens.len() + 1);
+    out.push(Some(false));
+    let mut stack: Vec<bool> = Vec::new();
+    let mut unbalanced = false;
+    for t in tokens {
+        match t.kind {
+            TokenKind::LParen => stack.push(true),
+            TokenKind::RParen => {
+                if stack.contains(&true) {
+                    while let Some(open) = stack.pop() {
+                        if open {
+                            break;
+                        }
+                    }
+                } else {
+                    unbalanced = true;
+                }
+            }
+            TokenKind::Semicolon | TokenKind::LBrace | TokenKind::RBrace | TokenKind::Fn => {
+                stack.push(false)
+            }
+            _ => {}
+        }
+        out.push(if unbalanced {
+            None
+        } else {
+            Some(stack.last() == Some(&true))
+        });
+    }
+    out
 }
 
 impl Parser {
@@ -43,12 +83,14 @@ impl Parser {
         source_name: Option<&str>,
         operator_registry: SharedOperatorRegistry,
     ) -> Self {
+        let paren_context = compute_paren_context(&tokens);
         Self {
             tokens,
             current: 0,
             source_name: source_name.map(String::from),
             source_lines: None,
             operator_registry,
+            paren_context,
         }
     }
 
@@ -2017,6 +2059,13 @@ impl Parser {
     /// True when `pos` is inside `(...)` of a call or grouping, not at block/statement level
     /// where bare `a, b = rhs` is unpack assignment.
     fn is_inside_parentheses_at(&self, pos: usize) -> bool {
+        if let Some(Some(inside)) = self.paren_context.get(pos) {
+            return *inside;
+        }
+        self.is_inside_parentheses_scan(pos)
+    }
+
+    fn is_inside_parentheses_scan(&self, pos: usize) -> bool {
         if pos == 0 {
             return false;
         }

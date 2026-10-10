@@ -270,7 +270,15 @@ fn ensure_module_loaded(
                         register_nested_module_namespaces(&module_object, vm_ptr);
                     }
                 }
-                let id = store_value(module_object, value_store, heavy_store);
+                let id = store_value(module_object.clone(), value_store, heavy_store);
+                // `m.X` reads the module's live data cells (see module_data::bind_namespace_object).
+                crate::vm::module_data::bind_namespace_object(
+                    &module_object,
+                    id,
+                    value_store,
+                    heavy_store,
+                    vm_ptr,
+                );
                 if let Some(idx) = global_index_by_name(global_names, module_name) {
                     if idx < globals.len() {
                         globals[idx] = GlobalSlot::Heap(id);
@@ -1012,7 +1020,15 @@ pub(crate) fn handle_import_from(
                                 }
                             }
 
-                            let module_id = store_value(module_object, value_store, heavy_store);
+                            let module_id =
+                                store_value(module_object.clone(), value_store, heavy_store);
+                            crate::vm::module_data::bind_namespace_object(
+                                &module_object,
+                                module_id,
+                                value_store,
+                                heavy_store,
+                                vm_ptr,
+                            );
                             // Plan 2.3: do not overwrite a slot that already holds an export (class/constructor); never overwrite argv slot.
                             let existing_idx = global_index_by_name(global_names, &module_name);
                             let overwrite_ok = existing_idx
@@ -1241,6 +1257,15 @@ pub(crate) fn handle_import_from(
     };
     // Clone the HashMap to avoid borrowing issues - we can now mutate globals
     let module_object = module_object_rc.borrow().clone();
+    // The module's own namespace (the value above is a store copy): module data is bound from its
+    // live slots so a repeated `from m import X` sees the current value and arrays stay shared.
+    let live_namespace = if module_object.str_key_contains(crate::vm::module_object::MODULE_MARKER_KEY) {
+        unsafe { (*vm_ptr).get_modules() }
+            .get(&module_name)
+            .and_then(|m| m.borrow().namespace.clone())
+    } else {
+        None
+    };
 
     for item_value in &items_array {
         if let Value::String(ref item_str) = item_value {
@@ -1328,7 +1353,18 @@ pub(crate) fn handle_import_from(
                             }
                         };
                         max_index_needed = max_index_needed.max(global_index + 1);
-                        let id = store_value(value.clone(), value_store, heavy_store);
+                        let id = live_namespace
+                            .as_ref()
+                            .and_then(|ns| {
+                                crate::vm::module_data::imported_data_value_id(
+                                    ns,
+                                    &key,
+                                    value_store,
+                                    heavy_store,
+                                    vm_ptr,
+                                )
+                            })
+                            .unwrap_or_else(|| store_value(value.clone(), value_store, heavy_store));
                         indices_to_set.push((global_index, key.clone(), id));
                     }
                     if max_index_needed > globals.len() {
@@ -1351,7 +1387,20 @@ pub(crate) fn handle_import_from(
                         let alias = parts[1];
 
                         if let Some(value) = module_object.str_key_get(name).cloned() {
-                            let id = store_value(value.clone(), value_store, heavy_store);
+                            let id = live_namespace
+                                .as_ref()
+                                .and_then(|ns| {
+                                    crate::vm::module_data::imported_data_value_id(
+                                        ns,
+                                        name,
+                                        value_store,
+                                        heavy_store,
+                                        vm_ptr,
+                                    )
+                                })
+                                .unwrap_or_else(|| {
+                                    store_value(value.clone(), value_store, heavy_store)
+                                });
                             let global_index =
                                 if let Some(idx) = global_index_by_name(global_names, alias) {
                                     idx
@@ -1464,7 +1513,18 @@ pub(crate) fn handle_import_from(
             indices
         };
         let has_merge = module_object.str_key_contains("__start_function_index");
-        let id = store_value(value_to_store, value_store, heavy_store);
+        let id = live_namespace
+            .as_ref()
+            .and_then(|ns| {
+                crate::vm::module_data::imported_data_value_id(
+                    ns,
+                    &item_str,
+                    value_store,
+                    heavy_store,
+                    vm_ptr,
+                )
+            })
+            .unwrap_or_else(|| store_value(value_to_store, value_store, heavy_store));
         for &global_index in &indices_to_update {
             // When we just merged (__start_function_index present), per-item is source of truth for
             // Functions only: always write remapped function so explicitly imported names get the correct one.

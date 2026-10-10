@@ -146,6 +146,9 @@ pub struct ModuleDataSlots {
     /// Keeps the namespace alive so its address (the map key) cannot be reused by another module.
     _namespace: Rc<RefCell<ObjectKind>>,
     pub slots: HashMap<String, GlobalSlot>,
+    /// Store objects standing for this namespace in the importer (`import m` binds `m` to one);
+    /// their data fields are kept pointing at `slots` (see `module_data`).
+    pub objects: Vec<crate::common::value_store::ValueId>,
 }
 
 impl ModuleDataSlots {
@@ -153,6 +156,7 @@ impl ModuleDataSlots {
         Self {
             _namespace: namespace,
             slots: HashMap::new(),
+            objects: Vec::new(),
         }
     }
 }

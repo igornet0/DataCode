@@ -1,0 +1,36 @@
+# Модуль с изменяемым состоянием: число, список и словарь.
+COUNT = 0
+ITEMS = ["m"]
+CFG = {"mode": "dev"}
+
+fn bump() {
+    global COUNT = COUNT + 1
+    return COUNT
+}
+
+fn add(x) {
+    push(ITEMS, x)
+    return len(ITEMS)
+}
+
+fn set_cfg(k, v) {
+    CFG[k] = v
+    return len(CFG)
+}
+
+fn count() {
+    return COUNT
+}
+
+fn items_len() {
+    return len(ITEMS)
+}
+
+fn cfg_get(k) {
+    return CFG[k]
+}
+
+fn reset_items() {
+    global ITEMS = []
+    return 0
+}

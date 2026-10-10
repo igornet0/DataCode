@@ -1,0 +1,39 @@
+from poizen_name import NAMES, SUFFIXES
+
+
+cls HashRecipe {
+    recipes: object
+
+    new HashRecipe(){
+        this.recipes = {}
+    }
+
+    fn add(ingridiets: array[Ingridiet], poizen: Poizen) {
+        this.recipes[ingridiets] = poizen
+    }
+}
+
+cls Poizen {
+    name: str
+    price_sell: float
+
+    new Poizen(name: str, price_sell: float){
+        this.name = name
+        this.price_sell = price_sell
+    }
+}
+
+cls Ingridiet {
+    name: str
+    price_buy: float
+
+    new Ingridiet(name: str, price_buy: float){
+        this.name = name
+        this.price_buy = price_buy
+    }
+}
+
+fn create_poizen() {
+    print(len(NAMES))
+    print(len(SUFFIXES))
+}

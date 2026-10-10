@@ -1,0 +1,21 @@
+from poizen import Poizen, create_poizen
+
+cls Inventari {
+    id: int
+}
+
+cls Player {
+    coins: float = 0.0
+    invent: Inventari
+}
+
+
+cls Game {
+
+    new Game() {
+    }
+
+    fn run() {
+        create_poizen()
+    }
+}

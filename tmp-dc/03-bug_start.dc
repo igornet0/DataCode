@@ -1,0 +1,4 @@
+from bug_oe import Game
+
+game = Game()
+game.run()

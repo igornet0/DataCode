@@ -532,7 +532,12 @@ pub(crate) fn handle_import_from(
                                 let start_idx = functions.len();
                                 let mut new_fns: Vec<_> = module_vm.get_functions().to_vec();
                                 for f in &mut new_fns {
-                                    f.module_name = Some(module_name.clone());
+                                    // Functions of modules this module imported itself keep their own
+                                    // module (e.g. `create_poizen` from `poizen` merged via `game`):
+                                    // their globals live in that module's namespace.
+                                    if f.module_name.is_none() {
+                                        f.module_name = Some(module_name.clone());
+                                    }
                                 }
                                 functions.extend(new_fns);
                                 let module_function_count = module_vm.get_functions().len();

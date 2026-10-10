@@ -1,0 +1,15 @@
+# Первый уровень: from-импорт функции второго уровня и вызов из метода класса.
+from potions import names_count
+
+cls Game {
+    new Game() {
+    }
+
+    fn run() {
+        return names_count()
+    }
+}
+
+fn run_game() {
+    return names_count()
+}

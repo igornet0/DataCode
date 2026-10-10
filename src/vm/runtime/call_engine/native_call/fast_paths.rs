@@ -137,8 +137,17 @@ pub(super) fn try_push_fast_path(
     let item_tv = crate::vm::stack::pop_direct(stack).unwrap_or(TaggedValue::null());
     let arr_tv = crate::vm::stack::pop_direct(stack).unwrap_or(TaggedValue::null());
     let arr_id = tagged_to_value_id(arr_tv, value_store);
-    if let Some(ValueCell::Array(slots)) = value_store.get_mut(arr_id) {
-        slots.push(item_tv);
+    if matches!(value_store.get(arr_id), Some(ValueCell::Array(_))) {
+        // Same as SetArrayElement: an item from the call arena (e.g. a `range` loop variable)
+        // must be inlined/promoted when the array outlives the call, or it reads back as null.
+        let item_tv = crate::vm::store_convert::prepare_value_for_container_store(
+            arr_id,
+            item_tv,
+            value_store,
+        );
+        if let Some(ValueCell::Array(slots)) = value_store.get_mut(arr_id) {
+            slots.push(item_tv);
+        }
         stack::push_id(stack, arr_id);
         return Some(VMStatus::Continue);
     }

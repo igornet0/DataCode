@@ -1,0 +1,64 @@
+# Модуль с изменяемыми данными: функции мутируют свои глобальные списки/словари на месте.
+ITEMS = ["зелье"]
+PRICES = {"зелье": 10}
+MATRIX = [[1, 2], [3, 4]]
+
+fn add_item(name) {
+    push(ITEMS, name)
+    return len(ITEMS)
+}
+
+fn items_count() {
+    return len(ITEMS)
+}
+
+fn rename_first(name) {
+    ITEMS[0] = name
+    return ITEMS[0]
+}
+
+fn first_item() {
+    return ITEMS[0]
+}
+
+fn set_price(name, price) {
+    PRICES[name] = price
+    return len(PRICES)
+}
+
+fn price_of(name) {
+    return PRICES[name]
+}
+
+fn reset_items() {
+    global ITEMS = ["новый"]
+    return len(ITEMS)
+}
+
+fn alias_push(name) {
+    local_ref = ITEMS
+    push(local_ref, name)
+    return len(ITEMS)
+}
+
+fn bump_cell() {
+    MATRIX[1][0] = MATRIX[1][0] + 100
+    return MATRIX[1][0]
+}
+
+fn fill(n) {
+    for i in range(n) {
+        push(ITEMS, i)
+    }
+    return len(ITEMS)
+}
+
+fn sum_numbers() {
+    s = 0
+    for x in ITEMS {
+        if typeof(x) == "int" {
+            s = s + x
+        }
+    }
+    return s
+}

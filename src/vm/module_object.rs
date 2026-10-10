@@ -120,6 +120,36 @@ impl ModuleObject {
     }
 }
 
+/// Live bindings of one module's plain data (`ITEMS = [...]`, `COUNT = 0`) inside one VM.
+///
+/// The export namespace stores `Value`s, and turning a `Value` into a store id copies arrays and
+/// dicts. Loading a module variable from the namespace on every `LoadGlobal` therefore produced a
+/// fresh copy each time: `push(ITEMS, x)` in a module function mutated a throwaway copy and every
+/// load cost O(len). A slot here is materialized once and then read/written like a regular
+/// global, so the value keeps its identity and loads are O(1).
+///
+/// Store ids are only valid in the VM that allocated them, so these slots live on the VM (not on
+/// [`ModuleObject`], which may be shared with child VMs).
+pub struct ModuleDataSlots {
+    /// Keeps the namespace alive so its address (the map key) cannot be reused by another module.
+    _namespace: Rc<RefCell<ObjectKind>>,
+    pub slots: HashMap<String, GlobalSlot>,
+}
+
+impl ModuleDataSlots {
+    pub fn new(namespace: Rc<RefCell<ObjectKind>>) -> Self {
+        Self {
+            _namespace: namespace,
+            slots: HashMap::new(),
+        }
+    }
+}
+
+/// Identity key of a module namespace for [`ModuleDataSlots`] lookup.
+pub fn namespace_key(namespace: &Rc<RefCell<ObjectKind>>) -> usize {
+    Rc::as_ptr(namespace) as *const () as usize
+}
+
 impl std::fmt::Debug for ModuleObject {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ModuleObject")

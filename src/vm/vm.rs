@@ -19,7 +19,7 @@ use crate::vm::globals;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::host::HostEntry;
 use crate::vm::module_cache::CachedModule;
-use crate::vm::module_object::ModuleObject;
+use crate::vm::module_object::{ModuleDataSlots, ModuleObject};
 use crate::vm::native_loader::{PluginHookNames, ResolvedNativeParamMeta};
 use crate::vm::permission_policy::PermissionPolicy;
 use crate::vm::store_convert::load_value;
@@ -126,6 +126,9 @@ pub struct Vm {
     module_deps: Rc<RefCell<HashMap<PathBuf, Vec<PathBuf>>>>,
     /// Cache of loaded modules by canonical name (e.g. "core.config") or path. Each module has its own namespace.
     modules: RefCell<HashMap<String, Rc<RefCell<ModuleObject>>>>,
+    /// Stable storage for module-level data read/written by merged module functions (see
+    /// [`ModuleDataSlots`]). Keyed by module namespace identity; ids live in this VM's value_store.
+    module_data_slots: RefCell<HashMap<usize, ModuleDataSlots>>,
     /// When set (e.g. from run_with_vm_internal_with_args), update_chunk_indices_from_names will always map "argv" to this slot,
     /// so ImportFrom re-patch does not remap LoadGlobal(argv) to load_settings (slot 79) after merge.
     argv_slot_index: Option<usize>,
@@ -225,6 +228,7 @@ impl Vm {
             executed_module_functions: Rc::new(RefCell::new(HashMap::new())),
             module_deps: Rc::new(RefCell::new(HashMap::new())),
             modules: RefCell::new(HashMap::new()),
+            module_data_slots: RefCell::new(HashMap::new()),
             argv_slot_index: None,
             argv_old_indices: None,
             current_argv_value_id: None,
@@ -283,6 +287,7 @@ impl Vm {
             executed_module_functions: parent.executed_module_functions.clone(),
             module_deps: parent.module_deps.clone(),
             modules: RefCell::new(HashMap::new()),
+            module_data_slots: RefCell::new(HashMap::new()),
             argv_slot_index: None,
             argv_old_indices: None,
             current_argv_value_id: None,
@@ -934,6 +939,14 @@ impl Vm {
         self.modules.borrow()
     }
 
+    /// Module data bindings (namespace identity -> per-name slot). Used by LoadGlobal/StoreGlobal
+    /// in module frames so module arrays/dicts keep identity across loads.
+    pub(crate) fn get_module_data_slots_mut(
+        &self,
+    ) -> std::cell::RefMut<'_, HashMap<usize, ModuleDataSlots>> {
+        self.module_data_slots.borrow_mut()
+    }
+
     /// Получить доступ к глобальным переменным (GlobalSlot; use resolve_to_value_id or store_convert::slot_to_value for Value)
     /// Combines builtins (0..BUILTIN_END) and module globals (BUILTIN_END+). Legacy: prefer per-module lookup.
     pub fn get_globals(&self) -> &[GlobalSlot] {
@@ -1092,6 +1105,7 @@ impl Vm {
         }
         self.value_store.clear();
         self.heavy_store.clear();
+        self.module_data_slots.borrow_mut().clear();
         for i in 0..self.globals.len() {
             self.globals[i] = GlobalSlot::null();
         }

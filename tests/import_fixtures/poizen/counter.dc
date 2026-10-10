@@ -1,0 +1,11 @@
+# Модуль с изменяемым глобальным состоянием.
+COUNT = 0
+
+fn bump() {
+    global COUNT = COUNT + 1
+    return COUNT
+}
+
+fn get_count() {
+    return COUNT
+}

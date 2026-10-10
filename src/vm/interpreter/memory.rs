@@ -12,13 +12,14 @@ use crate::vm::executor::global_index_by_name;
 use crate::vm::frame::CallFrame;
 use crate::vm::global_slot::{default_global_slot, GlobalSlot};
 use crate::vm::heavy_store::HeavyStore;
-use crate::vm::module_object::BUILTIN_END;
+use crate::vm::module_object::{namespace_key, ModuleDataSlots, ModuleObject, BUILTIN_END};
 use crate::vm::modules;
 use crate::vm::stack;
 use crate::vm::store_convert::{
     load_value, slot_to_value, store_value, store_value_arena, tagged_to_value_id_arena,
 };
 use crate::vm::types::VMStatus;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 /// Plain module-level data (`NAMES = [...]`, `COUNT = 0`, ...). The import pipeline never feeds
@@ -42,6 +43,58 @@ fn is_module_owned_data(value: &Value) -> bool {
             | Value::Date(_)
             | Value::Duration(_)
     )
+}
+
+/// Store-cell counterpart of [`is_module_owned_data`] (no `Value` materialization).
+fn is_module_owned_data_cell(cell: Option<&ValueCell>) -> bool {
+    matches!(
+        cell,
+        None | Some(
+            ValueCell::Null
+                | ValueCell::Int(_)
+                | ValueCell::Float(_)
+                | ValueCell::Number(_)
+                | ValueCell::Bool(_)
+                | ValueCell::String(_)
+                | ValueCell::Array(_)
+                | ValueCell::Tuple(_)
+                | ValueCell::Set(_)
+                | ValueCell::Path(_)
+                | ValueCell::Uuid(_, _)
+                | ValueCell::Date { .. }
+                | ValueCell::Duration { .. }
+        )
+    )
+}
+
+/// Live slot of module data `name` (see [`ModuleDataSlots`]). On first access the export is
+/// materialized into the main store once; later loads return the same id, so in-place mutations
+/// (`push`, `arr[i] = x`, `dict[k] = v`) are visible to every module function.
+/// Returns None when the name is not module-owned data (functions, classes, objects, missing).
+fn module_data_slot(
+    module_rc: &Rc<RefCell<ModuleObject>>,
+    name: &str,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+    vm_ptr: *mut crate::vm::vm::Vm,
+) -> Option<GlobalSlot> {
+    let module = module_rc.borrow();
+    let namespace = module.namespace.as_ref()?;
+    let key = namespace_key(namespace);
+    let mut all = unsafe { (*vm_ptr).get_module_data_slots_mut() };
+    if let Some(slot) = all.get(&key).and_then(|m| m.slots.get(name)) {
+        return Some(*slot);
+    }
+    let value = module.get_export(name).filter(is_module_owned_data)?;
+    let id = store_value(value, value_store, heavy_store);
+    // Inside a call nested values may land in the call arena (freed on return): keep the slot in the main store.
+    let id = value_store.promote_from_call_arena(id);
+    let slot = GlobalSlot::Heap(id);
+    all.entry(key)
+        .or_insert_with(|| ModuleDataSlots::new(Rc::clone(namespace)))
+        .slots
+        .insert(name.to_string(), slot);
+    Some(slot)
 }
 
 /// Execute LoadGlobal(index).
@@ -131,13 +184,13 @@ pub(crate) fn op_load_global(
                 // shadow the module's own `NAMES` imported via `from poizen_name import NAMES`.
                 if let Some(name) = var_name {
                     if name != "__constructing_class__" {
-                        let own_data = rc
-                            .borrow()
-                            .get_export(name)
-                            .filter(is_module_owned_data);
-                        if let Some(value) = own_data {
-                            let id = store_value(value, value_store, heavy_store);
-                            stack::push_id(stack, id);
+                        if let Some(slot) =
+                            module_data_slot(&rc, name, value_store, heavy_store, vm_ptr)
+                        {
+                            match slot {
+                                GlobalSlot::Inline(tv) => stack::push(stack, tv),
+                                GlobalSlot::Heap(id) => stack::push_id(stack, id),
+                            }
                             return Ok(VMStatus::Continue);
                         }
                     }
@@ -636,15 +689,50 @@ pub(crate) fn op_store_global(
     }
     // Module-owned data lives only in the module namespace (see LoadGlobal): writing it into the
     // host slot would overwrite a host variable with the same name (e.g. `COUNT` in main).
-    if module_export.is_some() {
-        let value = if tv.is_heap() {
-            load_value(tagged_to_value_id_arena(tv, value_store), value_store, heavy_store)
-        } else {
-            slot_to_value(tv, value_store, heavy_store)
-        };
-        if is_module_owned_data(&value) {
-            sync_module_export(value);
-            return Ok(VMStatus::Continue);
+    if let Some((module_rc, name)) = &module_export {
+        let namespace = module_rc.borrow().namespace.clone();
+        if let Some(namespace) = namespace {
+            let key = namespace_key(&namespace);
+            let heap_id = tv.is_heap().then(|| tagged_to_value_id_arena(tv, value_store));
+            let is_data = match heap_id {
+                Some(id) => is_module_owned_data_cell(value_store.get(id)),
+                None => true,
+            };
+            let mut all = unsafe { (*vm_ptr).get_module_data_slots_mut() };
+            if !is_data {
+                // Rebound to a function/class/object: drop the data slot so LoadGlobal uses the host-slot path below.
+                if let Some(m) = all.get_mut(&key) {
+                    m.slots.remove(name);
+                }
+            } else {
+                let (slot, value) = match heap_id {
+                    None => (
+                        GlobalSlot::Inline(tv),
+                        slot_to_value(tv, value_store, heavy_store),
+                    ),
+                    Some(id) => {
+                        let value = load_value(id, value_store, heavy_store);
+                        let from_constant = frames
+                            .last()
+                            .map(|f| f.constant_ids.contains(&id))
+                            .unwrap_or(false);
+                        // Constant-pool values are shared: copy so mutating the global does not mutate the literal.
+                        let id = if from_constant {
+                            store_value(value.clone(), value_store, heavy_store)
+                        } else {
+                            id
+                        };
+                        (GlobalSlot::Heap(value_store.promote_from_call_arena(id)), value)
+                    }
+                };
+                all.entry(key)
+                    .or_insert_with(|| ModuleDataSlots::new(Rc::clone(&namespace)))
+                    .slots
+                    .insert(name.clone(), slot);
+                drop(all);
+                sync_module_export(value);
+                return Ok(VMStatus::Continue);
+            }
         }
     }
     // Inline path: primitives (number, bool, null, int) — no alloc, no get.

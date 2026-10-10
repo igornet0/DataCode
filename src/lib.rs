@@ -67,7 +67,5 @@ pub use vm::Vm;
 
 /// Crate-internal helpers used by VM / file import (export remapping, parse-time preload).
 pub(crate) use run_api::{
-    module_uid, preload_native_call_registry_for_parse, preload_operator_registry_for_parse,
-    remap_function_constants_in_chunks, remap_native_indices_in_exports,
-    replace_function_with_module_function_in_exports,
+    preload_native_call_registry_for_parse, preload_operator_registry_for_parse,
 };

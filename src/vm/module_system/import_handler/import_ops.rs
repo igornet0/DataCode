@@ -16,8 +16,6 @@ use crate::vm::heavy_store::HeavyStore;
 use crate::vm::modules;
 use crate::vm::store_convert::{load_value, store_value};
 use crate::vm::types::VMStatus;
-use std::cell::RefCell;
-use std::rc::Rc;
 
 /// Typed ctor `Class::new_1_int` → arity-only name `Class::new_1` for compile-time placeholder slots.
 fn constructor_base_global_name(class_name: &str, ctor_key: &str) -> Option<String> {
@@ -124,88 +122,6 @@ fn resolve_dotted_namespace_from_loaded_parent(
     Some(cur)
 }
 
-/// Shift `Function(i)` inside module namespaces nested in an export (`import sub` done by the
-/// imported module) by `start`: like the module's own functions, their indices point into the
-/// imported module's VM function table, which was appended to the caller's table at `start`.
-/// Only `.dc` module namespaces are visited, so classes and plain objects are left as they are.
-fn shift_nested_module_functions(v: &mut Value, start: usize) {
-    if !crate::vm::module_object::is_module_namespace(v) {
-        return;
-    }
-    let Value::Object(rc) = v else {
-        return;
-    };
-    let mut shift = |inner: &mut Value| {
-        if let Value::Function(i) = inner {
-            *i += start;
-        } else {
-            shift_nested_module_functions(inner, start);
-        }
-    };
-    match &mut *rc.borrow_mut() {
-        crate::common::value::ObjectKind::Legacy(map) => map.values_mut().for_each(&mut shift),
-        crate::common::value::ObjectKind::Inline(entries) => {
-            entries.iter_mut().for_each(|(_, inner)| shift(inner))
-        }
-        crate::common::value::ObjectKind::Bucket(_) => {}
-    }
-}
-
-/// Register module namespaces nested in `module_object` (its own `import sub`) in the caller's
-/// `modules`, so frames of `sub`'s functions resolve their globals from `sub`'s namespace.
-/// Uses the nested copies already shifted to the caller's function table by
-/// [`shift_nested_module_functions`]; a module the caller already knows is kept.
-fn register_nested_module_namespaces(module_object: &Value, vm_ptr: *mut crate::vm::vm::Vm) {
-    use crate::common::value::ObjectKind;
-    use crate::vm::module_object::{is_module_namespace, ModuleObject, MODULE_MARKER_KEY};
-    let Value::Object(rc) = module_object else {
-        return;
-    };
-    let nested: Vec<Value> = rc
-        .borrow()
-        .str_key_pairs()
-        .into_iter()
-        .filter(|(k, v)| k != MODULE_MARKER_KEY && is_module_namespace(v))
-        .map(|(_, v)| v.clone())
-        .collect();
-    for ns in nested {
-        let Value::Object(ns_rc) = &ns else {
-            continue;
-        };
-        let name = match ns_rc.borrow().str_key_get(MODULE_MARKER_KEY) {
-            Some(Value::String(name)) => name.clone(),
-            _ => continue,
-        };
-        // Module namespaces are string-keyed maps (ModuleObject::get_export reads Legacy only);
-        // the nested copy may come back from the store in the Inline layout.
-        let as_legacy = match &*ns_rc.borrow() {
-            ObjectKind::Inline(_) => Some(
-                ns_rc
-                    .borrow()
-                    .str_key_pairs()
-                    .into_iter()
-                    .map(|(k, v)| (k, v.clone()))
-                    .collect::<std::collections::HashMap<_, _>>(),
-            ),
-            _ => None,
-        };
-        if let Some(map) = as_legacy {
-            *ns_rc.borrow_mut() = ObjectKind::Legacy(map);
-        }
-        {
-            let mut modules = unsafe { (*vm_ptr).get_modules_mut() };
-            if modules.contains_key(&name) {
-                continue;
-            }
-            modules.insert(
-                name.clone(),
-                Rc::new(RefCell::new(ModuleObject::from_namespace(name, ns_rc.clone()))),
-            );
-        }
-        register_nested_module_namespaces(&ns, vm_ptr);
-    }
-}
-
 /// Old import paths re-patch chunk global indices by name against the current table. Only the main
 /// script's chunks may be patched, and only while its table is checked out: program-module
 /// functions use their own compiler indices (see `program_modules`).
@@ -243,69 +159,10 @@ fn ensure_module_loaded(
         loaded_modules.insert(module_name.to_string());
         return Ok(());
     }
+    // `.dc` files and packages are program modules (`program_modules::import_dc_module`); what
+    // is left here is a native plugin module.
     let base_path =
         unsafe { (*vm_ptr).get_base_path() }.or_else(crate::vm::file_import::get_base_path);
-    let load_dc_err = if let Some(ref base_path) = base_path {
-        match crate::vm::file_import::load_local_module_with_vm(module_name, base_path, unsafe {
-            &mut *vm_ptr
-        }) {
-            Ok((module_object, opt_vm)) => {
-                if let Some(module_vm) = opt_vm {
-                    let start_function_index = unsafe {
-                        let vm_ref = &mut *vm_ptr;
-                        vm_ref.add_functions_from_module(
-                            module_vm.get_functions().clone(),
-                            module_name.to_string(),
-                        )
-                    };
-                    if let Value::Object(module_obj_rc) = &module_object {
-                        let mut module_obj = module_obj_rc.borrow_mut();
-                        let _ = module_obj.str_key_insert(
-                            "__start_function_index".to_string(),
-                            Value::Number(start_function_index as f64),
-                        );
-                        if let Some(m) = module_obj.legacy_mut() {
-                            for (_, v) in m.iter_mut() {
-                                if let Value::Function(i) = v {
-                                    *v = Value::Function(start_function_index + *i);
-                                } else {
-                                    shift_nested_module_functions(v, start_function_index);
-                                }
-                            }
-                        }
-                        drop(module_obj);
-                        register_nested_module_namespaces(&module_object, vm_ptr);
-                    }
-                }
-                let id = store_value(module_object.clone(), value_store, heavy_store);
-                // `m.X` reads the module's live data cells (see module_data::bind_namespace_object).
-                crate::vm::module_data::bind_namespace_object(
-                    &module_object,
-                    id,
-                    value_store,
-                    heavy_store,
-                    vm_ptr,
-                );
-                if let Some(idx) = global_index_by_name(global_names, module_name) {
-                    if idx < globals.len() {
-                        globals[idx] = GlobalSlot::Heap(id);
-                    } else {
-                        globals.resize(idx + 1, default_global_slot());
-                        globals[idx] = GlobalSlot::Heap(id);
-                    }
-                } else {
-                    let idx = globals.len();
-                    globals.push(GlobalSlot::Heap(id));
-                    global_names.insert(idx, module_name.to_string());
-                }
-                loaded_modules.insert(module_name.to_string());
-                return Ok(());
-            }
-            Err(e) => Some(e),
-        }
-    } else {
-        None
-    };
     if let Ok((module_object, sidecar)) = crate::vm::native_loader::try_load_native_module(
         module_name,
         base_path.as_deref(),
@@ -339,22 +196,12 @@ fn ensure_module_loaded(
         loaded_modules.insert(module_name.to_string());
         return Ok(());
     }
-    Err(load_dc_err.map_or_else(
-        || {
-            LangError::runtime_error(
-                format!(
-                    "Module '{}' not found (built-in, .dc file, or native module)",
-                    module_name
-                ),
-                line,
-            )
-        },
-        |e| {
-            LangError::runtime_error_with_source(
-                format!("Failed to load module '{}'", module_name),
-                e,
-            )
-        },
+    Err(LangError::runtime_error(
+        format!(
+            "Module '{}' not found (built-in, .dc file, or native module)",
+            module_name
+        ),
+        line,
     ))
 }
 
@@ -634,637 +481,71 @@ pub(crate) fn handle_import_from(
             }
             if !loaded_from_parent {
                 if let Some(ref base_path) = base_path {
-                    let functions_len_before = functions.len();
-                    match file_import::load_local_module_with_vm(&module_name, base_path, unsafe {
-                        &mut *vm_ptr
-                    }) {
-                        Ok((module_object, opt_vm)) => {
-                            debug_println!("[DEBUG ImportFrom] Загружен модуль '{}'", module_name);
-                            if let Some(ref module_vm) = opt_vm {
-                                // Add module's functions so Function indices in module_object are valid when we copy requested items. Do not merge module global_names.
-                                let start_idx = functions.len();
-                                let mut new_fns: Vec<_> = module_vm.get_functions().to_vec();
-                                for f in &mut new_fns {
-                                    // Functions of modules this module imported itself keep their own
-                                    // module (e.g. `create_poizen` from `poizen` merged via `game`):
-                                    // their globals live in that module's namespace.
-                                    if f.module_name.is_none() {
-                                        f.module_name = Some(module_name.clone());
-                                    }
-                                }
-                                functions.extend(new_fns);
-                                let module_function_count = module_vm.get_functions().len();
-                                crate::remap_function_constants_in_chunks(
-                                    functions,
-                                    start_idx,
-                                    module_function_count,
+                    // `.dc` files and packages are program modules (handled above); what is left
+                    // is a native plugin module.
+                    match crate::vm::native_loader::try_load_native_module(
+                        &module_name,
+                        Some(base_path.as_path()),
+                        natives.len(),
+                        abi_natives,
+                        loaded_native_libraries,
+                        Some(unsafe { (*vm_ptr).get_abi_native_export_names_mut() }),
+                    ) {
+                        Ok((module_object, sidecar)) => {
+                            unsafe {
+                                (*vm_ptr).register_plugin_native_indices_from_module(
+                                    &module_name,
+                                    &module_object,
+                                    sidecar.plugin_hooks.as_ref(),
                                 );
-                                debug_println!(
-                                    "[DEBUG ImportFrom] Функций в модуле: {}, start_idx: {}",
-                                    module_function_count,
-                                    start_idx
-                                );
-                                let parent_module = frames
-                                    .last()
-                                    .and_then(|f| f.module_name.as_deref())
-                                    .unwrap_or("__main__");
-                                let full_module_name =
-                                    if parent_module == "__main__" || module_name.contains('.') {
-                                        module_name.clone()
-                                    } else {
-                                        format!("{}.{}", parent_module, module_name)
-                                    };
-                                // Register modules by stable uid so shared cached objects work across VMs.
-                                {
-                                    let sub_reg = module_vm.get_module_registry();
-                                    let mut reg = unsafe { (*vm_ptr).get_module_registry_mut() };
-                                    for (uid, info) in sub_reg.iter() {
-                                        reg.insert(
-                                            *uid,
-                                            crate::vm::types::ModuleInfo {
-                                                name: info.name.clone(),
-                                                function_offset: start_idx + info.function_offset,
-                                                function_count: info.function_count,
-                                            },
-                                        );
-                                    }
-                                    reg.insert(
-                                        crate::module_uid(&full_module_name),
-                                        crate::vm::types::ModuleInfo {
-                                            name: module_name.clone(),
-                                            function_offset: start_idx,
-                                            function_count: module_vm.get_functions().len(),
-                                        },
-                                    );
-                                    // Namespaces the module got via `import sub` hold Function(i) with i
-                                    // indexing the module VM's whole function table (the same space as the
-                                    // module's own functions). The export conversion below turns them into
-                                    // ModuleFunction { uid("<module>.<sub>"), i }, so register that uid with
-                                    // the same base; without it `sub.f()` inside a from-imported function
-                                    // failed with "Can only call functions".
-                                    for sub in module_vm.get_modules().keys() {
-                                        reg.entry(crate::module_uid(&format!(
-                                            "{}.{}",
-                                            full_module_name, sub
-                                        )))
-                                        .or_insert_with(|| crate::vm::types::ModuleInfo {
-                                            name: sub.clone(),
-                                            function_offset: start_idx,
-                                            function_count: module_vm.get_functions().len(),
-                                        });
-                                    }
-                                }
-                                // Convert namespace: Value::Function(local_index) -> Value::ModuleFunction { module_uid, local_index }.
-                                let submodule_keys: std::collections::HashSet<String> =
-                                    module_vm.get_modules().keys().cloned().collect();
-                                if let Value::Object(module_obj_rc) = &module_object {
-                                    {
-                                        let mut borrowed = module_obj_rc.borrow_mut();
-                                        if let Some(map) = borrowed.legacy_mut() {
-                                            crate::replace_function_with_module_function_in_exports(
-                                                map,
-                                                &full_module_name,
-                                                &submodule_keys,
-                                                Some(module_obj_rc),
-                                            );
-                                        }
-                                    }
-                                }
-                                // Extend caller's natives with module's natives and remap NativeFunction in module object
-                                // (fixes "Native function index 194 out of bounds" when merged code uses Config etc.).
-                                const BUILTIN_NATIVE_COUNT: usize =
-                                    crate::vm::globals::BUILTIN_GLOBAL_COUNT;
-                                let other_natives = module_vm.get_natives();
-                                let native_start = natives.len();
-                                if other_natives.len() > BUILTIN_NATIVE_COUNT {
-                                    natives
-                                        .extend_from_slice(&other_natives[BUILTIN_NATIVE_COUNT..]);
-                                }
-                                if let Value::Object(module_obj_rc) = &module_object {
-                                    {
-                                        let mut borrowed = module_obj_rc.borrow_mut();
-                                        if let Some(map) = borrowed.legacy_mut() {
-                                            crate::remap_native_indices_in_exports(
-                                                map,
-                                                native_start,
-                                                Some(module_obj_rc),
-                                            );
-                                        }
-                                    }
-                                }
-                                // Merge submodules into caller so __constructing_class__ lookup finds classes from them.
-                                // Do not overwrite existing modules: caller may have runtime state (e.g. core.config.settings from load_settings).
-                                {
-                                    let mods = module_vm.get_modules();
-                                    let mut caller_mods = unsafe { (*vm_ptr).get_modules_mut() };
-                                    if let Value::Object(ref namespace_rc) = &module_object {
-                                        use crate::vm::module_object::ModuleObject;
-                                        let was_vacant = !caller_mods.contains_key(&module_name);
-                                        caller_mods.entry(module_name.clone()).or_insert_with(
-                                            || {
-                                                Rc::new(RefCell::new(ModuleObject::from_namespace(
-                                                    module_name.clone(),
-                                                    namespace_rc.clone(),
-                                                )))
-                                            },
-                                        );
-                                        if was_vacant {
-                                            debug_println!("[DEBUG ImportFrom] added loaded module '{}' to caller", module_name);
-                                        }
-                                    }
-                                    for (k, v) in mods.iter() {
-                                        let was_vacant = !caller_mods.contains_key(k);
-                                        caller_mods.entry(k.clone()).or_insert_with(|| v.clone());
-                                        if was_vacant {
-                                            debug_println!("[DEBUG ImportFrom] merged submodule '{}' into caller", k);
-                                        }
-                                    }
-                                }
-                                // Feed caller globals with names that merged module chunks reference (from module object or caller's merged modules),
-                                // so update_chunk_indices can map LoadGlobal to filled slots (fixes "Undefined variable: DatabaseConfig::new_1" in prod).
-                                // Feed all names that merged functions reference and that have non-Null values (classes, functions).
-                                // Skip internal module vars (e.g. "settings" = Null) so module state is not leaked.
-                                let argv_slot_feed = unsafe { (*vm_ptr).get_argv_slot_index() };
-                                {
-                                    let value_for_name = |name: &str| -> Option<Value> {
-                                        if let Value::Object(ref module_obj_rc) = &module_object {
-                                            if let Some(v) = module_obj_rc.borrow().str_key_get(name) {
-                                                return Some(v.clone());
-                                            }
-                                        }
-                                        let caller_mods = unsafe { (*vm_ptr).get_modules() };
-                                        for (_mod_name, rc) in caller_mods.iter() {
-                                            if let Some(v) = rc.borrow().get_export(name) {
-                                                return Some(v);
-                                            }
-                                        }
-                                        None
-                                    };
-                                    let is_internal_module_var =
-                                        |_name: &str, value: &Value| -> bool {
-                                            matches!(value, Value::Null)
-                                        };
-                                    for i in start_idx..functions.len() {
-                                        let chunk = &functions[i].chunk;
-                                        for name in chunk.global_names.values() {
-                                            if let Some(value) = value_for_name(name) {
-                                                if is_internal_module_var(name, &value) {
-                                                    continue;
-                                                }
-                                                let ok_to_feed = match &value {
-                                                    Value::Function(_)
-                                                    | Value::ModuleFunction { .. }
-                                                    | Value::Object(_) => true,
-                                                    _ => false,
-                                                };
-                                                if !ok_to_feed {
-                                                    continue;
-                                                }
-                                                let existing: Vec<usize> = global_names
-                                                    .iter()
-                                                    .filter(|(_, n)| *n == name)
-                                                    .map(|(idx, _)| *idx)
-                                                    .collect();
-                                                let slot_idx = if existing.is_empty() {
-                                                    let idx = globals.len();
-                                                    globals.resize(idx + 1, default_global_slot());
-                                                    global_names.insert(idx, name.clone());
-                                                    idx
-                                                } else {
-                                                    *existing.iter().min().unwrap()
-                                                };
-                                                let slot_empty = slot_idx >= globals.len()
-                                                    || matches!(
-                                                        load_value(
-                                                            globals[slot_idx]
-                                                                .resolve_to_value_id(value_store),
-                                                            value_store,
-                                                            heavy_store
-                                                        ),
-                                                        Value::Null
-                                                    );
-                                                if slot_empty && Some(slot_idx) != argv_slot_feed {
-                                                    if slot_idx >= globals.len() {
-                                                        globals.resize(
-                                                            slot_idx + 1,
-                                                            default_global_slot(),
-                                                        );
-                                                    }
-                                                    let id = store_value(
-                                                        value.clone(),
-                                                        value_store,
-                                                        heavy_store,
-                                                    );
-                                                    globals[slot_idx] = GlobalSlot::Heap(id);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                // Ensure all names from main + function chunks are in global_names
-                                // so update_chunk_indices_from_names finds them (no "no match").
-                                // Never skip Null module bindings (e.g. `global settings = null`):
-                                // they must remap or StoreGlobal/LoadGlobal keep stale module indices.
-                                let chunks_to_feed: Vec<_> = frames
-                                    .first()
-                                    .map(|f| &f.function.chunk)
-                                    .into_iter()
-                                    .chain(functions.iter().map(|f| &f.chunk))
-                                    .collect();
-                                for chunk in &chunks_to_feed {
-                                    for (idx, name) in &chunk.global_names {
-                                        if crate::bytecode::is_undefined_global_sentinel(*idx)
-                                            || name.as_str() == "argv"
-                                        {
-                                            continue;
-                                        }
-                                        if !global_names.values().any(|n| n == name) {
-                                            let new_idx = globals.len();
-                                            globals.push(default_global_slot());
-                                            global_names.insert(new_idx, name.clone());
-                                            debug_println!("[DEBUG ImportFrom merge] Добавлен слот для '{}' в globals[{}]", name, new_idx);
-                                        }
-                                    }
-                                }
-                                for name in ["create_all", "__constructing_class__"] {
-                                    if !global_names.values().any(|n| n == name)
-                                        && chunks_to_feed.iter().any(|chunk| {
-                                            chunk.global_names.values().any(|n| n == name)
-                                        })
-                                    {
-                                        let new_idx = globals.len();
-                                        globals.push(default_global_slot());
-                                        global_names.insert(new_idx, name.to_string());
-                                        debug_println!("[DEBUG ImportFrom merge] Добавлен fallback слот для '{}' в globals[{}]", name, new_idx);
-                                    }
-                                }
-                                // Module isolation: do NOT merge module globals into caller. Only requested items are added below (per-item loop).
-                                let global_names_snapshot = global_names.clone();
-                                let argv_slot = unsafe { (*vm_ptr).get_argv_slot_index() };
-                                if std::env::var("DATACODE_DEBUG").is_ok() {
-                                    eprintln!("=== IMPORTFROM DEBUG START (merge) ===");
-                                    if let Some(mf) = frames.first() {
-                                        let chunk = &mf.function.chunk;
-                                        eprintln!("[IMPORTFROM] Chunk global names (main):");
-                                        for (idx, name) in &chunk.global_names {
-                                            eprintln!("  chunk idx={} name={}", idx, name);
-                                        }
-                                    }
-                                    eprintln!("[IMPORTFROM] caller_global_names (snapshot) before update:");
-                                    for (idx, name) in global_names_snapshot.iter() {
-                                        eprintln!("  caller idx={} name={}", idx, name);
-                                    }
-                                    if !global_names_snapshot.values().any(|n| n == "create_all") {
-                                        eprintln!("[WARNING] create_all not found in caller_global_names BEFORE update");
-                                    }
-                                }
-                                for i in 0..functions.len() {
-                                    if !legacy_patch_allowed(functions[i].module_id, vm_ptr) {
-                                        continue;
-                                    }
-                                    crate::vm::module_system::chunk_patcher::update_chunk_indices_from_names(
-                                        &mut functions[i].chunk,
-                                        &global_names_snapshot,
-                                        Some(globals.as_mut_slice()),
-                                        Some(value_store),
-                                        Some(heavy_store),
-                                        argv_slot,
-                                        true, // merged module chunks: resolve sentinel
-                                    );
-                                }
-                                if let Some(main_frame) = frames
-                                    .first_mut()
-                                    .filter(|_| legacy_patch_allowed(0, vm_ptr))
-                                {
-                                    crate::vm::module_system::chunk_patcher::update_chunk_indices_from_names(
-                                        &mut main_frame.function.chunk,
-                                        &global_names_snapshot,
-                                        Some(globals.as_mut_slice()),
-                                        Some(value_store),
-                                        Some(heavy_store),
-                                        argv_slot,
-                                        false, // main chunk: do NOT resolve sentinel (module isolation)
-                                    );
-                                }
-                                if std::env::var("DATACODE_DEBUG").is_ok() {
-                                    if !global_names_snapshot.values().any(|n| n == "create_all") {
-                                        eprintln!("[WARNING] create_all STILL MISSING AFTER update_chunk_indices_from_names");
-                                    }
-                                    eprintln!("=== IMPORTFROM DEBUG END (merge) ===");
-                                }
-                                crate::vm::module_system::linker::ensure_entry_point_slots(
-                                    globals.as_mut_slice(),
-                                    global_names,
-                                    functions,
-                                    value_store,
-                                );
-                            } else {
-                                // Module already in cache: file_import added stored_fns and remapped the object.
-                                // Feed caller globals so added functions' LoadGlobal find classes/functions (e.g. DevSettings for load_settings).
-                                // Skip internal module vars (Null) to preserve isolation.
-                                let start_idx = functions_len_before;
-                                if functions.len() > start_idx {
-                                    let argv_slot_feed = unsafe { (*vm_ptr).get_argv_slot_index() };
-                                    let value_for_name = |name: &str| -> Option<Value> {
-                                        if let Value::Object(ref module_obj_rc) = &module_object {
-                                            if let Some(v) = module_obj_rc.borrow().str_key_get(name) {
-                                                return Some(v.clone());
-                                            }
-                                        }
-                                        let caller_mods = unsafe { (*vm_ptr).get_modules() };
-                                        for (_mod_name, rc) in caller_mods.iter() {
-                                            if let Some(v) = rc.borrow().get_export(name) {
-                                                return Some(v);
-                                            }
-                                        }
-                                        None
-                                    };
-                                    let is_internal_module_var =
-                                        |_name: &str, value: &Value| -> bool {
-                                            matches!(value, Value::Null)
-                                        };
-                                    for i in start_idx..functions.len() {
-                                        let chunk = &functions[i].chunk;
-                                        for name in chunk.global_names.values() {
-                                            if let Some(value) = value_for_name(name) {
-                                                if is_internal_module_var(name, &value) {
-                                                    continue;
-                                                }
-                                                let ok_to_feed = match &value {
-                                                    Value::Function(_)
-                                                    | Value::ModuleFunction { .. }
-                                                    | Value::Object(_) => true,
-                                                    _ => false,
-                                                };
-                                                if !ok_to_feed {
-                                                    continue;
-                                                }
-                                                let existing: Vec<usize> = global_names
-                                                    .iter()
-                                                    .filter(|(_, n)| *n == name)
-                                                    .map(|(idx, _)| *idx)
-                                                    .collect();
-                                                let slot_idx = if existing.is_empty() {
-                                                    let idx = globals.len();
-                                                    globals.resize(idx + 1, default_global_slot());
-                                                    global_names.insert(idx, name.clone());
-                                                    idx
-                                                } else {
-                                                    *existing.iter().min().unwrap()
-                                                };
-                                                let slot_empty = slot_idx >= globals.len()
-                                                    || matches!(
-                                                        load_value(
-                                                            globals[slot_idx]
-                                                                .resolve_to_value_id(value_store),
-                                                            value_store,
-                                                            heavy_store
-                                                        ),
-                                                        Value::Null
-                                                    );
-                                                if slot_empty && Some(slot_idx) != argv_slot_feed {
-                                                    if slot_idx >= globals.len() {
-                                                        globals.resize(
-                                                            slot_idx + 1,
-                                                            default_global_slot(),
-                                                        );
-                                                    }
-                                                    let id = store_value(
-                                                        value.clone(),
-                                                        value_store,
-                                                        heavy_store,
-                                                    );
-                                                    globals[slot_idx] = GlobalSlot::Heap(id);
-                                                }
-                                            }
-                                        }
-                                    }
-                                    // Ensure all names from main + function chunks are in global_names.
-                                    // For merged chunks: add slots for all names except internal (Null).
-                                    let chunks_to_feed: Vec<_> = frames
-                                        .first()
-                                        .map(|f| &f.function.chunk)
-                                        .into_iter()
-                                        .chain(functions.iter().map(|f| &f.chunk))
-                                        .collect();
-                                    let cache_is_internal = |name: &str| -> bool {
-                                        value_for_name(name)
-                                            .as_ref()
-                                            .map_or(true, |v| matches!(v, Value::Null))
-                                    };
-                                    for (chunk_index, chunk) in chunks_to_feed.iter().enumerate() {
-                                        let is_merged_module_chunk =
-                                            chunk_index >= 1 && (chunk_index - 1) >= start_idx;
-                                        for (idx, name) in &chunk.global_names {
-                                            if crate::bytecode::is_undefined_global_sentinel(*idx) || name.as_str() == "argv" {
-                                                continue;
-                                            }
-                                            if is_merged_module_chunk && cache_is_internal(name) {
-                                                continue;
-                                            }
-                                            if !global_names.values().any(|n| n == name) {
-                                                let new_idx = globals.len();
-                                                globals.push(default_global_slot());
-                                                global_names.insert(new_idx, name.clone());
-                                                debug_println!("[DEBUG ImportFrom cache] Добавлен слот для '{}' в globals[{}]", name, new_idx);
-                                            }
-                                        }
-                                    }
-                                    for name in ["create_all", "__constructing_class__"] {
-                                        if !global_names.values().any(|n| n == name)
-                                            && chunks_to_feed.iter().any(|chunk| {
-                                                chunk.global_names.values().any(|n| n == name)
-                                            })
-                                        {
-                                            let new_idx = globals.len();
-                                            globals.push(default_global_slot());
-                                            global_names.insert(new_idx, name.to_string());
-                                            debug_println!("[DEBUG ImportFrom cache] Добавлен fallback слот для '{}' в globals[{}]", name, new_idx);
-                                        }
-                                    }
-                                    let global_names_snapshot = global_names.clone();
-                                    let argv_slot = unsafe { (*vm_ptr).get_argv_slot_index() };
-                                    if std::env::var("DATACODE_DEBUG").is_ok() {
-                                        eprintln!("=== IMPORTFROM DEBUG START (cache hit) ===");
-                                        if let Some(mf) = frames.first() {
-                                            let chunk = &mf.function.chunk;
-                                            eprintln!("[IMPORTFROM] Chunk global names (main):");
-                                            for (idx, name) in &chunk.global_names {
-                                                eprintln!("  chunk idx={} name={}", idx, name);
-                                            }
-                                        }
-                                        eprintln!("[IMPORTFROM] caller_global_names (snapshot) before update:");
-                                        for (idx, name) in global_names_snapshot.iter() {
-                                            eprintln!("  caller idx={} name={}", idx, name);
-                                        }
-                                        if !global_names_snapshot
-                                            .values()
-                                            .any(|n| n == "create_all")
-                                        {
-                                            eprintln!("[WARNING] create_all not found in caller_global_names BEFORE update");
-                                        }
-                                    }
-                                    for i in 0..functions.len() {
-                                        if !legacy_patch_allowed(functions[i].module_id, vm_ptr) {
-                                            continue;
-                                        }
-                                        crate::vm::module_system::chunk_patcher::update_chunk_indices_from_names(
-                                            &mut functions[i].chunk,
-                                            &global_names_snapshot,
-                                            Some(globals.as_mut_slice()),
-                                            Some(value_store),
-                                            Some(heavy_store),
-                                            argv_slot,
-                                            true,
-                                        );
-                                    }
-                                    if let Some(main_frame) = frames
-                                        .first_mut()
-                                        .filter(|_| legacy_patch_allowed(0, vm_ptr))
-                                    {
-                                        crate::vm::module_system::chunk_patcher::update_chunk_indices_from_names(
-                                            &mut main_frame.function.chunk,
-                                            &global_names_snapshot,
-                                            Some(globals.as_mut_slice()),
-                                            Some(value_store),
-                                            Some(heavy_store),
-                                            argv_slot,
-                                            false, // main chunk: do NOT resolve sentinel
-                                        );
-                                    }
-                                    if std::env::var("DATACODE_DEBUG").is_ok() {
-                                        if !global_names_snapshot
-                                            .values()
-                                            .any(|n| n == "create_all")
-                                        {
-                                            eprintln!("[WARNING] create_all STILL MISSING AFTER update_chunk_indices_from_names");
-                                        }
-                                        eprintln!("=== IMPORTFROM DEBUG END (cache hit) ===");
-                                    }
-                                    crate::vm::module_system::linker::ensure_entry_point_slots(
-                                        globals.as_mut_slice(),
-                                        global_names,
-                                        functions,
-                                        value_store,
-                                    );
-                                }
+                                (*vm_ptr)
+                                    .merge_abi_export_param_meta(sidecar.export_param_meta);
                             }
-
-                            let module_id =
-                                store_value(module_object.clone(), value_store, heavy_store);
-                            crate::vm::module_data::bind_namespace_object(
-                                &module_object,
-                                module_id,
-                                value_store,
-                                heavy_store,
-                                vm_ptr,
-                            );
-                            // Plan 2.3: do not overwrite a slot that already holds an export (class/constructor); never overwrite argv slot.
-                            let existing_idx = global_index_by_name(global_names, &module_name);
-                            let overwrite_ok = existing_idx
-                                .map(|idx| {
-                                    Some(idx) != argv_slot_import
-                                        && (idx >= globals.len()
-                                            || matches!(
-                                                crate::vm::store_convert::load_value(
-                                                    globals[idx].resolve_to_value_id(value_store),
-                                                    value_store,
-                                                    heavy_store
-                                                ),
-                                                Value::Null
-                                            ))
-                                })
-                                .unwrap_or(true);
-                            if let Some(idx) = existing_idx {
-                                if overwrite_ok && Some(idx) != argv_slot_import {
+                            let module_value =
+                                Value::legacy_object(module_object);
+                            let id = store_value(module_value, value_store, heavy_store);
+                            if let Some(idx) =
+                                global_index_by_name(global_names, &module_name)
+                            {
+                                if Some(idx) != argv_slot_import {
                                     if idx < globals.len() {
-                                        globals[idx] = GlobalSlot::Heap(module_id);
+                                        globals[idx] = GlobalSlot::Heap(id);
                                     } else {
                                         globals.resize(idx + 1, default_global_slot());
-                                        globals[idx] = GlobalSlot::Heap(module_id);
+                                        globals[idx] = GlobalSlot::Heap(id);
                                     }
-                                } else if Some(idx) == argv_slot_import {
-                                    // Keep argv slot; push module to new slot
+                                } else {
                                     let new_idx = globals.len();
-                                    globals.push(GlobalSlot::Heap(module_id));
-                                    global_names.remove(&idx);
-                                    global_names.insert(new_idx, module_name.clone());
-                                } else if !overwrite_ok {
-                                    let new_idx = globals.len();
-                                    globals.push(GlobalSlot::Heap(module_id));
+                                    globals.push(GlobalSlot::Heap(id));
                                     global_names.remove(&idx);
                                     global_names.insert(new_idx, module_name.clone());
                                 }
                             } else {
                                 let idx = globals.len();
-                                globals.push(GlobalSlot::Heap(module_id));
+                                globals.push(GlobalSlot::Heap(id));
                                 global_names.insert(idx, module_name.clone());
                             }
                             loaded_modules.insert(module_name.clone());
                         }
-                        Err(load_err) => {
-                            match crate::vm::native_loader::try_load_native_module(
-                                &module_name,
-                                Some(base_path.as_path()),
-                                natives.len(),
-                                abi_natives,
-                                loaded_native_libraries,
-                                Some(unsafe { (*vm_ptr).get_abi_native_export_names_mut() }),
+                        Err(_) => {
+                            let error = ExceptionHandler::runtime_error_with_source(
+                                &frames,
+                                format!("Failed to load module '{}'", module_name),
+                                LangError::runtime_error(
+                                format!("Module '{}' not found (built-in, .dc file, or native module)", module_name),
+                                line,
+                            ),
+                            );
+                            match ExceptionHandler::handle_exception(
+                                stack,
+                                frames,
+                                exception_handlers,
+                                error,
+                                value_store,
+                                heavy_store,
                             ) {
-                                Ok((module_object, sidecar)) => {
-                                    unsafe {
-                                        (*vm_ptr).register_plugin_native_indices_from_module(
-                                            &module_name,
-                                            &module_object,
-                                            sidecar.plugin_hooks.as_ref(),
-                                        );
-                                        (*vm_ptr)
-                                            .merge_abi_export_param_meta(sidecar.export_param_meta);
-                                    }
-                                    let module_value =
-                                        Value::legacy_object(module_object);
-                                    let id = store_value(module_value, value_store, heavy_store);
-                                    if let Some(idx) =
-                                        global_index_by_name(global_names, &module_name)
-                                    {
-                                        if Some(idx) != argv_slot_import {
-                                            if idx < globals.len() {
-                                                globals[idx] = GlobalSlot::Heap(id);
-                                            } else {
-                                                globals.resize(idx + 1, default_global_slot());
-                                                globals[idx] = GlobalSlot::Heap(id);
-                                            }
-                                        } else {
-                                            let new_idx = globals.len();
-                                            globals.push(GlobalSlot::Heap(id));
-                                            global_names.remove(&idx);
-                                            global_names.insert(new_idx, module_name.clone());
-                                        }
-                                    } else {
-                                        let idx = globals.len();
-                                        globals.push(GlobalSlot::Heap(id));
-                                        global_names.insert(idx, module_name.clone());
-                                    }
-                                    loaded_modules.insert(module_name.clone());
-                                }
-                                Err(_) => {
-                                    let error = ExceptionHandler::runtime_error_with_source(
-                                        &frames,
-                                        format!("Failed to load module '{}'", module_name),
-                                        load_err,
-                                    );
-                                    match ExceptionHandler::handle_exception(
-                                        stack,
-                                        frames,
-                                        exception_handlers,
-                                        error,
-                                        value_store,
-                                        heavy_store,
-                                    ) {
-                                        Ok(()) => return Ok(VMStatus::Continue),
-                                        Err(e) => return Err(e),
-                                    }
-                                }
+                                Ok(()) => return Ok(VMStatus::Continue),
+                                Err(e) => return Err(e),
                             }
                         }
                     }
@@ -1387,16 +668,6 @@ pub(crate) fn handle_import_from(
     };
     // Clone the HashMap to avoid borrowing issues - we can now mutate globals
     let module_object = module_object_rc.borrow().clone();
-    // The module's own namespace (the value above is a store copy): module data is bound from its
-    // live slots so a repeated `from m import X` sees the current value and arrays stay shared.
-    let live_namespace = if module_object.str_key_contains(crate::vm::module_object::MODULE_MARKER_KEY) {
-        unsafe { (*vm_ptr).get_modules() }
-            .get(&module_name)
-            .and_then(|m| m.borrow().namespace.clone())
-    } else {
-        None
-    };
-
     for item_value in &items_array {
         if let Value::String(ref item_str) = item_value {
             if item_str != "*" && !item_str.contains(':') && !module_object.str_key_contains(item_str) {
@@ -1483,18 +754,7 @@ pub(crate) fn handle_import_from(
                             }
                         };
                         max_index_needed = max_index_needed.max(global_index + 1);
-                        let id = live_namespace
-                            .as_ref()
-                            .and_then(|ns| {
-                                crate::vm::module_data::imported_data_value_id(
-                                    ns,
-                                    &key,
-                                    value_store,
-                                    heavy_store,
-                                    vm_ptr,
-                                )
-                            })
-                            .unwrap_or_else(|| store_value(value.clone(), value_store, heavy_store));
+                        let id = store_value(value.clone(), value_store, heavy_store);
                         indices_to_set.push((global_index, key.clone(), id));
                     }
                     if max_index_needed > globals.len() {
@@ -1517,20 +777,7 @@ pub(crate) fn handle_import_from(
                         let alias = parts[1];
 
                         if let Some(value) = module_object.str_key_get(name).cloned() {
-                            let id = live_namespace
-                                .as_ref()
-                                .and_then(|ns| {
-                                    crate::vm::module_data::imported_data_value_id(
-                                        ns,
-                                        name,
-                                        value_store,
-                                        heavy_store,
-                                        vm_ptr,
-                                    )
-                                })
-                                .unwrap_or_else(|| {
-                                    store_value(value.clone(), value_store, heavy_store)
-                                });
+                            let id = store_value(value.clone(), value_store, heavy_store);
                             let global_index =
                                 if let Some(idx) = global_index_by_name(global_names, alias) {
                                     idx
@@ -1643,18 +890,7 @@ pub(crate) fn handle_import_from(
             indices
         };
         let has_merge = module_object.str_key_contains("__start_function_index");
-        let id = live_namespace
-            .as_ref()
-            .and_then(|ns| {
-                crate::vm::module_data::imported_data_value_id(
-                    ns,
-                    &item_str,
-                    value_store,
-                    heavy_store,
-                    vm_ptr,
-                )
-            })
-            .unwrap_or_else(|| store_value(value_to_store, value_store, heavy_store));
+        let id = store_value(value_to_store, value_store, heavy_store);
         for &global_index in &indices_to_update {
             // When we just merged (__start_function_index present), per-item is source of truth for
             // Functions only: always write remapped function so explicitly imported names get the correct one.

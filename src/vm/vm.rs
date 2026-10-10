@@ -19,7 +19,7 @@ use crate::vm::globals;
 use crate::vm::heavy_store::HeavyStore;
 use crate::vm::host::HostEntry;
 use crate::vm::module_cache::CachedModule;
-use crate::vm::module_object::{ModuleDataSlots, ModuleObject};
+use crate::vm::module_object::ModuleObject;
 use crate::vm::native_loader::{PluginHookNames, ResolvedNativeParamMeta};
 use crate::vm::permission_policy::PermissionPolicy;
 use crate::vm::store_convert::load_value;
@@ -118,17 +118,8 @@ pub struct Vm {
     pub(crate) pending_primary_keys: Vec<(Rc<RefCell<Table>>, String)>,
     /// Runtime module cache: canonical path -> compiled (chunk + functions). Shared with child VMs so modules are singletons.
     module_cache: Rc<RefCell<HashMap<PathBuf, CachedModule>>>,
-    /// Modules already executed once this run: canonical path -> saved namespace. Shared with child VMs so core.config etc. are singletons.
-    executed_modules: Rc<RefCell<HashMap<PathBuf, Value>>>,
-    /// Functions from each executed module. Shared with child VMs for cache hit remapping.
-    executed_module_functions: Rc<RefCell<HashMap<PathBuf, Vec<crate::bytecode::Function>>>>,
-    /// Dependency graph: canonical path -> list of canonical paths of imported modules. Shared with child VMs.
-    module_deps: Rc<RefCell<HashMap<PathBuf, Vec<PathBuf>>>>,
     /// Cache of loaded modules by canonical name (e.g. "core.config") or path. Each module has its own namespace.
     modules: RefCell<HashMap<String, Rc<RefCell<ModuleObject>>>>,
-    /// Stable storage for module-level data read/written by merged module functions (see
-    /// [`ModuleDataSlots`]). Keyed by module namespace identity; ids live in this VM's value_store.
-    module_data_slots: RefCell<HashMap<usize, ModuleDataSlots>>,
     /// `.dc` modules of this run (see [`crate::vm::program_modules`]). Entry 0 is the main script.
     /// The table of `current_module` is checked out into `globals` / `global_names` /
     /// `explicit_global_names` / `loaded_modules`; the others stay in their entries.
@@ -234,11 +225,7 @@ impl Vm {
             pending_relations: Vec::new(),
             pending_primary_keys: Vec::new(),
             module_cache: Rc::new(RefCell::new(HashMap::new())),
-            executed_modules: Rc::new(RefCell::new(HashMap::new())),
-            executed_module_functions: Rc::new(RefCell::new(HashMap::new())),
-            module_deps: Rc::new(RefCell::new(HashMap::new())),
             modules: RefCell::new(HashMap::new()),
-            module_data_slots: RefCell::new(HashMap::new()),
             program_modules: vec![crate::vm::program_modules::ProgramModule::main()],
             module_by_path: HashMap::new(),
             current_module: 0,
@@ -250,69 +237,6 @@ impl Vm {
             is_root: true,
             permission_policy: PermissionPolicy::default(),
             operator_registry_snapshot: None,
-            pending_generator_send: None,
-            yield_await_resume_value: None,
-            pending_send_rhs_return: None,
-            compute: crate::compute::runtime::ComputeRuntime::new(),
-        };
-        vm.register_natives();
-        vm
-    }
-
-    /// Creates a child VM that shares module_cache, executed_modules, executed_module_functions, and module_deps with the parent.
-    /// Ensures module singletons: when engine imports core.config, it gets the same namespace as main (e.g. load_settings mutates shared state).
-    pub(crate) fn new_child(parent: &Self) -> Self {
-        let mut vm = Self {
-            stack: Vec::with_capacity(DEFAULT_STACK_CAPACITY),
-            stack_sp: 0,
-            frames: Vec::with_capacity(DEFAULT_FRAMES_CAPACITY),
-            builtins: Vec::with_capacity(BUILTIN_END),
-            globals: Vec::with_capacity(DEFAULT_GLOBALS_CAPACITY),
-            functions: Vec::new(),
-            natives: Vec::new(),
-            exception_handlers: Vec::new(),
-            error_type_table: Vec::new(),
-            global_names: std::collections::BTreeMap::new(),
-            explicit_global_names: std::collections::BTreeMap::new(),
-            explicit_relations: Vec::new(),
-            explicit_primary_keys: Vec::new(),
-            loaded_modules: std::collections::HashSet::new(),
-            abi_natives: Vec::new(),
-            abi_native_export_names: Vec::new(),
-            abi_export_param_meta: parent.abi_export_param_meta.clone(),
-            loaded_native_libraries: Vec::new(),
-            base_path: None,
-            project_root: parent.project_root.clone(),
-            plugin_call_native: parent.plugin_call_native,
-            plugin_typeof_opaque: parent.plugin_typeof_opaque,
-            plugin_opaque_display: parent.plugin_opaque_display,
-            plugin_dataset_len_native: parent.plugin_dataset_len_native,
-            plugin_opaque_binop: parent.plugin_opaque_binop,
-            plot_context: Some(crate::plot::PlotContext::new()),
-            value_store: ValueStore::new(),
-            heavy_store: HeavyStore::new(),
-            native_args_buffer: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
-            reusable_native_arg_ids: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
-            reusable_all_popped: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
-            pending_relations: Vec::new(),
-            pending_primary_keys: Vec::new(),
-            module_cache: parent.module_cache.clone(),
-            executed_modules: parent.executed_modules.clone(),
-            executed_module_functions: parent.executed_module_functions.clone(),
-            module_deps: parent.module_deps.clone(),
-            modules: RefCell::new(HashMap::new()),
-            module_data_slots: RefCell::new(HashMap::new()),
-            program_modules: vec![crate::vm::program_modules::ProgramModule::main()],
-            module_by_path: HashMap::new(),
-            current_module: 0,
-            namespace_objects: HashMap::new(),
-            argv_slot_index: None,
-            argv_old_indices: None,
-            current_argv_value_id: None,
-            module_registry: RefCell::new(HashMap::new()),
-            is_root: false,
-            permission_policy: parent.permission_policy,
-            operator_registry_snapshot: parent.operator_registry_snapshot.clone(),
             pending_generator_send: None,
             yield_await_resume_value: None,
             pending_send_rhs_return: None,
@@ -590,23 +514,6 @@ impl Vm {
     /// Mutable borrow of the runtime module cache (canonical path -> CachedModule). Used by file_import.
     pub fn get_module_cache_mut(&self) -> std::cell::RefMut<'_, HashMap<PathBuf, CachedModule>> {
         self.module_cache.borrow_mut()
-    }
-
-    /// Mutable borrow of executed modules (canonical path -> module namespace). Used by file_import.
-    pub fn get_executed_modules_mut(&self) -> std::cell::RefMut<'_, HashMap<PathBuf, Value>> {
-        self.executed_modules.borrow_mut()
-    }
-
-    /// Mutable borrow of executed module functions (canonical path -> functions). Used by file_import on cache hit to add and remap.
-    pub fn get_executed_module_functions_mut(
-        &self,
-    ) -> std::cell::RefMut<'_, HashMap<PathBuf, Vec<crate::bytecode::Function>>> {
-        self.executed_module_functions.borrow_mut()
-    }
-
-    /// Mutable borrow of module dependency graph (path -> deps). Used by file_import to register edges after compile.
-    pub fn get_module_deps_mut(&self) -> std::cell::RefMut<'_, HashMap<PathBuf, Vec<PathBuf>>> {
-        self.module_deps.borrow_mut()
     }
 
     /// Immutable borrow of module registry (for executor to read loaded module's submodules).
@@ -1004,14 +911,6 @@ impl Vm {
         self.modules.borrow()
     }
 
-    /// Module data bindings (namespace identity -> per-name slot). Used by LoadGlobal/StoreGlobal
-    /// in module frames so module arrays/dicts keep identity across loads.
-    pub(crate) fn get_module_data_slots_mut(
-        &self,
-    ) -> std::cell::RefMut<'_, HashMap<usize, ModuleDataSlots>> {
-        self.module_data_slots.borrow_mut()
-    }
-
     /// Получить доступ к глобальным переменным (GlobalSlot; use resolve_to_value_id or store_convert::slot_to_value for Value)
     /// Combines builtins (0..BUILTIN_END) and module globals (BUILTIN_END+). Legacy: prefer per-module lookup.
     pub fn get_globals(&self) -> &[GlobalSlot] {
@@ -1190,7 +1089,6 @@ impl Vm {
         }
         self.value_store.clear();
         self.heavy_store.clear();
-        self.module_data_slots.borrow_mut().clear();
         for i in 0..self.globals.len() {
             self.globals[i] = GlobalSlot::null();
         }

@@ -2,7 +2,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::bytecode;
@@ -135,13 +134,6 @@ pub fn run_with_options(opts: RunOptions<'_>) -> Result<Value, LangError> {
         (Some(p), None) => run_with_base_path(source, p),
         (Some(p), Some(vm)) => run_with_vm_and_path(source, Some(p), Some(vm)).map(|(v, _)| v),
     }
-}
-
-/// Stable module UID from module path. Same path always yields same uid across VMs.
-pub(crate) fn module_uid(path: &str) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut h);
-    h.finish()
 }
 
 pub fn run(source: &str) -> Result<Value, LangError> {
@@ -356,20 +348,6 @@ pub fn extract_globals_from_vm(vm: &mut Vm) -> std::collections::HashMap<String,
         globals_map.insert(name, value);
     }
     globals_map
-}
-
-/// Собирает имена модулей из `from X import ...` в AST (для поиска lib в папках при старте).
-fn import_module_names_from_ast(ast: &[parser::ast::Stmt]) -> Vec<String> {
-    use parser::ast::{ImportStmt, Stmt};
-    let mut names = Vec::new();
-    for stmt in ast {
-        if let Stmt::Import { import_stmt, .. } = stmt {
-            if let ImportStmt::From { module, .. } = import_stmt {
-                names.push(module.clone());
-            }
-        }
-    }
-    names
 }
 
 /// Извлекает литеральное значение по умолчанию из Expr (только Literal).
@@ -594,68 +572,6 @@ pub(crate) fn remap_function_indices_in_exports(
     }
 }
 
-/// Replace Value::Function(local_index) with Value::ModuleFunction { module_uid, local_index } in an export map.
-/// Uses stable module_uid per namespace so shared cached objects work across VMs.
-/// submodule_keys: keys in exports that are submodules (e.g. {"config", "dev_config", "prod_config"} for core.config).
-pub(crate) fn replace_function_with_module_function_in_exports(
-    exports: &mut std::collections::HashMap<String, Value>,
-    module_name: &str,
-    submodule_keys: &std::collections::HashSet<String>,
-    root_rc: Option<&Rc<RefCell<ObjectKind>>>,
-) {
-    let mut seen = HashSet::new();
-    fn replace_value(
-        v: &mut Value,
-        module_path: &str,
-        root_rc: Option<&Rc<RefCell<ObjectKind>>>,
-        seen: &mut HashSet<*const ()>,
-    ) {
-        match v {
-            Value::Function(local_index) => {
-                *v = Value::ModuleFunction {
-                    module_uid: module_uid(module_path),
-                    local_index: *local_index,
-                };
-            }
-            Value::Object(rc) => {
-                if root_rc.is_some_and(|r| Rc::ptr_eq(rc, r)) {
-                    return;
-                }
-                let ptr = Rc::as_ptr(rc) as *const ();
-                if seen.contains(&ptr) {
-                    return;
-                }
-                seen.insert(ptr);
-                match &mut *rc.borrow_mut() {
-                    ObjectKind::Legacy(map) => {
-                        for (_, inner) in map.iter_mut() {
-                            replace_value(inner, module_path, root_rc, seen);
-                        }
-                    }
-                    ObjectKind::Inline(entries) => {
-                        for (_, inner) in entries.iter_mut() {
-                            replace_value(inner, module_path, root_rc, seen);
-                        }
-                    }
-                    ObjectKind::Bucket(_) => {}
-                }
-                seen.remove(&ptr);
-            }
-            _ => {}
-        }
-    }
-    for (k, v) in exports.iter_mut() {
-        let path = if submodule_keys.contains(k) {
-            format!("{}.{}", module_name, k)
-        } else {
-            module_name.to_string()
-        };
-        replace_value(v, &path, root_rc, &mut seen);
-    }
-}
-
-const BUILTIN_NATIVE_COUNT: usize = crate::vm::globals::BUILTIN_GLOBAL_COUNT;
-
 /// Remap Value::Function(local_i) in chunk constants of merged module functions to global indices.
 /// After extending VM's function array with a module's functions, instances created by that module's
 /// code (e.g. Security with method get_code) would otherwise store Value::Function(local_index);
@@ -673,57 +589,6 @@ pub(crate) fn remap_function_constants_in_chunks(
                 }
             }
         }
-    }
-}
-
-/// Remap NativeFunction indices in an export map so they refer to caller VM's native table.
-/// Caller must have already extended its natives with module_natives[BUILTIN_NATIVE_COUNT..].
-/// For NativeFunction(i) with i >= BUILTIN_NATIVE_COUNT: new_idx = native_start + (i - BUILTIN_NATIVE_COUNT).
-pub(crate) fn remap_native_indices_in_exports(
-    exports: &mut std::collections::HashMap<String, Value>,
-    native_start: usize,
-    root_rc: Option<&Rc<RefCell<ObjectKind>>>,
-) {
-    let mut seen = HashSet::new();
-    fn remap_value(
-        v: &mut Value,
-        native_start: usize,
-        root_rc: Option<&Rc<RefCell<ObjectKind>>>,
-        seen: &mut HashSet<*const ()>,
-    ) {
-        match v {
-            Value::NativeFunction(i) if *i >= BUILTIN_NATIVE_COUNT => {
-                *i = native_start + (*i - BUILTIN_NATIVE_COUNT);
-            }
-            Value::Object(rc) => {
-                if root_rc.is_some_and(|r| Rc::ptr_eq(rc, r)) {
-                    return;
-                }
-                let ptr = Rc::as_ptr(rc) as *const ();
-                if seen.contains(&ptr) {
-                    return;
-                }
-                seen.insert(ptr);
-                match &mut *rc.borrow_mut() {
-                    ObjectKind::Legacy(map) => {
-                        for (_, inner) in map.iter_mut() {
-                            remap_value(inner, native_start, root_rc, seen);
-                        }
-                    }
-                    ObjectKind::Inline(entries) => {
-                        for (_, inner) in entries.iter_mut() {
-                            remap_value(inner, native_start, root_rc, seen);
-                        }
-                    }
-                    ObjectKind::Bucket(_) => {}
-                }
-                seen.remove(&ptr);
-            }
-            _ => {}
-        }
-    }
-    for v in exports.values_mut() {
-        remap_value(v, native_start, root_rc, &mut seen);
     }
 }
 

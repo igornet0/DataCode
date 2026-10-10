@@ -109,13 +109,13 @@ fn resolve_module_file(
     name: &str,
     importer_dir: &Path,
     project_root: Option<&Path>,
-) -> Option<(PathBuf, PathBuf)> {
+) -> Result<Option<(PathBuf, PathBuf)>, LangError> {
     use crate::vm::file_import::{get_dpm_package_paths, try_find_module_in, try_find_path_segment};
     let parts: Vec<&str> = name.split('.').collect();
     if parts.len() == 1 {
         let mut roots = vec![importer_dir.to_path_buf()];
         roots.extend(get_dpm_package_paths());
-        return roots.iter().find_map(|r| try_find_module_in(name, r));
+        return Ok(roots.iter().find_map(|r| try_find_module_in(name, r)));
     }
     // Absolute dotted import: first segment from project_root (if set), else the importer's dir.
     let root_for_first = project_root.unwrap_or(importer_dir).to_path_buf();
@@ -123,15 +123,28 @@ fn resolve_module_file(
     for (i, segment) in parts[..parts.len() - 1].iter().enumerate() {
         let mut roots = vec![if i == 0 { root_for_first.clone() } else { current.clone() }];
         roots.extend(get_dpm_package_paths());
-        current = roots
-            .iter()
-            .find_map(|r| try_find_path_segment(segment, name, r).ok())?;
+        let mut file_prefix_error = None;
+        let found = roots.iter().find_map(|r| match try_find_path_segment(segment, name, r) {
+            Ok(dir) => Some(dir),
+            Err(e) => {
+                // `foo.bar` where `foo.dc` is a file: report it instead of "not found".
+                if file_prefix_error.is_none() && r.join(format!("{}.dc", segment)).exists() {
+                    file_prefix_error = Some(e);
+                }
+                None
+            }
+        });
+        match (found, file_prefix_error) {
+            (Some(dir), _) => current = dir,
+            (None, Some(e)) => return Err(e),
+            (None, None) => return Ok(None),
+        }
     }
     let mut roots = vec![current];
     roots.extend(get_dpm_package_paths());
-    roots
+    Ok(roots
         .iter()
-        .find_map(|r| try_find_module_in(parts[parts.len() - 1], r))
+        .find_map(|r| try_find_module_in(parts[parts.len() - 1], r)))
 }
 
 /// Bytecode of a module: in-memory cache, else fresh `.dcb`, else compile (and save both).
@@ -585,7 +598,7 @@ pub(crate) fn import_dc_module(
         return Ok(DcImport::NotFound);
     };
     let project_root = vm(vm_ptr).get_project_root();
-    let Some((module_dir, file)) = resolve_module_file(name, &dir, project_root.as_deref()) else {
+    let Some((module_dir, file)) = resolve_module_file(name, &dir, project_root.as_deref())? else {
         return Ok(DcImport::NotFound);
     };
     let key = crate::vm::module_cache::canonical_module_cache_key(&file);

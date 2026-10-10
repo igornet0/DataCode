@@ -1003,8 +1003,9 @@ cfg
     #[test]
     fn test_local_config_module_with_base_path() {
         let base = fixtures_dir().join("config_run");
+        // `config` is a package (config/__lib__.dc); ConfigApp lives in its submodule config/config.dc.
         let source = r#"
-from config import ConfigApp
+from config.config import ConfigApp
 1
 "#;
         let result = run_with_base_path(source, base.as_path());

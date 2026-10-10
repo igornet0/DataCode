@@ -542,6 +542,56 @@ pub(crate) fn op_load_global(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn op_store_global(
     index: usize,
+    line: usize,
+    stack: &mut Vec<TaggedValue>,
+    frames: &mut Vec<CallFrame>,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    explicit_global_names: &std::collections::BTreeMap<usize, String>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+    vm_ptr: *mut crate::vm::vm::Vm,
+) -> Result<VMStatus, LangError> {
+    let status = op_store_global_inner(
+        index,
+        line,
+        stack,
+        frames,
+        globals,
+        global_names,
+        explicit_global_names,
+        exception_handlers,
+        value_store,
+        heavy_store,
+        vm_ptr,
+    )?;
+    // A module rebound one of its globals: keep `m.name` of importers current, and make classes
+    // findable by name from other modules (class fallbacks search `vm.modules` exports).
+    if unsafe { (*vm_ptr).current_module } != 0 && index < globals.len() {
+        if let Some(name) = global_names.get(&index) {
+            crate::vm::program_modules::publish_store(
+                name,
+                &mut globals[index],
+                value_store,
+                heavy_store,
+                vm_ptr,
+            );
+            crate::vm::program_modules::register_class(
+                name,
+                &mut globals[index],
+                value_store,
+                heavy_store,
+                vm_ptr,
+            );
+        }
+    }
+    Ok(status)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn op_store_global_inner(
+    index: usize,
     _line: usize,
     stack: &mut Vec<TaggedValue>,
     frames: &mut Vec<CallFrame>,

@@ -170,6 +170,19 @@ impl Compiler {
 
         self.pass_sorted_top_level_function_slots(statements);
 
+        // `import m` names are module namespaces everywhere in the file, including function bodies
+        // compiled before the import statement: `m.add(x)` / `m.get(k)` are module calls, not
+        // set/dict method fast paths.
+        for stmt in statements {
+            if let Stmt::Import {
+                import_stmt: crate::parser::ast::ImportStmt::Modules(modules),
+                ..
+            } = stmt
+            {
+                self.known_class_instance_vars.extend(modules.iter().cloned());
+            }
+        }
+
         // Первый проход: объявляем все функции (forward declaration), включая вложенные
         self.collect_all_functions(statements)?;
 
@@ -654,6 +667,8 @@ impl Compiler {
                                 self.scope.globals.insert(module.clone(), global_index);
                                 self.chunk.global_names.insert(global_index, module.clone());
                             }
+                            // `m.add(x)` / `m.get(k)` call module functions: no set/dict method fast paths.
+                            self.known_class_instance_vars.insert(module.clone());
                         }
                     }
                     ImportStmt::From { module, items } => {

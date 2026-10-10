@@ -14,6 +14,7 @@ pub mod import_scan;
 pub mod iterable;
 pub mod module_cache;
 pub mod module_data;
+pub mod program_modules;
 pub mod module_object;
 pub mod native_call_registry;
 pub mod native_loader;

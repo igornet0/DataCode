@@ -1,0 +1,5 @@
+from shared import add
+
+fn left_add(x) {
+    return add(x)
+}

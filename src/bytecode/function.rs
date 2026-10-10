@@ -129,6 +129,9 @@ pub struct Function {
     pub variadic_pos_index: Option<usize>,
     /// Индекс параметра `**kwargs` в `param_names`, если объявлен.
     pub variadic_kw_index: Option<usize>,
+    /// Program module the function belongs to (0 = main script). Selects the global table its
+    /// LoadGlobal/StoreGlobal indices refer to (see `vm::program_modules`).
+    pub module_id: u32,
 }
 
 impl Function {
@@ -151,6 +154,7 @@ impl Function {
             is_stream: false,
             variadic_pos_index: None,
             variadic_kw_index: None,
+            module_id: 0,
         }
     }
 
@@ -173,6 +177,7 @@ impl Function {
             is_stream: false,
             variadic_pos_index: None,
             variadic_kw_index: None,
+            module_id: 0,
         }
     }
 }
@@ -197,6 +202,7 @@ impl Clone for Function {
             is_stream: self.is_stream,
             variadic_pos_index: self.variadic_pos_index,
             variadic_kw_index: self.variadic_kw_index,
+            module_id: self.module_id,
         }
     }
 }

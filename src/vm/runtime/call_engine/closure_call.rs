@@ -43,16 +43,57 @@ pub(crate) fn execute_closure_call(
     }
     let function = functions[function_index].clone();
 
-    constructor_call::set_constructing_class_for_call(
-        &function,
-        constructing_class_opt.as_ref(),
-        &*frames,
-        globals,
-        global_names,
-        value_store,
-        heavy_store,
-        vm_ptr,
-    );
+    let caller_module = unsafe { (*vm_ptr).current_module };
+    if function.module_id != caller_module && function.name.contains("::new_") {
+        // Constructor of a class from another program module: `__constructing_class__` lives in
+        // the callee's table. For a `super(...)` call keep the leaf class the caller is building.
+        let inherited = if constructor_call::is_super_chain_call(
+            &function,
+            frames,
+            globals,
+            global_names,
+            value_store,
+            heavy_store,
+        ) {
+            crate::vm::global_utils::global_index_by_name(global_names, "__constructing_class__")
+                .filter(|i| *i < globals.len())
+                .map(|i| globals[i])
+        } else {
+            None
+        };
+        // Check out the callee's table into `globals` / `global_names` for the update.
+        unsafe { (*vm_ptr).switch_module_table(function.module_id) };
+        match inherited {
+            Some(slot) => crate::vm::program_modules::bind_current(
+                globals,
+                global_names,
+                "__constructing_class__",
+                slot,
+            ),
+            None => constructor_call::set_constructing_class_for_call(
+                &function,
+                constructing_class_opt.as_ref(),
+                &*frames,
+                globals,
+                global_names,
+                value_store,
+                heavy_store,
+                vm_ptr,
+            ),
+        }
+        unsafe { (*vm_ptr).switch_module_table(caller_module) };
+    } else {
+        constructor_call::set_constructing_class_for_call(
+            &function,
+            constructing_class_opt.as_ref(),
+            &*frames,
+            globals,
+            global_names,
+            value_store,
+            heavy_store,
+            vm_ptr,
+        );
+    }
 
     debug_println!(
         "[CALL] function_index={}, functions.len()={}, function.name={}",
@@ -114,9 +155,22 @@ pub(crate) fn execute_closure_call(
         }
         arg_tvs.reserve(arity);
         for _ in 0..arity {
-            let arg_tv = stack::pop_direct(stack).unwrap_or(TaggedValue::null());
-            arg_tvs.push(arg_tv);
-            args.push(slot_to_value(arg_tv, value_store, heavy_store));
+            arg_tvs.push(stack::pop_direct(stack).unwrap_or(TaggedValue::null()));
+        }
+        // `m.f(x)` on a program module: the deepest value is the module's namespace receiver.
+        // Module functions never take it; drop it before converting arguments (the namespace
+        // references all module data).
+        if function.module_id != 0
+            && arg_tvs.last().is_some_and(|tv| {
+                tv.is_heap()
+                    && crate::vm::program_modules::namespace_module(tv.get_heap_id(), vm_ptr)
+                        == Some(function.module_id)
+            })
+        {
+            arg_tvs.pop();
+        }
+        for tv in &arg_tvs {
+            args.push(slot_to_value(*tv, value_store, heavy_store));
         }
         // Stack convention from `compile_module_method`: callee is popped first elsewhere,then this
         // loop consumes `arity` values *below* it. Typical layout bottom→top is `[receiver,
@@ -129,12 +183,12 @@ pub(crate) fn execute_closure_call(
         // `this` already in left‑to‑right order → reversing wrongly swaps bindings (constructor
         // helpers like `_init(items)`). Detect the common arity‑2 `{this, array}` edge and skip.
         let skip_reverse_two_arg_this_receiver_on_top =
-            arity == 2
+            args.len() == 2
                 && function.param_names.first().map(|s| s.as_str()) == Some("this")
                 && function.param_names.len() >= 2
                 && crate::vm::calls::get_type_name_value(&args[0]) == "object"
                 && crate::vm::calls::get_type_name_value(&args[1]) == "array";
-        if !(arity == 2 && skip_reverse_two_arg_this_receiver_on_top) {
+        if !skip_reverse_two_arg_this_receiver_on_top {
             arg_tvs.reverse();
             args.reverse();
         }

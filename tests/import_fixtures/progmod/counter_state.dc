@@ -1,0 +1,6 @@
+fail_next = 1
+
+fn tick() {
+    global fail_next = fail_next - 1
+    return fail_next
+}

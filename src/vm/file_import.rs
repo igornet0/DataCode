@@ -108,7 +108,7 @@ pub fn get_dpm_package_paths() -> Vec<PathBuf> {
 
 /// Пытается найти модуль в заданном корне: предпочитается пакет <root>/<module_name>/__lib__.dc,
 /// иначе файл <root>/<module_name>.dc. Так "core.config" даёт core/config/__lib__.dc, а не core/config.dc.
-fn try_find_module_in(module_name: &str, root: &Path) -> Option<(PathBuf, PathBuf)> {
+pub(crate) fn try_find_module_in(module_name: &str, root: &Path) -> Option<(PathBuf, PathBuf)> {
     let dir_path = root.join(module_name);
     let lib_path = dir_path.join("__lib__.dc");
     if dir_path.is_dir() && lib_path.exists() {
@@ -124,7 +124,7 @@ fn try_find_module_in(module_name: &str, root: &Path) -> Option<(PathBuf, PathBu
 /// Разрешает промежуточный сегмент dotted-импорта (не последний).
 /// Пакет с __lib__.dc → директория пакета; namespace-папка без __lib__ → та же директория;
 /// файл `<segment>.dc` без директории → ошибка (нельзя `foo.bar`, если foo — файл).
-fn try_find_path_segment(
+pub(crate) fn try_find_path_segment(
     segment: &str,
     full_module_name: &str,
     root: &Path,
@@ -513,7 +513,7 @@ fn load_local_module_with_vm_inner(
 /// Compiles source to bytecode (chunk + functions). Does not run.
 /// Also returns import module names from AST for dependency graph.
 /// source_name: path to source file for error messages (e.g. when loading a .dc module).
-fn compile_module(
+pub(crate) fn compile_module(
     source: &str,
     source_name: Option<&Path>,
 ) -> Result<

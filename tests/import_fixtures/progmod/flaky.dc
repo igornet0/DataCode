@@ -1,0 +1,8 @@
+# Первая инициализация падает; повторный импорт выполняет модуль заново.
+import counter_state
+
+if counter_state.tick() >= 0 {
+    throw ValueError("flaky init")
+}
+
+READY = true

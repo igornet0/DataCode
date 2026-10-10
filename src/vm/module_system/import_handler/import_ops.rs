@@ -206,6 +206,13 @@ fn register_nested_module_namespaces(module_object: &Value, vm_ptr: *mut crate::
     }
 }
 
+/// Old import paths re-patch chunk global indices by name against the current table. Only the main
+/// script's chunks may be patched, and only while its table is checked out: program-module
+/// functions use their own compiler indices (see `program_modules`).
+fn legacy_patch_allowed(function_module: u32, vm_ptr: *mut crate::vm::vm::Vm) -> bool {
+    function_module == 0 && unsafe { (*vm_ptr).current_module } == 0
+}
+
 /// Загрузить один top-level модуль (builtin / .dc / native), если его ещё нет в `loaded_modules`.
 /// Нужен для `from ml.layer import …` до строки `import ml`: сначала подгружается `ml`, затем разрешается вложенный namespace.
 fn ensure_module_loaded(
@@ -393,6 +400,43 @@ pub(crate) fn handle_import(
     if loaded_modules.contains(&module_name) {
         return Ok(VMStatus::Continue);
     }
+    if !modules::is_known_module(&module_name) {
+        use crate::vm::program_modules::{self as pm, DcImport};
+        match pm::import_dc_module(
+            &module_name,
+            frames,
+            stack,
+            globals,
+            global_names,
+            value_store,
+            heavy_store,
+            vm_ptr,
+        ) {
+            Ok(DcImport::Pending) => return Ok(VMStatus::Continue),
+            Ok(DcImport::Ready(id)) => {
+                let obj = pm::namespace_object(id, value_store, heavy_store, vm_ptr);
+                pm::bind_current(globals, global_names, &module_name, GlobalSlot::Heap(obj));
+                loaded_modules.insert(module_name);
+                return Ok(VMStatus::Continue);
+            }
+            Ok(DcImport::NotFound) => {}
+            Err(e) => {
+                let error = ExceptionHandler::runtime_error_with_source(
+                    &frames,
+                    format!("Failed to load module '{}'", module_name),
+                    e,
+                );
+                return ExceptionHandler::handle_exception_vm(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                );
+            }
+        }
+    }
     ensure_module_loaded(
         &module_name,
         line,
@@ -449,6 +493,75 @@ pub(crate) fn handle_import_from(
     };
     let module_name = ops.module_name;
     let items_array = ops.items_array;
+    if !modules::is_known_module(&module_name) {
+        use crate::vm::program_modules::{self as pm, DcImport};
+        match pm::import_dc_module(
+            &module_name,
+            frames,
+            stack,
+            globals,
+            global_names,
+            value_store,
+            heavy_store,
+            vm_ptr,
+        ) {
+            Ok(DcImport::Pending) => return Ok(VMStatus::Continue),
+            Ok(DcImport::Ready(id)) => {
+                let items: Vec<String> = items_array
+                    .iter()
+                    .filter_map(|v| match v {
+                        Value::String(s) => Some(s.clone()),
+                        _ => None,
+                    })
+                    .collect();
+                if let Err(msg) = pm::bind_from(id, &module_name, &items, globals, global_names, vm_ptr) {
+                    let error = ExceptionHandler::runtime_error(&frames, msg, line);
+                    return ExceptionHandler::handle_exception_vm(
+                        stack,
+                        frames,
+                        exception_handlers,
+                        error,
+                        value_store,
+                        heavy_store,
+                    );
+                }
+                // The compiler also reserves the module's own name; bind the namespace there only
+                // when the import itself did not just bind that name (`from helper import helper`).
+                let binds_module_name = items.iter().any(|it| {
+                    it == "*" || it.split_once(':').map(|(_, d)| d).unwrap_or(it) == module_name
+                });
+                let slot_free = crate::vm::global_utils::global_index_by_name(global_names, &module_name)
+                    .filter(|i| *i < globals.len())
+                    .map(|i| {
+                        let id = globals[i].resolve_to_value_id(value_store);
+                        id == crate::common::value_store::NULL_VALUE_ID
+                    })
+                    .unwrap_or(false);
+                if !binds_module_name && slot_free {
+                    let obj = pm::namespace_object(id, value_store, heavy_store, vm_ptr);
+                    pm::bind_current(globals, global_names, &module_name, GlobalSlot::Heap(obj));
+                }
+                loaded_modules.insert(module_name);
+                return Ok(VMStatus::Continue);
+            }
+            Ok(DcImport::NotFound) => {}
+            Err(e) => {
+                let error = ExceptionHandler::runtime_error_with_source(
+                    &frames,
+                    format!("Failed to load module '{}'", module_name),
+                    e,
+                );
+                return ExceptionHandler::handle_exception_vm(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                );
+            }
+        }
+    }
     let argv_slot_import = unsafe { (*vm_ptr).get_argv_slot_index() };
     // Preserve argv value id before any feed/per-item writes so we can restore the slot at the end (nested module run clears RunContext/SCRIPT_ARGV_VALUE_ID visibility).
     let saved_argv_value_id = argv_slot_import.and_then(|slot_idx| {
@@ -806,6 +919,9 @@ pub(crate) fn handle_import_from(
                                     }
                                 }
                                 for i in 0..functions.len() {
+                                    if !legacy_patch_allowed(functions[i].module_id, vm_ptr) {
+                                        continue;
+                                    }
                                     crate::vm::module_system::chunk_patcher::update_chunk_indices_from_names(
                                         &mut functions[i].chunk,
                                         &global_names_snapshot,
@@ -816,7 +932,10 @@ pub(crate) fn handle_import_from(
                                         true, // merged module chunks: resolve sentinel
                                     );
                                 }
-                                if let Some(main_frame) = frames.first_mut() {
+                                if let Some(main_frame) = frames
+                                    .first_mut()
+                                    .filter(|_| legacy_patch_allowed(0, vm_ptr))
+                                {
                                     crate::vm::module_system::chunk_patcher::update_chunk_indices_from_names(
                                         &mut main_frame.function.chunk,
                                         &global_names_snapshot,
@@ -986,6 +1105,9 @@ pub(crate) fn handle_import_from(
                                         }
                                     }
                                     for i in 0..functions.len() {
+                                        if !legacy_patch_allowed(functions[i].module_id, vm_ptr) {
+                                            continue;
+                                        }
                                         crate::vm::module_system::chunk_patcher::update_chunk_indices_from_names(
                                             &mut functions[i].chunk,
                                             &global_names_snapshot,
@@ -996,7 +1118,10 @@ pub(crate) fn handle_import_from(
                                             true,
                                         );
                                     }
-                                    if let Some(main_frame) = frames.first_mut() {
+                                    if let Some(main_frame) = frames
+                                        .first_mut()
+                                        .filter(|_| legacy_patch_allowed(0, vm_ptr))
+                                    {
                                         crate::vm::module_system::chunk_patcher::update_chunk_indices_from_names(
                                             &mut main_frame.function.chunk,
                                             &global_names_snapshot,
@@ -1789,7 +1914,10 @@ pub(crate) fn handle_import_from(
             eprintln!("[WARNING] create_all not found in caller_global_names BEFORE update");
         }
     }
-    if let Some(main_frame) = frames.first_mut() {
+    if let Some(main_frame) = frames
+        .first_mut()
+        .filter(|_| legacy_patch_allowed(0, vm_ptr))
+    {
         crate::vm::module_system::chunk_patcher::update_chunk_indices_from_names(
             &mut main_frame.function.chunk,
             global_names,
@@ -1809,7 +1937,10 @@ pub(crate) fn handle_import_from(
     // Re-patch all function chunks with final global_names after per-item imports.
     // Otherwise constructors from the module (e.g. ProdSettings::new_0) keep LoadGlobal(sentinel)
     // mapped to pre-import indices and may load the wrong class (e.g. DevSettings instead of ProdSettings).
-    for f in functions.iter_mut() {
+    for f in functions
+        .iter_mut()
+        .filter(|f| legacy_patch_allowed(f.module_id, vm_ptr))
+    {
         crate::vm::module_system::chunk_patcher::update_chunk_indices_from_names(
             &mut f.chunk,
             global_names,

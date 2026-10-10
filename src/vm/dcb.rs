@@ -31,7 +31,9 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// v29: DictIndexIntegralAddImm; flat-heap migrate skip when already flat.
 /// v30: JumpIfLocalHeapArrayEmpty*, NotInIntegral; ObjectSetIntegral single get_mut.
 /// v31: BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight, BitNot opcodes.
-pub const DCB_FORMAT_VERSION: &str = "32";
+/// v33: per-name undefined-global placeholders; `import m` names skip set/dict method fast paths;
+///      scalar constants dedup by exact variant (modules are loaded as program modules).
+pub const DCB_FORMAT_VERSION: &str = "33";
 
 /// Metadata stored at the start of a .dcb file for freshness checks.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

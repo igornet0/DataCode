@@ -24,37 +24,7 @@ pub(crate) fn set_constructing_class_for_call(
         return;
     }
     const CONSTRUCTING_CLASS_NAME: &str = "__constructing_class__";
-    let skip_set_super_chain: bool = frames
-        .last()
-        .map(|f| {
-            let caller_name = f.function.name.as_str();
-            let callee_name = function.name.split("::").next().unwrap_or("");
-            if !caller_name.contains("::new_") || callee_name.is_empty() {
-                return false;
-            }
-            let caller_class = caller_name.split("::").next().unwrap_or("");
-            if caller_class == callee_name {
-                return false;
-            }
-            let caller_class_idx = global_index_by_name(global_names, caller_class);
-            let superclass_name: Option<String> = caller_class_idx.and_then(|idx| {
-                if idx >= globals.len() {
-                    return None;
-                }
-                let id = globals[idx].resolve_to_value_id(value_store);
-                let v = load_value(id, value_store, heavy_store);
-                if let Value::Object(rc) = &v {
-                    let o = rc.borrow();
-                    if let Some(Value::String(s)) = o.str_key_get("__superclass") {
-                        return Some(s.clone());
-                    }
-                }
-                None
-            });
-            superclass_name.as_deref() == Some(callee_name)
-        })
-        .unwrap_or(false);
-    if skip_set_super_chain {
+    if is_super_chain_call(function, frames, globals, global_names, value_store, heavy_store) {
         return;
     }
     let class_to_set: Option<Value> = if let Some(class_val) = constructing_class_opt {
@@ -211,4 +181,46 @@ pub(crate) fn set_constructing_class_for_call(
             function.name, class_name,
         );
     }
+}
+
+/// Constructor call made from the constructor of a subclass (`super(...)`): the leaf class set for
+/// the outer constructor must stay `__constructing_class__`. Uses the caller's global table.
+pub(crate) fn is_super_chain_call(
+    function: &crate::bytecode::Function,
+    frames: &[CallFrame],
+    globals: &mut [GlobalSlot],
+    global_names: &std::collections::BTreeMap<usize, String>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+) -> bool {
+    frames
+        .last()
+        .map(|f| {
+            let caller_name = f.function.name.as_str();
+            let callee_name = function.name.split("::").next().unwrap_or("");
+            if !caller_name.contains("::new_") || callee_name.is_empty() {
+                return false;
+            }
+            let caller_class = caller_name.split("::").next().unwrap_or("");
+            if caller_class == callee_name {
+                return false;
+            }
+            let caller_class_idx = global_index_by_name(global_names, caller_class);
+            let superclass_name: Option<String> = caller_class_idx.and_then(|idx| {
+                if idx >= globals.len() {
+                    return None;
+                }
+                let id = globals[idx].resolve_to_value_id(value_store);
+                let v = load_value(id, value_store, heavy_store);
+                if let Value::Object(rc) = &v {
+                    let o = rc.borrow();
+                    if let Some(Value::String(s)) = o.str_key_get("__superclass") {
+                        return Some(s.clone());
+                    }
+                }
+                None
+            });
+            superclass_name.as_deref() == Some(callee_name)
+        })
+        .unwrap_or(false)
 }

@@ -796,67 +796,10 @@ fn run_with_vm_internal_with_args(
         debug_println!("[DEBUG run_with_vm_internal_with_args] lib_path указан явно: {:?}, загружаем __lib__.dc", lib_path_val);
         Some(run_lib_file(lib_path_val)?)
     } else {
-        // lib_path не указан - пытаемся автоматически найти __lib__.dc
-        if let Some(base_path) = base_for_lib {
-            // Сначала ищем __lib__.dc в папках по импортам (from X import ...), затем поднимаемся вверх по дереву
-            let module_names = import_module_names_from_ast(&ast);
-            // Ищем __lib__.dc только в директории скрипта или в папках импортов (base_path/<module>/__lib__.dc).
-            // Не поднимаемся вверх по дереву (find_nearest_lib), иначе при запуске из sandbox/web_api
-            // подхватывается __lib__.dc из корня репо, добавляются функции в VM до импорта core.config,
-            // и индексы конструкторов из модуля дают "Function index N out of bounds".
-            let potential_lib_path = if !module_names.is_empty() {
-                debug_println!(
-                    "[DEBUG run_with_vm_internal_with_args] Ищем __lib__.dc в папках по импортам: {:?}",
-                    module_names
-                );
-                file_import::find_lib_in_package_dirs(&base_path, &module_names)
-            } else {
-                None
-            }.or_else(|| {
-                let in_script_dir = base_path.join("__lib__.dc");
-                if in_script_dir.exists() {
-                    debug_println!(
-                        "[DEBUG run_with_vm_internal_with_args] Найден __lib__.dc в директории скрипта: {:?}",
-                        in_script_dir
-                    );
-                    Some(in_script_dir)
-                } else {
-                    None
-                }
-            });
-            if let Some(potential_lib_path) = potential_lib_path {
-                debug_println!(
-                    "[DEBUG run_with_vm_internal_with_args] Автоматически найден __lib__.dc: {:?}",
-                    potential_lib_path
-                );
-                // Передаем найденный путь в run_lib_file
-                // run_lib_file установит флаг is_executing_lib, чтобы предотвратить автоматический поиск
-                Some(run_lib_file(&potential_lib_path)?)
-            } else {
-                debug_println!(
-                    "[DEBUG run_with_vm_internal_with_args] __lib__.dc не найден ни в базовом пути, ни выше по дереву каталогов, ни в папках по импортам, начиная с: {:?}",
-                    base_path
-                );
-
-                // Специальное правило: для сценариев в директории `test_src`
-                // наличие __lib__.dc обязательно. Если базовый путь оканчивается
-                // на `test_src` и библиотека не найдена, возвращаем ошибку.
-                if base_path.ends_with("test_src") {
-                    return Err(LangError::runtime_error(
-                        format!(
-                            "Для файлов в директории '{}' требуется __lib__.dc (файл не найден ни в самой директории, ни выше по дереву каталогов)",
-                            base_path.display()
-                        ),
-                        0,
-                    ));
-                }
-
-                None
-            }
-        } else {
-            debug_println!("[DEBUG run_with_vm_internal_with_args] Базовый путь не установлен, не можем найти __lib__.dc");
-            None
-        }
+        // No implicit `__lib__.dc` preload: a package's `__lib__.dc` is the package module itself and
+        // runs once when imported (`from pkg import x`). Preloading it here ran package code twice
+        // and appended its functions ahead of the script's, shifting the script's function indices.
+        None
     };
 
     // 3. Семантический анализ

@@ -101,15 +101,10 @@ fn execute_file(config: cli::FileExecutionConfig) {
     // Путь к файлу для чтения и для __lib__.dc — всегда канонический
     let script_path_for_read = &script_canonical;
 
-    // Определяем путь к __lib__.dc для передачи в run_with_vm_with_args_and_lib (в той же директории, что и скрипт)
-    let lib_path = script_base_path.as_ref().and_then(|dir| {
-        let lib_path = dir.join("__lib__.dc");
-        if lib_path.exists() {
-            Some(lib_path)
-        } else {
-            None
-        }
-    });
+    // `__lib__.dc` next to the script is not preloaded: it is the package module of its directory
+    // and runs once when imported (`from pkg import x`). Preloading ran it twice and shifted the
+    // script's own function indices.
+    let lib_path: Option<PathBuf> = None;
 
     // Устанавливаем базовый путь для импортов и load_env — всегда абсолютный,
     // чтобы разрешение путей не зависело от current_dir() (иначе при cargo run из подкаталога — нестабильно).

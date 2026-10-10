@@ -129,6 +129,16 @@ pub struct Vm {
     /// Stable storage for module-level data read/written by merged module functions (see
     /// [`ModuleDataSlots`]). Keyed by module namespace identity; ids live in this VM's value_store.
     module_data_slots: RefCell<HashMap<usize, ModuleDataSlots>>,
+    /// `.dc` modules of this run (see [`crate::vm::program_modules`]). Entry 0 is the main script.
+    /// The table of `current_module` is checked out into `globals` / `global_names` /
+    /// `explicit_global_names` / `loaded_modules`; the others stay in their entries.
+    pub(crate) program_modules: Vec<crate::vm::program_modules::ProgramModule>,
+    /// Canonical module path -> index in `program_modules` (each module runs once per VM).
+    pub(crate) module_by_path: HashMap<PathBuf, u32>,
+    /// Program module whose global table is checked out (module of the executing frame).
+    pub(crate) current_module: u32,
+    /// Namespace object id (bound by `import m`) -> program module id.
+    pub(crate) namespace_objects: HashMap<ValueId, u32>,
     /// When set (e.g. from run_with_vm_internal_with_args), update_chunk_indices_from_names will always map "argv" to this slot,
     /// so ImportFrom re-patch does not remap LoadGlobal(argv) to load_settings (slot 79) after merge.
     argv_slot_index: Option<usize>,
@@ -229,6 +239,10 @@ impl Vm {
             module_deps: Rc::new(RefCell::new(HashMap::new())),
             modules: RefCell::new(HashMap::new()),
             module_data_slots: RefCell::new(HashMap::new()),
+            program_modules: vec![crate::vm::program_modules::ProgramModule::main()],
+            module_by_path: HashMap::new(),
+            current_module: 0,
+            namespace_objects: HashMap::new(),
             argv_slot_index: None,
             argv_old_indices: None,
             current_argv_value_id: None,
@@ -288,6 +302,10 @@ impl Vm {
             module_deps: parent.module_deps.clone(),
             modules: RefCell::new(HashMap::new()),
             module_data_slots: RefCell::new(HashMap::new()),
+            program_modules: vec![crate::vm::program_modules::ProgramModule::main()],
+            module_by_path: HashMap::new(),
+            current_module: 0,
+            namespace_objects: HashMap::new(),
             argv_slot_index: None,
             argv_old_indices: None,
             current_argv_value_id: None,
@@ -368,6 +386,10 @@ impl Vm {
 
     /// Get the argv slot index if set.
     pub fn get_argv_slot_index(&self) -> Option<usize> {
+        // The argv slot index belongs to the main script's global table.
+        if self.current_module != 0 {
+            return None;
+        }
         self.argv_slot_index
     }
 
@@ -378,7 +400,41 @@ impl Vm {
 
     /// Get the bytecode indices that mean "argv" for this run.
     pub(crate) fn get_argv_old_indices(&self) -> Option<&[usize]> {
+        if self.current_module != 0 {
+            return None;
+        }
         self.argv_old_indices.as_deref()
+    }
+
+    /// Check out the global table of program module `to` (see `program_modules`). O(1): swaps vectors.
+    pub(crate) fn switch_module_table(&mut self, to: u32) {
+        if to == self.current_module || to as usize >= self.program_modules.len() {
+            return;
+        }
+        let cur = self.current_module as usize;
+        {
+            let t = &mut self.program_modules[cur].table;
+            std::mem::swap(&mut self.globals, &mut t.globals);
+            std::mem::swap(&mut self.global_names, &mut t.global_names);
+            std::mem::swap(&mut self.explicit_global_names, &mut t.explicit_global_names);
+            std::mem::swap(&mut self.loaded_modules, &mut t.loaded_modules);
+        }
+        {
+            let t = &mut self.program_modules[to as usize].table;
+            std::mem::swap(&mut self.globals, &mut t.globals);
+            std::mem::swap(&mut self.global_names, &mut t.global_names);
+            std::mem::swap(&mut self.explicit_global_names, &mut t.explicit_global_names);
+            std::mem::swap(&mut self.loaded_modules, &mut t.loaded_modules);
+        }
+        self.current_module = to;
+    }
+
+    /// Make the checked-out table match the executing frame (after a nested run loop returns).
+    pub(crate) fn sync_module_table(&mut self) {
+        let m = self.frames.last().map(|f| f.function.module_id).unwrap_or(0);
+        if m != self.current_module {
+            self.switch_module_table(m);
+        }
     }
 
     /// Set the canonical argv value id for this run so LoadGlobal(argv_slot) always loads it.
@@ -892,6 +948,12 @@ impl Vm {
                 None => return Ok(VMStatus::FrameEnded),
             }
         };
+        // Each program module has its own global table: use the one of the executing frame.
+        if let Some(f) = self.frames.last() {
+            if f.function.module_id != self.current_module {
+                self.switch_module_table(f.function.module_id);
+            }
+        }
         executor::execute_instruction(
             instruction,
             line,
@@ -1099,6 +1161,26 @@ impl Vm {
     /// Use when reusing the same VM for stateless runs (e.g. HTTP request handlers). Non-function
     /// globals (config, tables, etc.) are dropped; global state is not preserved between calls.
     pub fn reset_stores_and_globals_for_stateless(&mut self) {
+        // Module state survives requests (as it did when modules lived in their own VMs): move
+        // every program-module slot out of the store as a Value and back in after the clear.
+        self.switch_module_table(0);
+        let module_snapshots: Vec<Vec<Value>> = (1..self.program_modules.len())
+            .map(|m| {
+                let mut slots = std::mem::take(&mut self.program_modules[m].table.globals);
+                let values = slots
+                    .iter_mut()
+                    .map(|slot| {
+                        let id = slot.resolve_to_value_id(&mut self.value_store);
+                        load_value(id, &self.value_store, &self.heavy_store)
+                    })
+                    .collect();
+                values
+            })
+            .collect();
+        for m in &mut self.program_modules {
+            m.namespace_object = None;
+        }
+        self.namespace_objects.clear();
         let mut function_globals: Vec<(usize, usize)> = Vec::new();
         for (idx, slot) in self.globals.iter_mut().enumerate() {
             let id = slot.resolve_to_value_id(&mut self.value_store);
@@ -1117,6 +1199,19 @@ impl Vm {
                 self.globals[global_idx] =
                     GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(fn_idx)));
             }
+        }
+        for (m, values) in module_snapshots.into_iter().enumerate() {
+            let slots: Vec<GlobalSlot> = values
+                .into_iter()
+                .map(|v| {
+                    GlobalSlot::Heap(crate::vm::store_convert::store_value(
+                        v,
+                        &mut self.value_store,
+                        &mut self.heavy_store,
+                    ))
+                })
+                .collect();
+            self.program_modules[m + 1].table.globals = slots;
         }
     }
 
@@ -1297,6 +1392,17 @@ impl Vm {
         function_index: usize,
         args: &[Value],
     ) -> Result<Value, LangError> {
+        let result = self.call_function_by_index_inner(function_index, args);
+        // The nested run loop may leave another module's table checked out.
+        self.sync_module_table();
+        result
+    }
+
+    fn call_function_by_index_inner(
+        &mut self,
+        function_index: usize,
+        args: &[Value],
+    ) -> Result<Value, LangError> {
         // Setup function call (creates frame, handles cache, sets up captured variables)
         if let Some(cached_result) = calls::setup_function_call(
             function_index,
@@ -1372,6 +1478,17 @@ impl Vm {
 
     /// Like [`call_function_by_index`], but binds canonical [`ValueId`] arguments (special-method `this`).
     pub fn call_function_by_index_with_arg_ids(
+        &mut self,
+        function_index: usize,
+        arg_ids: &[crate::common::value_store::ValueId],
+    ) -> Result<Value, LangError> {
+        let result = self.call_function_by_index_with_arg_ids_inner(function_index, arg_ids);
+        // The nested run loop may leave another module's table checked out.
+        self.sync_module_table();
+        result
+    }
+
+    fn call_function_by_index_with_arg_ids_inner(
         &mut self,
         function_index: usize,
         arg_ids: &[crate::common::value_store::ValueId],

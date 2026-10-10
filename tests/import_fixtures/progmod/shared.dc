@@ -1,0 +1,7 @@
+# Общий модуль для ромбовидного импорта.
+ITEMS = []
+
+fn add(x) {
+    push(ITEMS, x)
+    return len(ITEMS)
+}

@@ -21,6 +21,29 @@ use crate::vm::store_convert::{
 use crate::vm::types::VMStatus;
 use std::rc::Rc;
 
+/// Plain module-level data (`NAMES = [...]`, `COUNT = 0`, ...). The import pipeline never feeds
+/// such values into the host's global slots, so a host slot with the same name always belongs to
+/// the host script and must not be read or written by module code. Functions, classes and other
+/// objects keep the host-slot path (they are fed into the host on import).
+fn is_module_owned_data(value: &Value) -> bool {
+    matches!(
+        value,
+        Value::Null
+            | Value::Int(_)
+            | Value::Float(_)
+            | Value::Number(_)
+            | Value::Bool(_)
+            | Value::String(_)
+            | Value::Array(_)
+            | Value::Tuple(_)
+            | Value::Set(_)
+            | Value::Path(_)
+            | Value::Uuid(_, _)
+            | Value::Date(_)
+            | Value::Duration(_)
+    )
+}
+
 /// Execute LoadGlobal(index).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn op_load_global(
@@ -102,6 +125,23 @@ pub(crate) fn op_load_global(
                     .get(&index)
                     .map(String::as_str)
                     .or_else(|| global_names.get(&index).map(String::as_str));
+                // Module-owned data (lists, strings, numbers, null, ...) always comes from the module
+                // namespace. Merged module chunks are patched to host slots by name, so a host
+                // variable with the same name (e.g. `NAMES` in the main script) would otherwise
+                // shadow the module's own `NAMES` imported via `from poizen_name import NAMES`.
+                if let Some(name) = var_name {
+                    if name != "__constructing_class__" {
+                        let own_data = rc
+                            .borrow()
+                            .get_export(name)
+                            .filter(is_module_owned_data);
+                        if let Some(value) = own_data {
+                            let id = store_value(value, value_store, heavy_store);
+                            stack::push_id(stack, id);
+                            return Ok(VMStatus::Continue);
+                        }
+                    }
+                }
                 // Prefer host VM globals only when THIS index is actually named the same in the host
                 // name table. Module chunk indices are not host indices: treating chunk name presence
                 // alone as "name_matches" was a tautology and leaked unrelated host objects (e.g.
@@ -593,6 +633,19 @@ pub(crate) fn op_store_global(
     // Do not allow script to overwrite the argv slot (host-only, read-only).
     if unsafe { (*vm_ptr).get_argv_slot_index() } == Some(index) {
         return Ok(VMStatus::Continue);
+    }
+    // Module-owned data lives only in the module namespace (see LoadGlobal): writing it into the
+    // host slot would overwrite a host variable with the same name (e.g. `COUNT` in main).
+    if module_export.is_some() {
+        let value = if tv.is_heap() {
+            load_value(tagged_to_value_id_arena(tv, value_store), value_store, heavy_store)
+        } else {
+            slot_to_value(tv, value_store, heavy_store)
+        };
+        if is_module_owned_data(&value) {
+            sync_module_export(value);
+            return Ok(VMStatus::Continue);
+        }
     }
     // Inline path: primitives (number, bool, null, int) — no alloc, no get.
     if !tv.is_heap() {

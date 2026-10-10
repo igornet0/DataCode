@@ -331,12 +331,11 @@ pub(crate) fn op_load_global(
 
     let mut effective_index = index;
     let argv_slot_for_resolve = unsafe { (*vm_ptr).get_argv_slot_index() };
-    const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
     if index >= globals.len() {
         // Main chunk: never resolve undefined sentinel after ImportFrom — internal module
         // names (e.g. `settings`) may exist in caller global_names for patched module functions
         // but must not become visible to unimported bare names in the importer.
-        if frame.function.name == "<main>" && index == UNDEFINED_GLOBAL_SENTINEL {
+        if frame.function.name == "<main>" && crate::bytecode::is_undefined_global_sentinel(index) {
             // keep effective_index out of bounds → Undefined variable below
         } else if let Some(var_name) = frame.function.chunk.global_names.get(&index) {
             let real_idx_opt = if *var_name == "argv" && argv_slot_for_resolve.is_some() {

@@ -572,11 +572,10 @@ fn run_compiled_module(
     };
     vm.set_base_path(module_base_path.or_else(get_base_path));
     vm.set_project_root(project_root);
-    const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
     let max_global_index = chunk
         .global_names
         .keys()
-        .filter(|&&idx| idx != UNDEFINED_GLOBAL_SENTINEL)
+        .filter(|&&idx| !crate::bytecode::is_undefined_global_sentinel(idx))
         .max()
         .copied()
         .unwrap_or(0);

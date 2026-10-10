@@ -20,11 +20,10 @@ pub fn ensure_globals_from_chunk(
     global_names: &mut std::collections::BTreeMap<usize, String>,
     chunk: &crate::bytecode::Chunk,
 ) {
-    const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
     let mut entries: Vec<_> = chunk
         .global_names
         .iter()
-        .filter(|(idx, _)| **idx != UNDEFINED_GLOBAL_SENTINEL)
+        .filter(|(idx, _)| !crate::bytecode::is_undefined_global_sentinel(**idx))
         .filter(|(_, name)| name.as_str() != "argv")
         .filter(|(_, name)| {
             if let Some(builtin_idx) = globals::builtin_global_index(name) {
@@ -63,11 +62,10 @@ pub fn ensure_globals_from_chunk_preserve_indices(
     global_names: &mut std::collections::BTreeMap<usize, String>,
     chunk: &crate::bytecode::Chunk,
 ) {
-    const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
     let mut entries: Vec<_> = chunk
         .global_names
         .iter()
-        .filter(|(i, _)| **i != UNDEFINED_GLOBAL_SENTINEL)
+        .filter(|(i, _)| !crate::bytecode::is_undefined_global_sentinel(**i))
         .map(|(i, n)| (*i, n.clone()))
         .collect();
     entries.sort_by_key(|(idx, _)| *idx);
@@ -193,7 +191,6 @@ pub fn set_functions(
     unique_names.sort();
     unique_names.dedup();
 
-    const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
     let mut name_to_new_idx: std::collections::HashMap<String, usize> =
         std::collections::HashMap::new();
     let mut constructor_slots_used: std::collections::HashSet<usize> =
@@ -202,7 +199,7 @@ pub fn set_functions(
         let only_sentinel = all_pairs
             .iter()
             .filter(|(_, n)| n == name)
-            .all(|(idx, _)| *idx == UNDEFINED_GLOBAL_SENTINEL);
+            .all(|(idx, _)| crate::bytecode::is_undefined_global_sentinel(*idx));
         if only_sentinel {
             continue;
         }

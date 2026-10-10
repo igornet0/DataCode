@@ -630,9 +630,8 @@ impl Vm {
     /// Перед патчем добавляет в VM.global_names все имена из chunk, которых там ещё нет,
     /// чтобы не получать "no match" и не оставлять LoadGlobal/StoreGlobal без ремаппинга.
     pub fn update_chunk_indices(&mut self, chunk: &mut crate::bytecode::Chunk) {
-        const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
         for (idx, name) in &chunk.global_names.clone() {
-            if *idx == UNDEFINED_GLOBAL_SENTINEL || name.as_str() == "argv" {
+            if crate::bytecode::is_undefined_global_sentinel(*idx) || name.as_str() == "argv" {
                 continue;
             }
             if !self.global_names.values().any(|n| n == name) {

@@ -739,7 +739,6 @@ pub(crate) fn handle_import_from(
                                 // so update_chunk_indices_from_names finds them (no "no match").
                                 // Never skip Null module bindings (e.g. `global settings = null`):
                                 // they must remap or StoreGlobal/LoadGlobal keep stale module indices.
-                                const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
                                 let chunks_to_feed: Vec<_> = frames
                                     .first()
                                     .map(|f| &f.function.chunk)
@@ -748,7 +747,7 @@ pub(crate) fn handle_import_from(
                                     .collect();
                                 for chunk in &chunks_to_feed {
                                     for (idx, name) in &chunk.global_names {
-                                        if *idx == UNDEFINED_GLOBAL_SENTINEL
+                                        if crate::bytecode::is_undefined_global_sentinel(*idx)
                                             || name.as_str() == "argv"
                                         {
                                             continue;
@@ -925,7 +924,7 @@ pub(crate) fn handle_import_from(
                                         let is_merged_module_chunk =
                                             chunk_index >= 1 && (chunk_index - 1) >= start_idx;
                                         for (idx, name) in &chunk.global_names {
-                                            if *idx == usize::MAX || name.as_str() == "argv" {
+                                            if crate::bytecode::is_undefined_global_sentinel(*idx) || name.as_str() == "argv" {
                                                 continue;
                                             }
                                             if is_merged_module_chunk && cache_is_internal(name) {
@@ -1668,7 +1667,6 @@ pub(crate) fn handle_import_from(
     // so we don't get "no match" and LoadGlobal/StoreGlobal get correct remapping.
     // Always include Null bindings such as `global settings = null` — skipping them left module
     // functions on unmapped indices and broke load_settings/get_settings.
-    const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
     let chunks_to_feed: Vec<_> = frames
         .first()
         .map(|f| &f.function.chunk)
@@ -1677,7 +1675,7 @@ pub(crate) fn handle_import_from(
         .collect();
     for chunk in &chunks_to_feed {
         for (idx, name) in &chunk.global_names {
-            if *idx == UNDEFINED_GLOBAL_SENTINEL || name.as_str() == "argv" {
+            if crate::bytecode::is_undefined_global_sentinel(*idx) || name.as_str() == "argv" {
                 continue;
             }
             if !global_names.values().any(|n| n == name) {

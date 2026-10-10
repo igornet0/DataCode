@@ -710,6 +710,8 @@ fn run_with_vm_internal_with_args(
     // Регистрируем встроенные модули (plot, settings_env, uuid) — они заполняют слоты по имени
     vm.register_all_builtin_modules()?;
     vm.ensure_builtin_globals_high_indices();
+    // `throw ValueError("...")` in the script (the other run paths do the same).
+    vm.ensure_exception_constructors();
 
     // Module isolation: register __lib__.dc as a module (no merge). Main must "from __lib__ import X" to use lib exports.
     if let Some(mut lib_vm) = lib_vm {

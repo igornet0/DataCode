@@ -63,9 +63,24 @@ pub struct ProgramModule {
     pub state: InitState,
     /// Store object bound by `import m` (fields = this module's global cells).
     pub namespace_object: Option<ValueId>,
+    /// Slots the VM filled before the module ran (builtins, builtin modules, exception
+    /// constructors). A name there is the module's own export only once the module rebinds it.
+    pub prebound: HashMap<usize, GlobalSlot>,
 }
 
 impl ProgramModule {
+    /// Names this module binds itself (`m.x`, `from m import *`): exportable names whose slot the
+    /// module's code set, not values the VM prefilled (builtins, builtin modules, exceptions).
+    pub fn own_names(&self) -> impl Iterator<Item = (usize, &str)> {
+        let t = &self.table;
+        t.global_names.iter().filter_map(move |(i, n)| {
+            let own = *i < t.globals.len()
+                && exportable(n)
+                && self.prebound.get(i).is_none_or(|orig| !same_slot(orig, &t.globals[*i]));
+            own.then_some((*i, n.as_str()))
+        })
+    }
+
     /// Entry 0: the main script (its table lives in the VM fields while it executes).
     pub fn main() -> Self {
         Self {
@@ -78,6 +93,7 @@ impl ProgramModule {
             functions_len: 0,
             state: InitState::Ready,
             namespace_object: None,
+            prebound: HashMap::new(),
         }
     }
 }
@@ -532,6 +548,12 @@ fn instantiate(
     );
     let mut table = table;
     finish_table(&mut table, store, heap);
+    let prebound = prebound_slots(&table, &builtin_modules);
+    crate::vm::global_slot::mark_unassigned_globals(
+        &mut table.globals,
+        &table.global_names,
+        std::iter::once(&init.chunk).chain(relocated.iter().map(|f| &f.chunk)),
+    );
     fill_entry_point_slots(&mut table, &relocated, base, store);
     patch_placeholder_loads(&mut init.chunk, &table);
     for f in &mut relocated {
@@ -549,6 +571,7 @@ fn instantiate(
         functions_len,
         state: InitState::NotStarted,
         namespace_object: None,
+        prebound,
     });
     v.module_by_path.insert(key, id);
     Ok(id)
@@ -707,13 +730,12 @@ pub(crate) fn namespace_object(
     let module_name = v.program_modules[id as usize].name.clone();
     let mut omap = crate::common::object_map::ObjectMap::new();
     let entries: Vec<(String, ValueId)> = {
-        let t = &mut v.program_modules[id as usize].table;
-        let names: Vec<(usize, String)> = t
-            .global_names
-            .iter()
-            .filter(|(i, n)| **i >= BUILTIN_GLOBAL_COUNT && **i < t.globals.len() && exportable(n))
-            .map(|(i, n)| (*i, n.clone()))
+        let module = &mut v.program_modules[id as usize];
+        let names: Vec<(usize, String)> = module
+            .own_names()
+            .map(|(i, n)| (i, n.to_string()))
             .collect();
+        let t = &mut module.table;
         names
             .into_iter()
             .map(|(i, n)| (n, slot_id(&mut t.globals[i], store)))
@@ -732,6 +754,32 @@ pub(crate) fn namespace_object(
     v.program_modules[id as usize].namespace_object = Some(obj);
     v.namespace_objects.insert(obj, id);
     obj
+}
+
+/// Slots of `table` holding VM-provided values before the module's code runs.
+fn prebound_slots(
+    table: &ModuleTable,
+    builtin_modules: &[(String, GlobalSlot)],
+) -> HashMap<usize, GlobalSlot> {
+    table
+        .global_names
+        .iter()
+        .filter(|(i, n)| {
+            **i < table.globals.len()
+                && (**i < BUILTIN_GLOBAL_COUNT
+                    || builtin_modules.iter().any(|(m, _)| m == *n)
+                    || !same_slot(&table.globals[**i], &default_global_slot()))
+        })
+        .map(|(i, _)| (*i, table.globals[*i]))
+        .collect()
+}
+
+fn same_slot(a: &GlobalSlot, b: &GlobalSlot) -> bool {
+    match (a, b) {
+        (GlobalSlot::Inline(x), GlobalSlot::Inline(y)) => x == y,
+        (GlobalSlot::Heap(x), GlobalSlot::Heap(y)) => x == y,
+        _ => false,
+    }
 }
 
 /// Names a module exposes through `m.x` / `from m import *`.
@@ -798,11 +846,10 @@ pub(crate) fn bind_from(
     vm_ptr: *mut crate::vm::vm::Vm,
 ) -> Result<(), String> {
     let v = vm(vm_ptr);
-    let t = &v.program_modules[id as usize].table;
+    let module = &v.program_modules[id as usize];
+    let t = &module.table;
     let lookup = |name: &str| -> Option<GlobalSlot> {
-        crate::vm::global_utils::global_index_by_name(&t.global_names, name)
-            .filter(|i| *i < t.globals.len())
-            .map(|i| t.globals[i])
+        module.own_names().find(|(_, n)| *n == name).map(|(i, _)| t.globals[i])
     };
     let mut binds: Vec<(String, GlobalSlot)> = Vec::new();
     let add_with_members = |src: &str, dst: &str, binds: &mut Vec<(String, GlobalSlot)>| {
@@ -817,13 +864,9 @@ pub(crate) fn bind_from(
     };
     for item in items {
         if item == "*" {
-            for (i, n) in &t.global_names {
-                if *i >= BUILTIN_GLOBAL_COUNT
-                    && *i < t.globals.len()
-                    && exportable(n)
-                    && !n.starts_with("__")
-                {
-                    binds.push((n.clone(), t.globals[*i]));
+            for (i, n) in module.own_names() {
+                if !n.starts_with("__") {
+                    binds.push((n.to_string(), t.globals[i]));
                 }
             }
             continue;
@@ -832,12 +875,11 @@ pub(crate) fn bind_from(
             Some((s, d)) => (s, d),
             None => (item.as_str(), item.as_str()),
         };
-        let Some(slot) = lookup(src).filter(|_| exportable(src)) else {
-            let mut avail: Vec<&str> = t
-                .global_names
-                .iter()
-                .filter(|(i, n)| **i >= BUILTIN_GLOBAL_COUNT && exportable(n) && !n.starts_with("__") && !n.contains("::"))
-                .map(|(_, n)| n.as_str())
+        let Some(slot) = lookup(src) else {
+            let mut avail: Vec<&str> = module
+                .own_names()
+                .map(|(_, n)| n)
+                .filter(|n| !n.starts_with("__") && !n.contains("::"))
                 .collect();
             avail.sort();
             avail.dedup();
@@ -893,4 +935,118 @@ pub(crate) fn register_class(
         )))
     });
     entry.borrow().set_export(name, value);
+}
+
+/// `m.X = v` (SetArrayElement on a module namespace object): the module and field name, read
+/// from the operands before the opcode pops them. None for every other container.
+pub(crate) fn namespace_store_target(
+    stack: &[TaggedValue],
+    frames: &[CallFrame],
+    store: &mut ValueStore,
+    heap: &HeavyStore,
+    vm_ptr: *mut crate::vm::vm::Vm,
+) -> Option<(u32, ValueId, ValueId, String)> {
+    if vm(vm_ptr).namespace_objects.is_empty() {
+        return None;
+    }
+    let container = crate::vm::stack::peek(stack, 0, frames).ok()?;
+    if !container.is_heap() {
+        return None;
+    }
+    let obj = container.get_heap_id();
+    let id = namespace_module(obj, vm_ptr)?;
+    let key = crate::vm::stack::peek(stack, 1, frames).ok()?;
+    if !key.is_heap() {
+        return None;
+    }
+    let key_id = key.get_heap_id();
+    match crate::vm::store_convert::load_value(key_id, store, heap) {
+        Value::String(name) if exportable(&name) && !name.starts_with("__") => {
+            // The field shares its cell with the module global (and with values read from it):
+            // detach it so the store allocates a new cell instead of overwriting that one.
+            let key = Value::String(name.clone());
+            crate::vm::store_convert::object_map_upsert_in_place(
+                store,
+                obj,
+                heap,
+                &key,
+                key_id,
+                crate::common::value_store::NULL_VALUE_ID,
+            );
+            Some((id, obj, key_id, name))
+        }
+        _ => None,
+    }
+}
+
+/// After `m.X = v`: rebind the module's global `X` to the field's new value, so the module's
+/// functions (and later `from m import X`) see it, as with Python module attributes.
+pub(crate) fn sync_namespace_store(
+    target: (u32, ValueId, ValueId, String),
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &BTreeMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &HeavyStore,
+    vm_ptr: *mut crate::vm::vm::Vm,
+) {
+    let (id, obj, key_id, name) = target;
+    let Some(vid) =
+        crate::vm::store_convert::object_cell_try_lookup_by_key_id(obj, key_id, store, heap)
+    else {
+        return;
+    };
+    let slot = GlobalSlot::Heap(vid);
+    let v = vm(vm_ptr);
+    if v.current_module == id {
+        // The module's table is checked out into the VM fields.
+        for idx in crate::vm::global_utils::global_indices_by_name(global_names, &name) {
+            if idx < globals.len() {
+                globals[idx] = slot;
+            }
+        }
+        return;
+    }
+    let t = &mut v.program_modules[id as usize].table;
+    bind_current(&mut t.globals, &mut t.global_names, &name, slot);
+}
+
+/// `m.Class(args)` is compiled as a method call: `[m, args..., Class]`. A class object takes no
+/// receiver, so drop the namespace object `m` and return the arity without it.
+pub(crate) fn drop_namespace_receiver_for_class(
+    arity: usize,
+    callee: TaggedValue,
+    stack: &mut Vec<TaggedValue>,
+    frames: &mut Vec<CallFrame>,
+    exception_handlers: &mut Vec<crate::vm::exceptions::ExceptionHandler>,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
+    vm_ptr: *mut crate::vm::vm::Vm,
+) -> Result<usize, LangError> {
+    if arity == 0 || vm(vm_ptr).namespace_objects.is_empty() || !callee.is_heap() {
+        return Ok(arity);
+    }
+    let Ok(receiver) = crate::vm::stack::peek(stack, arity - 1, frames) else {
+        return Ok(arity);
+    };
+    if !receiver.is_heap() || namespace_module(receiver.get_heap_id(), vm_ptr).is_none() {
+        return Ok(arity);
+    }
+    let is_class = match store.get(callee.get_heap_id()) {
+        Some(ValueCell::Heavy(idx)) => matches!(heap.get(*idx), Some(Value::Object(rc))
+            if rc.borrow().str_key_get("__class_name").is_some()
+                && !rc.borrow().str_key_contains("__class")),
+        _ => false,
+    };
+    if !is_class {
+        return Ok(arity);
+    }
+    let mut args = Vec::with_capacity(arity - 1);
+    for _ in 0..arity - 1 {
+        args.push(crate::vm::stack::pop(stack, frames, exception_handlers, store, heap)?);
+    }
+    crate::vm::stack::pop(stack, frames, exception_handlers, store, heap)?;
+    for tv in args.into_iter().rev() {
+        crate::vm::stack::push(stack, tv);
+    }
+    Ok(arity - 1)
 }

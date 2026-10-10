@@ -1587,7 +1587,14 @@ pub(crate) fn execute_instruction(
             )
         }
         OpCode::SetArrayElement => {
-            return element_ops::op_set_array_element(
+            let namespace_target = crate::vm::program_modules::namespace_store_target(
+                stack,
+                frames,
+                value_store,
+                heavy_store,
+                vm_ptr,
+            );
+            let status = element_ops::op_set_array_element(
                 line,
                 stack,
                 frames,
@@ -1598,7 +1605,18 @@ pub(crate) fn execute_instruction(
                 exception_handlers,
                 value_store,
                 heavy_store,
-            )
+            )?;
+            if let Some(target) = namespace_target {
+                crate::vm::program_modules::sync_namespace_store(
+                    target,
+                    globals,
+                    global_names,
+                    value_store,
+                    heavy_store,
+                    vm_ptr,
+                );
+            }
+            return Ok(status);
         }
         OpCode::SetArraySlice => {
             return element_ops::op_set_array_slice(

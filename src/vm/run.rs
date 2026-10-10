@@ -64,6 +64,7 @@ pub fn execute_run(
     let _web_browser_guard = WebBrowserCleanupGuard;
 
     vm.merge_global_names_from_chunk(chunk);
+    vm.mark_unassigned_globals(chunk);
 
     const CONSTRUCTING_CLASS_NAME: &str = "__constructing_class__";
     if !vm.global_names_contains(CONSTRUCTING_CLASS_NAME) {

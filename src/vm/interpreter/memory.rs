@@ -199,6 +199,29 @@ pub(crate) fn op_load_global(
                 id = cid;
             }
         }
+        if id == crate::common::value_store::UNSET_GLOBAL_ID {
+            let name = global_names
+                .get(&effective_index)
+                .or_else(|| frame.function.chunk.global_names.get(&index))
+                .map(String::as_str)
+                .unwrap_or("?");
+            let error = ExceptionHandler::runtime_error(
+                &frames,
+                format!("Undefined variable: {} (used before assignment)", name),
+                line,
+            );
+            return match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
+                Ok(()) => Ok(VMStatus::Continue),
+                Err(e) => Err(e),
+            };
+        }
         {
             // Avoid full materialization: one store.get to decide id_to_push (O(1) instead of O(size)).
             let cell = value_store.get(id);
@@ -465,6 +488,14 @@ fn op_store_global_inner(
                 return Ok(VMStatus::Continue);
             }
         }
+    }
+    // A module namespace object keeps its identity: `m.X = v` writes through it to the module.
+    if crate::vm::program_modules::namespace_module(value_id, vm_ptr).is_some() {
+        if index >= globals.len() {
+            globals.resize(index + 1, default_global_slot());
+        }
+        globals[index] = GlobalSlot::Heap(value_id);
+        return Ok(VMStatus::Continue);
     }
     let mut value = load_value(value_id, value_store, heavy_store);
     if let Value::Table(table_rc) = &mut value {

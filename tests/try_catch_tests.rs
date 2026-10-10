@@ -1078,4 +1078,87 @@ mod tests {
         "#;
         assert_number_result(source, 1300.0);
     }
+
+    // ========== #18: формы catch, типизированный catch для throw и нескольких try ==========
+
+    #[test]
+    fn test_catch_variable_in_parentheses() {
+        let source = r#"
+            let r = 0
+            try {
+                throw "x"
+            } catch (e) {
+                r = r + 1
+            }
+            try {
+                throw ValueError("y")
+            } catch (ValueError e) {
+                r = r + 10
+            }
+            r
+        "#;
+        assert_number_result(source, 11.0);
+    }
+
+    #[test]
+    fn test_typed_catch_matches_thrown_value_error() {
+        let source = r#"
+            let r = 0
+            try {
+                throw ValueError("bad")
+            } catch TypeError e {
+                r = 1
+            } catch ValueError e {
+                r = 2
+            } catch e {
+                r = 3
+            }
+            r
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_typed_catch_in_second_try_block() {
+        // Таблица типов ошибок chunk раньше копировалась только при первом try.
+        let source = r#"
+            let r = 0
+            try {
+                throw ValueError("x")
+            } catch ValueError e {
+                r = r + 1
+            }
+            try {
+                let z = 1 / 0
+            } catch ZeroDivisionError e {
+                r = r + 10
+            }
+            let a = 7
+            let b = 0
+            try {
+                let z = a % b
+            } catch ZeroDivisionError e {
+                r = r + 100
+            }
+            r
+        "#;
+        assert_number_result(source, 111.0);
+    }
+
+    #[test]
+    fn test_thrown_value_error_message() {
+        let source = r#"
+            let m = ""
+            try {
+                throw ValueError("bad value")
+            } catch e {
+                m = str(e)
+            }
+            m
+        "#;
+        match run_and_get_result(source) {
+            Ok(Value::String(s)) => assert!(s.contains("bad value"), "{}", s),
+            other => panic!("expected string, got {:?}", other),
+        }
+    }
 }

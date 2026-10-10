@@ -1764,6 +1764,8 @@ impl Parser {
 
         while self.match_token(TokenKind::Catch) {
             let catch_line = self.previous().line;
+            // `catch (e)` / `catch (ValueError e)`: скобки вокруг типа и переменной необязательны.
+            let parenthesized = self.match_token(TokenKind::LParen);
 
             // Парсим тип ошибки (опционально)
             let error_type = if self.check(TokenKind::Identifier) {
@@ -1791,6 +1793,10 @@ impl Parser {
             } else {
                 None
             };
+
+            if parenthesized {
+                self.consume(TokenKind::RParen, "Expect ')' after catch variable")?;
+            }
 
             // Парсим тело catch блока
             self.consume(TokenKind::LBrace, "Expect '{' after 'catch'")?;

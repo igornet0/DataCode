@@ -33,7 +33,8 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// v31: BitAnd, BitOr, BitXor, ShiftLeft, ShiftRight, BitNot opcodes.
 /// v33: per-name undefined-global placeholders; `import m` names skip set/dict method fast paths;
 ///      scalar constants dedup by exact variant (modules are loaded as program modules).
-pub const DCB_FORMAT_VERSION: &str = "33";
+/// v34: error-type table of a chunk holds the types of every try (not only the first).
+pub const DCB_FORMAT_VERSION: &str = "34";
 
 /// Metadata stored at the start of a .dcb file for freshness checks.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

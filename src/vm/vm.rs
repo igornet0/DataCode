@@ -440,6 +440,17 @@ impl Vm {
             &chunk.explicit_global_names,
         );
     }
+    /// Before running a script chunk: globals it assigns but has not assigned yet read as
+    /// "used before assignment" (see [`crate::vm::global_slot::mark_unassigned_globals`]).
+    pub(crate) fn mark_unassigned_globals(&mut self, chunk: &Chunk) {
+        let functions = self.functions.iter().filter(|f| f.module_id == 0).map(|f| &f.chunk);
+        crate::vm::global_slot::mark_unassigned_globals(
+            &mut self.globals,
+            &self.global_names,
+            std::iter::once(chunk).chain(functions),
+        );
+    }
+
     pub(crate) fn global_names_contains(&self, name: &str) -> bool {
         self.global_names.values().any(|n| n == name)
     }

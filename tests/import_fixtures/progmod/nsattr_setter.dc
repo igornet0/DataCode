@@ -1,0 +1,5 @@
+import nsattr
+
+fn set_count(v) {
+    nsattr.COUNT = v
+}

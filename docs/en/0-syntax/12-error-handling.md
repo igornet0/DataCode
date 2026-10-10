@@ -13,6 +13,8 @@ try {
 
 ```
 
+Parentheses are optional: `catch (e)`, `catch e` and `catch as e` are the same. An error type may precede the variable: `catch (ValueError e)` or `catch ValueError e`.
+
 The variable in `catch (e)` is optional:
 
 ```datacode

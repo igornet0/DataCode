@@ -18,6 +18,10 @@ pub type StringId = u32;
 /// Reserved id for null (allocated once at VM creation).
 pub const NULL_VALUE_ID: ValueId = 0;
 
+/// Reserved null cell marking a global that the program assigns but has not assigned yet. Reads
+/// see null; `LoadGlobal` reports the name as undefined (like Python's NameError).
+pub const UNSET_GLOBAL_ID: ValueId = 1;
+
 /// Chunk size for the cell arena; each chunk is one allocation. Enables growth without realloc of a single huge Vec.
 const CHUNK_SIZE: usize = 65536;
 
@@ -302,6 +306,7 @@ impl ValueStore {
     pub fn new() -> Self {
         let mut first = Vec::with_capacity(CHUNK_SIZE);
         first.push(ValueCell::Null);
+        first.push(ValueCell::Null); // UNSET_GLOBAL_ID
         ValueStore {
             chunks: vec![first],
             string_pool: StringPool::new(),
@@ -654,12 +659,13 @@ impl ValueStore {
         self.len() == 0
     }
 
-    /// Clear all cells and reset to initial state (single Null at index 0).
+    /// Clear all cells and reset to initial state (reserved Null cells at 0 and 1).
     /// Drops main chunks and arena; also clears the string pool.
     /// Used when reusing VM for stateless runs (e.g. HTTP requests).
     pub fn clear(&mut self) {
         let mut first = Vec::with_capacity(CHUNK_SIZE);
         first.push(ValueCell::Null);
+        first.push(ValueCell::Null); // UNSET_GLOBAL_ID
         self.chunks = vec![first];
         self.string_pool.clear();
         self.arena.clear();

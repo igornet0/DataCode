@@ -1039,8 +1039,17 @@ pub fn native_table_class(args: &[Value]) -> Value {
     Value::legacy_object(obj)
 }
 
-/// Constructor for raise ValueError("message"). Called as ValueError("..."); returns a Value whose to_string() is used for the exception message.
+/// Key of the error type in an error object built by an exception constructor (`ValueError("...")`).
+pub const ERROR_TYPE_KEY: &str = "__error_type";
+/// Key of the message in such an error object.
+pub const ERROR_MESSAGE_KEY: &str = "message";
+
+/// Constructor for `throw ValueError("message")`: an error object carrying its type, so a typed
+/// `catch ValueError e` matches it. `throw` uses its message.
 pub fn native_value_error_new(args: &[Value]) -> Value {
     let msg = args.get(0).map(|v| v.to_string()).unwrap_or_default();
-    Value::String(msg)
+    let mut obj = std::collections::HashMap::new();
+    obj.insert(ERROR_TYPE_KEY.to_string(), Value::String("ValueError".to_string()));
+    obj.insert(ERROR_MESSAGE_KEY.to_string(), Value::String(msg));
+    Value::legacy_object(obj)
 }

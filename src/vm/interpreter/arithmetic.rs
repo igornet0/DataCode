@@ -551,11 +551,12 @@ pub fn op_div(
                         }
                     })
                     .unwrap_or(0);
-                let error = ExceptionHandler::runtime_error(
-                    frames,
-                    "Division by zero".to_string(),
-                    line,
-                );
+                let error = ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Division by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
                 return ExceptionHandler::handle_exception_vm(
                     stack,
                     frames,
@@ -596,10 +597,11 @@ pub fn op_div(
                     }
                 })
                 .unwrap_or(0);
-            let error = ExceptionHandler::runtime_error(
+            let error = ExceptionHandler::runtime_error_with_type(
                 frames,
                 "Division by zero".to_string(),
                 line,
+                crate::common::error::ErrorType::ZeroDivisionError,
             );
             return ExceptionHandler::handle_exception_vm(
                 stack,
@@ -668,10 +670,11 @@ pub fn op_int_div(
                     }
                 })
                 .unwrap_or(0);
-            let error = ExceptionHandler::runtime_error(
+            let error = ExceptionHandler::runtime_error_with_type(
                 frames,
                 "Division by zero".to_string(),
                 line,
+                crate::common::error::ErrorType::ZeroDivisionError,
             );
             return ExceptionHandler::handle_exception_vm(
                 stack,
@@ -737,7 +740,12 @@ pub fn op_mod(
                     .last()
                     .map(|f| if f.ip > 0 { f.function.chunk.get_line(f.ip - 1) } else { 0 })
                     .unwrap_or(0);
-                let error = ExceptionHandler::runtime_error(frames, "Modulo by zero".to_string(), line);
+                let error = ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Modulo by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
                 return ExceptionHandler::handle_exception_vm(
                     stack,
                     frames,
@@ -779,7 +787,12 @@ pub fn op_mod(
                 .last()
                 .map(|f| if f.ip > 0 { f.function.chunk.get_line(f.ip - 1) } else { 0 })
                 .unwrap_or(0);
-            let error = ExceptionHandler::runtime_error(frames, "Modulo by zero".to_string(), line);
+            let error = ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Modulo by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
             return ExceptionHandler::handle_exception_vm(
                 stack,
                 frames,
@@ -811,7 +824,12 @@ pub fn op_mod(
                     }
                 })
                 .unwrap_or(0);
-            let error = ExceptionHandler::runtime_error(frames, "Modulo by zero".to_string(), line);
+            let error = ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Modulo by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
             return ExceptionHandler::handle_exception_vm(
                 stack,
                 frames,

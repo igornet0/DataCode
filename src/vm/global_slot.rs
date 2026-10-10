@@ -36,3 +36,32 @@ impl GlobalSlot {
 pub fn default_global_slot() -> GlobalSlot {
     GlobalSlot::null()
 }
+
+/// Mark the still-empty slots of globals the program assigns (`StoreGlobal` in `chunks`) as
+/// unassigned ([`crate::common::value_store::UNSET_GLOBAL_ID`]) so reading them before the first
+/// assignment is an error instead of null. Slots already holding a value are left alone.
+pub fn mark_unassigned_globals<'a>(
+    globals: &mut [GlobalSlot],
+    global_names: &std::collections::BTreeMap<usize, String>,
+    chunks: impl Iterator<Item = &'a crate::bytecode::Chunk>,
+) {
+    use crate::common::value_store::UNSET_GLOBAL_ID;
+    for chunk in chunks {
+        for op in &chunk.code {
+            let crate::bytecode::OpCode::StoreGlobal(idx) = op else {
+                continue;
+            };
+            let idx = *idx;
+            if idx >= globals.len() || !matches!(globals[idx], GlobalSlot::Heap(NULL_VALUE_ID)) {
+                continue;
+            }
+            let Some(name) = global_names.get(&idx).or_else(|| chunk.global_names.get(&idx)) else {
+                continue;
+            };
+            if name.starts_with("__") || name.contains("::") || name == "argv" {
+                continue;
+            }
+            globals[idx] = GlobalSlot::Heap(UNSET_GLOBAL_ID);
+        }
+    }
+}

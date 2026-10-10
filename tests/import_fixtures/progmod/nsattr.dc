@@ -1,0 +1,42 @@
+# Данные модуля, функции с именами встроенных и класс для обращения через пространство имён.
+ITEMS = [1]
+COUNT = 0
+
+fn items_len() {
+    return len(ITEMS)
+}
+
+fn count() {
+    return COUNT
+}
+
+fn bump() {
+    global COUNT = COUNT + 1
+}
+
+cls Box {
+    w: int
+    public:
+    new Box() {
+        this.w = 1
+    }
+    new Box(w) {
+        this.w = w
+    }
+    fn area() {
+        return this.w * this.w
+    }
+}
+
+cls Pt {
+    x: int
+    y: int
+    public:
+    new Pt(x, y = 10) {
+        this.x = x
+        this.y = y
+    }
+    fn s() {
+        return this.x + this.y
+    }
+}

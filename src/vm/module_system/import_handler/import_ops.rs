@@ -382,6 +382,7 @@ pub(crate) fn handle_import_from(
                     .map(|i| {
                         let id = globals[i].resolve_to_value_id(value_store);
                         id == crate::common::value_store::NULL_VALUE_ID
+                            || id == crate::common::value_store::UNSET_GLOBAL_ID
                     })
                     .unwrap_or(false);
                 if !binds_module_name && slot_free {

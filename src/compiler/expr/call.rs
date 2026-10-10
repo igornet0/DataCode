@@ -25,6 +25,80 @@ fn is_builtin_pascal_native_callable(name: &str) -> bool {
     )
 }
 
+/// `Class(...)` whose arguments the VM binds (CallVariadic on the class object): `*` / `**`
+/// spreads, or named arguments for a class with a `*args` / `**kwargs` constructor or one imported
+/// from a module (its constructor signatures are unknown here).
+fn constructor_binds_at_runtime(ctx: &CompilationContext, name: &str, call_args: &[Arg]) -> bool {
+    if is_builtin_pascal_native_callable(name)
+        || name == "Settings"
+        || crate::compiler::natives::get_native_function_params(name).is_some()
+        || crate::compiler::natives::get_native_varkw_param(name).is_some()
+    {
+        return false;
+    }
+    let has_spread = call_args
+        .iter()
+        .any(|a| matches!(a, Arg::UnpackArray(_) | Arg::UnpackObject(_)));
+    let has_named = call_args.iter().any(|a| matches!(a, Arg::Named { .. }));
+    let variadic_prefix = format!("{}::new_v", name);
+    let local_variadic = ctx.function_names.iter().any(|n| n.starts_with(&variadic_prefix));
+    let imported = ctx.imported_symbols.contains_key(name) && !ctx.class_constructor.contains_key(name);
+    has_spread || (has_named && (local_variadic || imported))
+}
+
+/// Emit `Class(args)` as CallVariadic on the class object (stack: positional, *spread,
+/// (key, value)..., **spread, class).
+fn emit_runtime_constructor_call(
+    ctx: &mut CompilationContext,
+    name: &str,
+    call_args: &[Arg],
+    line: usize,
+) -> Result<(), LangError> {
+    let (mut n_pos, mut n_star, mut n_named, mut n_starstar) = (0, 0, 0, 0);
+    for arg in call_args {
+        if let Arg::Positional(e) = arg {
+            expr::compile_expr(ctx, e)?;
+            n_pos += 1;
+        }
+    }
+    for arg in call_args {
+        if let Arg::UnpackArray(e) = arg {
+            expr::compile_expr(ctx, e)?;
+            n_star += 1;
+        }
+    }
+    for arg in call_args {
+        if let Arg::Named { name: key, value } = arg {
+            let key_idx = ctx.chunk.add_constant(Value::String(key.clone()));
+            ctx.chunk.write_with_line(OpCode::Constant(key_idx), line);
+            expr::compile_expr(ctx, value)?;
+            n_named += 1;
+        }
+    }
+    for arg in call_args {
+        if let Arg::UnpackObject(e) = arg {
+            expr::compile_expr(ctx, e)?;
+            n_starstar += 1;
+        }
+    }
+    if let Some(local_index) = ctx.scope.resolve_local(name) {
+        ctx.chunk.write_with_line(OpCode::LoadLocal(local_index), line);
+    } else if let Some(global_index) = ensure_callable_global(ctx, name) {
+        ctx.chunk.global_names.insert(global_index, name.to_string());
+        ctx.chunk.write_with_line(OpCode::LoadGlobal(global_index), line);
+    } else {
+        return Err(LangError::ParseError {
+            message: format!("Undefined class: {}", name),
+            line,
+            file: ctx.source_name.map(|s| s.to_string()),
+        });
+    }
+    let packed =
+        crate::compiler::natives::pack_call_variadic_operand(n_pos, n_star, n_named, n_starstar);
+    ctx.chunk.write_with_line(OpCode::CallVariadic(packed), line);
+    Ok(())
+}
+
 /// Resolve or allocate a global slot for a call target. After `from M import *`, unknown names get a slot filled at runtime.
 fn ensure_callable_global(ctx: &mut CompilationContext, name: &str) -> Option<usize> {
     if let Some(&idx) = ctx.scope.globals.get(name) {
@@ -619,6 +693,22 @@ fn resolve_same_class_delegate_ctor(
         .filter(|c| *c != current_ctor_name)
         .collect();
 
+    if others.is_empty() {
+        // `: this(a, b, 0)` into `new C(*xs)` / `new C(a, *rest)`: the `new_v<k>` overload with the
+        // most regular parameters that still fits; the call packs the rest into *args.
+        let prefix = format!("{}::new_v", class_name);
+        let variadic = ctx
+            .function_names
+            .iter()
+            .filter(|n| n.as_str() != current_ctor_name)
+            .filter_map(|n| Some((n.strip_prefix(&prefix)?.parse::<usize>().ok()?, n)))
+            .filter(|(k, _)| *k <= arity)
+            .max_by_key(|(k, _)| *k);
+        if let Some((_, name)) = variadic {
+            return Ok((name.clone(), false));
+        }
+    }
+
     match others.len() {
         0 => Err(LangError::ParseError {
             message: format!(
@@ -842,6 +932,8 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             ctx.chunk
                 .write_with_line(OpCode::Call(resolved_args.len()), *line);
             return Ok(());
+        } else if constructor_binds_at_runtime(ctx, name, call_args) {
+            return emit_runtime_constructor_call(ctx, name, call_args, *line);
         } else {
             // Имя начинается с заглавной буквы - это может быть конструктор класса
             let skip_default_ctor_resolve = name == "Settings"

@@ -41,6 +41,58 @@ pub fn check_type_value(value: &Value, type_parts: &[TypePart]) -> bool {
 }
 
 /// Like [`check_type_value`], resolving user class supertypes via class objects in globals.
+/// First argument of `function` that does not match its parameter annotation, as an error
+/// message. The annotation of `*args` / `**kwargs` applies to each element / value.
+pub(crate) fn param_type_error(
+    function: &crate::bytecode::Function,
+    args: &[Value],
+    globals: &mut [GlobalSlot],
+    global_names: &std::collections::BTreeMap<usize, String>,
+    store: &mut ValueStore,
+    heap: &HeavyStore,
+) -> Option<String> {
+    for (i, (arg, expected)) in args.iter().zip(&function.param_types).enumerate() {
+        let Some(type_parts) = expected else {
+            continue;
+        };
+        let param_name = function.param_names.get(i).map(|s| s.as_str()).unwrap_or("unknown");
+        let items: Vec<(String, Value)> = if Some(i) == function.variadic_pos_index {
+            match arg {
+                Value::Array(rc) => rc
+                    .borrow()
+                    .iter()
+                    .enumerate()
+                    .map(|(j, v)| (format!("{}[{}]", param_name, j), v.clone()))
+                    .collect(),
+                _ => vec![(param_name.to_string(), arg.clone())],
+            }
+        } else if Some(i) == function.variadic_kw_index {
+            match arg {
+                Value::Object(rc) => rc
+                    .borrow()
+                    .str_key_entries_cloned()
+                    .into_iter()
+                    .map(|(k, v)| (format!("{}['{}']", param_name, k), v))
+                    .collect(),
+                _ => vec![(param_name.to_string(), arg.clone())],
+            }
+        } else {
+            vec![(param_name.to_string(), arg.clone())]
+        };
+        for (label, value) in items {
+            if !check_type_value_with_globals(&value, type_parts, globals, global_names, store, heap) {
+                return Some(format!(
+                    "Argument '{}' expected type '{}', got '{}'",
+                    label,
+                    format_type_parts(type_parts),
+                    type_compat::display_value_type(&value)
+                ));
+            }
+        }
+    }
+    None
+}
+
 pub fn check_type_value_with_globals(
     value: &Value,
     type_parts: &[TypePart],
@@ -150,27 +202,10 @@ pub fn setup_function_call(
     }
 
     // Проверяем типы аргументов, если указаны аннотации типов
-    for (i, (arg, expected_types)) in effective_args.iter().zip(&function.param_types).enumerate() {
-        if let Some(type_names) = expected_types {
-            if !check_type_value_with_globals(arg, type_names, globals, global_names, store, heap)
-            {
-                let param_name = function
-                    .param_names
-                    .get(i)
-                    .map(|s| s.as_str())
-                    .unwrap_or("unknown");
-                return Err(LangError::runtime_error_with_type(
-                    format!(
-                        "Argument '{}' expected type '{}', got '{}'",
-                        param_name,
-                        format_type_parts(type_names),
-                        type_compat::display_value_type(arg)
-                    ),
-                    0,
-                    ErrorType::TypeError,
-                ));
-            }
-        }
+    if let Some(message) =
+        param_type_error(&function, &effective_args, globals, global_names, store, heap)
+    {
+        return Err(LangError::runtime_error_with_type(message, 0, ErrorType::TypeError));
     }
 
     if function.is_stream {
@@ -325,26 +360,33 @@ pub fn setup_function_call_with_arg_ids(
         ));
     }
 
-    for (i, (&arg_id, expected_types)) in arg_ids.iter().zip(&function.param_types).enumerate() {
-        if let Some(type_names) = expected_types {
-            let arg = load_value(arg_id, store, heap);
-            if !check_type_value_with_globals(&arg, type_names, globals, global_names, store, heap)
-            {
-                let param_name = function
-                    .param_names
-                    .get(i)
-                    .map(|s| s.as_str())
-                    .unwrap_or("unknown");
-                return Err(LangError::runtime_error_with_type(
-                    format!(
-                        "Argument '{}' expected type '{}', got '{}'",
-                        param_name,
-                        format_type_parts(type_names),
-                        type_compat::display_value_type(&arg)
-                    ),
-                    0,
-                    ErrorType::TypeError,
-                ));
+    if crate::vm::variadic_bind::function_accepts_variadic(&function) {
+        let args: Vec<Value> = arg_ids.iter().map(|&id| load_value(id, store, heap)).collect();
+        if let Some(message) = param_type_error(&function, &args, globals, global_names, store, heap) {
+            return Err(LangError::runtime_error_with_type(message, 0, ErrorType::TypeError));
+        }
+    } else {
+        for (i, (&arg_id, expected_types)) in arg_ids.iter().zip(&function.param_types).enumerate() {
+            if let Some(type_names) = expected_types {
+                let arg = load_value(arg_id, store, heap);
+                if !check_type_value_with_globals(&arg, type_names, globals, global_names, store, heap)
+                {
+                    let param_name = function
+                        .param_names
+                        .get(i)
+                        .map(|s| s.as_str())
+                        .unwrap_or("unknown");
+                    return Err(LangError::runtime_error_with_type(
+                        format!(
+                            "Argument '{}' expected type '{}', got '{}'",
+                            param_name,
+                            format_type_parts(type_names),
+                            type_compat::display_value_type(&arg)
+                        ),
+                        0,
+                        ErrorType::TypeError,
+                    ));
+                }
             }
         }
     }

@@ -40,3 +40,13 @@ cls Pt {
         return this.x + this.y
     }
 }
+
+cls Bag {
+    n: int
+    k: int
+    public:
+    new Bag(*items, **opts) {
+        this.n = len(items)
+        this.k = len(opts)
+    }
+}

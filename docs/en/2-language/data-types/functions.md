@@ -82,10 +82,34 @@ print(f(b = 8, a = 0))       # [0, 8, [], {}]
 
 For functions of the current file the compiler knows the signature, so binding errors are reported **at compile time**. For functions in variables and from modules arguments are bound **at call time**: errors happen at run time and can be caught with `try` / `catch`.
 
+### Methods and constructors
+
+`*args` / `**kwargs` work in class methods and constructors too (also together with `@class`):
+
+```datacode
+cls Bag {
+    public:
+    n: int
+    new Bag(*items, **opts) {
+        this.n = len(items)
+    }
+    fn add(*xs) {
+        return len(xs)
+    }
+}
+
+Bag(1, 2, mode = "x").n   # 2
+Bag(*[1, 2, 3]).n         # 3
+```
+
+Constructor choice: first the overload taking exactly that many arguments (`new Bag(a)`), then the `*args` overload with the most regular parameters. `super(...)` and `: this(...)` pick a `*args` constructor the same way.
+
+### Type annotations
+
+An annotation on `*args` / `**kwargs` is checked for **each element**: `fn f(*nums: int)` called as `f(1, "x")` fails with `Argument 'nums[1]' expected type 'int', got 'str'`.
+
 ### Limitations
 
-- **Class methods and constructors** do not accept `*args` / `**kwargs` in their declaration.
-- A type annotation on `*args` / `**kwargs` (`*nums: int`) is accepted but **not checked** for the elements.
 - Built-in functions and native plugin functions accept named arguments only where their documentation says so.
 
 ---

@@ -153,6 +153,9 @@ pub struct Vm {
     pub(crate) yield_await_resume_value: Option<Value>,
     /// Перед `Explicit`: RHS yield-await — возвращается из `send()`, сам следующий `Yield` идёт в `pending_deferred_yield`.
     pub(crate) pending_send_rhs_return: Option<Value>,
+    /// Set by CallVariadic for a constructor whose arguments it already bound (`*args` packed):
+    /// the closure call must not pack them again. Consumed by the next closure call.
+    pub(crate) prebound_call_args: bool,
     /// CPU/GPU compute runtime (`system.process` device selection and numeric kernels).
     compute: crate::compute::runtime::ComputeRuntime,
 }
@@ -240,6 +243,7 @@ impl Vm {
             pending_generator_send: None,
             yield_await_resume_value: None,
             pending_send_rhs_return: None,
+            prebound_call_args: false,
             compute: crate::compute::runtime::ComputeRuntime::new(),
         };
         vm.register_natives();

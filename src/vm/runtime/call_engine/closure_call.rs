@@ -207,7 +207,8 @@ pub(crate) fn execute_closure_call(
     // `*args` / `**kwargs` functions reached by a plain Call: the compiler emits CallVariadic only
     // when it knows the signature, so an imported or indirectly called variadic function gets its
     // arguments packed here. Fixed parameters keep the caller's slots (heap identity preserved).
-    if crate::vm::variadic_bind::function_accepts_variadic(&function) {
+    let prebound = std::mem::take(unsafe { &mut (*vm_ptr).prebound_call_args });
+    if !prebound && crate::vm::variadic_bind::function_accepts_variadic(&function) {
         let fixed_n = crate::vm::variadic_bind::fixed_param_count(&function);
         let passed = args.len();
         match crate::vm::variadic_bind::bind_function_args(
@@ -284,43 +285,25 @@ pub(crate) fn execute_closure_call(
         }
     }
 
-    for (i, (arg, expected_types)) in args.iter().zip(&function.param_types).enumerate() {
-        if let Some(type_names) = expected_types {
-            if !crate::vm::calls::check_type_value_with_globals(
-                arg,
-                type_names,
-                globals,
-                global_names,
-                value_store,
-                heavy_store,
-            ) {
-                let param_name = function
-                    .param_names
-                    .get(i)
-                    .map(|s| s.as_str())
-                    .unwrap_or("unknown");
-                let error = LangError::runtime_error_with_type(
-                    format!(
-                        "Argument '{}' expected type '{}', got '{}'",
-                        param_name,
-                        crate::vm::calls::format_type_parts(type_names),
-                        crate::vm::type_compat::display_value_type(arg)
-                    ),
-                    line,
-                    ErrorType::TypeError,
-                );
-                match ExceptionHandler::handle_exception(
-                    stack,
-                    frames,
-                    exception_handlers,
-                    error,
-                    value_store,
-                    heavy_store,
-                ) {
-                    Ok(()) => return Ok(VMStatus::Continue),
-                    Err(e) => return Err(e),
-                }
-            }
+    if let Some(message) = crate::vm::calls::param_type_error(
+        &function,
+        &args,
+        globals,
+        global_names,
+        value_store,
+        heavy_store,
+    ) {
+        let error = LangError::runtime_error_with_type(message, line, ErrorType::TypeError);
+        match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
+            Ok(()) => return Ok(VMStatus::Continue),
+            Err(e) => return Err(e),
         }
     }
 

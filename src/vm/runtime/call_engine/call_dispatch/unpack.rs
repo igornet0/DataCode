@@ -16,6 +16,56 @@ use crate::vm::types::VMStatus;
 use crate::vm::variadic_bind::{bind_function_args, bind_native_varkw_args};
 use std::collections::HashMap;
 
+fn is_class_object(rc: &std::rc::Rc<std::cell::RefCell<crate::common::value::ObjectKind>>) -> bool {
+    let obj = rc.borrow();
+    obj.str_key_get("__class_name").is_some() && !obj.str_key_contains("__class")
+}
+
+fn is_module_namespace(v: &Value) -> bool {
+    matches!(v, Value::Object(rc)
+        if rc.borrow().str_key_contains(crate::vm::module_object::MODULE_MARKER_KEY))
+}
+
+/// Constructors of a class in binding order: fixed-arity overloads (fewest parameters first),
+/// then `*args` / `**kwargs` overloads (most regular parameters first).
+fn constructor_candidates(
+    class_obj: &crate::common::value::ObjectKind,
+    class_name: &str,
+    functions: &[crate::bytecode::Function],
+    vm_ptr: *mut crate::vm::vm::Vm,
+) -> Vec<usize> {
+    let mut found: Vec<usize> = class_obj
+        .str_key_pairs()
+        .iter()
+        .filter(|(k, _)| k.starts_with("new_"))
+        .filter_map(|(_, v)| match v {
+            Value::Function(i) if *i < functions.len() => Some(*i),
+            Value::ModuleFunction {
+                module_uid,
+                local_index,
+            } => unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) },
+            _ => None,
+        })
+        .collect();
+    if found.is_empty() && !class_name.is_empty() {
+        let prefix = format!("{}::new_", class_name);
+        found = functions
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.name.starts_with(&prefix))
+            .map(|(i, _)| i)
+            .collect();
+    }
+    found.sort_by_key(|&i| {
+        let f = &functions[i];
+        let variadic = crate::vm::variadic_bind::function_accepts_variadic(f);
+        let fixed = crate::vm::variadic_bind::fixed_param_count(f);
+        (variadic, if variadic { usize::MAX - fixed } else { fixed })
+    });
+    found.dedup();
+    found
+}
+
 fn pop_value(
     stack: &mut Vec<TaggedValue>,
     frames: &mut Vec<CallFrame>,
@@ -245,6 +295,31 @@ pub(crate) fn execute_call_variadic(
                 Ok(bound) => bound,
                 Err(msg) => raise!(msg),
             };
+            if let Some(msg) = crate::vm::calls::param_type_error(
+                &function,
+                &bound,
+                globals,
+                _global_names,
+                value_store,
+                heavy_store,
+            ) {
+                let error = crate::common::error::LangError::runtime_error_with_type(
+                    msg,
+                    line,
+                    crate::common::error::ErrorType::TypeError,
+                );
+                return match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
+                    Ok(()) => Ok(VMStatus::Continue),
+                    Err(e) => Err(e),
+                };
+            }
             let arg_tvs: Vec<TaggedValue> = bound
                 .iter()
                 .map(|v| TaggedValue::from_heap(store_value(v.clone(), value_store, heavy_store)))
@@ -321,6 +396,76 @@ pub(crate) fn execute_call_variadic(
                 explicit_primary_keys,
                 globals,
                 explicit_global_names,
+                vm_ptr,
+            );
+        }
+        Value::Object(class_rc) if is_class_object(class_rc) => {
+            // `Class(a, *xs, k = v, **opts)` / `m.Class(...)`: pick the constructor overload that
+            // binds these arguments, bind them here, then run it like a plain constructor Call.
+            if positional.first().is_some_and(is_module_namespace) {
+                positional.remove(0);
+            }
+            for arr in &star_vals {
+                let Value::Array(rc) = arr else {
+                    raise!("* unpacking requires an array".to_string());
+                };
+                positional.extend(rc.borrow().iter().cloned());
+            }
+            for obj in &starstar_vals {
+                let Value::Object(rc) = obj else {
+                    raise!("** unpacking requires an object with string keys".to_string());
+                };
+                for (k, v) in rc.borrow().str_key_entries_cloned() {
+                    if named.contains_key(&k) {
+                        raise!(format!("got multiple values for argument '{}'", k));
+                    }
+                    named.insert(k, v);
+                }
+            }
+            let class_name = class_rc
+                .borrow()
+                .str_key_get("__class_name")
+                .map(|v| v.to_string())
+                .unwrap_or_default();
+            let mut last_error = None;
+            let mut chosen = None;
+            for idx in constructor_candidates(&class_rc.borrow(), &class_name, functions, vm_ptr) {
+                match bind_function_args(&functions[idx], positional.clone(), named.clone(), &[], &[]) {
+                    Ok(bound) => {
+                        chosen = Some((idx, bound));
+                        break;
+                    }
+                    Err(e) => last_error = Some(e),
+                }
+            }
+            let Some((function_index, bound)) = chosen else {
+                raise!(last_error.unwrap_or_else(|| format!(
+                    "Class '{}' has no constructor for these arguments",
+                    class_name
+                )));
+            };
+            let arity = bound.len();
+            for v in bound {
+                let id = store_value(v, value_store, heavy_store);
+                stack::push(stack, TaggedValue::from_heap(id));
+            }
+            unsafe { (*vm_ptr).prebound_call_args = true };
+            let current_ip = frames.last().map(|f| f.ip.saturating_sub(1)).unwrap_or(0);
+            return super::super::closure_call::execute_closure_call(
+                current_ip,
+                function_index,
+                Some(callee_val.clone()),
+                arity,
+                line,
+                stack,
+                frames,
+                globals,
+                _global_names,
+                functions,
+                exception_handlers,
+                error_type_table,
+                value_store,
+                heavy_store,
                 vm_ptr,
             );
         }

@@ -18,14 +18,17 @@ pub fn prepare_method_args(
     heavy_store: &mut HeavyStore,
     vm_ptr: *mut crate::vm::vm::Vm,
 ) {
+    // A `*args` / `**kwargs` method takes any number of arguments; the caller never passes @class.
+    let variadic = crate::vm::variadic_bind::function_accepts_variadic(function);
     if function.param_names.get(1).map(|s| s.as_str()) == Some("@class")
         && !args.is_empty()
-        && args.len() < function.arity
+        && (variadic || args.len() < function.arity)
     {
         let after_inject = args.len() + 1;
-        let rest_ok = after_inject <= function.arity
-            && (after_inject == function.arity
-                || crate::vm::call_defaults::trailing_defaults_available(function, after_inject));
+        let rest_ok = variadic
+            || (after_inject <= function.arity
+                && (after_inject == function.arity
+                    || crate::vm::call_defaults::trailing_defaults_available(function, after_inject)));
         if rest_ok {
             let this_val = &args[0];
             let class_val = match this_val {

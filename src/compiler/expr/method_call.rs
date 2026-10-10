@@ -714,9 +714,8 @@ fn compile_module_method(
             if (error_msg.contains("not supported")
                 || error_msg.contains("Named arguments are not supported"))
                 && args.iter().any(|a| !matches!(a, Arg::Positional(_)))
-                // `m.Point(x = 1)`: constructors keep the plain Call path (class dispatch).
-                && !method.starts_with(|c: char| c.is_uppercase())
             {
+                // `m.Point(x = 1)` too: the VM binds named arguments to the class's constructors.
                 // Signature unknown here (module function, class method, ...): bind named and
                 // spread arguments at runtime against the callee's parameter list.
                 return compile_runtime_bound_method_call(ctx, method, args, temp_object_slot, line);

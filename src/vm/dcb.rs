@@ -34,7 +34,9 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// v33: per-name undefined-global placeholders; `import m` names skip set/dict method fast paths;
 ///      scalar constants dedup by exact variant (modules are loaded as program modules).
 /// v34: error-type table of a chunk holds the types of every try (not only the first).
-pub const DCB_FORMAT_VERSION: &str = "34";
+/// v35: `*args` / `**kwargs` in methods and constructors (`Class::new_v<k>`); `m.Class(k = v)` and
+///      named / spread constructor arguments compile to CallVariadic.
+pub const DCB_FORMAT_VERSION: &str = "35";
 
 /// Metadata stored at the start of a .dcb file for freshness checks.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

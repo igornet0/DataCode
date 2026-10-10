@@ -622,6 +622,12 @@ impl Parser {
 
     /// После `(` — список параметров до `)` (как у именованной функции).
     fn parse_parameter_list_until_rparen(&mut self) -> Result<Vec<Param>, LangError> {
+        self.parse_parameters(false)
+    }
+
+    /// Параметры функции, метода (`allow_class_param`: `@class` первым) или конструктора до `)`:
+    /// обычные, со значением по умолчанию, `*args`, `**kwargs`.
+    fn parse_parameters(&mut self, allow_class_param: bool) -> Result<Vec<Param>, LangError> {
         let mut params = Vec::new();
         let mut has_default = false;
         let mut has_var_pos = false;
@@ -686,6 +692,25 @@ impl Parser {
                         .clone();
                     has_var_pos = true;
                     (name, ParamKind::VariadicPositional)
+                } else if allow_class_param && self.match_token(TokenKind::At) {
+                    self.consume(TokenKind::Identifier, "Expect 'class' after '@'")?;
+                    if self.previous().lexeme != "class" {
+                        return Err(LangError::ParseError {
+                            message: "After '@' only 'class' is allowed as parameter name"
+                                .to_string(),
+                            line: self.previous().line,
+                            file: self.source_name.clone(),
+                        });
+                    }
+                    if !params.is_empty() {
+                        return Err(LangError::ParseError {
+                            message: "@class can only be the first parameter of a method"
+                                .to_string(),
+                            line: self.previous().line,
+                            file: self.source_name.clone(),
+                        });
+                    }
+                    ("@class".to_string(), ParamKind::Regular)
                 } else {
                     let name = self
                         .consume(TokenKind::Identifier, "Expect parameter name")?
@@ -1061,59 +1086,7 @@ impl Parser {
             "Expect '(' after class name in constructor",
         )?;
 
-        let mut params = Vec::new();
-        let mut has_default = false;
-        if !self.check(TokenKind::RParen) {
-            loop {
-                if params.len() >= 255 {
-                    return Err(LangError::ParseError {
-                        message: "Cannot have more than 255 parameters".to_string(),
-                        line: self.previous().line,
-                        file: self.source_name.clone(),
-                    });
-                }
-
-                let param_name = self
-                    .consume(TokenKind::Identifier, "Expect parameter name")?
-                    .lexeme
-                    .clone();
-                let param_line = self.previous().line;
-
-                // Проверяем, есть ли аннотация типа
-                let type_annotation = if self.match_token(TokenKind::Colon) {
-                    Some(self.parse_type_name()?)
-                } else {
-                    None
-                };
-
-                // Проверяем, есть ли значение по умолчанию
-                let default_value = if self.match_token(TokenKind::Equal) {
-                    has_default = true;
-                    Some(self.expression()?)
-                } else {
-                    if has_default {
-                        return Err(LangError::ParseError {
-                            message: "Non-default argument follows default argument".to_string(),
-                            line: param_line,
-                            file: self.source_name.clone(),
-                        });
-                    }
-                    None
-                };
-
-                params.push(crate::parser::ast::Param {
-                    name: param_name,
-                    kind: ParamKind::Regular,
-                    type_annotation,
-                    default_value,
-                });
-
-                if !self.match_token(TokenKind::Comma) {
-                    break;
-                }
-            }
-        }
-        self.consume(TokenKind::RParen, "Expect ')' after parameters")?;
+        let params = self.parse_parameters(false)?;
 
         // Проверяем, есть ли делегирующий конструктор: new ClassName(...) : this(...) {}
         let (body, delegate_args) = if self.match_token(TokenKind::Colon) {
@@ -1179,79 +1152,7 @@ impl Parser {
         };
         self.consume(TokenKind::LParen, "Expect '(' after method name")?;
 
-        let mut params = Vec::new();
-        let mut has_default = false;
-        if !self.check(TokenKind::RParen) {
-            loop {
-                if params.len() >= 255 {
-                    return Err(LangError::ParseError {
-                        message: "Cannot have more than 255 parameters".to_string(),
-                        line: self.previous().line,
-                        file: self.source_name.clone(),
-                    });
-                }
-
-                let param_name = if self.match_token(TokenKind::At) {
-                    self.consume(TokenKind::Identifier, "Expect 'class' after '@'")?;
-                    if self.previous().lexeme != "class" {
-                        return Err(LangError::ParseError {
-                            message: "After '@' only 'class' is allowed as parameter name"
-                                .to_string(),
-                            line: self.previous().line,
-                            file: self.source_name.clone(),
-                        });
-                    }
-                    if !params.is_empty() {
-                        return Err(LangError::ParseError {
-                            message: "@class can only be the first parameter of a method"
-                                .to_string(),
-                            line: self.previous().line,
-                            file: self.source_name.clone(),
-                        });
-                    }
-                    "@class".to_string()
-                } else {
-                    self.consume(TokenKind::Identifier, "Expect parameter name")?
-                        .lexeme
-                        .clone()
-                };
-                let param_line = self.previous().line;
-
-                // Проверяем, есть ли аннотация типа
-                let type_annotation = if self.match_token(TokenKind::Colon) {
-                    Some(self.parse_type_name()?)
-                } else {
-                    None
-                };
-
-                // Проверяем, есть ли значение по умолчанию
-                let default_value = if self.match_token(TokenKind::Equal) {
-                    has_default = true;
-                    Some(self.expression()?)
-                } else {
-                    if has_default {
-                        return Err(LangError::ParseError {
-                            message: "Non-default argument follows default argument".to_string(),
-                            line: param_line,
-                            file: self.source_name.clone(),
-                        });
-                    }
-                    None
-                };
-
-                params.push(crate::parser::ast::Param {
-                    name: param_name,
-                    kind: ParamKind::Regular,
-                    type_annotation,
-                    default_value,
-                });
-
-                if !self.match_token(TokenKind::Comma) {
-                    break;
-                }
-            }
-        }
-        self.consume(TokenKind::RParen, "Expect ')' after parameters")?;
+        let params = self.parse_parameters(true)?;
 
         // Проверяем, есть ли аннотация возвращаемого типа
         let return_type = if self.match_token(TokenKind::Arrow) {

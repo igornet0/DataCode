@@ -159,4 +159,15 @@ mod tests {
         let v = run("fn setg() {\n    global G = 3\n}\nsetg()\nX = null\nif X == null {\n    G = G + 1\n}\nG").unwrap();
         assert_eq!(num(v), 4.0);
     }
+
+    #[test]
+    fn module_class_constructor_binds_named_arguments() {
+        // Именованные аргументы конструктору класса из модуля связываются по имени (#20).
+        let v = run("import nsattr\nnsattr.Bag(1, 2, z = 3).n * 10 + nsattr.Bag(1, 2, z = 3).k").unwrap();
+        assert_eq!(num(v), 21.0);
+        let v = run("from nsattr import Bag, Pt\nBag(z = 1, w = 2).k * 100 + Pt(y = 5, x = 2).s()").unwrap();
+        assert_eq!(num(v), 207.0);
+        let v = run("import nsattr\nnsattr.Pt(y = 1, x = 5).s()").unwrap();
+        assert_eq!(num(v), 6.0);
+    }
 }

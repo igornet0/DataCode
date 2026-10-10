@@ -216,7 +216,8 @@ pub fn load_local_module(module_name: &str, base_path: &Path) -> Result<Value, L
     set_base_path(old_base_path);
 
     // 5. Экспортировать глобальные переменные в объект модуля
-    let exports = export_globals_from_vm(&mut vm);
+    let mut exports = export_globals_from_vm(&mut vm);
+    mark_module_namespace(&mut exports, module_name);
 
     Ok(Value::Object(std::rc::Rc::new(std::cell::RefCell::new(
         ObjectKind::Legacy(exports),
@@ -482,7 +483,8 @@ fn load_local_module_with_vm_inner(
     _run_ctx_guard.restore_now();
     RunContext::set_restored_script_argv_after_import(saved_restored_argv);
     set_base_path(base_path_before);
-    let exports = export_globals_from_vm(&mut module_vm);
+    let mut exports = export_globals_from_vm(&mut module_vm);
+    mark_module_namespace(&mut exports, module_name);
     let ns = std::rc::Rc::new(std::cell::RefCell::new(ObjectKind::Legacy(exports)));
     let module_object = Value::Object(ns.clone());
 
@@ -620,6 +622,14 @@ fn compile_and_run_module(
 
 /// Извлекает все глобальные переменные из VM после выполнения модуля (globals are GlobalSlot)
 /// Exports VM globals as a name -> Value map (for module namespace / __lib__ registration).
+/// Tag a `.dc` module export map so `m.f(x)` calls do not pass the namespace as a receiver.
+fn mark_module_namespace(exports: &mut HashMap<String, Value>, module_name: &str) {
+    exports.insert(
+        crate::vm::module_object::MODULE_MARKER_KEY.to_string(),
+        Value::String(module_name.to_string()),
+    );
+}
+
 pub fn export_globals_from_vm(vm: &mut Vm) -> HashMap<String, Value> {
     use crate::vm::store_convert::load_value;
     let mut exports = HashMap::new();

@@ -613,6 +613,60 @@ fn compile_string_method(
     Ok(())
 }
 
+/// `recv.method(a, *xs, k = v, **opts)` with an unknown signature: stack layout for CallVariadic is
+/// `[recv, positional..., *spread..., (key, value)..., **spread..., method]`; the receiver is the
+/// first positional (the VM drops it for module namespaces, binds it to `this` for methods).
+fn compile_runtime_bound_method_call(
+    ctx: &mut CompilationContext,
+    method: &str,
+    args: &[Arg],
+    temp_object_slot: usize,
+    line: usize,
+) -> Result<(), LangError> {
+    ctx.chunk
+        .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    let mut n_pos = 1;
+    for arg in args {
+        if let Arg::Positional(e) = arg {
+            expr::compile_expr(ctx, e)?;
+            n_pos += 1;
+        }
+    }
+    let mut n_star = 0;
+    for arg in args {
+        if let Arg::UnpackArray(e) = arg {
+            expr::compile_expr(ctx, e)?;
+            n_star += 1;
+        }
+    }
+    let mut n_named = 0;
+    for arg in args {
+        if let Arg::Named { name, value } = arg {
+            let key_idx = ctx.chunk.add_constant(Value::String(name.clone()));
+            ctx.chunk.write_with_line(OpCode::Constant(key_idx), line);
+            expr::compile_expr(ctx, value)?;
+            n_named += 1;
+        }
+    }
+    let mut n_starstar = 0;
+    for arg in args {
+        if let Arg::UnpackObject(e) = arg {
+            expr::compile_expr(ctx, e)?;
+            n_starstar += 1;
+        }
+    }
+    ctx.chunk
+        .write_with_line(OpCode::LoadLocal(temp_object_slot), line);
+    let method_name_index = ctx.chunk.add_constant(Value::String(method.to_string()));
+    ctx.chunk
+        .write_with_line(OpCode::Constant(method_name_index), line);
+    ctx.chunk.write_with_line(OpCode::GetArrayElement, line);
+    let packed =
+        crate::compiler::natives::pack_call_variadic_operand(n_pos, n_star, n_named, n_starstar);
+    ctx.chunk.write_with_line(OpCode::CallVariadic(packed), line);
+    Ok(())
+}
+
 fn compile_module_method(
     ctx: &mut CompilationContext,
     method: &str,
@@ -657,7 +711,16 @@ fn compile_module_method(
                 _ => "",
             };
 
-            if error_msg.contains("not supported")
+            if (error_msg.contains("not supported")
+                || error_msg.contains("Named arguments are not supported"))
+                && args.iter().any(|a| !matches!(a, Arg::Positional(_)))
+                // `m.Point(x = 1)`: constructors keep the plain Call path (class dispatch).
+                && !method.starts_with(|c: char| c.is_uppercase())
+            {
+                // Signature unknown here (module function, class method, ...): bind named and
+                // spread arguments at runtime against the callee's parameter list.
+                return compile_runtime_bound_method_call(ctx, method, args, temp_object_slot, line);
+            } else if error_msg.contains("not supported")
                 || error_msg.contains("Named arguments are not supported")
             {
                 // Fallback: компилируем аргументы как есть

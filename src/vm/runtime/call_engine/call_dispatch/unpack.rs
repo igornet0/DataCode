@@ -117,6 +117,24 @@ pub(crate) fn execute_call_variadic(
     reusable_all_popped: &mut Vec<Value>,
     vm_ptr: *mut crate::vm::vm::Vm,
 ) -> Result<VMStatus, LangError> {
+    // Argument-binding errors go through the exception handler (catchable by try/catch),
+    // like the arity errors of a plain Call.
+    macro_rules! raise {
+        ($msg:expr) => {{
+            let error = ExceptionHandler::runtime_error(&frames, $msg, line);
+            return match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
+                Ok(()) => Ok(VMStatus::Continue),
+                Err(e) => Err(e),
+            };
+        }};
+    }
     let n_pos = (packed & 0xFF) as usize;
     let n_star = ((packed >> 8) & 0xFF) as usize;
     let n_named = ((packed >> 16) & 0xFF) as usize;
@@ -136,6 +154,11 @@ pub(crate) fn execute_call_variadic(
             heavy_store,
         )?);
     }
+    // `**a, **b` are popped last-first; restore call-site order.
+    starstar_vals.reverse();
+    // Named arguments in call-site order (needed when a native without known parameter names
+    // takes them positionally, see below).
+    let mut named_order: Vec<(String, Value)> = Vec::with_capacity(n_named);
     let mut named = HashMap::new();
     for _ in 0..n_named {
         let val = pop_value(
@@ -153,19 +176,15 @@ pub(crate) fn execute_call_variadic(
             heavy_store,
         )?;
         let Value::String(key) = key_val else {
-            return Err(LangError::runtime_error(
-                "named argument key must be a string".to_string(),
-                line,
-            ));
+            raise!("named argument key must be a string".to_string());
         };
         if named.contains_key(&key) {
-            return Err(LangError::runtime_error(
-                format!("got multiple values for argument '{}'", key),
-                line,
-            ));
+            raise!(format!("got multiple values for argument '{}'", key));
         }
-        named.insert(key, val);
+        named.insert(key.clone(), val.clone());
+        named_order.push((key, val));
     }
+    named_order.reverse();
     let mut star_vals = Vec::with_capacity(n_star);
     for _ in 0..n_star {
         star_vals.push(pop_value(
@@ -186,20 +205,46 @@ pub(crate) fn execute_call_variadic(
             heavy_store,
         )?);
     }
-    let positional: Vec<Value> = pos_rev.into_iter().rev().collect();
+    // `f(*a, *b)` must bind `a` before `b`: they were popped last-first.
+    star_vals.reverse();
+    let mut positional: Vec<Value> = pos_rev.into_iter().rev().collect();
+
+    let user_function_index = match &callee_val {
+        Value::Function(i) if *i < functions.len() => Some(*i),
+        Value::ModuleFunction {
+            module_uid,
+            local_index,
+        } => unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) }
+            .filter(|i| *i < functions.len()),
+        _ => None,
+    };
 
     match &callee_val {
-        Value::Function(i) if *i < functions.len() => {
-            let function_index = *i;
+        _ if user_function_index.is_some() => {
+            let function_index = user_function_index.unwrap();
             let function = functions[function_index].clone();
-            let bound = bind_function_args(
+            // Same receiver rules as a plain Call (`m.f(...)` drops the module namespace,
+            // `@class` methods get their class injected).
+            let mut receiver_tvs = vec![TaggedValue::null(); positional.len()];
+            super::super::method_call::prepare_method_args(
+                function_index,
+                &function,
+                &mut positional,
+                &mut receiver_tvs,
+                value_store,
+                heavy_store,
+                vm_ptr,
+            );
+            let bound = match bind_function_args(
                 &function,
                 positional,
                 named,
                 &star_vals,
                 &starstar_vals,
-            )
-            .map_err(|e| LangError::runtime_error(e, line))?;
+            ) {
+                Ok(bound) => bound,
+                Err(msg) => raise!(msg),
+            };
             let arg_tvs: Vec<TaggedValue> = bound
                 .iter()
                 .map(|v| TaggedValue::from_heap(store_value(v.clone(), value_store, heavy_store)))
@@ -227,15 +272,31 @@ pub(crate) fn execute_call_variadic(
                 let param_names = crate::compiler::natives::get_native_function_params(name)
                     .unwrap_or_default();
                 let varkw = crate::compiler::natives::get_native_varkw_param(name);
-                bind_native_varkw_args(
-                    &param_names,
-                    varkw,
-                    positional,
-                    named,
-                    &star_vals,
-                    &starstar_vals,
-                )
-                .map_err(|e| LangError::runtime_error(e, line))?
+                if param_names.is_empty()
+                    && varkw.is_none()
+                    && !named_order.is_empty()
+                    && star_vals.is_empty()
+                    && starstar_vals.is_empty()
+                {
+                    // Parameter names unknown (plugin natives): pass named values positionally
+                    // in call-site order, as a plain Call did before runtime binding.
+                    positional
+                        .into_iter()
+                        .chain(named_order.into_iter().map(|(_, v)| v))
+                        .collect()
+                } else {
+                    match bind_native_varkw_args(
+                        &param_names,
+                        varkw,
+                        positional,
+                        named,
+                        &star_vals,
+                        &starstar_vals,
+                    ) {
+                        Ok(bound) => bound,
+                        Err(msg) => raise!(msg),
+                    }
+                }
             };
             let arity = bound.len();
             for v in bound {
@@ -264,10 +325,7 @@ pub(crate) fn execute_call_variadic(
             );
         }
         _ => {
-            return Err(LangError::runtime_error(
-                "CallVariadic callee must be a function".to_string(),
-                line,
-            ));
+            raise!("CallVariadic callee must be a function".to_string());
         }
     }
     Ok(VMStatus::Continue)

@@ -686,13 +686,8 @@ impl Parser {
                     None
                 };
 
-                if has_default && (kind == ParamKind::VariadicPositional || kind == ParamKind::VariadicKeyword) {
-                    return Err(LangError::ParseError {
-                        message: "Non-default argument follows default argument".to_string(),
-                        line: param_line,
-                        file: self.source_name.clone(),
-                    });
-                }
+                // `fn f(a, b = 2, *args, **kwargs)` is fine: *args / **kwargs have no default of their
+                // own and never take a positional slot that a defaulted parameter could shadow.
 
                 params.push(Param {
                     name: param_name,

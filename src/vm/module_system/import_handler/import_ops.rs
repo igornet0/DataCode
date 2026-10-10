@@ -124,6 +124,88 @@ fn resolve_dotted_namespace_from_loaded_parent(
     Some(cur)
 }
 
+/// Shift `Function(i)` inside module namespaces nested in an export (`import sub` done by the
+/// imported module) by `start`: like the module's own functions, their indices point into the
+/// imported module's VM function table, which was appended to the caller's table at `start`.
+/// Only `.dc` module namespaces are visited, so classes and plain objects are left as they are.
+fn shift_nested_module_functions(v: &mut Value, start: usize) {
+    if !crate::vm::module_object::is_module_namespace(v) {
+        return;
+    }
+    let Value::Object(rc) = v else {
+        return;
+    };
+    let mut shift = |inner: &mut Value| {
+        if let Value::Function(i) = inner {
+            *i += start;
+        } else {
+            shift_nested_module_functions(inner, start);
+        }
+    };
+    match &mut *rc.borrow_mut() {
+        crate::common::value::ObjectKind::Legacy(map) => map.values_mut().for_each(&mut shift),
+        crate::common::value::ObjectKind::Inline(entries) => {
+            entries.iter_mut().for_each(|(_, inner)| shift(inner))
+        }
+        crate::common::value::ObjectKind::Bucket(_) => {}
+    }
+}
+
+/// Register module namespaces nested in `module_object` (its own `import sub`) in the caller's
+/// `modules`, so frames of `sub`'s functions resolve their globals from `sub`'s namespace.
+/// Uses the nested copies already shifted to the caller's function table by
+/// [`shift_nested_module_functions`]; a module the caller already knows is kept.
+fn register_nested_module_namespaces(module_object: &Value, vm_ptr: *mut crate::vm::vm::Vm) {
+    use crate::common::value::ObjectKind;
+    use crate::vm::module_object::{is_module_namespace, ModuleObject, MODULE_MARKER_KEY};
+    let Value::Object(rc) = module_object else {
+        return;
+    };
+    let nested: Vec<Value> = rc
+        .borrow()
+        .str_key_pairs()
+        .into_iter()
+        .filter(|(k, v)| k != MODULE_MARKER_KEY && is_module_namespace(v))
+        .map(|(_, v)| v.clone())
+        .collect();
+    for ns in nested {
+        let Value::Object(ns_rc) = &ns else {
+            continue;
+        };
+        let name = match ns_rc.borrow().str_key_get(MODULE_MARKER_KEY) {
+            Some(Value::String(name)) => name.clone(),
+            _ => continue,
+        };
+        // Module namespaces are string-keyed maps (ModuleObject::get_export reads Legacy only);
+        // the nested copy may come back from the store in the Inline layout.
+        let as_legacy = match &*ns_rc.borrow() {
+            ObjectKind::Inline(_) => Some(
+                ns_rc
+                    .borrow()
+                    .str_key_pairs()
+                    .into_iter()
+                    .map(|(k, v)| (k, v.clone()))
+                    .collect::<std::collections::HashMap<_, _>>(),
+            ),
+            _ => None,
+        };
+        if let Some(map) = as_legacy {
+            *ns_rc.borrow_mut() = ObjectKind::Legacy(map);
+        }
+        {
+            let mut modules = unsafe { (*vm_ptr).get_modules_mut() };
+            if modules.contains_key(&name) {
+                continue;
+            }
+            modules.insert(
+                name.clone(),
+                Rc::new(RefCell::new(ModuleObject::from_namespace(name, ns_rc.clone()))),
+            );
+        }
+        register_nested_module_namespaces(&ns, vm_ptr);
+    }
+}
+
 /// Загрузить один top-level модуль (builtin / .dc / native), если его ещё нет в `loaded_modules`.
 /// Нужен для `from ml.layer import …` до строки `import ml`: сначала подгружается `ml`, затем разрешается вложенный namespace.
 fn ensure_module_loaded(
@@ -179,9 +261,13 @@ fn ensure_module_loaded(
                             for (_, v) in m.iter_mut() {
                                 if let Value::Function(i) = v {
                                     *v = Value::Function(start_function_index + *i);
+                                } else {
+                                    shift_nested_module_functions(v, start_function_index);
                                 }
                             }
                         }
+                        drop(module_obj);
+                        register_nested_module_namespaces(&module_object, vm_ptr);
                     }
                 }
                 let id = store_value(module_object, value_store, heavy_store);
@@ -484,6 +570,23 @@ pub(crate) fn handle_import_from(
                                             function_count: module_vm.get_functions().len(),
                                         },
                                     );
+                                    // Namespaces the module got via `import sub` hold Function(i) with i
+                                    // indexing the module VM's whole function table (the same space as the
+                                    // module's own functions). The export conversion below turns them into
+                                    // ModuleFunction { uid("<module>.<sub>"), i }, so register that uid with
+                                    // the same base; without it `sub.f()` inside a from-imported function
+                                    // failed with "Can only call functions".
+                                    for sub in module_vm.get_modules().keys() {
+                                        reg.entry(crate::module_uid(&format!(
+                                            "{}.{}",
+                                            full_module_name, sub
+                                        )))
+                                        .or_insert_with(|| crate::vm::types::ModuleInfo {
+                                            name: sub.clone(),
+                                            function_offset: start_idx,
+                                            function_count: module_vm.get_functions().len(),
+                                        });
+                                    }
                                 }
                                 // Convert namespace: Value::Function(local_index) -> Value::ModuleFunction { module_uid, local_index }.
                                 let submodule_keys: std::collections::HashSet<String> =

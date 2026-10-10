@@ -1,0 +1,6 @@
+# Два уровня вложенности: outer -> wrapper -> mathx.
+import wrapper
+
+fn outer_inc(x) {
+    return wrapper.wrap_inc(x) + 1
+}

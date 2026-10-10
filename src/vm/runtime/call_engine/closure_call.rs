@@ -140,7 +140,59 @@ pub(crate) fn execute_closure_call(
         }
     }
 
-    method_call::prepare_method_args(&function, &mut args, &mut arg_tvs, value_store, heavy_store);
+    method_call::prepare_method_args(
+        function_index,
+        &function,
+        &mut args,
+        &mut arg_tvs,
+        value_store,
+        heavy_store,
+        vm_ptr,
+    );
+
+    // `*args` / `**kwargs` functions reached by a plain Call: the compiler emits CallVariadic only
+    // when it knows the signature, so an imported or indirectly called variadic function gets its
+    // arguments packed here. Fixed parameters keep the caller's slots (heap identity preserved).
+    if crate::vm::variadic_bind::function_accepts_variadic(&function) {
+        let fixed_n = crate::vm::variadic_bind::fixed_param_count(&function);
+        let passed = args.len();
+        match crate::vm::variadic_bind::bind_function_args(
+            &function,
+            std::mem::take(&mut args),
+            std::collections::HashMap::new(),
+            &[],
+            &[],
+        ) {
+            Ok(bound) => {
+                arg_tvs = bound
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        if i < fixed_n && i < passed {
+                            arg_tvs[i]
+                        } else {
+                            TaggedValue::from_heap(store_value(v.clone(), value_store, heavy_store))
+                        }
+                    })
+                    .collect();
+                args = bound;
+            }
+            Err(msg) => {
+                let error = ExceptionHandler::runtime_error(&frames, msg, line);
+                return match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
+                    Ok(()) => Ok(VMStatus::Continue),
+                    Err(e) => Err(e),
+                };
+            }
+        }
+    }
 
     if args.len() < function.arity
         && crate::vm::call_defaults::trailing_defaults_available(&function, args.len())

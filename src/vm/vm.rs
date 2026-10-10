@@ -707,7 +707,11 @@ impl Vm {
     ) -> usize {
         let start_index = self.functions.len();
         for f in &mut functions {
-            f.module_name = Some(module_name.clone());
+            // Functions of modules the imported module itself imported keep their own module:
+            // their globals (e.g. `mathx` used inside `wrapper`) live in that module's namespace.
+            if f.module_name.is_none() {
+                f.module_name = Some(module_name.clone());
+            }
         }
         self.functions.extend(functions);
         start_index

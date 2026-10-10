@@ -1665,15 +1665,43 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
 
         // Разрешаем аргументы: именованные -> позиционные, применяем значения по умолчанию
         let imported_from = ctx.imported_symbols.get(name).map(|s| s.as_str());
-        let resolved_args = args::resolve_function_args(
-            name,
-            call_args,
-            function_info,
-            *line,
-            ctx.source_name,
-            imported_from,
-            None,
-        )?;
+        // Imported function whose signature the compiler does not know: bind named arguments at
+        // runtime by the callee's parameter names (CallVariadic) instead of guessing an order here.
+        // Same for a function held in a variable (lambda, `f = other_fn`), which is not a builtin.
+        let callee_is_user_value = ctx.scope.resolve_local(name).is_some()
+            || ctx.scope.globals.get(name).is_some_and(|&i| {
+                i >= crate::vm::globals::BUILTIN_GLOBAL_COUNT && i != usize::MAX
+            });
+        let bind_named_at_runtime = function_info.is_none()
+            && (imported_from.is_some() || callee_is_user_value)
+            && call_args.iter().any(|a| matches!(a, Arg::Named { .. }))
+            && crate::compiler::natives::get_native_function_params(name).is_none()
+            && crate::compiler::natives::get_native_varkw_param(name).is_none();
+        let resolved_args = if bind_named_at_runtime {
+            // Natives without known parameter names (plugins) take named values in this order;
+            // keep the previous convention for them (lexicographic by name). User functions bind by name.
+            // CallVariadic groups arguments by kind anyway, so only the named group is reordered.
+            let (mut named, mut ordered): (Vec<Arg>, Vec<Arg>) = call_args
+                .iter()
+                .cloned()
+                .partition(|a| matches!(a, Arg::Named { .. }));
+            named.sort_by(|a, b| match (a, b) {
+                (Arg::Named { name: x, .. }, Arg::Named { name: y, .. }) => x.cmp(y),
+                _ => std::cmp::Ordering::Equal,
+            });
+            ordered.extend(named);
+            ordered
+        } else {
+            args::resolve_function_args(
+                name,
+                call_args,
+                function_info,
+                *line,
+                ctx.source_name,
+                imported_from,
+                None,
+            )?
+        };
 
         // Специальная обработка для isinstance: преобразуем идентификаторы типов в строки
         let processed_args = if name == "isinstance" && resolved_args.len() >= 2 {
@@ -1748,7 +1776,8 @@ pub fn compile_call(ctx: &mut CompilationContext, expr: &Expr) -> Result<(), Lan
             .map(|(_, f)| f.variadic_pos_index.is_some() || f.variadic_kw_index.is_some())
             .unwrap_or(false);
         let needs_variadic_opcode = crate::compiler::natives::call_needs_variadic_opcode(&processed_args)
-            || user_has_variadic;
+            || user_has_variadic
+            || bind_named_at_runtime;
 
         if needs_variadic_opcode {
             let mut pos_exprs: Vec<&Expr> = Vec::new();

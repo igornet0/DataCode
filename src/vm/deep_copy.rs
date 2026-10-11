@@ -1,5 +1,6 @@
 //! Recursive deep copy for container [`Value`]s (used by `copy()`, `.clone()`, `set.copy()`).
 
+use crate::common::integral_map::IntegralSlot;
 use crate::common::object_map::ObjectMap;
 use crate::common::set_map::SetMap;
 use crate::common::table::{Table, TableData};
@@ -234,6 +235,17 @@ fn deep_copy_object(
         }
         ObjectKind::Bucket(omap) => {
             let mut new_map = ObjectMap::with_capacity(omap.len());
+            for (canonical, slot) in omap.iter_integral_entries() {
+                match slot {
+                    IntegralSlot::Immediate(tv) => new_map.upsert_integral_tagged(canonical, 0, tv),
+                    IntegralSlot::Heap(vid) => {
+                        let val_mat = load_value(vid, ctx.store, ctx.heap);
+                        let new_val = deep_copy_impl(&val_mat, ctx)?;
+                        let new_vid = store_value(new_val, ctx.store, ctx.heap);
+                        new_map.upsert_integral(canonical, 0, new_vid);
+                    }
+                }
+            }
             for (_, kid, vid) in omap.iter_entries() {
                 if kid == NULL_VALUE_ID && vid == NULL_VALUE_ID {
                     continue;

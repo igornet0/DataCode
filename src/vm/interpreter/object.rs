@@ -217,17 +217,26 @@ pub fn op_unpack_object(
 ) -> Result<VMStatus, LangError> {
     let obj_id = pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
     let pairs: Vec<(String, ValueId)> = match value_store.get(obj_id) {
-        Some(ValueCell::Object(m)) => m
-            .iter_entries()
-            .map(|(_, kid, vid)| {
-                let k = match load_value(kid, value_store, heavy_store) {
-                    Value::String(s) => s,
-                    Value::Number(n) => format!("{}", n),
-                    other => format!("{:?}", other),
-                };
-                (k, vid)
-            })
-            .collect(),
+        Some(ValueCell::Object(m)) => {
+            let integral: Vec<(i64, crate::common::integral_map::IntegralSlot)> =
+                m.iter_integral_entries().collect();
+            let mut pairs: Vec<(String, ValueId)> = m
+                .iter_entries()
+                .map(|(_, kid, vid)| {
+                    let k = match load_value(kid, value_store, heavy_store) {
+                        Value::String(s) => s,
+                        Value::Number(n) => format!("{}", n),
+                        other => format!("{:?}", other),
+                    };
+                    (k, vid)
+                })
+                .collect();
+            for (canonical, slot) in integral {
+                let vid = crate::vm::memory::integral_slot_to_value_id(slot, value_store);
+                pairs.push((format!("{}", canonical), vid));
+            }
+            pairs
+        }
         _ => {
             let val = load_value(obj_id, value_store, heavy_store);
             if let Value::Object(rc) = &val {

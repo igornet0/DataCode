@@ -108,16 +108,12 @@ impl SetMap {
         F: Fn(ValueId) -> bool,
     {
         if let Some(c) = canonical {
-            if self.contains_integral(c) {
-                return false;
-            }
-        } else if self.inner.find_in_bucket(hash, &eq).is_some() {
+            return self.insert_integral_only(c, key_id);
+        }
+        if self.inner.find_in_bucket(hash, &eq).is_some() {
             return false;
         }
         self.inner.upsert(hash, key_id, NULL_VALUE_ID, eq);
-        if let Some(c) = canonical {
-            self.inner.upsert_integral(c, key_id, NULL_VALUE_ID);
-        }
         self.bump_generation();
         true
     }

@@ -30,7 +30,7 @@ pub fn compile_stmt(
         Stmt::Expr { .. } => {
             if let Stmt::Expr { expr, line } = stmt {
                 crate::compiler::expr::compile_expr(ctx, expr)?;
-                if pop_value {
+                if pop_value && !drop_assignment_reload(ctx) {
                     ctx.chunk
                         .write_with_line(crate::bytecode::OpCode::Pop, *line);
                 }
@@ -56,4 +56,28 @@ pub fn compile_stmt(
         Stmt::Try { .. } => try_catch::compile_try_catch(ctx, stmt),
         Stmt::Class { .. } => class::compile_class(ctx, stmt, pop_value),
     }
+}
+
+/// Assignment statement peephole: `x = v` compiles to `Store x; Load x` so the assignment can be
+/// used as an expression; as a statement the reloaded value is popped right away. Drop the
+/// reload instead of emitting `Pop` (two fewer instructions per assignment). Jumps inside `v`
+/// target at most the store, so removing the trailing load keeps every offset valid.
+/// `StoreLocal` then also does the dead-slot truncation the dropped `Pop` did at the frame
+/// boundary (some call paths still read the stack top as `stack.len()`).
+fn drop_assignment_reload(ctx: &mut CompilationContext) -> bool {
+    use crate::bytecode::OpCode;
+    let code = &ctx.chunk.code;
+    let n = code.len();
+    if n < 2 {
+        return false;
+    }
+    let redundant = match (&code[n - 2], &code[n - 1]) {
+        (OpCode::StoreLocal(a), OpCode::LoadLocal(b)) => a == b,
+        _ => false,
+    };
+    if redundant {
+        ctx.chunk.code.pop();
+        ctx.chunk.lines.pop();
+    }
+    redundant
 }

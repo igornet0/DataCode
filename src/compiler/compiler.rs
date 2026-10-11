@@ -221,6 +221,7 @@ impl Compiler {
         // Очищаем метки после финализации главного скрипта
         self.labels.clear();
 
+        crate::bytecode::fuse_superinstructions(&mut self.chunk);
         Ok(self.chunk.clone())
     }
 
@@ -586,7 +587,11 @@ impl Compiler {
         self.chunk.global_names.insert(idx, name.to_string());
     }
 
-    pub fn get_functions(self) -> Vec<Function> {
+    pub fn get_functions(mut self) -> Vec<Function> {
+        // Function bodies are final (jumps laid out) once compilation is done.
+        for function in &mut self.functions {
+            crate::bytecode::fuse_superinstructions(&mut function.chunk);
+        }
         self.functions
     }
 

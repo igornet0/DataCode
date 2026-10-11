@@ -99,6 +99,13 @@ pub fn op_store_local(
     heavy_store: &mut HeavyStore,
 ) -> Result<VMStatus, LangError> {
     let tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+    // Statement `x = v` compiles without a trailing `Pop`: drop dead slots at the frame
+    // boundary here, as `Pop` would.
+    if let Some(frame) = frames.last() {
+        let stack_start = frame.stack_start;
+        let sp = stack::with_sp(stack, |sp| *sp);
+        stack::truncate_if_at_frame(stack, sp, stack_start);
+    }
     let tv = crate::vm::array_view::materialize_tagged_if_array_view(tv, value_store, heavy_store);
     let tv = {
         let slots = frames.last().map(|f| f.slots.as_slice()).unwrap_or(&[]);

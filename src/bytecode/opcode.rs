@@ -204,10 +204,15 @@ pub enum OpCode {
     GridHeapLen(usize),
     /// Constructor epilogue: `@init(this, constructor_params…)` via [`dispatch_special_by_id`].
     InvokeSpecialInit(usize, usize),
+    /// Superinstruction placed over the first of two consecutive `LoadLocal(a); LoadLocal(b)`
+    /// (see [`crate::bytecode::fuse_superinstructions`]); the second `LoadLocal(b)` stays in
+    /// place so jump targets are unchanged. The fast path pushes both and skips the second;
+    /// the general handler behaves exactly like `LoadLocal(a)`.
+    LoadLocalPair(usize, usize),
 }
 
 /// Количество слотов гистограммы профиля (по одному на вариант [`OpCode`] без параметров).
-pub const PROFILE_OPCODE_SLOTS: usize = 111;
+pub const PROFILE_OPCODE_SLOTS: usize = 112;
 
 /// Индекс «неизвестного» опкода в гистограмме alloc/get (вне [`execute_instruction`]).
 pub const PROFILE_OPCODE_UNKNOWN: u8 = 255;
@@ -327,6 +332,7 @@ impl OpCode {
             OpCode::GridHeapPopUnpack2(_, _, _) => 108,
             OpCode::GridHeapLen(_) => 109,
             OpCode::InvokeSpecialInit(_, _) => 110,
+            OpCode::LoadLocalPair(_, _) => 111,
         }
     }
 
@@ -448,6 +454,7 @@ impl OpCode {
             "GridHeapPopUnpack2",
             "GridHeapLen",
             "InvokeSpecialInit",
+            "LoadLocalPair",
         ];
         NAMES.get(index as usize).copied().unwrap_or("?")
     }

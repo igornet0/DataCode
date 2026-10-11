@@ -212,6 +212,10 @@ impl Chunk {
                 output.push_str(&format!("LOAD_LOCAL {}\n", index));
                 offset + 1
             }
+            OpCode::LoadLocalPair(a, b) => {
+                output.push_str(&format!("LOAD_LOCAL_PAIR {} {}\n", a, b));
+                offset + 1
+            }
             OpCode::StoreLocal(index) => {
                 output.push_str(&format!("STORE_LOCAL {}\n", index));
                 offset + 1
@@ -701,6 +705,18 @@ impl Chunk {
                 ));
                 offset + 1
             }
+        }
+    }
+}
+
+/// Peephole run on finished chunks (after jump layout is final): mark `LoadLocal(a); LoadLocal(b)`
+/// by replacing the first instruction with [`OpCode::LoadLocalPair`]. Nothing is removed, so
+/// code length and all jump offsets stay valid.
+pub fn fuse_superinstructions(chunk: &mut Chunk) {
+    let code = &mut chunk.code;
+    for i in 0..code.len().saturating_sub(1) {
+        if let (OpCode::LoadLocal(a), OpCode::LoadLocal(b)) = (&code[i], &code[i + 1]) {
+            code[i] = OpCode::LoadLocalPair(*a, *b);
         }
     }
 }

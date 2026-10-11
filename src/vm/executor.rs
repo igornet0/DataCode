@@ -79,7 +79,7 @@ pub(crate) fn execute_instruction(
     #[cfg(feature = "threaded_dispatch")]
     {
         match instruction {
-            OpCode::LoadLocal(index) => {
+            OpCode::LoadLocal(index) | OpCode::LoadLocalPair(index, _) => {
                 return stack_ops::op_load_local(index, current_ip, stack, frames)
             }
             OpCode::StoreLocal(index) => {
@@ -753,7 +753,8 @@ pub(crate) fn execute_instruction(
                 heavy_store,
             )
         }
-        OpCode::LoadLocal(index) => {
+        // The pair's second load is the next instruction, so the general path runs one load.
+        OpCode::LoadLocal(index) | OpCode::LoadLocalPair(index, _) => {
             return stack_ops::op_load_local(index, current_ip, stack, frames)
         }
         OpCode::StoreLocal(index) => {

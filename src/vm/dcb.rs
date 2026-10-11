@@ -36,7 +36,7 @@ pub const COMPILER_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// v34: error-type table of a chunk holds the types of every try (not only the first).
 /// v35: `*args` / `**kwargs` in methods and constructors (`Class::new_v<k>`); `m.Class(k = v)` and
 ///      named / spread constructor arguments compile to CallVariadic.
-pub const DCB_FORMAT_VERSION: &str = "35";
+pub const DCB_FORMAT_VERSION: &str = "36";
 
 /// Metadata stored at the start of a .dcb file for freshness checks.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -210,6 +210,7 @@ pub enum SerOpCode {
     GridHeapPopUnpack2(usize, usize, usize),
     GridHeapLen(usize),
     InvokeSpecialInit(usize, usize),
+    LoadLocalPair(usize, usize),
 }
 
 impl From<&OpCode> for SerOpCode {
@@ -334,6 +335,7 @@ impl From<&OpCode> for SerOpCode {
             OpCode::GridHeapPopUnpack2(a, b, c) => SerOpCode::GridHeapPopUnpack2(*a, *b, *c),
             OpCode::GridHeapLen(a) => SerOpCode::GridHeapLen(*a),
             OpCode::InvokeSpecialInit(a, b) => SerOpCode::InvokeSpecialInit(*a, *b),
+            OpCode::LoadLocalPair(a, b) => SerOpCode::LoadLocalPair(*a, *b),
         }
     }
 }
@@ -460,6 +462,7 @@ impl From<SerOpCode> for OpCode {
             SerOpCode::GridHeapPopUnpack2(a, b, c) => OpCode::GridHeapPopUnpack2(a, b, c),
             SerOpCode::GridHeapLen(a) => OpCode::GridHeapLen(a),
             SerOpCode::InvokeSpecialInit(a, b) => OpCode::InvokeSpecialInit(a, b),
+            SerOpCode::LoadLocalPair(a, b) => OpCode::LoadLocalPair(a, b),
         }
     }
 }

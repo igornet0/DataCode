@@ -1,7 +1,7 @@
 //! Inline fast path for the most frequent simple opcodes on immediate values.
 //!
 //! [`run_fast_ops`] executes `LoadLocal` / `StoreLocal` / `Constant` / `Pop` / `Dup` / jumps /
-//! integer `Add`/`Sub` straight on the VM stack and frame, without the per-instruction
+//! `Add`/`Sub`/`Mul` / `AbsI32` / `InGridBoundsOut` straight on the VM stack and frame, without the per-instruction
 //! `execute_instruction` call (22 arguments), the thread-local VM context and the `Result` plumbing.
 //! Every handler first checks that the operands are the trivial case it knows; anything else
 //! (heap values, overflow, stack underflow, end of chunk) leaves the instruction untouched for the
@@ -39,19 +39,46 @@ fn int_operand(tv: TaggedValue) -> Option<i64> {
     None
 }
 
-/// Result of `a + b` / `a - b` for immediates, or `None` to defer to the full handler.
+#[derive(Clone, Copy)]
+enum ArithOp {
+    Add,
+    Sub,
+    Mul,
+}
+
+/// Result of `a + b` / `a - b` / `a * b` for immediates, or `None` to defer to the full
+/// handler. Same rules as `op_add`/`op_sub`/`op_mul`: two whole operands give an `int`,
+/// two float-domain numbers otherwise give a float, anything else goes to the handler.
 #[inline(always)]
-fn add_sub_immediates(a: TaggedValue, b: TaggedValue, sub: bool) -> Option<TaggedValue> {
+fn arith_immediates(a: TaggedValue, b: TaggedValue, op: ArithOp) -> Option<TaggedValue> {
+    let int_op = |i: i64, j: i64| match op {
+        ArithOp::Add => i.wrapping_add(j),
+        ArithOp::Sub => i.wrapping_sub(j),
+        ArithOp::Mul => i.wrapping_mul(j),
+    };
     if a.is_number() && b.is_number() {
         let (x, y) = (a.get_f64(), b.get_f64());
         return match (f64_whole_to_i64_exact(x), f64_whole_to_i64_exact(y)) {
-            (Some(i), Some(j)) => int_result(if sub { i.wrapping_sub(j) } else { i.wrapping_add(j) }),
-            _ => Some(TaggedValue::from_f64(if sub { x - y } else { x + y })),
+            (Some(i), Some(j)) => int_result(int_op(i, j)),
+            _ => Some(TaggedValue::from_f64(match op {
+                ArithOp::Add => x + y,
+                ArithOp::Sub => x - y,
+                ArithOp::Mul => x * y,
+            })),
         };
     }
     let i = int_operand(a)?;
     let j = int_operand(b)?;
-    int_result(if sub { i.wrapping_sub(j) } else { i.wrapping_add(j) })
+    int_result(int_op(i, j))
+}
+
+/// Grid coordinate operand of `InGridBoundsOut` for immediates (heap values → `Err`).
+#[inline(always)]
+fn grid_bound(tv: TaggedValue) -> Result<Option<i64>, ()> {
+    if tv.is_heap() {
+        return Err(());
+    }
+    Ok(crate::common::numeric::tagged_integral_canonical_if_whole(tv))
 }
 
 #[inline(always)]
@@ -197,16 +224,58 @@ pub(crate) fn run_fast_ops(stack: &mut Vec<TaggedValue>, stack_sp: &mut usize, f
                     continue;
                 }
             }
-            OpCode::Add | OpCode::Sub => {
+            OpCode::Add | OpCode::Sub | OpCode::Mul => {
                 if sp < stack_start + 2 {
                     break;
                 }
+                let kind = match op {
+                    OpCode::Add => ArithOp::Add,
+                    OpCode::Sub => ArithOp::Sub,
+                    _ => ArithOp::Mul,
+                };
                 let (a, b) = (stack[sp - 2], stack[sp - 1]);
-                let Some(r) = add_sub_immediates(a, b, matches!(op, OpCode::Sub)) else {
+                let Some(r) = arith_immediates(a, b, kind) else {
                     break;
                 };
                 sp -= 1;
                 stack[sp - 1] = r;
+            }
+            OpCode::AbsI32 => {
+                if sp <= stack_start {
+                    break;
+                }
+                let tv = stack[sp - 1];
+                // Same as `op_abs_i32`: the result is always float-domain.
+                let r = if tv.is_int() {
+                    (tv.get_i32() as i64).unsigned_abs() as f64
+                } else if tv.is_number() && tv.get_f64().is_finite() {
+                    tv.get_f64().abs()
+                } else {
+                    break;
+                };
+                stack[sp - 1] = TaggedValue::from_f64(r);
+            }
+            OpCode::InGridBoundsOut => {
+                if sp < stack_start + 4 {
+                    break;
+                }
+                let bounds = (
+                    grid_bound(stack[sp - 4]),
+                    grid_bound(stack[sp - 3]),
+                    grid_bound(stack[sp - 2]),
+                    grid_bound(stack[sp - 1]),
+                );
+                let (Ok(nr), Ok(nc), Ok(rows), Ok(cols)) = bounds else {
+                    break;
+                };
+                let in_bounds = match (nr, nc, rows, cols) {
+                    (Some(nr), Some(nc), Some(rows), Some(cols)) => {
+                        nr >= 0 && nr < rows && nc >= 0 && nc < cols
+                    }
+                    _ => false,
+                };
+                sp -= 3;
+                stack[sp - 1] = TaggedValue::from_bool(!in_bounds);
             }
             _ => break,
         }
@@ -223,12 +292,14 @@ mod tests {
     fn add_sub_rules() {
         let i = TaggedValue::from_i32;
         let f = TaggedValue::from_f64;
-        assert_eq!(add_sub_immediates(i(2), i(3), false), Some(i(5)));
-        assert_eq!(add_sub_immediates(f(2.0), f(3.0), false), Some(i(5)));
-        assert_eq!(add_sub_immediates(f(2.5), f(3.0), false), Some(f(5.5)));
-        assert_eq!(add_sub_immediates(i(2), f(3.0), true), Some(i(-1)));
-        assert_eq!(add_sub_immediates(i(2), f(0.5), false), None);
-        assert_eq!(add_sub_immediates(i(i32::MAX), i(1), false), None);
-        assert_eq!(add_sub_immediates(TaggedValue::null(), i(1), false), None);
+        assert_eq!(arith_immediates(i(2), i(3), ArithOp::Add), Some(i(5)));
+        assert_eq!(arith_immediates(f(2.0), f(3.0), ArithOp::Add), Some(i(5)));
+        assert_eq!(arith_immediates(f(2.5), f(3.0), ArithOp::Add), Some(f(5.5)));
+        assert_eq!(arith_immediates(i(2), f(3.0), ArithOp::Sub), Some(i(-1)));
+        assert_eq!(arith_immediates(i(2), f(0.5), ArithOp::Add), None);
+        assert_eq!(arith_immediates(i(i32::MAX), i(1), ArithOp::Add), None);
+        assert_eq!(arith_immediates(i(1 << 20), i(1 << 20), ArithOp::Mul), None);
+        assert_eq!(arith_immediates(f(1.5), f(2.0), ArithOp::Mul), Some(f(3.0)));
+        assert_eq!(arith_immediates(TaggedValue::null(), i(1), ArithOp::Add), None);
     }
 }

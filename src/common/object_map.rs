@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use crate::common::integral_map::{IntegralMap, IntegralSlot};
 use crate::common::tagged_value::TaggedValue;
-use crate::common::value_store::ValueId;
+use crate::common::value_store::{IdBuildHasher, ValueId};
 
 /// Stable bucket index derived from [`crate::common::type_model::object_key_hash64`].
 pub type KeyHash = u64;
@@ -22,7 +22,7 @@ pub struct ObjectEntry {
 /// Flat dictionary using bucket chaining (no string coercion).
 #[derive(Debug, Clone)]
 pub struct ObjectMap {
-    buckets: HashMap<KeyHash, Vec<ObjectEntry>>,
+    buckets: HashMap<KeyHash, Vec<ObjectEntry>, IdBuildHasher>,
     /// Canonical `i64` → value; authoritative for integral-only fast paths (see [`Self::len`]).
     integral_index: IntegralMap,
     /// When true: mutation APIs return errors at VM boundary.
@@ -40,7 +40,7 @@ impl Default for ObjectMap {
 impl ObjectMap {
     pub fn new() -> Self {
         Self {
-            buckets: HashMap::new(),
+            buckets: HashMap::default(),
             integral_index: IntegralMap::new(),
             frozen: false,
             plain: false,
@@ -49,7 +49,7 @@ impl ObjectMap {
 
     pub fn with_capacity(cap: usize) -> Self {
         Self {
-            buckets: HashMap::with_capacity(cap),
+            buckets: HashMap::with_capacity_and_hasher(cap, IdBuildHasher::default()),
             integral_index: IntegralMap::with_capacity(cap),
             frozen: false,
             plain: false,
@@ -59,7 +59,7 @@ impl ObjectMap {
     /// Plain dict literal / `{}` / reused A* score maps (no class visibility metadata).
     pub fn new_plain() -> Self {
         Self {
-            buckets: HashMap::new(),
+            buckets: HashMap::default(),
             integral_index: IntegralMap::new(),
             frozen: false,
             plain: true,
@@ -68,7 +68,7 @@ impl ObjectMap {
 
     pub fn with_capacity_plain(cap: usize) -> Self {
         Self {
-            buckets: HashMap::with_capacity(cap),
+            buckets: HashMap::with_capacity_and_hasher(cap, IdBuildHasher::default()),
             integral_index: IntegralMap::with_capacity(cap),
             frozen: false,
             plain: true,
@@ -93,6 +93,12 @@ impl ObjectMap {
     /// Distinct keys count (same logical size as Python dict len): integral keys plus bucket keys.
     pub fn len(&self) -> usize {
         self.integral_index.len() + self.bucket_entry_count()
+    }
+
+    /// True when at least one non-integral key may be stored (O(1); empty chains are dropped).
+    #[inline]
+    pub fn has_bucket_entries(&self) -> bool {
+        !self.buckets.is_empty()
     }
 
     /// Keys stored in bucket chains (non-integral keys).
@@ -188,7 +194,7 @@ impl ObjectMap {
             .map(IntegralSlot::heap_value_id)
     }
 
-    pub fn buckets_ref(&self) -> &HashMap<KeyHash, Vec<ObjectEntry>> {
+    pub fn buckets_ref(&self) -> &HashMap<KeyHash, Vec<ObjectEntry>, IdBuildHasher> {
         &self.buckets
     }
 

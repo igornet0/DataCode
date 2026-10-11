@@ -447,14 +447,13 @@ fn try_hashed_membership(
         _ => return None,
     };
     if let Some(canonical) = tagged_integral_canonical_if_whole(value_tv) {
-        let hit = match value_store.get(container_id)? {
-            ValueCell::Set(set) => set.contains_integral(canonical),
-            ValueCell::Object(map) => map.contains_integral(canonical),
-            _ => false,
+        // Whole-number keys live only in the integral index (see `ObjectMap`), so a miss there
+        // is final — no need to hash the member and scan bucket chains.
+        return match value_store.get(container_id)? {
+            ValueCell::Set(set) => Some(set.contains_integral(canonical)),
+            ValueCell::Object(map) => Some(map.contains_integral(canonical)),
+            _ => None,
         };
-        if hit {
-            return Some(true);
-        }
     }
     let member_id = tagged_to_value_id(value_tv, value_store);
     let store: &ValueStore = value_store;

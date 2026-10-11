@@ -66,6 +66,10 @@ pub(crate) fn object_map_needs_visibility_checks(
 ) -> bool {
     // Class instances are stored in plain [`ObjectMap`]s (`MakeObject`); check visibility metadata
     // keys before `is_plain()` — otherwise private/protected enforcement is skipped on set/get fast paths.
+    // Metadata keys are strings, so a map with no bucket (non-integral) keys has none.
+    if !omap.has_bucket_entries() {
+        return false;
+    }
     for &(h, key_str) in visibility_metadata_key_hash_entries() {
         if omap
             .find_in_bucket(h, |k_id| match load_value(k_id, store, heap) {

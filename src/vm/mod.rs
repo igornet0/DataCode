@@ -39,6 +39,7 @@ pub mod calls;
 pub mod exception;
 pub mod exceptions;
 pub mod executor;
+pub(crate) mod fast_ops;
 pub mod generator;
 pub mod global_slot;
 pub mod globals;

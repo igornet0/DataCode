@@ -78,25 +78,15 @@ pub fn op_load_local(
     stack: &mut Vec<TaggedValue>,
     frames: &mut Vec<CallFrame>,
 ) -> Result<VMStatus, LangError> {
-    let frame = frames.last_mut().unwrap();
-    if frame.load_local_cache_ip == Some(current_ip) && frame.load_local_cache_slot == Some(index) {
-        if let Some(tv) = frame.load_local_cache_tagged {
-            stack::push(stack, tv);
-            return Ok(VMStatus::Continue);
-        }
-    }
+    // No per-IP value cache: reading the slot is as cheap as checking a cache, and a cache
+    // goes stale whenever a slot is written by anything other than `StoreLocal`.
+    let _ = current_ip;
     let frame = frames.last_mut().unwrap();
     if index >= frame.slots.len() {
         frame.ensure_slot(index);
     }
     let tv = frame.slots[index];
     stack::push(stack, tv);
-    {
-        let frame = frames.last_mut().unwrap();
-        frame.load_local_cache_ip = Some(current_ip);
-        frame.load_local_cache_slot = Some(index);
-        frame.load_local_cache_tagged = Some(tv);
-    }
     Ok(VMStatus::Continue)
 }
 

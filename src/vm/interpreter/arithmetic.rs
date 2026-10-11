@@ -166,14 +166,9 @@ pub fn op_add(
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     {
         let frame = frames.last_mut().unwrap();
+        // The cached flag only records the operand kinds seen last time; whole numbers must
+        // still produce an `int`, so the result is always computed by the rules below.
         let cache_hit = frame.add_cache_ip == Some(current_ip) && frame.add_cache_both_number;
-        if cache_hit && a_tv.is_number() && b_tv.is_number() {
-            stack::push(
-                stack,
-                TaggedValue::from_f64(a_tv.get_f64() + b_tv.get_f64()),
-            );
-            return Ok(VMStatus::Continue);
-        }
         if cache_hit {
             frame.add_cache_both_number = false;
         }

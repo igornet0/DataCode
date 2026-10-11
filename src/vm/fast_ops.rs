@@ -8,6 +8,10 @@
 //! general path, so results are the same as the regular opcode handlers produce.
 
 use crate::bytecode::OpCode;
+use crate::common::integral_map::IntegralSlot;
+use crate::common::numeric::tagged_integral_canonical_if_whole;
+use crate::common::object_map::ObjectMap;
+use crate::common::value_store::{ValueCell, ValueId, ValueStore, NULL_VALUE_ID};
 use crate::common::TaggedValue;
 use crate::vm::frame::CallFrame;
 
@@ -15,9 +19,8 @@ use crate::vm::frame::CallFrame;
 /// to `i64` exactly.
 #[inline(always)]
 fn f64_whole_to_i64_exact(f: f64) -> Option<i64> {
-    if !f.is_finite() || f.fract() != 0.0 {
-        return None;
-    }
+    // Equivalent to `is_finite && fract == 0` followed by the exactness check: a saturated or
+    // truncated cast never round-trips for non-finite or fractional values.
     let i = f as i64;
     if (i as f64) == f {
         Some(i)
@@ -72,6 +75,69 @@ fn arith_immediates(a: TaggedValue, b: TaggedValue, op: ArithOp) -> Option<Tagge
     int_result(int_op(i, j))
 }
 
+/// Whole-number key of an immediate member / subscript (`None` for heap values and
+/// non-integral numbers, which go to the general handlers).
+#[inline(always)]
+fn immediate_integral_key(tv: TaggedValue) -> Option<i64> {
+    if tv.is_heap() {
+        return None;
+    }
+    tagged_integral_canonical_if_whole(tv)
+}
+
+/// Dict cell the integral fast paths may touch without class-visibility checks: the same
+/// condition the general handlers use (plain dict, or no string keys that could hold class
+/// metadata).
+#[inline(always)]
+fn is_plain_dict(map: &ObjectMap, id: ValueId, store: &ValueStore) -> bool {
+    map.is_plain() || !map.has_bucket_entries() || store.is_plain_object(id)
+}
+
+/// `member in container` for a whole-number member and a set / plain dict container
+/// (whole-number keys live only in the integral index). `None` → general handler.
+#[inline(always)]
+fn integral_membership(member: TaggedValue, container: TaggedValue, store: &ValueStore) -> Option<bool> {
+    let key = immediate_integral_key(member)?;
+    if !container.is_heap() {
+        return None;
+    }
+    let id = container.get_heap_id();
+    match store.get(id)? {
+        ValueCell::Set(set) => Some(set.contains_integral(key)),
+        ValueCell::Object(map) if is_plain_dict(map, id, store) => Some(map.contains_integral(key)),
+        _ => None,
+    }
+}
+
+/// `container[key] = value` for a plain dict, whole-number key and immediate score value,
+/// mirroring `op_object_set_integral`. Returns false (nothing changed) when the general handler
+/// is needed (heap values / existing heap slot / other containers).
+#[inline(always)]
+fn dict_set_integral(container: TaggedValue, key: TaggedValue, value: TaggedValue, store: &mut ValueStore) -> bool {
+    if !container.is_heap() || value.is_heap() || !(value.is_number() || value.is_int() || value.is_null()) {
+        return false;
+    }
+    let Some(key) = immediate_integral_key(key) else {
+        return false;
+    };
+    let id = container.get_heap_id();
+    let plain_object = store.is_plain_object(id);
+    let Some(ValueCell::Object(map)) = store.get_mut(id) else {
+        return false;
+    };
+    if map.is_frozen() || !(plain_object || map.is_plain() || !map.has_bucket_entries()) {
+        return false;
+    }
+    if map.try_write_integral_immediate(key, value) {
+        return true;
+    }
+    if matches!(map.find_integral_slot(key), Some(IntegralSlot::Heap(_))) {
+        return false;
+    }
+    map.upsert_integral_tagged(key, NULL_VALUE_ID, value);
+    true
+}
+
 /// Grid coordinate operand of `InGridBoundsOut` for immediates (heap values → `Err`).
 #[inline(always)]
 fn grid_bound(tv: TaggedValue) -> Result<Option<i64>, ()> {
@@ -111,61 +177,91 @@ fn immediate_truthy(tv: TaggedValue) -> Option<bool> {
     Some(true)
 }
 
-#[inline(always)]
-fn push(stack: &mut Vec<TaggedValue>, sp: &mut usize, tv: TaggedValue) {
-    if *sp < stack.len() {
-        stack[*sp] = tv;
-    } else {
-        stack.push(tv);
-    }
-    *sp += 1;
-}
-
-#[inline(always)]
-fn jump(frame: &mut CallFrame, next_ip: usize, offset: i64) {
-    frame.ip = (next_ip as i64 + offset) as usize;
-}
-
 /// Execute simple opcodes of the current frame until one needs the general path.
 /// `stack_sp` is the VM's logical stack top ([`crate::vm::vm::Vm::stack_sp`]).
-pub(crate) fn run_fast_ops(stack: &mut Vec<TaggedValue>, stack_sp: &mut usize, frames: &mut [CallFrame]) {
+pub(crate) fn run_fast_ops(
+    stack: &mut Vec<TaggedValue>,
+    stack_sp: &mut usize,
+    frames: &mut [CallFrame],
+    store: &mut ValueStore,
+) {
     let Some(frame) = frames.last_mut() else {
         return;
     };
-    // Same clamp the stack helpers apply before every access.
+    // Split borrows so `ip`, the code slice and the slot vector stay in registers across
+    // iterations (writes through `slots` / `stack` cannot alias the code or each other).
+    let CallFrame {
+        function,
+        ip: frame_ip,
+        slots,
+        stack_start,
+        constant_tagged,
+        ..
+    } = frame;
+    let code: &[OpCode] = &function.chunk.code;
+    let constants: &[Option<TaggedValue>] = constant_tagged;
+    let stack_start = *stack_start;
+    let mut ip = *frame_ip;
+    // Same clamp the stack helpers apply before every access; afterwards `sp <= stack.len()`
+    // holds throughout (pushes extend the vector when `sp` reaches its length).
     let mut sp = (*stack_sp).min(stack.len());
-    let stack_start = frame.stack_start;
-    loop {
-        let ip = frame.ip;
-        let Some(op) = frame.function.chunk.code.get(ip) else {
-            break;
-        };
+
+    macro_rules! push {
+        ($tv:expr) => {{
+            let tv = $tv;
+            if sp < stack.len() {
+                stack[sp] = tv;
+            } else {
+                stack.push(tv);
+            }
+            sp += 1;
+        }};
+    }
+
+    while let Some(op) = code.get(ip) {
         let next = ip + 1;
         match *op {
             OpCode::LoadLocal(index) => {
-                let Some(&tv) = frame.slots.get(index) else {
+                let Some(&tv) = slots.get(index) else {
                     break;
                 };
-                push(stack, &mut sp, tv);
+                push!(tv);
+            }
+            OpCode::LoadLocalPair(a, b) => {
+                // Second `LoadLocal(b)` sits at `next`; execute both and skip it.
+                let (Some(&x), Some(&y)) = (slots.get(a), slots.get(b)) else {
+                    break;
+                };
+                push!(x);
+                push!(y);
+                ip = next + 1;
+                continue;
             }
             OpCode::StoreLocal(index) => {
                 // Immediate → immediate slot only: heap values need array-view materialization,
                 // table alias forks and heap-pair recycling done by `op_store_local`.
-                if sp <= stack_start || index >= frame.slots.len() {
+                if sp <= stack_start {
                     break;
                 }
                 let tv = stack[sp - 1];
-                if tv.is_heap() || frame.slots[index].is_heap() {
-                    break;
-                }
-                sp -= 1;
-                frame.slots[index] = tv;
-            }
-            OpCode::Constant(index) => {
-                let Some(Some(tv)) = frame.constant_tagged.get(index).copied() else {
+                let Some(slot) = slots.get_mut(index) else {
                     break;
                 };
-                push(stack, &mut sp, tv);
+                if tv.is_heap() || slot.is_heap() {
+                    break;
+                }
+                *slot = tv;
+                sp -= 1;
+                // Same frame-boundary truncation as `Pop` (statement `x = v` has no `Pop`).
+                if sp == stack_start && stack.len() > stack_start {
+                    stack.truncate(stack_start);
+                }
+            }
+            OpCode::Constant(index) => {
+                let Some(Some(tv)) = constants.get(index).copied() else {
+                    break;
+                };
+                push!(tv);
             }
             OpCode::Pop => {
                 if sp <= stack_start {
@@ -184,18 +280,18 @@ pub(crate) fn run_fast_ops(stack: &mut Vec<TaggedValue>, stack_sp: &mut usize, f
                 if tv.is_heap() {
                     break;
                 }
-                push(stack, &mut sp, tv);
+                push!(tv);
             }
             OpCode::Jump8(offset) => {
-                jump(frame, next, offset as i64);
+                ip = (next as i64 + offset as i64) as usize;
                 continue;
             }
             OpCode::Jump16(offset) => {
-                jump(frame, next, offset as i64);
+                ip = (next as i64 + offset as i64) as usize;
                 continue;
             }
             OpCode::Jump32(offset) => {
-                jump(frame, next, offset as i64);
+                ip = (next as i64 + offset as i64) as usize;
                 continue;
             }
             OpCode::JumpIfFalse8(offset) => {
@@ -207,7 +303,7 @@ pub(crate) fn run_fast_ops(stack: &mut Vec<TaggedValue>, stack_sp: &mut usize, f
                 };
                 sp -= 1;
                 if !truthy {
-                    jump(frame, next, offset as i64);
+                    ip = (next as i64 + offset as i64) as usize;
                     continue;
                 }
             }
@@ -220,7 +316,7 @@ pub(crate) fn run_fast_ops(stack: &mut Vec<TaggedValue>, stack_sp: &mut usize, f
                 };
                 sp -= 1;
                 if !truthy {
-                    jump(frame, next, offset as i64);
+                    ip = (next as i64 + offset as i64) as usize;
                     continue;
                 }
             }
@@ -277,10 +373,51 @@ pub(crate) fn run_fast_ops(stack: &mut Vec<TaggedValue>, stack_sp: &mut usize, f
                 sp -= 3;
                 stack[sp - 1] = TaggedValue::from_bool(!in_bounds);
             }
+            OpCode::In | OpCode::InIntegral | OpCode::NotInIntegral => {
+                if sp < stack_start + 2 {
+                    break;
+                }
+                let Some(found) = integral_membership(stack[sp - 2], stack[sp - 1], store) else {
+                    break;
+                };
+                sp -= 1;
+                stack[sp - 1] = TaggedValue::from_bool(found != matches!(op, OpCode::NotInIntegral));
+            }
+            OpCode::ObjectSetIntegral => {
+                // Stack `[value, key, dict]` → `[dict]`.
+                if sp < stack_start + 3 {
+                    break;
+                }
+                let container = stack[sp - 1];
+                if !dict_set_integral(container, stack[sp - 2], stack[sp - 3], store) {
+                    break;
+                }
+                sp -= 2;
+                stack[sp - 1] = container;
+            }
+            OpCode::SetAddIntegral => {
+                // Stack `[set, item]` → `[set]`.
+                if sp < stack_start + 2 {
+                    break;
+                }
+                let (set_tv, item) = (stack[sp - 2], stack[sp - 1]);
+                let Some(key) = immediate_integral_key(item) else {
+                    break;
+                };
+                if !set_tv.is_heap() {
+                    break;
+                }
+                let Some(ValueCell::Set(set)) = store.get_mut(set_tv.get_heap_id()) else {
+                    break;
+                };
+                set.insert_integral_only(key, NULL_VALUE_ID);
+                sp -= 1;
+            }
             _ => break,
         }
-        frame.ip = next;
+        ip = next;
     }
+    *frame_ip = ip;
     *stack_sp = sp;
 }
 

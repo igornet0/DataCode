@@ -854,52 +854,76 @@ impl Vm {
     /// Выполнить один шаг VM - получить следующую инструкцию и выполнить её.
     /// Pub(crate) for vm::run::execute_run.
     pub(crate) fn step(&mut self) -> Result<VMStatus, LangError> {
-        // Simple opcodes on immediates run inline; the general path below picks up at the
-        // first instruction the fast path does not handle.
-        #[cfg(not(feature = "profile"))]
-        crate::vm::fast_ops::run_fast_ops(&mut self.stack, &mut self.stack_sp, &mut self.frames);
         let vm_ptr = self as *mut Vm;
         let _vm_call_ctx = {
             let previous =
                 VM_CALL_CONTEXT.with(|ctx| ctx.replace(Some(VmExecutionContext { vm: vm_ptr })));
             StepVmCallContextGuard { previous }
         };
-        let (instruction, line) = {
-            match executor::step(&mut self.frames)? {
-                Some((inst, ln)) => (inst, ln),
-                None => return Ok(VMStatus::FrameEnded),
+        // Keep executing while instructions just continue in the same frame: callers only act
+        // on a non-`Continue` status or a change of frame depth (call / return / unwind), so
+        // returning to them after every instruction only added per-instruction overhead.
+        let depth = self.frames.len();
+        loop {
+            // Simple opcodes on immediates run inline; the general path below picks up at the
+            // first instruction the fast path does not handle.
+            #[cfg(not(feature = "profile"))]
+            crate::vm::fast_ops::run_fast_ops(
+                &mut self.stack,
+                &mut self.stack_sp,
+                &mut self.frames,
+                &mut self.value_store,
+            );
+            // Fetch inline; `executor::step` only for the rare exhausted-frame case.
+            let fetched = self.frames.last_mut().and_then(|frame| {
+                let ip = frame.ip;
+                let op = frame.function.chunk.code.get(ip)?.clone();
+                frame.ip = ip + 1;
+                Some((op, frame.function.chunk.get_line(ip)))
+            });
+            let (instruction, line) = match fetched {
+                Some(fetched) => fetched,
+                None => match executor::step(&mut self.frames)? {
+                    Some((inst, ln)) => (inst, ln),
+                    None => return Ok(VMStatus::FrameEnded),
+                },
+            };
+            // Each program module has its own global table: use the one of the executing frame.
+            if let Some(f) = self.frames.last() {
+                if f.function.module_id != self.current_module {
+                    self.switch_module_table(f.function.module_id);
+                }
             }
-        };
-        // Each program module has its own global table: use the one of the executing frame.
-        if let Some(f) = self.frames.last() {
-            if f.function.module_id != self.current_module {
-                self.switch_module_table(f.function.module_id);
+            let status = executor::execute_instruction(
+                instruction,
+                line,
+                &mut self.stack,
+                &mut self.frames,
+                &mut self.globals,
+                &mut self.global_names,
+                &self.explicit_global_names,
+                &mut self.functions,
+                &mut self.natives,
+                &mut self.exception_handlers,
+                &mut self.error_type_table,
+                &mut self.explicit_relations,
+                &mut self.explicit_primary_keys,
+                &mut self.loaded_modules,
+                &mut self.abi_natives,
+                &mut self.loaded_native_libraries,
+                &mut self.value_store,
+                &mut self.heavy_store,
+                &mut self.native_args_buffer,
+                &mut self.reusable_native_arg_ids,
+                &mut self.reusable_all_popped,
+                vm_ptr,
+            )?;
+            if !matches!(status, VMStatus::Continue) || self.frames.len() != depth {
+                return Ok(status);
             }
+            // A nested run inside a native may have left another VM as the active context.
+            VM_CALL_CONTEXT.with(|ctx| ctx.set(Some(VmExecutionContext { vm: vm_ptr })));
         }
-        executor::execute_instruction(
-            instruction,
-            line,
-            &mut self.stack,
-            &mut self.frames,
-            &mut self.globals,
-            &mut self.global_names,
-            &self.explicit_global_names,
-            &mut self.functions,
-            &mut self.natives,
-            &mut self.exception_handlers,
-            &mut self.error_type_table,
-            &mut self.explicit_relations,
-            &mut self.explicit_primary_keys,
-            &mut self.loaded_modules,
-            &mut self.abi_natives,
-            &mut self.loaded_native_libraries,
-            &mut self.value_store,
-            &mut self.heavy_store,
-            &mut self.native_args_buffer,
-            &mut self.reusable_native_arg_ids,
-            &mut self.reusable_all_popped,
-            vm_ptr,
-        )
     }
 
     // execute_instruction moved to executor.rs

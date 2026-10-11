@@ -1,0 +1,10 @@
+RED = "red"
+GREEN = "green"
+
+fn test(color: str = RED) -> str {
+    return color
+}
+
+fn __main__() {
+    print(test(GREEN))
+}

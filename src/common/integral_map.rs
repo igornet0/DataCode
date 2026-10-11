@@ -143,6 +143,15 @@ impl IntegralMap {
             .copied()
     }
 
+    /// All occupied `(canonical, slot)` pairs (order unspecified).
+    pub fn iter_entries(&self) -> impl Iterator<Item = (i64, IntegralSlot)> + '_ {
+        self.keys
+            .iter()
+            .zip(self.slots.iter())
+            .filter(|(&k, _)| k != EMPTY_KEY)
+            .map(|(&k, &slot)| (k, slot))
+    }
+
     /// Drop occupied entries. When the table grew large, release backing storage (A* reuse + `.clear()`).
     pub fn clear(&mut self) {
         if self.keys.is_empty() {
@@ -262,13 +271,36 @@ impl IntegralMap {
                 return None;
             }
             if k == canonical {
-                self.keys[idx] = EMPTY_KEY;
+                let removed = self.slots[idx];
+                self.backward_shift_delete(idx);
                 self.len = self.len.saturating_sub(1);
-                return Some(self.slots[idx]);
+                return Some(removed);
             }
             idx = (idx + 1) & (cap - 1);
         }
         None
+    }
+
+    /// Linear-probing delete: pull later entries of the probe run back into the hole so
+    /// lookups that stop at the first [`EMPTY_KEY`] still find them (no tombstones needed).
+    fn backward_shift_delete(&mut self, mut hole: usize) {
+        let mask = self.keys.len() - 1;
+        let mut j = hole;
+        loop {
+            j = (j + 1) & mask;
+            let k = self.keys[j];
+            if k == EMPTY_KEY {
+                break;
+            }
+            let home = hash_slot(k, mask + 1);
+            // Entry at `j` may move to `hole` only if its home slot is not inside (hole, j].
+            if (j.wrapping_sub(home) & mask) >= (j.wrapping_sub(hole) & mask) {
+                self.keys[hole] = k;
+                self.slots[hole] = self.slots[j];
+                hole = j;
+            }
+        }
+        self.keys[hole] = EMPTY_KEY;
     }
 }
 
@@ -283,8 +315,10 @@ fn capacity_for(n: usize) -> usize {
 
 #[inline]
 fn hash_slot(key: i64, cap: usize) -> usize {
+    // Fibonacci hashing: the high bits of the product are well mixed, the low ones are not
+    // (low `k` bits of the product depend only on the low `k` bits of the key).
     let h = (key as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    (h as usize) & (cap - 1)
+    (h >> (64 - cap.trailing_zeros())) as usize
 }
 
 impl IntegralMap {
@@ -344,6 +378,44 @@ mod tests {
         let tv = TaggedValue::from_f64(10.0);
         assert!(tv.is_number());
         assert!(!tv.is_heap());
+    }
+
+    #[test]
+    fn remove_keeps_rest_of_probe_chain_reachable() {
+        // Small table forces long probe chains; remove from the middle and check the rest.
+        let mut m = IntegralMap::with_capacity(4);
+        let keys: Vec<i64> = (0..6).map(|i| i * 1024).collect();
+        for &k in &keys {
+            m.insert_tagged(k, TaggedValue::from_i32(k as i32));
+        }
+        for (n, &k) in keys.iter().enumerate() {
+            assert!(m.remove(k).is_some());
+            for &rest in &keys[n + 1..] {
+                assert!(m.contains_key(rest), "lost {} after removing {}", rest, k);
+            }
+            assert_eq!(m.len(), keys.len() - n - 1);
+        }
+    }
+
+    #[test]
+    fn random_insert_remove_matches_hashset() {
+        let mut m = IntegralMap::new();
+        let mut reference = std::collections::HashSet::new();
+        let mut x: u64 = 12345;
+        for _ in 0..20000 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let key = ((x >> 33) % 512) as i64 * 500;
+            if (x >> 20) & 1 == 0 {
+                m.insert_tagged(key, TaggedValue::null());
+                reference.insert(key);
+            } else {
+                assert_eq!(m.remove(key).is_some(), reference.remove(&key));
+            }
+            assert_eq!(m.len(), reference.len());
+        }
+        for k in 0..512i64 {
+            assert_eq!(m.contains_key(k * 500), reference.contains(&(k * 500)));
+        }
     }
 
     #[test]

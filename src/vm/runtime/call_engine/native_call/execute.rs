@@ -37,7 +37,7 @@ struct RestoreVmContextGuard {
 impl Drop for RestoreVmContextGuard {
     fn drop(&mut self) {
         VM_CALL_CONTEXT.with(|ctx| {
-            *ctx.borrow_mut() = self.previous;
+            ctx.set(self.previous);
         });
     }
 }
@@ -390,8 +390,8 @@ pub(crate) fn execute_native_call(
     }
 
     let prev_ctx = VM_CALL_CONTEXT.with(|ctx| {
-        let prev = *ctx.borrow();
-        *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+        let prev = ctx.get();
+        ctx.set(Some(VmExecutionContext { vm: vm_ptr }));
         prev
     });
     let _ctx_guard = RestoreVmContextGuard { previous: prev_ctx };

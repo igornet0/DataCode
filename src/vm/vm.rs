@@ -175,8 +175,7 @@ where
 {
     VM_CALL_CONTEXT.with(|ctx| {
         let ptr = ctx
-            .borrow()
-            .as_ref()
+            .get()
             .expect("with_current_stores: VM context not set")
             .vm;
         unsafe { (*ptr).with_stores(f) }
@@ -855,6 +854,10 @@ impl Vm {
     /// Выполнить один шаг VM - получить следующую инструкцию и выполнить её.
     /// Pub(crate) for vm::run::execute_run.
     pub(crate) fn step(&mut self) -> Result<VMStatus, LangError> {
+        // Simple opcodes on immediates run inline; the general path below picks up at the
+        // first instruction the fast path does not handle.
+        #[cfg(not(feature = "profile"))]
+        crate::vm::fast_ops::run_fast_ops(&mut self.stack, &mut self.stack_sp, &mut self.frames);
         let vm_ptr = self as *mut Vm;
         let _vm_call_ctx = {
             let previous =

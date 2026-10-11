@@ -7,7 +7,6 @@
 use std::collections::HashMap;
 
 use crate::common::integral_map::{IntegralMap, IntegralSlot};
-use crate::common::numeric::hash_integral_key;
 use crate::common::tagged_value::TaggedValue;
 use crate::common::value_store::ValueId;
 

@@ -1289,7 +1289,7 @@ pub fn native_apply_join(args: &[Value]) -> Value {
         // Восстанавливаем контекст перед каждым вызовом
         if let Some(vm_ptr) = vm_ptr {
             VM_CALL_CONTEXT.with(|ctx| {
-                *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+                ctx.set(Some(VmExecutionContext { vm: vm_ptr }));
             });
         }
 

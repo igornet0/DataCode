@@ -185,10 +185,10 @@ pub fn pop_with_sp(
     value_store: &mut ValueStore,
     heavy_store: &mut HeavyStore,
 ) -> Result<TaggedValue, LangError> {
-    let line = stack_underflow_line(frames);
-
     if let Some(frame) = frames.last() {
         if *sp <= frame.stack_start {
+            // Line lookup only on the error path (pop runs for nearly every opcode).
+            let line = stack_underflow_line(frames);
             let error =
                 ExceptionHandler::runtime_error(frames, "Stack underflow".to_string(), line);
             return match ExceptionHandler::handle_exception(

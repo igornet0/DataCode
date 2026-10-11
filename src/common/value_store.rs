@@ -773,8 +773,17 @@ impl ValueStore {
         if id == NULL_VALUE_ID {
             return false;
         }
-        self.whole_i64_cache.values().any(|&v| v == id)
-            || self.f64_bits_cache.values().any(|&v| v == id)
+        // O(1): look the cell's own number up in the caches instead of scanning every entry
+        // (the caches grow with each distinct number, e.g. ~50k grid ids in A*).
+        let Some(ValueCell::Number(n)) = self.get(id) else {
+            return false;
+        };
+        let n = *n;
+        if n.is_finite() && n.fract() == 0.0 {
+            let canonical = super::numeric::f64_trunc_to_i64_clamped(n);
+            return self.whole_i64_cache.get(&canonical) == Some(&id);
+        }
+        self.f64_bits_cache.get(&n.to_bits()) == Some(&id)
     }
 
     /// Fresh ephemeral copy of a scalar cell (for mutable dict/slot updates).

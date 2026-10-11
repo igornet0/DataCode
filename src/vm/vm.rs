@@ -56,7 +56,7 @@ struct StepVmCallContextGuard {
 impl Drop for StepVmCallContextGuard {
     fn drop(&mut self) {
         VM_CALL_CONTEXT.with(|ctx| {
-            *ctx.borrow_mut() = self.previous;
+            ctx.replace(self.previous);
         });
     }
 }
@@ -857,11 +857,8 @@ impl Vm {
     pub(crate) fn step(&mut self) -> Result<VMStatus, LangError> {
         let vm_ptr = self as *mut Vm;
         let _vm_call_ctx = {
-            let previous = VM_CALL_CONTEXT.with(|ctx| {
-                let p = *ctx.borrow();
-                *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
-                p
-            });
+            let previous =
+                VM_CALL_CONTEXT.with(|ctx| ctx.replace(Some(VmExecutionContext { vm: vm_ptr })));
             StepVmCallContextGuard { previous }
         };
         let (instruction, line) = {

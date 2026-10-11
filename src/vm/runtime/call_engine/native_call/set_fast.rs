@@ -205,12 +205,12 @@ fn integral_key_for_set_op(
 pub(super) fn try_set_integral_mut_early(
     native_index: usize,
     arity: usize,
-    _line: usize,
+    line: usize,
     stack: &mut Vec<TaggedValue>,
     frames: &mut Vec<CallFrame>,
-    _exception_handlers: &mut Vec<crate::vm::exceptions::ExceptionHandler>,
+    exception_handlers: &mut Vec<crate::vm::exceptions::ExceptionHandler>,
     value_store: &mut ValueStore,
-    _heavy_store: &mut crate::vm::heavy_store::HeavyStore,
+    heavy_store: &mut crate::vm::heavy_store::HeavyStore,
 ) -> Option<Result<VMStatus, LangError>> {
     let op = match native_index {
         i if i == builtin::SET_ADD && arity == 2 => SetOp::Add,
@@ -235,8 +235,22 @@ pub(super) fn try_set_integral_mut_early(
     }
 
     let Some((canonical, key_id)) = integral_key_for_set_op(item_tv, value_store) else {
+        // Tuple / string / … members: hash path on the set cell in place. The generic native
+        // path would materialize the whole set to `Value` and write it back — O(len) per call.
         restore_stack_args(stack, set_tv, item_tv);
-        return None;
+        let op = match op {
+            SetOp::Add => SetIntegralMut::Add,
+            SetOp::Discard => SetIntegralMut::Discard,
+        };
+        return Some(set_mut_material_from_stack(
+            op,
+            line,
+            stack,
+            frames,
+            exception_handlers,
+            value_store,
+            heavy_store,
+        ));
     };
 
     match op {

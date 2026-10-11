@@ -447,10 +447,9 @@ pub(crate) fn execute_instruction(
         }
     }
 
-    // Логирование выполнения конструктора
-    let is_constructor = frame.function.name.contains("::new_");
-
-    if is_constructor && crate::common::debug::is_debug_enabled() {
+    // Логирование выполнения конструктора (флаг debug проверяется первым: `contains` по имени
+    // функции на каждой инструкции заметно стоит в горячих циклах).
+    if crate::common::debug::is_debug_enabled() && frame.function.name.contains("::new_") {
         let is_return = matches!(instruction, OpCode::Return);
         debug_println!(
             "[DEBUG executor constructor] '{}' IP {} line {}: {:?} (stack len {})",

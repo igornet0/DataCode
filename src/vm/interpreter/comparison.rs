@@ -372,6 +372,11 @@ pub fn op_in(
         stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let value_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
 
+    if let Some(found) = try_hashed_membership(container_tv, value_tv, value_store, heavy_store) {
+        stack::push(stack, TaggedValue::from_bool(found));
+        return Ok(VMStatus::Continue);
+    }
+
     let container_id = tagged_to_value_id(container_tv, value_store);
     let value_id = tagged_to_value_id(value_tv, value_store);
     let container = load_value(container_id, value_store, heavy_store);
@@ -409,6 +414,60 @@ pub fn op_in(
             Ok(()) => Ok(VMStatus::Continue),
             Err(e) => Err(e),
         },
+    }
+}
+
+/// `x in set` / `x in dict` straight on the store cell: O(1) hash lookup instead of
+/// materializing the whole container through `load_value` (which made `in` O(len)).
+/// Returns `None` when the container is not a set or plain dict (class instances with
+/// `@contains`, arrays, iterables) so the caller takes the generic path.
+fn try_hashed_membership(
+    container_tv: TaggedValue,
+    value_tv: TaggedValue,
+    value_store: &mut ValueStore,
+    heavy_store: &HeavyStore,
+) -> Option<bool> {
+    if !container_tv.is_heap() {
+        return None;
+    }
+    let container_id = container_tv.get_heap_id();
+    let is_plain_dict = match value_store.get(container_id)? {
+        ValueCell::Set(_) => false,
+        ValueCell::Object(map)
+            if map.is_plain()
+                || value_store.is_plain_object(container_id)
+                || !crate::vm::interpreter::element::object_map_needs_visibility_checks(
+                    map,
+                    value_store,
+                    heavy_store,
+                ) =>
+        {
+            true
+        }
+        _ => return None,
+    };
+    if let Some(canonical) = tagged_integral_canonical_if_whole(value_tv) {
+        let hit = match value_store.get(container_id)? {
+            ValueCell::Set(set) => set.contains_integral(canonical),
+            ValueCell::Object(map) => map.contains_integral(canonical),
+            _ => false,
+        };
+        if hit {
+            return Some(true);
+        }
+    }
+    let member_id = tagged_to_value_id(value_tv, value_store);
+    let store: &ValueStore = value_store;
+    match store.get(container_id)? {
+        ValueCell::Set(set) => {
+            let member = load_value(member_id, store, heavy_store);
+            Some(crate::vm::set_ops::set_contains_value(set, &member, store, heavy_store))
+        }
+        ValueCell::Object(map) if is_plain_dict => Some(
+            crate::vm::memory::object_map_lookup_value(map, member_id, store, heavy_store)
+                .is_some(),
+        ),
+        _ => None,
     }
 }
 

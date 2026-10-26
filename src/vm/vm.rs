@@ -56,7 +56,7 @@ struct StepVmCallContextGuard {
 impl Drop for StepVmCallContextGuard {
     fn drop(&mut self) {
         VM_CALL_CONTEXT.with(|ctx| {
-            *ctx.borrow_mut() = self.previous;
+            ctx.replace(self.previous);
         });
     }
 }
@@ -118,14 +118,18 @@ pub struct Vm {
     pub(crate) pending_primary_keys: Vec<(Rc<RefCell<Table>>, String)>,
     /// Runtime module cache: canonical path -> compiled (chunk + functions). Shared with child VMs so modules are singletons.
     module_cache: Rc<RefCell<HashMap<PathBuf, CachedModule>>>,
-    /// Modules already executed once this run: canonical path -> saved namespace. Shared with child VMs so core.config etc. are singletons.
-    executed_modules: Rc<RefCell<HashMap<PathBuf, Value>>>,
-    /// Functions from each executed module. Shared with child VMs for cache hit remapping.
-    executed_module_functions: Rc<RefCell<HashMap<PathBuf, Vec<crate::bytecode::Function>>>>,
-    /// Dependency graph: canonical path -> list of canonical paths of imported modules. Shared with child VMs.
-    module_deps: Rc<RefCell<HashMap<PathBuf, Vec<PathBuf>>>>,
     /// Cache of loaded modules by canonical name (e.g. "core.config") or path. Each module has its own namespace.
     modules: RefCell<HashMap<String, Rc<RefCell<ModuleObject>>>>,
+    /// `.dc` modules of this run (see [`crate::vm::program_modules`]). Entry 0 is the main script.
+    /// The table of `current_module` is checked out into `globals` / `global_names` /
+    /// `explicit_global_names` / `loaded_modules`; the others stay in their entries.
+    pub(crate) program_modules: Vec<crate::vm::program_modules::ProgramModule>,
+    /// Canonical module path -> index in `program_modules` (each module runs once per VM).
+    pub(crate) module_by_path: HashMap<PathBuf, u32>,
+    /// Program module whose global table is checked out (module of the executing frame).
+    pub(crate) current_module: u32,
+    /// Namespace object id (bound by `import m`) -> program module id.
+    pub(crate) namespace_objects: HashMap<ValueId, u32>,
     /// When set (e.g. from run_with_vm_internal_with_args), update_chunk_indices_from_names will always map "argv" to this slot,
     /// so ImportFrom re-patch does not remap LoadGlobal(argv) to load_settings (slot 79) after merge.
     argv_slot_index: Option<usize>,
@@ -149,6 +153,9 @@ pub struct Vm {
     pub(crate) yield_await_resume_value: Option<Value>,
     /// Перед `Explicit`: RHS yield-await — возвращается из `send()`, сам следующий `Yield` идёт в `pending_deferred_yield`.
     pub(crate) pending_send_rhs_return: Option<Value>,
+    /// Set by CallVariadic for a constructor whose arguments it already bound (`*args` packed):
+    /// the closure call must not pack them again. Consumed by the next closure call.
+    pub(crate) prebound_call_args: bool,
     /// CPU/GPU compute runtime (`system.process` device selection and numeric kernels).
     compute: crate::compute::runtime::ComputeRuntime,
 }
@@ -168,8 +175,7 @@ where
 {
     VM_CALL_CONTEXT.with(|ctx| {
         let ptr = ctx
-            .borrow()
-            .as_ref()
+            .get()
             .expect("with_current_stores: VM context not set")
             .vm;
         unsafe { (*ptr).with_stores(f) }
@@ -221,10 +227,11 @@ impl Vm {
             pending_relations: Vec::new(),
             pending_primary_keys: Vec::new(),
             module_cache: Rc::new(RefCell::new(HashMap::new())),
-            executed_modules: Rc::new(RefCell::new(HashMap::new())),
-            executed_module_functions: Rc::new(RefCell::new(HashMap::new())),
-            module_deps: Rc::new(RefCell::new(HashMap::new())),
             modules: RefCell::new(HashMap::new()),
+            program_modules: vec![crate::vm::program_modules::ProgramModule::main()],
+            module_by_path: HashMap::new(),
+            current_module: 0,
+            namespace_objects: HashMap::new(),
             argv_slot_index: None,
             argv_old_indices: None,
             current_argv_value_id: None,
@@ -235,64 +242,7 @@ impl Vm {
             pending_generator_send: None,
             yield_await_resume_value: None,
             pending_send_rhs_return: None,
-            compute: crate::compute::runtime::ComputeRuntime::new(),
-        };
-        vm.register_natives();
-        vm
-    }
-
-    /// Creates a child VM that shares module_cache, executed_modules, executed_module_functions, and module_deps with the parent.
-    /// Ensures module singletons: when engine imports core.config, it gets the same namespace as main (e.g. load_settings mutates shared state).
-    pub(crate) fn new_child(parent: &Self) -> Self {
-        let mut vm = Self {
-            stack: Vec::with_capacity(DEFAULT_STACK_CAPACITY),
-            stack_sp: 0,
-            frames: Vec::with_capacity(DEFAULT_FRAMES_CAPACITY),
-            builtins: Vec::with_capacity(BUILTIN_END),
-            globals: Vec::with_capacity(DEFAULT_GLOBALS_CAPACITY),
-            functions: Vec::new(),
-            natives: Vec::new(),
-            exception_handlers: Vec::new(),
-            error_type_table: Vec::new(),
-            global_names: std::collections::BTreeMap::new(),
-            explicit_global_names: std::collections::BTreeMap::new(),
-            explicit_relations: Vec::new(),
-            explicit_primary_keys: Vec::new(),
-            loaded_modules: std::collections::HashSet::new(),
-            abi_natives: Vec::new(),
-            abi_native_export_names: Vec::new(),
-            abi_export_param_meta: parent.abi_export_param_meta.clone(),
-            loaded_native_libraries: Vec::new(),
-            base_path: None,
-            project_root: parent.project_root.clone(),
-            plugin_call_native: parent.plugin_call_native,
-            plugin_typeof_opaque: parent.plugin_typeof_opaque,
-            plugin_opaque_display: parent.plugin_opaque_display,
-            plugin_dataset_len_native: parent.plugin_dataset_len_native,
-            plugin_opaque_binop: parent.plugin_opaque_binop,
-            plot_context: Some(crate::plot::PlotContext::new()),
-            value_store: ValueStore::new(),
-            heavy_store: HeavyStore::new(),
-            native_args_buffer: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
-            reusable_native_arg_ids: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
-            reusable_all_popped: Vec::with_capacity(DEFAULT_NATIVE_BUF_CAPACITY),
-            pending_relations: Vec::new(),
-            pending_primary_keys: Vec::new(),
-            module_cache: parent.module_cache.clone(),
-            executed_modules: parent.executed_modules.clone(),
-            executed_module_functions: parent.executed_module_functions.clone(),
-            module_deps: parent.module_deps.clone(),
-            modules: RefCell::new(HashMap::new()),
-            argv_slot_index: None,
-            argv_old_indices: None,
-            current_argv_value_id: None,
-            module_registry: RefCell::new(HashMap::new()),
-            is_root: false,
-            permission_policy: parent.permission_policy,
-            operator_registry_snapshot: parent.operator_registry_snapshot.clone(),
-            pending_generator_send: None,
-            yield_await_resume_value: None,
-            pending_send_rhs_return: None,
+            prebound_call_args: false,
             compute: crate::compute::runtime::ComputeRuntime::new(),
         };
         vm.register_natives();
@@ -363,6 +313,10 @@ impl Vm {
 
     /// Get the argv slot index if set.
     pub fn get_argv_slot_index(&self) -> Option<usize> {
+        // The argv slot index belongs to the main script's global table.
+        if self.current_module != 0 {
+            return None;
+        }
         self.argv_slot_index
     }
 
@@ -373,7 +327,41 @@ impl Vm {
 
     /// Get the bytecode indices that mean "argv" for this run.
     pub(crate) fn get_argv_old_indices(&self) -> Option<&[usize]> {
+        if self.current_module != 0 {
+            return None;
+        }
         self.argv_old_indices.as_deref()
+    }
+
+    /// Check out the global table of program module `to` (see `program_modules`). O(1): swaps vectors.
+    pub(crate) fn switch_module_table(&mut self, to: u32) {
+        if to == self.current_module || to as usize >= self.program_modules.len() {
+            return;
+        }
+        let cur = self.current_module as usize;
+        {
+            let t = &mut self.program_modules[cur].table;
+            std::mem::swap(&mut self.globals, &mut t.globals);
+            std::mem::swap(&mut self.global_names, &mut t.global_names);
+            std::mem::swap(&mut self.explicit_global_names, &mut t.explicit_global_names);
+            std::mem::swap(&mut self.loaded_modules, &mut t.loaded_modules);
+        }
+        {
+            let t = &mut self.program_modules[to as usize].table;
+            std::mem::swap(&mut self.globals, &mut t.globals);
+            std::mem::swap(&mut self.global_names, &mut t.global_names);
+            std::mem::swap(&mut self.explicit_global_names, &mut t.explicit_global_names);
+            std::mem::swap(&mut self.loaded_modules, &mut t.loaded_modules);
+        }
+        self.current_module = to;
+    }
+
+    /// Make the checked-out table match the executing frame (after a nested run loop returns).
+    pub(crate) fn sync_module_table(&mut self) {
+        let m = self.frames.last().map(|f| f.function.module_id).unwrap_or(0);
+        if m != self.current_module {
+            self.switch_module_table(m);
+        }
     }
 
     /// Set the canonical argv value id for this run so LoadGlobal(argv_slot) always loads it.
@@ -455,6 +443,17 @@ impl Vm {
             &chunk.explicit_global_names,
         );
     }
+    /// Before running a script chunk: globals it assigns but has not assigned yet read as
+    /// "used before assignment" (see [`crate::vm::global_slot::mark_unassigned_globals`]).
+    pub(crate) fn mark_unassigned_globals(&mut self, chunk: &Chunk) {
+        let functions = self.functions.iter().filter(|f| f.module_id == 0).map(|f| &f.chunk);
+        crate::vm::global_slot::mark_unassigned_globals(
+            &mut self.globals,
+            &self.global_names,
+            std::iter::once(chunk).chain(functions),
+        );
+    }
+
     pub(crate) fn global_names_contains(&self, name: &str) -> bool {
         self.global_names.values().any(|n| n == name)
     }
@@ -529,23 +528,6 @@ impl Vm {
     /// Mutable borrow of the runtime module cache (canonical path -> CachedModule). Used by file_import.
     pub fn get_module_cache_mut(&self) -> std::cell::RefMut<'_, HashMap<PathBuf, CachedModule>> {
         self.module_cache.borrow_mut()
-    }
-
-    /// Mutable borrow of executed modules (canonical path -> module namespace). Used by file_import.
-    pub fn get_executed_modules_mut(&self) -> std::cell::RefMut<'_, HashMap<PathBuf, Value>> {
-        self.executed_modules.borrow_mut()
-    }
-
-    /// Mutable borrow of executed module functions (canonical path -> functions). Used by file_import on cache hit to add and remap.
-    pub fn get_executed_module_functions_mut(
-        &self,
-    ) -> std::cell::RefMut<'_, HashMap<PathBuf, Vec<crate::bytecode::Function>>> {
-        self.executed_module_functions.borrow_mut()
-    }
-
-    /// Mutable borrow of module dependency graph (path -> deps). Used by file_import to register edges after compile.
-    pub fn get_module_deps_mut(&self) -> std::cell::RefMut<'_, HashMap<PathBuf, Vec<PathBuf>>> {
-        self.module_deps.borrow_mut()
     }
 
     /// Immutable borrow of module registry (for executor to read loaded module's submodules).
@@ -625,9 +607,8 @@ impl Vm {
     /// Перед патчем добавляет в VM.global_names все имена из chunk, которых там ещё нет,
     /// чтобы не получать "no match" и не оставлять LoadGlobal/StoreGlobal без ремаппинга.
     pub fn update_chunk_indices(&mut self, chunk: &mut crate::bytecode::Chunk) {
-        const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
         for (idx, name) in &chunk.global_names.clone() {
-            if *idx == UNDEFINED_GLOBAL_SENTINEL || name.as_str() == "argv" {
+            if crate::bytecode::is_undefined_global_sentinel(*idx) || name.as_str() == "argv" {
                 continue;
             }
             if !self.global_names.values().any(|n| n == name) {
@@ -702,7 +683,11 @@ impl Vm {
     ) -> usize {
         let start_index = self.functions.len();
         for f in &mut functions {
-            f.module_name = Some(module_name.clone());
+            // Functions of modules the imported module itself imported keep their own module:
+            // their globals (e.g. `mathx` used inside `wrapper`) live in that module's namespace.
+            if f.module_name.is_none() {
+                f.module_name = Some(module_name.clone());
+            }
         }
         self.functions.extend(functions);
         start_index
@@ -871,43 +856,74 @@ impl Vm {
     pub(crate) fn step(&mut self) -> Result<VMStatus, LangError> {
         let vm_ptr = self as *mut Vm;
         let _vm_call_ctx = {
-            let previous = VM_CALL_CONTEXT.with(|ctx| {
-                let p = *ctx.borrow();
-                *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
-                p
-            });
+            let previous =
+                VM_CALL_CONTEXT.with(|ctx| ctx.replace(Some(VmExecutionContext { vm: vm_ptr })));
             StepVmCallContextGuard { previous }
         };
-        let (instruction, line) = {
-            match executor::step(&mut self.frames)? {
-                Some((inst, ln)) => (inst, ln),
-                None => return Ok(VMStatus::FrameEnded),
+        // Keep executing while instructions just continue in the same frame: callers only act
+        // on a non-`Continue` status or a change of frame depth (call / return / unwind), so
+        // returning to them after every instruction only added per-instruction overhead.
+        let depth = self.frames.len();
+        loop {
+            // Simple opcodes on immediates run inline; the general path below picks up at the
+            // first instruction the fast path does not handle.
+            #[cfg(not(feature = "profile"))]
+            crate::vm::fast_ops::run_fast_ops(
+                &mut self.stack,
+                &mut self.stack_sp,
+                &mut self.frames,
+                &mut self.value_store,
+            );
+            // Fetch inline; `executor::step` only for the rare exhausted-frame case.
+            let fetched = self.frames.last_mut().and_then(|frame| {
+                let ip = frame.ip;
+                let op = frame.function.chunk.code.get(ip)?.clone();
+                frame.ip = ip + 1;
+                Some((op, frame.function.chunk.get_line(ip)))
+            });
+            let (instruction, line) = match fetched {
+                Some(fetched) => fetched,
+                None => match executor::step(&mut self.frames)? {
+                    Some((inst, ln)) => (inst, ln),
+                    None => return Ok(VMStatus::FrameEnded),
+                },
+            };
+            // Each program module has its own global table: use the one of the executing frame.
+            if let Some(f) = self.frames.last() {
+                if f.function.module_id != self.current_module {
+                    self.switch_module_table(f.function.module_id);
+                }
             }
-        };
-        executor::execute_instruction(
-            instruction,
-            line,
-            &mut self.stack,
-            &mut self.frames,
-            &mut self.globals,
-            &mut self.global_names,
-            &self.explicit_global_names,
-            &mut self.functions,
-            &mut self.natives,
-            &mut self.exception_handlers,
-            &mut self.error_type_table,
-            &mut self.explicit_relations,
-            &mut self.explicit_primary_keys,
-            &mut self.loaded_modules,
-            &mut self.abi_natives,
-            &mut self.loaded_native_libraries,
-            &mut self.value_store,
-            &mut self.heavy_store,
-            &mut self.native_args_buffer,
-            &mut self.reusable_native_arg_ids,
-            &mut self.reusable_all_popped,
-            vm_ptr,
-        )
+            let status = executor::execute_instruction(
+                instruction,
+                line,
+                &mut self.stack,
+                &mut self.frames,
+                &mut self.globals,
+                &mut self.global_names,
+                &self.explicit_global_names,
+                &mut self.functions,
+                &mut self.natives,
+                &mut self.exception_handlers,
+                &mut self.error_type_table,
+                &mut self.explicit_relations,
+                &mut self.explicit_primary_keys,
+                &mut self.loaded_modules,
+                &mut self.abi_natives,
+                &mut self.loaded_native_libraries,
+                &mut self.value_store,
+                &mut self.heavy_store,
+                &mut self.native_args_buffer,
+                &mut self.reusable_native_arg_ids,
+                &mut self.reusable_all_popped,
+                vm_ptr,
+            )?;
+            if !matches!(status, VMStatus::Continue) || self.frames.len() != depth {
+                return Ok(status);
+            }
+            // A nested run inside a native may have left another VM as the active context.
+            VM_CALL_CONTEXT.with(|ctx| ctx.set(Some(VmExecutionContext { vm: vm_ptr })));
+        }
     }
 
     // execute_instruction moved to executor.rs
@@ -1083,6 +1099,26 @@ impl Vm {
     /// Use when reusing the same VM for stateless runs (e.g. HTTP request handlers). Non-function
     /// globals (config, tables, etc.) are dropped; global state is not preserved between calls.
     pub fn reset_stores_and_globals_for_stateless(&mut self) {
+        // Module state survives requests (as it did when modules lived in their own VMs): move
+        // every program-module slot out of the store as a Value and back in after the clear.
+        self.switch_module_table(0);
+        let module_snapshots: Vec<Vec<Value>> = (1..self.program_modules.len())
+            .map(|m| {
+                let mut slots = std::mem::take(&mut self.program_modules[m].table.globals);
+                let values = slots
+                    .iter_mut()
+                    .map(|slot| {
+                        let id = slot.resolve_to_value_id(&mut self.value_store);
+                        load_value(id, &self.value_store, &self.heavy_store)
+                    })
+                    .collect();
+                values
+            })
+            .collect();
+        for m in &mut self.program_modules {
+            m.namespace_object = None;
+        }
+        self.namespace_objects.clear();
         let mut function_globals: Vec<(usize, usize)> = Vec::new();
         for (idx, slot) in self.globals.iter_mut().enumerate() {
             let id = slot.resolve_to_value_id(&mut self.value_store);
@@ -1100,6 +1136,19 @@ impl Vm {
                 self.globals[global_idx] =
                     GlobalSlot::Heap(self.value_store.allocate_arena(ValueCell::Function(fn_idx)));
             }
+        }
+        for (m, values) in module_snapshots.into_iter().enumerate() {
+            let slots: Vec<GlobalSlot> = values
+                .into_iter()
+                .map(|v| {
+                    GlobalSlot::Heap(crate::vm::store_convert::store_value(
+                        v,
+                        &mut self.value_store,
+                        &mut self.heavy_store,
+                    ))
+                })
+                .collect();
+            self.program_modules[m + 1].table.globals = slots;
         }
     }
 
@@ -1280,6 +1329,17 @@ impl Vm {
         function_index: usize,
         args: &[Value],
     ) -> Result<Value, LangError> {
+        let result = self.call_function_by_index_inner(function_index, args);
+        // The nested run loop may leave another module's table checked out.
+        self.sync_module_table();
+        result
+    }
+
+    fn call_function_by_index_inner(
+        &mut self,
+        function_index: usize,
+        args: &[Value],
+    ) -> Result<Value, LangError> {
         // Setup function call (creates frame, handles cache, sets up captured variables)
         if let Some(cached_result) = calls::setup_function_call(
             function_index,
@@ -1355,6 +1415,17 @@ impl Vm {
 
     /// Like [`call_function_by_index`], but binds canonical [`ValueId`] arguments (special-method `this`).
     pub fn call_function_by_index_with_arg_ids(
+        &mut self,
+        function_index: usize,
+        arg_ids: &[crate::common::value_store::ValueId],
+    ) -> Result<Value, LangError> {
+        let result = self.call_function_by_index_with_arg_ids_inner(function_index, arg_ids);
+        // The nested run loop may leave another module's table checked out.
+        self.sync_module_table();
+        result
+    }
+
+    fn call_function_by_index_with_arg_ids_inner(
         &mut self,
         function_index: usize,
         arg_ids: &[crate::common::value_store::ValueId],

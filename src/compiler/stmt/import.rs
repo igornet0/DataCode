@@ -23,6 +23,8 @@ pub fn compile_import(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<(), L
                         ctx.scope.globals.insert(module.clone(), global_index);
                         ctx.chunk.global_names.insert(global_index, module.clone());
                     }
+                    // `m.add(x)` / `m.get(k)` call module functions: no set/dict method fast paths.
+                    ctx.known_class_instance_vars.insert(module.clone());
                 }
             }
             ImportStmt::From { module, items } => {

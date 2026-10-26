@@ -5,19 +5,20 @@ use crate::common::value::Value;
 use crate::vm::natives::table::try_parse_date;
 use std::io;
 
-pub fn read_csv_bytes(content: &[u8]) -> Result<Table, io::Error> {
-    read_csv_bytes_inner(content, true)
+pub fn read_csv_bytes(content: &[u8], trim: bool) -> Result<Table, io::Error> {
+    read_csv_bytes_inner(content, true, trim)
 }
 
 /// Read CSV with every row as data (no separate header row). Used before transpose.
-pub fn read_csv_bytes_raw(content: &[u8]) -> Result<Table, io::Error> {
-    read_csv_bytes_inner(content, false)
+pub fn read_csv_bytes_raw(content: &[u8], trim: bool) -> Result<Table, io::Error> {
+    read_csv_bytes_inner(content, false, trim)
 }
 
-fn read_csv_bytes_inner(content: &[u8], has_headers: bool) -> Result<Table, io::Error> {
+fn read_csv_bytes_inner(content: &[u8], has_headers: bool, trim: bool) -> Result<Table, io::Error> {
     use csv::ReaderBuilder;
     let mut reader = ReaderBuilder::new()
         .has_headers(has_headers)
+        .trim(if trim { csv::Trim::All } else { csv::Trim::None })
         .from_reader(content);
     build_csv_table(&mut reader, has_headers)
 }

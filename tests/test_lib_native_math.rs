@@ -84,13 +84,6 @@ fn build_math_native_cdylib() -> Result<(), String> {
     Ok(())
 }
 
-fn datacode_sdk_submodule_present() -> bool {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("datacode_sdk")
-        .join("Cargo.toml")
-        .is_file()
-}
-
 fn skip_without_datacode_sdk() -> bool {
     if datacode_sdk_submodule_present() {
         return false;

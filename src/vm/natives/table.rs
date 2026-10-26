@@ -1139,7 +1139,7 @@ pub fn table_map_impl(table: &Table, column: &str, func: &Value) -> Result<Table
                 let cell = out[idx].clone();
                 if let Some(vm_ptr) = vm_ptr {
                     VM_CALL_CONTEXT.with(|ctx| {
-                        *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+                        ctx.set(Some(VmExecutionContext { vm: vm_ptr }));
                     });
                 }
                 let new_val = match invoke_value_callable(func, &[cell]) {
@@ -1167,7 +1167,7 @@ pub fn table_map_impl(table: &Table, column: &str, func: &Value) -> Result<Table
         let cell = row[col_idx].clone();
         if let Some(vm_ptr) = vm_ptr {
             VM_CALL_CONTEXT.with(|ctx| {
-                *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+                ctx.set(Some(VmExecutionContext { vm: vm_ptr }));
             });
         }
         let new_val = match invoke_value_callable(func, &[cell]) {
@@ -1222,7 +1222,7 @@ pub fn column_map_impl(
         let cell = row[col_idx].clone();
         if let Some(vm_ptr) = vm_ptr {
             VM_CALL_CONTEXT.with(|ctx| {
-                *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+                ctx.set(Some(VmExecutionContext { vm: vm_ptr }));
             });
         }
         let new_val = match invoke_value_callable(func, &[cell]) {
@@ -1299,7 +1299,7 @@ pub fn columns_map_impl(
         })?;
         if let Some(vm_ptr) = vm_ptr {
             VM_CALL_CONTEXT.with(|ctx| {
-                *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+                ctx.set(Some(VmExecutionContext { vm: vm_ptr }));
             });
         }
         let new_val = match invoke_value_callable(func, &args) {
@@ -1486,7 +1486,7 @@ pub fn table_split_column_impl(
         let cell = row[col_idx].clone();
         if let Some(vm_ptr) = vm_ptr {
             VM_CALL_CONTEXT.with(|ctx| {
-                *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+                ctx.set(Some(VmExecutionContext { vm: vm_ptr }));
             });
         }
         let parts_val = match invoke_value_callable(iter_fn, &[cell]) {
@@ -2422,7 +2422,7 @@ fn apply_aggregate_op_on_table(
             for v in &col_values {
                 if let Some(vm_ptr) = vm_ptr {
                     VM_CALL_CONTEXT.with(|ctx| {
-                        *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+                        ctx.set(Some(VmExecutionContext { vm: vm_ptr }));
                     });
                 }
                 let pred_res = invoke_value_callable(where_fn, std::slice::from_ref(v)).map_err(|e| {
@@ -2513,7 +2513,7 @@ fn apply_aggregate_op(
             for v in &col_values {
                 if let Some(vm_ptr) = vm_ptr {
                     VM_CALL_CONTEXT.with(|ctx| {
-                        *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+                        ctx.set(Some(VmExecutionContext { vm: vm_ptr }));
                     });
                 }
                 let pred_res = invoke_value_callable(where_fn, std::slice::from_ref(v)).map_err(|e| {
@@ -2963,7 +2963,7 @@ pub fn table_replace_nulls_impl(
                 let new_value = if callback_mode {
                     if let Some(vm_ptr) = vm_ptr {
                         VM_CALL_CONTEXT.with(|ctx| {
-                            *ctx.borrow_mut() = Some(VmExecutionContext { vm: vm_ptr });
+                            ctx.set(Some(VmExecutionContext { vm: vm_ptr }));
                         });
                     }
                     match invoke_value_callable(replacement, std::slice::from_ref(&row_value)) {

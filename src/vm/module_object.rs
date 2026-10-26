@@ -6,6 +6,18 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
+/// Key marking a `.dc` module namespace object (value: module name). Calls through the namespace
+/// (`m.f(x)`) must not pass the namespace as a receiver; see [`is_module_namespace`].
+pub const MODULE_MARKER_KEY: &str = "__module__";
+
+/// True for the namespace object produced by `import m` of a `.dc` module.
+pub fn is_module_namespace(value: &Value) -> bool {
+    match value {
+        Value::Object(rc) => rc.borrow().str_key_contains(MODULE_MARKER_KEY),
+        _ => false,
+    }
+}
+
 /// Builtin indices 0..BUILTIN_END are in VM.builtins; module globals start at BUILTIN_END.
 pub const BUILTIN_END: usize = crate::vm::globals::BUILTIN_GLOBAL_COUNT;
 

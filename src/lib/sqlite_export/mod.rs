@@ -120,13 +120,14 @@ pub fn export_content_assets(
     Ok(())
 }
 
+/// Экспорт модели в SQLite (`--build_model`, CLI): только таблицы, объявленные `global`.
 pub fn export_to_sqlite(
     vm: &mut Vm,
     output_path: &str,
     debug_timings: bool,
     fk_check: FkCheckMode,
 ) -> Result<SqliteExportOutcome, String> {
-    let tables_map = get_global_tables(vm)?;
+    let tables_map = get_exported_tables(vm)?;
     if tables_map.is_empty() {
         return Err("Нет таблиц для экспорта".to_string());
     }
@@ -497,7 +498,37 @@ pub fn export_single_table(
     Ok(())
 }
 
-/// Получить все таблицы из глобальных переменных VM (globals are GlobalSlot)
+/// Таблицы модели для экспорта: только переменные, явно объявленные `global`.
+///
+/// Локальные таблицы скрипта (промежуточные шаги, `x = source_table(...)`) в
+/// опубликованную базу не попадают — так же, как скаляры в `_datacode_variables`.
+pub fn get_exported_tables(
+    vm: &mut crate::vm::vm::Vm,
+) -> Result<HashMap<String, Rc<RefCell<Table>>>, String> {
+    use crate::vm::store_convert::load_value;
+    let explicit: Vec<(usize, String)> = vm
+        .get_explicit_global_names()
+        .iter()
+        .map(|(idx, name)| (*idx, name.clone()))
+        .collect();
+    let global_count = vm.get_globals().len();
+    let mut tables = HashMap::new();
+    for (index, var_name) in explicit {
+        if index >= global_count {
+            continue;
+        }
+        let value_id = vm.resolve_global_to_value_id(index);
+        if let Value::Table(table) = load_value(value_id, vm.value_store(), vm.heavy_store()) {
+            tables.insert(var_name, table);
+        }
+    }
+    Ok(tables)
+}
+
+/// Все таблицы верхнего уровня скрипта, включая локальные (globals are GlobalSlot).
+///
+/// Нужна для поиска имени таблицы (`save_tables_sqlite([users])`), а не для
+/// выбора таблиц экспорта — для экспорта модели см. [`get_exported_tables`].
 pub fn get_global_tables(
     vm: &mut crate::vm::vm::Vm,
 ) -> Result<HashMap<String, Rc<RefCell<Table>>>, String> {
@@ -545,6 +576,24 @@ orders = table([[1, 100]], ["user_id", "amount"])
             "expected users and orders, got keys={:?}",
             tables.keys().collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn exported_tables_are_explicit_globals_only() {
+        let source = r#"
+global g = table([[1]], ["a"])
+tmp = table([[2]], ["b"])
+global merged = table([], ["a"])
+merged = merge_tables(tables=[merged, g])
+"#;
+        let (_v, mut vm) = crate::run_with_vm(source).expect("run_with_vm should succeed");
+        let tables = super::get_exported_tables(&mut vm).expect("get_exported_tables");
+        let mut names: Vec<_> = tables.keys().cloned().collect();
+        names.sort();
+        assert_eq!(names, vec!["g".to_string(), "merged".to_string()]);
+        assert_eq!(tables["merged"].borrow().len(), 1, "reassigned global keeps its latest value");
+        // Name lookup for save_tables_sqlite still sees locals.
+        assert!(get_global_tables(&mut vm).unwrap().contains_key("tmp"));
     }
 
     #[test]

@@ -9,6 +9,7 @@ pub mod config;
 pub mod natives;
 pub mod output_capture;
 pub mod router;
+pub mod session_ve;
 pub mod smb;
 pub mod ws_natives;
 
@@ -37,6 +38,13 @@ pub fn set_use_ve(use_ve: bool) {
 
 pub fn get_use_ve() -> bool {
     USE_VE_FLAG.with(|f| *f.borrow())
+}
+
+/// True while client code runs inside a WebSocket session (a DCP package or an
+/// `@ws_route` handler). Such code is sandboxed: no server paths, no host
+/// details, no writes to the server disk.
+pub fn client_sandbox_active() -> bool {
+    get_use_ve() || crate::dcp::dcp_session_active()
 }
 
 pub fn set_native_error(msg: String) {
@@ -117,6 +125,8 @@ async fn handle_client(stream: TcpStream, build_model: bool) {
     let smb_manager = Arc::new(Mutex::new(SmbManager::new()));
 
     crate::vm::file_ops::set_smb_manager(smb_manager.clone());
+    // Load ws_app.dc routes into this client thread before sandboxing it.
+    app::ensure_app_loaded_in_thread();
     set_use_ve(true);
     clear_dcp_session();
 
@@ -171,6 +181,7 @@ fn cleanup_client(smb_manager: &Arc<Mutex<SmbManager>>) {
     drop(manager);
 
     crate::vm::file_ops::clear_smb_manager();
+    session_ve::cleanup_ve_dir();
     clear_dcp_session();
     crate::web::cleanup_all();
     set_use_ve(false);

@@ -23,6 +23,19 @@ Each client connection runs in a sandbox (`getcwd()` empty, paths relative to DC
 
 Local `save()` / file writes are **blocked** in DCP WebSocket sessions.
 
+**Session sandbox** (applies to every DCP package and `@ws_route` handler):
+
+| Area | Behavior in a session |
+|------|-----------------------|
+| Paths | Every path a built-in returns, prints or reports in an error is relative to the session root (`./data/a.csv`). `path(...).exists`, `.is_file`, `.is_dir` check the package VFS, never the server disk |
+| Writes | `save()`, `save_csv`, `save_sqlite`, `save_tables_sqlite`, `response.save*`, archive `extract`, `system.fs.write`, file-based `sqlite:` connections are denied under **any** `execute_policy` (protects the server disk). `sqlite::memory:` is allowed. With `allow_write` they go to the session folder (below) |
+| Host details | `system.env.get_home_dir()` / `get_temp_dir()` return `"./"`; `get_username()`, `get_hostname()`, `system.env.get(...)`, `system.net.get_ip()` return `null`; `system.net.get_interfaces()` returns `[]` |
+| Permissions | `execute_policy` defaults to **`restricted`**: `system.fs.read`, `system.process.exec`, `system.env.set_env`, `web.http`, `web.browser` are denied |
+
+**Session folder** (`configure({"allow_write": true, "write_quota_mb": 50})`): each client connection gets a private folder, created on the first write only and removed when the client disconnects. Paths must be relative (`out/report.csv`); absolute paths and `..` are rejected. Written files can be read back, listed and probed with `.exists`, and every returned path is `./…`. The folder is limited to `write_quota_mb` (default 50); a write that exceeds it fails and is removed.
+
+`configure({"execute_policy": "allow_all"})` in `ws_app.dc` is an explicit developer decision that re-enables `fs.read`, `process.exec`, `env.set_env` and network access for client code. Writes and host details stay sandboxed.
+
 ### Application script (`ws_app.dc`)
 
 Optional setup script. Runs once at startup before accepting connections.
@@ -42,7 +55,7 @@ fn ping(req) {
 
 | Function | Description |
 |----------|-------------|
-| `websocket.configure({...})` | `execute_policy`: `"allow_all"` (default) or `"restricted"` |
+| `websocket.configure({...})` | `execute_policy`: `"restricted"` (default) or `"allow_all"`; `allow_write`: `false` (default) / `true` — session folder; `write_quota_mb` (default 50). Applies to every client connection |
 | `websocket.disable_builtin("type")` | Disable built-in JSON handler (e.g. `smb_connect`) |
 | `websocket.enable_builtin("type")` | Re-enable |
 
@@ -77,6 +90,13 @@ dcp create -o job.dcp --code script.dc --assets-dir ./data
 ```
 
 With `--build_model`, successful runs may include `sqlite_db` (base64-encoded SQLite file).
+
+`sqlite_db` contains only tables declared `global`. Script-local variables (intermediate steps, `src = source_table(...)`) are not exported, matching scalars in `_datacode_variables`. Reassigning a global (`orders = orders[...]`) exports its latest value.
+
+```dc
+global orders = table([[1, 10]], ["id", "amount"])   # in sqlite_db
+tmp = orders["amount" > 5]                            # not exported
+```
 
 ### FK check mode (`__config__`)
 
@@ -181,6 +201,8 @@ global renamed = source_table("orders", {"id": null, "value": "amount"})
 - `columns` omitted or `null` — all columns
 - Array of strings — select columns in array order; **error** if a name is missing
 - Object — select only listed keys; string value renames, `null` keeps the name; **error** if a key is missing
+
+**Types of Arrow `Utf8` columns.** The type is inferred for the whole column. A column becomes numeric (or a date) only if **every** non-empty value is a canonical number (or date); empty cells in such a column become `null`. Otherwise the whole column stays text. Numbers with a leading zero (`007`, `001.20`), an explicit `+` (`+79161234567`) or integers beyond 2^53 are not canonical, so codes, phone numbers, ZIP codes and long ids keep every character in the VM and in the SQLite export (`TEXT` column). Send Arrow `Int64` / `Float64` columns to get numbers unconditionally.
 
 **Content-addressed assets:** table cells may store UTF-8 refs `asset://{sha256}`. Bytes live in ASSET sections named `assets/{sha256}` (deduped by hash). Path-based VFS assets (for `read(path(...))`) remain separate. With `--build_model`, content assets are written to SQLite table `__assets` (`id`, `kind`, `mime_type`, `filename`, `size`, `data`); business columns keep the `asset://` text.
 

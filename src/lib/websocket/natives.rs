@@ -31,7 +31,8 @@ fn arg_string(args: &[Value], fn_name: &str) -> Option<String> {
     }
 }
 
-/// `websocket.configure({ "execute_policy": "restricted" | "allow_all" })`
+/// `websocket.configure({ "execute_policy": "restricted" | "allow_all",
+///                       "allow_write": bool, "write_quota_mb": number })`
 pub fn native_websocket_configure(args: &[Value]) -> Value {
     let Some(obj_rc) = arg_object_first(args, "configure") else {
         return Value::Null;
@@ -57,6 +58,28 @@ pub fn native_websocket_configure(args: &[Value]) -> Value {
                 }
             };
             config.execute_permission_policy = policy;
+        }
+        if let Some(value) = obj.str_key_get("allow_write") {
+            match value {
+                Value::Bool(b) => config.allow_write = *b,
+                _ => {
+                    set_native_error("TypeError: allow_write must be a bool".to_string());
+                    return;
+                }
+            }
+        }
+        if let Some(value) = obj.str_key_get("write_quota_mb") {
+            match value {
+                Value::Number(n) if n.is_finite() && *n >= 0.0 => {
+                    config.write_quota_bytes = (*n * 1024.0 * 1024.0) as u64;
+                }
+                _ => {
+                    set_native_error(
+                        "TypeError: write_quota_mb must be a non-negative number".to_string(),
+                    );
+                    return;
+                }
+            }
         }
     });
     Value::Null

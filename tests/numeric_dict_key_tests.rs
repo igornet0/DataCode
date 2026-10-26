@@ -174,3 +174,21 @@ path_ok
 "#;
     assert_number(source, 1.0);
 }
+
+#[test]
+fn dict_keys_and_values_called_on_variable() {
+    // `d.keys()` / `d.values()` у словаря в переменной (раньше: Can only call functions).
+    let source = r#"
+let d = {"a": 1, "b": 2}
+let n = 0
+for k in d.keys() {
+    n = n + 1
+}
+let s = 0
+for v in d.values() {
+    s = s + v
+}
+n * 10 + s + len(d.keys()) * 100
+"#;
+    assert_number(source, 223.0);
+}

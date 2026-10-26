@@ -195,6 +195,16 @@ pub fn materialize_tagged_if_array_view(
         return tv;
     }
     let id = tv.get_heap_id();
+    // Only views are materialized: check the cell kind first instead of converting every
+    // array/object stored to a local (that conversion copies the whole value).
+    let is_view = match store.get(id) {
+        Some(ValueCell::ArrayView { .. }) => true,
+        Some(ValueCell::Heavy(idx)) => matches!(heap.get(*idx), Some(Value::ArrayView(_))),
+        _ => false,
+    };
+    if !is_view {
+        return tv;
+    }
     let v = crate::vm::store_convert::load_value(id, store, heap);
     match v {
         Value::ArrayView(av) => {

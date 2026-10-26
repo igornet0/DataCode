@@ -1,7 +1,7 @@
 // Exception opcode handlers: BeginTry, EndTry, Catch, EndCatch, Throw, PopExceptionHandler.
 // Logic preserved 1:1 from executor.rs — no semantic changes.
 
-use crate::common::error::LangError;
+use crate::common::error::{ErrorType, LangError};
 use crate::common::value_store::ValueStore;
 use crate::vm::exceptions::ExceptionHandler;
 use crate::vm::frame::CallFrame;
@@ -94,8 +94,10 @@ pub fn op_throw(
     let error_value_id =
         pop_to_value_id(stack, frames, exception_handlers, value_store, heavy_store)?;
     let error_value = load_value(error_value_id, value_store, heavy_store);
-    let error_message = error_value.to_string();
-    let error = LangError::runtime_error(error_message, line);
+    let error = match thrown_error_object(&error_value) {
+        Some((error_type, message)) => LangError::runtime_error_with_type(message, line, error_type),
+        None => LangError::runtime_error(error_value.to_string(), line),
+    };
 
     match ExceptionHandler::handle_exception(
         stack,
@@ -109,6 +111,24 @@ pub fn op_throw(
         Err(e) => return Err(e),
     }
     Ok(VMStatus::Continue)
+}
+
+/// Type and message of an error object from an exception constructor (`ValueError("...")`).
+fn thrown_error_object(value: &crate::common::value::Value) -> Option<(ErrorType, String)> {
+    use crate::vm::natives::basic::{ERROR_MESSAGE_KEY, ERROR_TYPE_KEY};
+    let crate::common::value::Value::Object(rc) = value else {
+        return None;
+    };
+    let obj = rc.borrow();
+    let crate::common::value::Value::String(type_name) = obj.str_key_get(ERROR_TYPE_KEY)? else {
+        return None;
+    };
+    let error_type = ErrorType::from_name(type_name)?;
+    let message = obj
+        .str_key_get(ERROR_MESSAGE_KEY)
+        .map(|m| m.to_string())
+        .unwrap_or_default();
+    Some((error_type, message))
 }
 
 pub fn op_pop_exception_handler(

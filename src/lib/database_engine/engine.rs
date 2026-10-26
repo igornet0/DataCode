@@ -97,7 +97,12 @@ impl DatabaseEngine {
     ) -> Result<Self, String> {
         let lower = url.to_ascii_lowercase();
         let (backend, dialect) = if lower.starts_with("sqlite:") {
-            let path = parse_sqlite_path(&url)?;
+            let mut path = parse_sqlite_path(&url)?;
+            // Opening a file database creates it on disk: in a session only
+            // in-memory, or a file inside the session folder when writes are enabled.
+            if path.as_os_str() != ":memory:" && crate::websocket::client_sandbox_active() {
+                path = crate::file_io::resolve_write_path(&path)?;
+            }
             let conn =
                 Connection::open(&path).map_err(|e| format!("SQLite connection failed: {}", e))?;
             conn.execute("PRAGMA foreign_keys = ON", [])

@@ -9,6 +9,7 @@ User-defined functions. Folder: [`examples/en/04-functions/`](../../../examples/
 | 03 | `nested_functions.dc` | nested fn | [scoping and closures](../2-language/scoping-and-closures.md) |
 | 04 | `recursion.dc` | recursive calls | [06-functions](../0-syntax/06-functions.md) |
 | 05 | `stream_functions.dc` | `stream fn` | [08-stream-functions](../0-syntax/08-stream-functions.md) |
+| 06 | `variadic_arguments.dc` | `*args`, `**kwargs`, unpacking | [06-functions](../0-syntax/06-functions.md#variable-number-of-arguments-args-and-kwargs) |
 
 ```bash
 datacode examples/en/04-functions/simple_functions.dc

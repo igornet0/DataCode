@@ -170,6 +170,19 @@ impl Compiler {
 
         self.pass_sorted_top_level_function_slots(statements);
 
+        // `import m` names are module namespaces everywhere in the file, including function bodies
+        // compiled before the import statement: `m.add(x)` / `m.get(k)` are module calls, not
+        // set/dict method fast paths.
+        for stmt in statements {
+            if let Stmt::Import {
+                import_stmt: crate::parser::ast::ImportStmt::Modules(modules),
+                ..
+            } = stmt
+            {
+                self.known_class_instance_vars.extend(modules.iter().cloned());
+            }
+        }
+
         // Первый проход: объявляем все функции (forward declaration), включая вложенные
         self.collect_all_functions(statements)?;
 
@@ -208,6 +221,7 @@ impl Compiler {
         // Очищаем метки после финализации главного скрипта
         self.labels.clear();
 
+        crate::bytecode::fuse_superinstructions(&mut self.chunk);
         Ok(self.chunk.clone())
     }
 
@@ -367,10 +381,11 @@ impl Compiler {
                         // (для значения по умолчанию это обычно не нужно, но для argv[i] нужно)
                         if let Some(param_type) = main_function.param_types.get(i) {
                             if let Some(type_parts) = param_type {
-                                let has_num = TypePart::slice_walk_type_names(type_parts, &mut |s| {
-                                    s == "int" || s == "float" || s == "num" || s == "number"
-                                });
-                                if has_num {
+                                // Значения argv уже приведены к типам в run_api (coerce_main_arg); int() оставлен
+                                // только для чистого `int`, чтобы float/num не усекались.
+                                let has_int = TypePart::slice_walk_type_names(type_parts, &mut |s| s == "int");
+                                let has_other = TypePart::slice_walk_type_names(type_parts, &mut |s| s != "int");
+                                if has_int && !has_other {
                                     if let Some(&int_global_index) = self.scope.globals.get("int") {
                                         self.chunk.write_with_line(
                                             OpCode::LoadGlobal(int_global_index),
@@ -572,7 +587,11 @@ impl Compiler {
         self.chunk.global_names.insert(idx, name.to_string());
     }
 
-    pub fn get_functions(self) -> Vec<Function> {
+    pub fn get_functions(mut self) -> Vec<Function> {
+        // Function bodies are final (jumps laid out) once compilation is done.
+        for function in &mut self.functions {
+            crate::bytecode::fuse_superinstructions(&mut function.chunk);
+        }
         self.functions
     }
 
@@ -653,6 +672,8 @@ impl Compiler {
                                 self.scope.globals.insert(module.clone(), global_index);
                                 self.chunk.global_names.insert(global_index, module.clone());
                             }
+                            // `m.add(x)` / `m.get(k)` call module functions: no set/dict method fast paths.
+                            self.known_class_instance_vars.insert(module.clone());
                         }
                     }
                     ImportStmt::From { module, items } => {

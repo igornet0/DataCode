@@ -4,6 +4,45 @@
 // Strings are interned in StringPool (per ValueStore) to cut heap fragmentation and duplicate allocations.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::{BuildHasherDefault, Hasher};
+
+/// Hasher for integer ids / canonical keys in the store's side tables. These are looked up on
+/// hot opcode paths; SipHash (the std default) dominated those lookups. Keys are not
+/// attacker-controlled hash-flooding targets here (ids are allocated by the VM).
+#[derive(Default, Clone, Copy)]
+pub struct IdHasher(u64);
+
+impl Hasher for IdHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.0 = (self.0.rotate_left(8) ^ b as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        }
+    }
+    #[inline]
+    fn write_u32(&mut self, n: u32) {
+        self.write_u64(n as u64);
+    }
+    #[inline]
+    fn write_u64(&mut self, n: u64) {
+        // Fibonacci mix; hashbrown uses the top 7 bits for control bytes and low bits for the
+        // bucket, so fold the high half down as well.
+        let h = (self.0 ^ n).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        self.0 = h ^ (h >> 32);
+    }
+    #[inline]
+    fn write_i64(&mut self, n: i64) {
+        self.write_u64(n as u64);
+    }
+}
+
+pub type IdBuildHasher = BuildHasherDefault<IdHasher>;
+type IdSet<K> = HashSet<K, IdBuildHasher>;
+type IdMap<K, V> = HashMap<K, V, IdBuildHasher>;
 use std::path::PathBuf;
 
 use super::numeric::{FloatValue, IntValue};
@@ -17,6 +56,10 @@ pub type StringId = u32;
 
 /// Reserved id for null (allocated once at VM creation).
 pub const NULL_VALUE_ID: ValueId = 0;
+
+/// Reserved null cell marking a global that the program assigns but has not assigned yet. Reads
+/// see null; `LoadGlobal` reports the name as undefined (like Python's NameError).
+pub const UNSET_GLOBAL_ID: ValueId = 1;
 
 /// Chunk size for the cell arena; each chunk is one allocation. Enables growth without realloc of a single huge Vec.
 const CHUNK_SIZE: usize = 65536;
@@ -275,21 +318,21 @@ pub struct ValueStore {
     /// Nesting depth of user-function calls using [`Self::call_arena`].
     ephemeral_depth: u32,
     /// Canonical whole numbers → one [`ValueCell`] per `i64` (avoids millions of duplicate `Number` allocs).
-    whole_i64_cache: HashMap<i64, ValueId>,
+    whole_i64_cache: IdMap<i64, ValueId>,
     /// Non-whole `f64` bit patterns (`inf`, `nan`, …) → one cell each (A* `float(inf)` defaults).
-    f64_bits_cache: HashMap<u64, ValueId>,
+    f64_bits_cache: IdMap<u64, ValueId>,
     /// Recycled 2-slot heap items (`Array` len 2 / compacted tuple pairs) for `heapq`.
     heap_pair_free_list: Vec<ValueId>,
     /// Single reused 2-slot cell for `heappop` → tuple-unpack (`current_f, current = …`) hot path.
     scratch_heap_pair: Option<ValueId>,
     /// Heap arrays using flat `[f,n,f,n,…]` storage (A* open_heap); not inferred from slot shape alone.
-    flat_heap_ids: HashSet<ValueId>,
+    flat_heap_ids: IdSet<ValueId>,
     /// 2-slot cells allocated via [`Self::alloc_heap_pair`] (safe to recycle on locals/stack sweep).
-    heapq_owned_pair_ids: HashSet<ValueId>,
+    heapq_owned_pair_ids: IdSet<ValueId>,
     /// Plain `{}` / dict literals — skip class visibility scans without loading the cell.
-    plain_object_ids: HashSet<ValueId>,
+    plain_object_ids: IdSet<ValueId>,
     /// Plain `set()` literals — same for set membership / mutation fast paths.
-    plain_set_ids: HashSet<ValueId>,
+    plain_set_ids: IdSet<ValueId>,
 }
 
 impl Default for ValueStore {
@@ -302,20 +345,21 @@ impl ValueStore {
     pub fn new() -> Self {
         let mut first = Vec::with_capacity(CHUNK_SIZE);
         first.push(ValueCell::Null);
+        first.push(ValueCell::Null); // UNSET_GLOBAL_ID
         ValueStore {
             chunks: vec![first],
             string_pool: StringPool::new(),
             arena: HeapArena::new(),
             call_arena: HeapArena::new(),
             ephemeral_depth: 0,
-            whole_i64_cache: HashMap::new(),
-            f64_bits_cache: HashMap::new(),
+            whole_i64_cache: IdMap::default(),
+            f64_bits_cache: IdMap::default(),
             heap_pair_free_list: Vec::new(),
             scratch_heap_pair: None,
-            flat_heap_ids: HashSet::new(),
-            heapq_owned_pair_ids: HashSet::new(),
-            plain_object_ids: HashSet::new(),
-            plain_set_ids: HashSet::new(),
+            flat_heap_ids: IdSet::default(),
+            heapq_owned_pair_ids: IdSet::default(),
+            plain_object_ids: IdSet::default(),
+            plain_set_ids: IdSet::default(),
         }
     }
 
@@ -654,12 +698,13 @@ impl ValueStore {
         self.len() == 0
     }
 
-    /// Clear all cells and reset to initial state (single Null at index 0).
+    /// Clear all cells and reset to initial state (reserved Null cells at 0 and 1).
     /// Drops main chunks and arena; also clears the string pool.
     /// Used when reusing VM for stateless runs (e.g. HTTP requests).
     pub fn clear(&mut self) {
         let mut first = Vec::with_capacity(CHUNK_SIZE);
         first.push(ValueCell::Null);
+        first.push(ValueCell::Null); // UNSET_GLOBAL_ID
         self.chunks = vec![first];
         self.string_pool.clear();
         self.arena.clear();
@@ -767,8 +812,17 @@ impl ValueStore {
         if id == NULL_VALUE_ID {
             return false;
         }
-        self.whole_i64_cache.values().any(|&v| v == id)
-            || self.f64_bits_cache.values().any(|&v| v == id)
+        // O(1): look the cell's own number up in the caches instead of scanning every entry
+        // (the caches grow with each distinct number, e.g. ~50k grid ids in A*).
+        let Some(ValueCell::Number(n)) = self.get(id) else {
+            return false;
+        };
+        let n = *n;
+        if n.is_finite() && n.fract() == 0.0 {
+            let canonical = super::numeric::f64_trunc_to_i64_clamped(n);
+            return self.whole_i64_cache.get(&canonical) == Some(&id);
+        }
+        self.f64_bits_cache.get(&n.to_bits()) == Some(&id)
     }
 
     /// Fresh ephemeral copy of a scalar cell (for mutable dict/slot updates).

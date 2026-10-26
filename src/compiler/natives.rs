@@ -270,6 +270,7 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "sheet_name".to_string(),
             "header".to_string(),
             "headerT".to_string(),
+            "trim".to_string(),
         ]),
         "read" => Some(vec![
             "path".to_string(),
@@ -277,6 +278,7 @@ pub fn get_native_function_params(function_name: &str) -> Option<Vec<String>> {
             "sheet_name".to_string(),
             "header".to_string(),
             "headerT".to_string(),
+            "trim".to_string(),
         ]),
         "read_file_bin" => Some(vec!["path".to_string()]),
         "save" => Some(vec!["data".to_string(), "filename".to_string()]),

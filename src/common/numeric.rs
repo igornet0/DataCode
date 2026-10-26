@@ -112,7 +112,7 @@ impl FloatValue {
             FloatValue::NegInfinity => "-inf".into(),
             FloatValue::NaN => "nan".into(),
             FloatValue::Finite(n) => {
-                if n.fract() == 0.0 && n.abs() <= (i64::MAX as f64) && n.is_finite() {
+                if f64_is_whole(n) && n.abs() <= (i64::MAX as f64) && n.is_finite() {
                     format!("{}", n as i64)
                 } else {
                     format!("{}", n)
@@ -125,13 +125,13 @@ impl FloatValue {
 /// Whole finite floats (`42.0`) classify as `int` for `typeof`; fractional or non-finite as `float`.
 #[inline]
 pub fn float_is_int_surface(f: FloatValue) -> bool {
-    f.as_f64().is_some_and(|n| n.is_finite() && n.fract() == 0.0)
+    f.as_f64().is_some_and(|n| n.is_finite() && f64_is_whole(n))
 }
 
 /// Legacy `number` literals: whole values classify as `int` for `typeof`.
 #[inline]
 pub fn number_is_int_surface(n: f64) -> bool {
-    n.fract() == 0.0
+    f64_is_whole(n)
 }
 
 impl IntValue {
@@ -173,7 +173,7 @@ impl IntValue {
 pub fn value_classifies_as_float_surface(fv: FloatValue) -> bool {
     !matches!(
         fv,
-        FloatValue::Finite(n) if n.fract() == 0.0 && n.is_finite()
+        FloatValue::Finite(n) if f64_is_whole(n) && n.is_finite()
     ) || fv.is_nan()
         || fv.is_infinity()
 }
@@ -209,7 +209,7 @@ pub fn hash_float_value(fv: FloatValue) -> u64 {
         FloatValue::NegInfinity => hash_finish(0x20, 2),
         FloatValue::NaN => hash_finish(0x22, 0),
         FloatValue::Finite(n) => {
-            if n.is_finite() && n.fract() == 0.0 {
+            if n.is_finite() && f64_is_whole(n) {
                 hash_integral_key(f64_trunc_to_i64_clamped(n))
             } else {
                 hash_finish(0x21, n.to_bits())
@@ -298,13 +298,21 @@ pub(crate) fn numeric_sort_class(a: SortAtom, b: SortAtom) -> Ordering {
 /// Truncate `f64` toward zero and clamp to `i64` (for `int()` / string parse).
 #[inline]
 pub fn f64_trunc_to_i64_clamped(n: f64) -> i64 {
-    let t = n.trunc();
-    if t < i64::MIN as f64 {
-        i64::MIN
-    } else if t > i64::MAX as f64 {
-        i64::MAX
+    // `as` truncates toward zero and saturates (NaN → 0), which is exactly trunc + clamp,
+    // without the libm `trunc` call `f64::trunc` compiles to on baseline x86-64.
+    n as i64
+}
+
+/// `n.fract() == 0.0` (finite whole number) without calling libm `trunc`: on baseline x86-64
+/// (no SSE4.1) `f64::fract` is a function call, and this check runs for every arithmetic
+/// result and integral dict/set key.
+#[inline]
+pub fn f64_is_whole(n: f64) -> bool {
+    // 2^53: from here on every finite double is an integer.
+    if n.abs() < 9_007_199_254_740_992.0 {
+        (n as i64) as f64 == n
     } else {
-        t as i64
+        n.is_finite()
     }
 }
 
@@ -350,7 +358,7 @@ pub fn tagged_integral_canonical_if_whole(tv: TaggedValue) -> Option<i64> {
     // some whole `f64` bit patterns also satisfy `is_int()`, and `get_i32()` would read the wrong canonical.
     if tv.is_number() {
         let n = tv.get_f64();
-        if n.is_finite() && n.fract() == 0.0 {
+        if n.is_finite() && f64_is_whole(n) {
             return Some(f64_trunc_to_i64_clamped(n));
         }
         return None;
@@ -368,14 +376,14 @@ pub fn integer_cell_as_i64_if_whole(cell: &ValueCell) -> Option<i64> {
         ValueCell::Int(IntValue::Finite(n)) => Some(*n),
         ValueCell::Int(IntValue::PosInfinity | IntValue::NegInfinity) => None,
         ValueCell::Number(x) => {
-            if !x.is_finite() || x.fract() != 0.0 {
+            if !x.is_finite() || !f64_is_whole(*x) {
                 None
             } else {
                 Some(f64_trunc_to_i64_clamped(*x))
             }
         }
         ValueCell::Float(FloatValue::Finite(x)) => {
-            if !x.is_finite() || x.fract() != 0.0 {
+            if !x.is_finite() || !f64_is_whole(*x) {
                 None
             } else {
                 Some(f64_trunc_to_i64_clamped(*x))
@@ -392,13 +400,13 @@ pub fn integer_value_as_i64_if_whole(v: &Value) -> Option<i64> {
         Value::Int(IntValue::Finite(n)) => Some(*n),
         Value::Int(IntValue::PosInfinity | IntValue::NegInfinity) => None,
         Value::Number(x) => {
-            if !x.is_finite() || x.fract() != 0.0 {
+            if !x.is_finite() || !f64_is_whole(*x) {
                 return None;
             }
             Some(f64_trunc_to_i64_clamped(*x))
         }
         Value::Float(FloatValue::Finite(x)) => {
-            if !x.is_finite() || x.fract() != 0.0 {
+            if !x.is_finite() || !f64_is_whole(*x) {
                 return None;
             }
             Some(f64_trunc_to_i64_clamped(*x))

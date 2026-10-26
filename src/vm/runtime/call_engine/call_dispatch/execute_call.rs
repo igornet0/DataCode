@@ -43,6 +43,29 @@ pub(crate) fn execute_call(
     vm_ptr: *mut crate::vm::vm::Vm,
 ) -> Result<VMStatus, LangError> {
     let callee_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+    // `d.keys()` / `d.values()`: the property already is the view; calling it with only the
+    // receiver returns that view.
+    if arity == 1
+        && callee_tv.is_heap()
+        && matches!(
+            value_store.get(callee_tv.get_heap_id()),
+            Some(crate::common::value_store::ValueCell::ObjectFieldList { .. })
+        )
+    {
+        stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+        stack::push(stack, callee_tv);
+        return Ok(VMStatus::Continue);
+    }
+    let arity = crate::vm::program_modules::drop_namespace_receiver_for_class(
+        arity,
+        callee_tv,
+        stack,
+        frames,
+        exception_handlers,
+        value_store,
+        heavy_store,
+        vm_ptr,
+    )?;
     let resolved = resolve_call_callee(
         arity,
         line,

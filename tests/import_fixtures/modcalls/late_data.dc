@@ -1,0 +1,16 @@
+# Данные модуля объявлены ниже функций, которые их используют.
+fn add(item) {
+    push(ITEMS, item)
+}
+
+fn count() {
+    return len(ITEMS)
+}
+
+fn total() {
+    return LIMIT * FACTOR
+}
+
+ITEMS = ["start"]
+LIMIT = 10
+FACTOR = 3

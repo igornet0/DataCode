@@ -1,0 +1,16 @@
+# Модуль, который сам импортирует mathx через `import` и вызывает его функции.
+import mathx
+
+fn wrap_inc(x) {
+    return mathx.inc(x) * 100
+}
+
+fn wrap_zero() {
+    return mathx.zero()
+}
+
+fn wrap_mul(a, b) {
+    return mathx.mul(a, b)
+}
+
+TOP = mathx.inc(10)

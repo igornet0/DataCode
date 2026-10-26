@@ -1,0 +1,6 @@
+# Второй уровень: from-импорт данных и функция, которая их читает.
+from names import NAMES, SUFFIXES
+
+fn names_count() {
+    return len(NAMES) * 10 + len(SUFFIXES)
+}

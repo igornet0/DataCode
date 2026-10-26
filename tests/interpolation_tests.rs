@@ -183,4 +183,110 @@ n = 3.14159
             "3.14 3.1",
         );
     }
+    // ---- Format spec: width + precision ("{width}.{precision}f") ----
+
+    #[test]
+    fn test_format_precision_only_unchanged() {
+        assert_string_result(
+            r#"
+order = {"stop_price": 1234.5678, "stop_drop": 3.14159}
+"${order['stop_price']:.2f}|${order['stop_drop']:.2f}%"
+"#,
+            "1234.57|3.14%",
+        );
+    }
+
+    #[test]
+    fn test_format_width_precision_pads_left() {
+        assert_string_result(
+            r#"
+order = {"stop_price": 123.456, "stop_drop": 3.14159, "liquidation_price": 98.7}
+"[${order['stop_price']:9.2f}] [${order['stop_drop']:7.2f}%] [${order['liquidation_price']:9.2f}]"
+"#,
+            "[   123.46] [   3.14%] [    98.70]",
+        );
+    }
+
+    #[test]
+    fn test_format_width_exact_fit() {
+        assert_string_result(
+            r#"
+n = 123456.789
+"[${n:9.2f}]"
+"#,
+            "[123456.79]",
+        );
+    }
+
+    #[test]
+    fn test_format_width_smaller_than_value_not_truncated() {
+        assert_string_result(
+            r#"
+n = 12345678.9
+"[${n:7.2f}] [${n:1.0f}]"
+"#,
+            "[12345678.90] [12345679]",
+        );
+    }
+
+    #[test]
+    fn test_format_width_negative_numbers() {
+        assert_string_result(
+            r#"
+a = -3.14159
+b = -1234.5
+"[${a:9.2f}] [${b:7.2f}] [${b:3.1f}]"
+"#,
+            "[    -3.14] [-1234.50] [-1234.5]",
+        );
+    }
+
+    #[test]
+    fn test_format_width_integer_values() {
+        assert_string_result(
+            r#"
+i = 42
+z = 0
+m = -7
+"[${i:9.2f}] [${z:7.2f}] [${m:6.1f}] [${i:.2f}]"
+"#,
+            "[    42.00] [   0.00] [  -7.0] [42.00]",
+        );
+    }
+
+    #[test]
+    fn test_format_width_with_name_and_expression() {
+        assert_string_result(
+            r#"
+a = 1.5
+b = 2.25
+"${a=:8.3f}|${a + b:6.1f}"
+"#,
+            "a=   1.500|   3.8",
+        );
+    }
+
+    #[test]
+    fn test_format_width_zero_pad_and_align() {
+        assert_string_result(
+            r#"
+n = 3.14159
+m = -3.14159
+"[${n:09.2f}] [${m:09.2f}] [${n:<9.2f}] [${n:^9.2f}] [${n:*>9.2f}] [${n:+9.2f}]"
+"#,
+            "[000003.14] [-00003.14] [3.14     ] [  3.14   ] [*****3.14] [    +3.14]",
+        );
+    }
+
+    #[test]
+    fn test_format_width_only() {
+        assert_string_result(
+            r#"
+i = 42
+s = "ab"
+"[${i:5}] [${i:5d}] [${s:5}] [${s:>5}]"
+"#,
+            "[   42] [   42] [ab   ] [   ab]",
+        );
+    }
 }

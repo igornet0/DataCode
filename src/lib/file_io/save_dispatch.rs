@@ -3,7 +3,10 @@
 use crate::common::table::Table;
 use crate::common::table_csv_export::write_table_csv;
 use crate::common::value::{ObjectKind, Value};
-use crate::file_io::path_input::{extension_lower, format_path_for_error, path_from_value, write_bytes_to_path};
+use crate::file_io::path_input::{
+    display_written_path, ensure_write_allowed, extension_lower, finish_write, format_path_for_error,
+    path_from_value, resolve_write_path, write_bytes_to_path,
+};
 use crate::file_io::value_serde::{
     value_to_json_string_pretty, value_to_toml_string_pretty, value_to_xml_string,
     value_to_yaml_string,
@@ -62,6 +65,7 @@ fn incompatible(path: &PathBuf, ext: &str, ty: &str) -> String {
 }
 
 pub fn save_value(data: &Value, path_arg: &Value) -> Result<String, String> {
+    ensure_write_allowed()?;
     let path = path_from_value(path_arg)?;
     let ext = extension_lower(&path);
     let ty = type_name_for_error(data);
@@ -77,9 +81,10 @@ pub fn save_value(data: &Value, path_arg: &Value) -> Result<String, String> {
             if out.extension().is_none() {
                 out.set_extension("csv");
             }
-            let resolved = crate::file_io::path_input::resolve_local_path(&out)?;
+            let resolved = resolve_write_path(&out)?;
             ensure_parent(&resolved)?;
             write_table_csv(&table, &resolved).map_err(|e| err(&path, &ext, ty, e))?;
+            finish_write(&resolved)?;
             resolved
         }
         (ValueKind::Table, "json") => {
@@ -103,10 +108,11 @@ pub fn save_value(data: &Value, path_arg: &Value) -> Result<String, String> {
             if out.extension().is_none() {
                 out.set_extension("sqlite");
             }
-            let resolved = crate::file_io::path_input::resolve_local_path(&out)?;
+            let resolved = resolve_write_path(&out)?;
             ensure_parent(&resolved)?;
             export_single_table(&table, &resolved, &name)
                 .map_err(|e| err(&path, &ext, ty, e))?;
+            finish_write(&resolved)?;
             resolved
         }
         (ValueKind::Object, "json") => {
@@ -147,7 +153,7 @@ pub fn save_value(data: &Value, path_arg: &Value) -> Result<String, String> {
         (ValueKind::Other, _) => return Err(incompatible(&path, &ext, ty)),
     };
 
-    Ok(out_path.to_string_lossy().to_string())
+    Ok(display_written_path(&out_path))
 }
 
 fn ensure_parent(resolved: &PathBuf) -> Result<(), String> {

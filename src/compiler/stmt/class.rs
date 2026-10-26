@@ -26,6 +26,35 @@ pub const CONSTRUCTING_CLASS_GLOBAL_NAME: &str = "__constructing_class__";
 
 /// Build `default_values` for a class method: leading `None` for `this` (and `@class` if present),
 /// then compile-time constants for user parameters that have defaults.
+/// `*args` / `**kwargs` positions of a method or constructor function: user parameter positions
+/// shifted by the implicit leading parameters (`this`, `@class`).
+fn set_variadic_indices(function: &mut Function, user_params: &[&Param], offset: usize) {
+    use crate::parser::ast::ParamKind;
+    function.variadic_pos_index = user_params
+        .iter()
+        .position(|p| p.kind == ParamKind::VariadicPositional)
+        .map(|i| i + offset);
+    function.variadic_kw_index = user_params
+        .iter()
+        .position(|p| p.kind == ParamKind::VariadicKeyword)
+        .map(|i| i + offset);
+}
+
+/// Constructor function name. A constructor with `*args` / `**kwargs` is `Class::new_v<k>` (k regular
+/// parameters): it serves calls with no exact `new_<n>` overload.
+fn constructor_function_name(class_name: &str, params: &[Param]) -> String {
+    use crate::parser::ast::ParamKind;
+    if params.iter().any(|p| p.kind != ParamKind::Regular) {
+        let fixed = params.iter().filter(|p| p.kind == ParamKind::Regular).count();
+        return format!("{}::new_v{}", class_name, fixed);
+    }
+    let arity = params.len();
+    match param_types_suffix(params) {
+        Some(suffix) if !suffix.is_empty() => format!("{}::new_{}_{}", class_name, arity, suffix),
+        _ => format!("{}::new_{}", class_name, arity),
+    }
+}
+
 fn method_default_values(
     user_params: &[&Param],
     has_at_class: bool,
@@ -874,6 +903,11 @@ pub fn compile_class(
                 ctx.compile_time_bindings,
                 ctx.source_name,
             )?;
+            set_variadic_indices(
+                &mut method_function,
+                &user_params,
+                1 + usize::from(has_at_class),
+            );
 
             // Сохраняем функцию (forward declaration)
             let function_index = ctx.functions.len();
@@ -1888,11 +1922,7 @@ pub fn compile_class(
 
         // Build constructor names: use type suffix when all params have types, to support overloading by type
         for constructor in constructors_to_compile {
-            let arity = constructor.params.len();
-            let constructor_name = match param_types_suffix(&constructor.params) {
-                Some(suffix) if !suffix.is_empty() => format!("{}::new_{}_{}", name, arity, suffix),
-                _ => format!("{}::new_{}", name, arity),
-            };
+            let constructor_name = constructor_function_name(name, &constructor.params);
 
             // Создаем функцию для конструктора
             let mut constructor_function =
@@ -1923,6 +1953,8 @@ pub fn compile_class(
                 }
             }
             constructor_function.default_values = default_values;
+            let ctor_params: Vec<&Param> = constructor.params.iter().collect();
+            set_variadic_indices(&mut constructor_function, &ctor_params, 0);
 
             // Сохраняем функцию
             let function_index = ctx.functions.len();
@@ -2694,6 +2726,17 @@ pub fn compile_class(
         let ctor_prefix_meta = format!("{}::new_", name);
         for (global_name, _) in ctx.scope.globals.iter() {
             if let Some(suffix) = global_name.strip_prefix(&ctor_prefix_meta) {
+                // `new_v<k>`: constructor with *args / **kwargs, key kept as is.
+                if let Some(fixed) = suffix.strip_prefix('v') {
+                    if !fixed.is_empty() && fixed.chars().all(|c| c.is_ascii_digit()) {
+                        if let Some(fn_idx) = ctx.function_names.iter().position(|n| n == global_name) {
+                            class_metadata
+                                .entry(format!("new_{}", suffix))
+                                .or_insert_with(|| Value::Function(fn_idx));
+                        }
+                    }
+                    continue;
+                }
                 let digit_len = suffix.chars().take_while(|c| c.is_ascii_digit()).count();
                 if digit_len == 0 {
                     continue;

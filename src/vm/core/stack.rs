@@ -164,6 +164,7 @@ fn stack_underflow_error(frames: &[CallFrame]) -> LangError {
     )
 }
 
+#[inline]
 pub fn pop(
     stack: &mut Vec<TaggedValue>,
     frames: &mut Vec<CallFrame>,
@@ -172,9 +173,28 @@ pub fn pop(
     heavy_store: &mut HeavyStore,
 ) -> Result<TaggedValue, LangError> {
     if let Some(sp) = active_sp(stack.len()) {
-        return pop_with_sp(stack, sp, frames, exception_handlers, value_store, heavy_store);
+        // Hot path inline; underflow handling stays out of line in `pop_with_sp`.
+        let floor = frames.last().map(|f| f.stack_start).unwrap_or(0);
+        if *sp > floor {
+            *sp -= 1;
+            return Ok(stack[*sp]);
+        }
+        return pop_with_sp_cold(stack, sp, frames, exception_handlers, value_store, heavy_store);
     }
     stack.pop().ok_or_else(|| stack_underflow_error(frames))
+}
+
+#[cold]
+#[inline(never)]
+fn pop_with_sp_cold(
+    stack: &mut Vec<TaggedValue>,
+    sp: &mut usize,
+    frames: &mut Vec<CallFrame>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+) -> Result<TaggedValue, LangError> {
+    pop_with_sp(stack, sp, frames, exception_handlers, value_store, heavy_store)
 }
 
 pub fn pop_with_sp(
@@ -185,10 +205,10 @@ pub fn pop_with_sp(
     value_store: &mut ValueStore,
     heavy_store: &mut HeavyStore,
 ) -> Result<TaggedValue, LangError> {
-    let line = stack_underflow_line(frames);
-
     if let Some(frame) = frames.last() {
         if *sp <= frame.stack_start {
+            // Line lookup only on the error path (pop runs for nearly every opcode).
+            let line = stack_underflow_line(frames);
             let error =
                 ExceptionHandler::runtime_error(frames, "Stack underflow".to_string(), line);
             return match ExceptionHandler::handle_exception(

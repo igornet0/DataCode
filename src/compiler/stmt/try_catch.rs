@@ -56,11 +56,8 @@ pub fn compile_try_catch(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<()
 
         // Создаем метки для try/catch блоков
         let after_try_label = ctx.labels.create_label();
-        let after_catch_label = if else_block.is_some() {
-            Some(ctx.labels.create_label())
-        } else {
-            None
-        };
+        // Каждый catch завершается прыжком сюда: без него тело catch проваливалось в следующий catch.
+        let after_catch_label = Some(ctx.labels.create_label());
 
         // Если есть finally, переходим к нему после успешного try
         // Иначе переходим к метке после try (начало catch блоков)
@@ -126,6 +123,11 @@ pub fn compile_try_catch(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<()
 
         // Помечаем метку после try (начало catch блоков)
         ctx.labels.mark_label(after_try_label, ctx.chunk.code.len());
+        if else_block.is_none() {
+            if let Some(ref after_catch_label) = after_catch_label {
+                ctx.labels.mark_label(*after_catch_label, ctx.chunk.code.len());
+            }
+        }
 
         // Компилируем else блок (если есть)
         if let Some(else_block) = else_block {
@@ -185,10 +187,9 @@ pub fn compile_try_catch(ctx: &mut CompilationContext, stmt: &Stmt) -> Result<()
         };
         ctx.chunk.exception_handlers.push(handler_info);
 
-        // Копируем таблицу типов ошибок в chunk (если еще не скопирована)
-        if ctx.chunk.error_type_table.is_empty() {
-            ctx.chunk.error_type_table = ctx.error_type_table.clone();
-        }
+        // Таблица типов ошибок chunk: каждый try может добавить новые типы, поэтому синхронизируем
+        // её целиком (копия только при первом try теряла типы последующих catch).
+        ctx.chunk.error_type_table = ctx.error_type_table.clone();
 
         // Патчим BeginTry с правильным индексом обработчика
         if let Some(OpCode::BeginTry(_)) = ctx.chunk.code.get_mut(begin_try_ip) {

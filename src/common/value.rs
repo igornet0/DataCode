@@ -1335,6 +1335,10 @@ impl Value {
             Value::Function(_) | Value::ModuleFunction { .. } => "<function>".to_string(),
             Value::NativeFunction(_) => "<native function>".to_string(),
             Value::Path(p) => {
+                // Files in the session folder: always the short `./…` form.
+                if let Some(shown) = crate::websocket::session_ve::display_if_inside(p) {
+                    return shown;
+                }
                 if crate::dcp::dcp_vfs_active() {
                     if let Ok(key) = crate::dcp::normalize_vfs_path(p) {
                         return crate::dcp::format_logical_path(&key);

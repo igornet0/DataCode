@@ -23,6 +23,46 @@ pub struct Parser {
     /// Lazily loaded from [`Self::source_name`] for Python `:` indented blocks.
     source_lines: Option<Vec<String>>,
     operator_registry: SharedOperatorRegistry,
+    /// `paren_context[pos]` = [`Parser::is_inside_parentheses_at`]`(pos)`, precomputed in one pass
+    /// (the backward scan per expression was O(n^2) on long literals). `None`: unbalanced `)`
+    /// before `pos`, answered by the scan.
+    paren_context: Vec<Option<bool>>,
+}
+
+/// One forward pass equivalent to the backward scan of [`Parser::is_inside_parentheses_at`]:
+/// a stack of unmatched `(` and boundary tokens (`;`, `{`, `}`, `fn`); `)` closes the nearest `(`
+/// together with the boundaries opened after it. Inside parentheses = the top is a `(`.
+fn compute_paren_context(tokens: &[Token]) -> Vec<Option<bool>> {
+    let mut out = Vec::with_capacity(tokens.len() + 1);
+    out.push(Some(false));
+    let mut stack: Vec<bool> = Vec::new();
+    let mut unbalanced = false;
+    for t in tokens {
+        match t.kind {
+            TokenKind::LParen => stack.push(true),
+            TokenKind::RParen => {
+                if stack.contains(&true) {
+                    while let Some(open) = stack.pop() {
+                        if open {
+                            break;
+                        }
+                    }
+                } else {
+                    unbalanced = true;
+                }
+            }
+            TokenKind::Semicolon | TokenKind::LBrace | TokenKind::RBrace | TokenKind::Fn => {
+                stack.push(false)
+            }
+            _ => {}
+        }
+        out.push(if unbalanced {
+            None
+        } else {
+            Some(stack.last() == Some(&true))
+        });
+    }
+    out
 }
 
 impl Parser {
@@ -43,12 +83,14 @@ impl Parser {
         source_name: Option<&str>,
         operator_registry: SharedOperatorRegistry,
     ) -> Self {
+        let paren_context = compute_paren_context(&tokens);
         Self {
             tokens,
             current: 0,
             source_name: source_name.map(String::from),
             source_lines: None,
             operator_registry,
+            paren_context,
         }
     }
 
@@ -580,6 +622,12 @@ impl Parser {
 
     /// После `(` — список параметров до `)` (как у именованной функции).
     fn parse_parameter_list_until_rparen(&mut self) -> Result<Vec<Param>, LangError> {
+        self.parse_parameters(false)
+    }
+
+    /// Параметры функции, метода (`allow_class_param`: `@class` первым) или конструктора до `)`:
+    /// обычные, со значением по умолчанию, `*args`, `**kwargs`.
+    fn parse_parameters(&mut self, allow_class_param: bool) -> Result<Vec<Param>, LangError> {
         let mut params = Vec::new();
         let mut has_default = false;
         let mut has_var_pos = false;
@@ -644,6 +692,25 @@ impl Parser {
                         .clone();
                     has_var_pos = true;
                     (name, ParamKind::VariadicPositional)
+                } else if allow_class_param && self.match_token(TokenKind::At) {
+                    self.consume(TokenKind::Identifier, "Expect 'class' after '@'")?;
+                    if self.previous().lexeme != "class" {
+                        return Err(LangError::ParseError {
+                            message: "After '@' only 'class' is allowed as parameter name"
+                                .to_string(),
+                            line: self.previous().line,
+                            file: self.source_name.clone(),
+                        });
+                    }
+                    if !params.is_empty() {
+                        return Err(LangError::ParseError {
+                            message: "@class can only be the first parameter of a method"
+                                .to_string(),
+                            line: self.previous().line,
+                            file: self.source_name.clone(),
+                        });
+                    }
+                    ("@class".to_string(), ParamKind::Regular)
                 } else {
                     let name = self
                         .consume(TokenKind::Identifier, "Expect parameter name")?
@@ -686,13 +753,8 @@ impl Parser {
                     None
                 };
 
-                if has_default && (kind == ParamKind::VariadicPositional || kind == ParamKind::VariadicKeyword) {
-                    return Err(LangError::ParseError {
-                        message: "Non-default argument follows default argument".to_string(),
-                        line: param_line,
-                        file: self.source_name.clone(),
-                    });
-                }
+                // `fn f(a, b = 2, *args, **kwargs)` is fine: *args / **kwargs have no default of their
+                // own and never take a positional slot that a defaulted parameter could shadow.
 
                 params.push(Param {
                     name: param_name,
@@ -1024,59 +1086,7 @@ impl Parser {
             "Expect '(' after class name in constructor",
         )?;
 
-        let mut params = Vec::new();
-        let mut has_default = false;
-        if !self.check(TokenKind::RParen) {
-            loop {
-                if params.len() >= 255 {
-                    return Err(LangError::ParseError {
-                        message: "Cannot have more than 255 parameters".to_string(),
-                        line: self.previous().line,
-                        file: self.source_name.clone(),
-                    });
-                }
-
-                let param_name = self
-                    .consume(TokenKind::Identifier, "Expect parameter name")?
-                    .lexeme
-                    .clone();
-                let param_line = self.previous().line;
-
-                // Проверяем, есть ли аннотация типа
-                let type_annotation = if self.match_token(TokenKind::Colon) {
-                    Some(self.parse_type_name()?)
-                } else {
-                    None
-                };
-
-                // Проверяем, есть ли значение по умолчанию
-                let default_value = if self.match_token(TokenKind::Equal) {
-                    has_default = true;
-                    Some(self.expression()?)
-                } else {
-                    if has_default {
-                        return Err(LangError::ParseError {
-                            message: "Non-default argument follows default argument".to_string(),
-                            line: param_line,
-                            file: self.source_name.clone(),
-                        });
-                    }
-                    None
-                };
-
-                params.push(crate::parser::ast::Param {
-                    name: param_name,
-                    kind: ParamKind::Regular,
-                    type_annotation,
-                    default_value,
-                });
-
-                if !self.match_token(TokenKind::Comma) {
-                    break;
-                }
-            }
-        }
-        self.consume(TokenKind::RParen, "Expect ')' after parameters")?;
+        let params = self.parse_parameters(false)?;
 
         // Проверяем, есть ли делегирующий конструктор: new ClassName(...) : this(...) {}
         let (body, delegate_args) = if self.match_token(TokenKind::Colon) {
@@ -1142,79 +1152,7 @@ impl Parser {
         };
         self.consume(TokenKind::LParen, "Expect '(' after method name")?;
 
-        let mut params = Vec::new();
-        let mut has_default = false;
-        if !self.check(TokenKind::RParen) {
-            loop {
-                if params.len() >= 255 {
-                    return Err(LangError::ParseError {
-                        message: "Cannot have more than 255 parameters".to_string(),
-                        line: self.previous().line,
-                        file: self.source_name.clone(),
-                    });
-                }
-
-                let param_name = if self.match_token(TokenKind::At) {
-                    self.consume(TokenKind::Identifier, "Expect 'class' after '@'")?;
-                    if self.previous().lexeme != "class" {
-                        return Err(LangError::ParseError {
-                            message: "After '@' only 'class' is allowed as parameter name"
-                                .to_string(),
-                            line: self.previous().line,
-                            file: self.source_name.clone(),
-                        });
-                    }
-                    if !params.is_empty() {
-                        return Err(LangError::ParseError {
-                            message: "@class can only be the first parameter of a method"
-                                .to_string(),
-                            line: self.previous().line,
-                            file: self.source_name.clone(),
-                        });
-                    }
-                    "@class".to_string()
-                } else {
-                    self.consume(TokenKind::Identifier, "Expect parameter name")?
-                        .lexeme
-                        .clone()
-                };
-                let param_line = self.previous().line;
-
-                // Проверяем, есть ли аннотация типа
-                let type_annotation = if self.match_token(TokenKind::Colon) {
-                    Some(self.parse_type_name()?)
-                } else {
-                    None
-                };
-
-                // Проверяем, есть ли значение по умолчанию
-                let default_value = if self.match_token(TokenKind::Equal) {
-                    has_default = true;
-                    Some(self.expression()?)
-                } else {
-                    if has_default {
-                        return Err(LangError::ParseError {
-                            message: "Non-default argument follows default argument".to_string(),
-                            line: param_line,
-                            file: self.source_name.clone(),
-                        });
-                    }
-                    None
-                };
-
-                params.push(crate::parser::ast::Param {
-                    name: param_name,
-                    kind: ParamKind::Regular,
-                    type_annotation,
-                    default_value,
-                });
-
-                if !self.match_token(TokenKind::Comma) {
-                    break;
-                }
-            }
-        }
-        self.consume(TokenKind::RParen, "Expect ')' after parameters")?;
+        let params = self.parse_parameters(true)?;
 
         // Проверяем, есть ли аннотация возвращаемого типа
         let return_type = if self.match_token(TokenKind::Arrow) {
@@ -1727,6 +1665,8 @@ impl Parser {
 
         while self.match_token(TokenKind::Catch) {
             let catch_line = self.previous().line;
+            // `catch (e)` / `catch (ValueError e)`: скобки вокруг типа и переменной необязательны.
+            let parenthesized = self.match_token(TokenKind::LParen);
 
             // Парсим тип ошибки (опционально)
             let error_type = if self.check(TokenKind::Identifier) {
@@ -1754,6 +1694,10 @@ impl Parser {
             } else {
                 None
             };
+
+            if parenthesized {
+                self.consume(TokenKind::RParen, "Expect ')' after catch variable")?;
+            }
 
             // Парсим тело catch блока
             self.consume(TokenKind::LBrace, "Expect '{' after 'catch'")?;
@@ -1890,7 +1834,7 @@ impl Parser {
         (expr_content, include_name, format_spec)
     }
 
-    /// True when text after a top-level `:` looks like a printf-style format, not slice syntax.
+    /// True when text after a top-level `:` looks like a Python-style format spec (e.g. `.2f`, `9.2f`, `>10`), not slice syntax.
     fn looks_like_format_spec(spec: &str) -> bool {
         let s = spec.trim();
         if s.is_empty() || s.ends_with(']') {
@@ -1900,6 +1844,7 @@ impl Parser {
         matches!(first, '.' | ',' | '+' | '#' | '0')
             || first.is_ascii_digit()
             || "fdeFgGeExXos%".contains(first)
+            || crate::common::format_spec::FormatSpec::parse(s).is_some()
     }
 
     /// Unescape literal segments: lexer \$ pushes placeholder \u{E000}; we replace it with "$" (the "{" is already in the string)
@@ -2021,6 +1966,13 @@ impl Parser {
     /// True when `pos` is inside `(...)` of a call or grouping, not at block/statement level
     /// where bare `a, b = rhs` is unpack assignment.
     fn is_inside_parentheses_at(&self, pos: usize) -> bool {
+        if let Some(Some(inside)) = self.paren_context.get(pos) {
+            return *inside;
+        }
+        self.is_inside_parentheses_scan(pos)
+    }
+
+    fn is_inside_parentheses_scan(&self, pos: usize) -> bool {
         if pos == 0 {
             return false;
         }

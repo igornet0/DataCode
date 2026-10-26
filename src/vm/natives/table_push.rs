@@ -182,6 +182,9 @@ fn object_entries(obj: &Value) -> Result<Vec<(String, Value)>, String> {
             Ok(out)
         }
         ObjectKind::Bucket(omap) => with_current_stores(|store, heap| {
+            if omap.integral_in_use() {
+                return Err("object keys must be strings".to_string());
+            }
             let mut out = Vec::new();
             for (_, key_id, val_id) in omap.iter_entries() {
                 let key_val = load_value(key_id, store, heap);

@@ -166,14 +166,9 @@ pub fn op_add(
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     {
         let frame = frames.last_mut().unwrap();
+        // The cached flag only records the operand kinds seen last time; whole numbers must
+        // still produce an `int`, so the result is always computed by the rules below.
         let cache_hit = frame.add_cache_ip == Some(current_ip) && frame.add_cache_both_number;
-        if cache_hit && a_tv.is_number() && b_tv.is_number() {
-            stack::push(
-                stack,
-                TaggedValue::from_f64(a_tv.get_f64() + b_tv.get_f64()),
-            );
-            return Ok(VMStatus::Continue);
-        }
         if cache_hit {
             frame.add_cache_both_number = false;
         }
@@ -551,11 +546,12 @@ pub fn op_div(
                         }
                     })
                     .unwrap_or(0);
-                let error = ExceptionHandler::runtime_error(
-                    frames,
-                    "Division by zero".to_string(),
-                    line,
-                );
+                let error = ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Division by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
                 return ExceptionHandler::handle_exception_vm(
                     stack,
                     frames,
@@ -596,10 +592,11 @@ pub fn op_div(
                     }
                 })
                 .unwrap_or(0);
-            let error = ExceptionHandler::runtime_error(
+            let error = ExceptionHandler::runtime_error_with_type(
                 frames,
                 "Division by zero".to_string(),
                 line,
+                crate::common::error::ErrorType::ZeroDivisionError,
             );
             return ExceptionHandler::handle_exception_vm(
                 stack,
@@ -668,10 +665,11 @@ pub fn op_int_div(
                     }
                 })
                 .unwrap_or(0);
-            let error = ExceptionHandler::runtime_error(
+            let error = ExceptionHandler::runtime_error_with_type(
                 frames,
                 "Division by zero".to_string(),
                 line,
+                crate::common::error::ErrorType::ZeroDivisionError,
             );
             return ExceptionHandler::handle_exception_vm(
                 stack,
@@ -737,7 +735,12 @@ pub fn op_mod(
                     .last()
                     .map(|f| if f.ip > 0 { f.function.chunk.get_line(f.ip - 1) } else { 0 })
                     .unwrap_or(0);
-                let error = ExceptionHandler::runtime_error(frames, "Modulo by zero".to_string(), line);
+                let error = ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Modulo by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
                 return ExceptionHandler::handle_exception_vm(
                     stack,
                     frames,
@@ -779,7 +782,12 @@ pub fn op_mod(
                 .last()
                 .map(|f| if f.ip > 0 { f.function.chunk.get_line(f.ip - 1) } else { 0 })
                 .unwrap_or(0);
-            let error = ExceptionHandler::runtime_error(frames, "Modulo by zero".to_string(), line);
+            let error = ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Modulo by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
             return ExceptionHandler::handle_exception_vm(
                 stack,
                 frames,
@@ -811,7 +819,12 @@ pub fn op_mod(
                     }
                 })
                 .unwrap_or(0);
-            let error = ExceptionHandler::runtime_error(frames, "Modulo by zero".to_string(), line);
+            let error = ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Modulo by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
             return ExceptionHandler::handle_exception_vm(
                 stack,
                 frames,

@@ -12,11 +12,10 @@ use crate::vm::executor::global_index_by_name;
 use crate::vm::frame::CallFrame;
 use crate::vm::global_slot::{default_global_slot, GlobalSlot};
 use crate::vm::heavy_store::HeavyStore;
-use crate::vm::module_object::BUILTIN_END;
 use crate::vm::modules;
 use crate::vm::stack;
 use crate::vm::store_convert::{
-    load_value, slot_to_value, store_value, store_value_arena, tagged_to_value_id_arena,
+    load_value, store_value, store_value_arena, tagged_to_value_id_arena,
 };
 use crate::vm::types::VMStatus;
 use std::rc::Rc;
@@ -38,212 +37,13 @@ pub(crate) fn op_load_global(
     vm_ptr: *mut crate::vm::vm::Vm,
 ) -> Result<VMStatus, LangError> {
     let frame = frames.last().unwrap();
-    // __constructing_class__ must always come from caller's globals (set by executor before constructor call),
-    // not from module namespace — otherwise in a super() chain we'd load the current class (e.g. ConfigApp)
-    // instead of the leaf class (e.g. ProdSettings), and model_config would be null.
-    let is_constructing_class_load = frame.function.name.contains("::new_")
-        && frame
-            .function
-            .chunk
-            .global_names
-            .get(&index)
-            .map(|n| n.as_str())
-            == Some("__constructing_class__");
-    // Per-module isolation: resolve from frame's module namespace (and builtins) when frame has module_name.
-    let load_mod_name = frame
-        .module_name
-        .clone()
-        .or_else(|| frame.function.module_name.clone());
-    if let Some(ref mod_name) = load_mod_name {
-        if is_constructing_class_load {
-            // Fall through to globals path so we use caller's __constructing_class__ (leaf class), not module export.
-        } else if index < BUILTIN_END {
-            let builtins = unsafe { (*vm_ptr).get_builtins() };
-            if index < builtins.len() {
-                let (inline_tv, heap_id_opt) = match &builtins[index] {
-                    GlobalSlot::Inline(tv) => (Some(*tv), None),
-                    GlobalSlot::Heap(id) => (None, Some(*id)),
-                };
-                if let Some(tv) = inline_tv {
-                    stack::push(stack, tv);
-                } else {
-                    let id = heap_id_opt.unwrap();
-                    stack::push_id(stack, id);
-                }
-                return Ok(VMStatus::Continue);
-            }
-        } else {
-            let module_rc = {
-                let modules = unsafe { (*vm_ptr).get_modules() };
-                modules.get(mod_name).cloned()
-            };
-            if crate::common::debug::is_debug_enabled() {
-                let var_name = frame
-                    .function
-                    .chunk
-                    .global_names
-                    .get(&index)
-                    .map(String::as_str);
-                let mod_keys: Vec<_> = unsafe { (*vm_ptr).get_modules() }.keys().cloned().collect();
-                debug_println!(
-                        "[DEBUG LoadGlobal module] frame.module_name={:?} var_name={:?} index={} mod_found={} mod_keys_sample={:?}",
-                        mod_name,
-                        var_name,
-                        index,
-                        module_rc.is_some(),
-                        mod_keys.get(..5.min(mod_keys.len())),
-                    );
-            }
-            if let Some(rc) = module_rc {
-                let var_name = frame
-                    .function
-                    .chunk
-                    .global_names
-                    .get(&index)
-                    .map(String::as_str)
-                    .or_else(|| global_names.get(&index).map(String::as_str));
-                // Prefer host VM globals only when THIS index is actually named the same in the host
-                // name table. Module chunk indices are not host indices: treating chunk name presence
-                // alone as "name_matches" was a tautology and leaked unrelated host objects (e.g.
-                // a Settings instance) into get_settings' `settings` load.
-                if var_name != Some("__constructing_class__") && index < globals.len() {
-                    let host_name = global_names.get(&index).map(|n| n.as_str());
-                    if host_name == var_name {
-                        let id = globals[index].resolve_to_value_id(value_store);
-                        if !matches!(load_value(id, value_store, heavy_store), Value::Null) {
-                            stack::push_id(stack, id);
-                            return Ok(VMStatus::Continue);
-                        }
-                    }
-                }
-                let class_name = frame.function.name.split("::").next().unwrap_or("");
-                let value_opt = {
-                    let module = rc.borrow();
-                    if let Some(name) = var_name {
-                        module
-                            .get_export(name)
-                            .or_else(|| {
-                                if name == "__constructing_class__"
-                                    && frame.function.name.contains("::new_")
-                                {
-                                    module.get_export(class_name)
-                                } else {
-                                    None
-                                }
-                            })
-                            .and_then(|v| {
-                                if name == "__constructing_class__"
-                                    && frame.function.name.contains("::new_")
-                                    && matches!(&v, Value::Null)
-                                {
-                                    module.get_export(class_name)
-                                } else {
-                                    Some(v)
-                                }
-                            })
-                    } else {
-                        None
-                    }
-                };
-                let value_opt = value_opt
-                    .and_then(|v| {
-                        if var_name == Some("__constructing_class__")
-                            && frame.function.name.contains("::new_")
-                            && matches!(&v, Value::Null)
-                        {
-                            None
-                        } else {
-                            Some(v)
-                        }
-                    })
-                    .or_else(|| {
-                        if var_name == Some("__constructing_class__")
-                            && frame.function.name.contains("::new_")
-                        {
-                            let modules = unsafe { (*vm_ptr).get_modules() };
-                            if let Some(rc) = modules.get(class_name) {
-                                if let Some(v) = rc.borrow().get_export(class_name) {
-                                    return Some(v);
-                                }
-                            }
-
-                            // Fallback: search all loaded modules for the class (e.g. dotted module "core.config" shares namespace with "config")
-                            for (_mod_key, rc) in modules.iter() {
-                                if let Some(v) = rc.borrow().get_export(class_name) {
-                                    return Some(v);
-                                }
-                            }
-                        }
-                        None
-                    });
-                if let Some(value) = value_opt {
-                    if crate::common::debug::is_debug_enabled() {
-                        let vt = match &value {
-                            Value::NativeFunction(_) => "NativeFunction",
-                            Value::Function(_) => "Function",
-                            Value::ModuleFunction { .. } => "ModuleFunction",
-                            Value::Object(_) => "Object",
-                            _ => "Other",
-                        };
-                        debug_println!(
-                            "[DEBUG LoadGlobal module] get_export({:?}) -> {} (using module path)",
-                            var_name,
-                            vt
-                        );
-                    }
-                    let id = store_value(value, value_store, heavy_store);
-                    stack::push_id(stack, id);
-                    return Ok(VMStatus::Continue);
-                }
-                if crate::common::debug::is_debug_enabled() {
-                    debug_println!("[DEBUG LoadGlobal module] get_export({:?}) returned None, trying fallback modules", var_name);
-                }
-                // Fallback: primary module (e.g. "config") may not have the export; try all modules
-                // (e.g. "settings" lives in "core.config" top-level, not "config" submodule).
-                if let Some(name) = var_name {
-                    if name != "__constructing_class__" {
-                        let modules = unsafe { (*vm_ptr).get_modules() };
-                        for (_mod_key, rc) in modules.iter() {
-                            if let Some(v) = rc.borrow().get_export(name) {
-                                let id = store_value(v, value_store, heavy_store);
-                                stack::push_id(stack, id);
-                                return Ok(VMStatus::Continue);
-                            }
-                        }
-                    }
-                }
-                if !(var_name == Some("__constructing_class__")
-                    && frame.function.name.contains("::new_"))
-                {
-                    if crate::common::debug::is_debug_enabled() {
-                        debug_println!("[DEBUG LoadGlobal module] module {:?} not found or get_export failed for {:?}, falling through to globals", mod_name, var_name);
-                    }
-                    let err_name = var_name.unwrap_or("?").to_string();
-                    return Err(LangError::runtime_error(
-                        format!("Undefined variable: {}", err_name),
-                        line,
-                    ));
-                }
-            } else if crate::common::debug::is_debug_enabled() {
-                let var_name = frame
-                    .function
-                    .chunk
-                    .global_names
-                    .get(&index)
-                    .map(String::as_str);
-                debug_println!("[DEBUG LoadGlobal module] modules.get({:?}) = None, falling through to globals for {:?}", mod_name, var_name);
-            }
-        }
-    }
-
     let mut effective_index = index;
     let argv_slot_for_resolve = unsafe { (*vm_ptr).get_argv_slot_index() };
-    const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
     if index >= globals.len() {
         // Main chunk: never resolve undefined sentinel after ImportFrom — internal module
         // names (e.g. `settings`) may exist in caller global_names for patched module functions
         // but must not become visible to unimported bare names in the importer.
-        if frame.function.name == "<main>" && index == UNDEFINED_GLOBAL_SENTINEL {
+        if frame.function.name == "<main>" && crate::bytecode::is_undefined_global_sentinel(index) {
             // keep effective_index out of bounds → Undefined variable below
         } else if let Some(var_name) = frame.function.chunk.global_names.get(&index) {
             let real_idx_opt = if *var_name == "argv" && argv_slot_for_resolve.is_some() {
@@ -399,6 +199,29 @@ pub(crate) fn op_load_global(
                 id = cid;
             }
         }
+        if id == crate::common::value_store::UNSET_GLOBAL_ID {
+            let name = global_names
+                .get(&effective_index)
+                .or_else(|| frame.function.chunk.global_names.get(&index))
+                .map(String::as_str)
+                .unwrap_or("?");
+            let error = ExceptionHandler::runtime_error(
+                &frames,
+                format!("Undefined variable: {} (used before assignment)", name),
+                line,
+            );
+            return match ExceptionHandler::handle_exception(
+                stack,
+                frames,
+                exception_handlers,
+                error,
+                value_store,
+                heavy_store,
+            ) {
+                Ok(()) => Ok(VMStatus::Continue),
+                Err(e) => Err(e),
+            };
+        }
         {
             // Avoid full materialization: one store.get to decide id_to_push (O(1) instead of O(size)).
             let cell = value_store.get(id);
@@ -519,6 +342,56 @@ pub(crate) fn op_load_global(
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn op_store_global(
     index: usize,
+    line: usize,
+    stack: &mut Vec<TaggedValue>,
+    frames: &mut Vec<CallFrame>,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    explicit_global_names: &std::collections::BTreeMap<usize, String>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+    vm_ptr: *mut crate::vm::vm::Vm,
+) -> Result<VMStatus, LangError> {
+    let status = op_store_global_inner(
+        index,
+        line,
+        stack,
+        frames,
+        globals,
+        global_names,
+        explicit_global_names,
+        exception_handlers,
+        value_store,
+        heavy_store,
+        vm_ptr,
+    )?;
+    // A module rebound one of its globals: keep `m.name` of importers current, and make classes
+    // findable by name from other modules (class fallbacks search `vm.modules` exports).
+    if unsafe { (*vm_ptr).current_module } != 0 && index < globals.len() {
+        if let Some(name) = global_names.get(&index) {
+            crate::vm::program_modules::publish_store(
+                name,
+                &mut globals[index],
+                value_store,
+                heavy_store,
+                vm_ptr,
+            );
+            crate::vm::program_modules::register_class(
+                name,
+                &mut globals[index],
+                value_store,
+                heavy_store,
+                vm_ptr,
+            );
+        }
+    }
+    Ok(status)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn op_store_global_inner(
+    index: usize,
     _line: usize,
     stack: &mut Vec<TaggedValue>,
     frames: &mut Vec<CallFrame>,
@@ -532,40 +405,6 @@ pub(crate) fn op_store_global(
 ) -> Result<VMStatus, LangError> {
     let tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let tv = crate::vm::array_view::materialize_tagged_if_array_view(tv, value_store, heavy_store);
-    // Per-module isolation: write to frame's module namespace when frame has module_name.
-    let store_mod_name = frames.last().and_then(|f| {
-        f.module_name
-            .clone()
-            .or_else(|| f.function.module_name.clone())
-            .or_else(|| {
-                let registry = unsafe { (*vm_ptr).get_module_registry() };
-                crate::vm::module_object::module_name_for_function_index(&registry, f.function_index)
-            })
-    });
-    let store_global_name = frames
-        .last()
-        .and_then(|f| f.function.chunk.global_names.get(&index).cloned())
-        .or_else(|| global_names.get(&index).cloned())
-        .or_else(|| explicit_global_names.get(&index).cloned());
-    // Defer namespace sync until the final stored value is known (objects may need store_value_arena).
-    let module_export = if index >= BUILTIN_END {
-        if let (Some(ref mod_name), Some(ref name)) = (&store_mod_name, &store_global_name) {
-            let module_rc = {
-                let modules = unsafe { (*vm_ptr).get_modules() };
-                modules.get(mod_name).cloned()
-            };
-            module_rc.map(|rc| (rc, name.clone()))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-    let sync_module_export = |value: Value| {
-        if let Some((rc, name)) = &module_export {
-            rc.borrow().set_export(name, value);
-        }
-    };
     // Do not allow script to overwrite the argv slot (host-only, read-only).
     // Debug: see if StoreGlobal is ever executed for constructor new_0 (diagnose Null in export).
     let name_at_idx = global_names.get(&index).map(|s| s.as_str());
@@ -600,7 +439,6 @@ pub(crate) fn op_store_global(
             globals.resize(index + 1, default_global_slot());
         }
         globals[index] = GlobalSlot::Inline(tv);
-        sync_module_export(slot_to_value(tv, value_store, heavy_store));
         return Ok(VMStatus::Continue);
     }
     let value_id = tagged_to_value_id_arena(tv, value_store);
@@ -647,10 +485,17 @@ pub(crate) fn op_store_global(
                     globals.resize(index + 1, default_global_slot());
                 }
                 globals[index] = GlobalSlot::Heap(value_id);
-                sync_module_export(load_value(value_id, value_store, heavy_store));
                 return Ok(VMStatus::Continue);
             }
         }
+    }
+    // A module namespace object keeps its identity: `m.X = v` writes through it to the module.
+    if crate::vm::program_modules::namespace_module(value_id, vm_ptr).is_some() {
+        if index >= globals.len() {
+            globals.resize(index + 1, default_global_slot());
+        }
+        globals[index] = GlobalSlot::Heap(value_id);
+        return Ok(VMStatus::Continue);
     }
     let mut value = load_value(value_id, value_store, heavy_store);
     if let Value::Table(table_rc) = &mut value {
@@ -676,7 +521,6 @@ pub(crate) fn op_store_global(
             globals.resize(index + 1, default_global_slot());
         }
         globals[index] = GlobalSlot::Heap(store_id);
-        sync_module_export(load_value(store_id, value_store, heavy_store));
         return Ok(VMStatus::Continue);
     }
     let (super_name, class_name, class_meta_opt) = if let Value::Object(class_rc) = &value {
@@ -834,6 +678,5 @@ pub(crate) fn op_store_global(
         globals.resize(index + 1, default_global_slot());
     }
     globals[index] = GlobalSlot::Heap(final_id);
-    sync_module_export(stored_value);
     Ok(VMStatus::Continue)
 }

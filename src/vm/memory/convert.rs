@@ -29,13 +29,10 @@ pub fn object_map_upsert(
     kid: ValueId,
     vid: ValueId,
 ) {
+    // Whole-number keys live only in the integral side table (see `ObjectMap` docs).
     if let Some(canonical) = integer_value_as_i64_if_whole(key_material) {
-        let had = omap.contains_integral(canonical);
         omap.upsert_integral(canonical, kid, vid);
-        // Rewrite of existing int key (A* g_score/f_score): skip bucket chain sync.
-        if had {
-            return;
-        }
+        return;
     }
     let h = crate::common::type_model::object_key_hash_value(key_material).expect("hashable key");
     let bucket = omap.bucket_mut_or_insert(h);
@@ -774,15 +771,20 @@ fn load_value_inner(
             if !visiting.insert(id) {
                 return load_value_cycle_placeholder();
             }
-            let pairs: Vec<(Value, Value)> = omap
-                .iter_entries()
-                .map(|(_, kid, vid)| {
-                    (
-                        load_value_inner(kid, store, heap, visiting),
-                        load_value_inner(vid, store, heap, visiting),
-                    )
-                })
-                .collect();
+            let mut pairs: Vec<(Value, Value)> = Vec::with_capacity(omap.len());
+            for (canonical, slot) in omap.iter_integral_entries() {
+                let val = match slot {
+                    IntegralSlot::Immediate(tv) => slot_to_value(tv, store, heap),
+                    IntegralSlot::Heap(vid) => load_value_inner(vid, store, heap, visiting),
+                };
+                pairs.push((Value::Number(canonical as f64), val));
+            }
+            for (_, kid, vid) in omap.iter_entries() {
+                pairs.push((
+                    load_value_inner(kid, store, heap, visiting),
+                    load_value_inner(vid, store, heap, visiting),
+                ));
+            }
             visiting.remove(&id);
             Value::Object(Rc::new(RefCell::new(ObjectKind::Inline(pairs))))
         }

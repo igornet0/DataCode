@@ -47,23 +47,6 @@ fn fork_table_if_slot_aliased(
     TaggedValue::from_heap(store_value(val, value_store, heavy_store))
 }
 
-/// Format a value for string interpolation with a spec like ".2f" or ".0f".
-fn format_value_interp(value: &Value, spec: &str) -> String {
-    let spec = spec.trim();
-    if let Some(rest) = spec.strip_prefix('.') {
-        if let Some(dot_f) = rest.find('f') {
-            let prec_str = &rest[..dot_f];
-            if prec_str.chars().all(|c| c.is_ascii_digit()) {
-                let prec: usize = prec_str.parse().unwrap_or(6);
-                if let Some(n) = value.as_ieee_f64() {
-                    return format!("{:.*}", prec, n);
-                }
-            }
-        }
-    }
-    value.to_string()
-}
-
 pub fn op_constant(
     index: usize,
     stack: &mut Vec<TaggedValue>,
@@ -95,25 +78,15 @@ pub fn op_load_local(
     stack: &mut Vec<TaggedValue>,
     frames: &mut Vec<CallFrame>,
 ) -> Result<VMStatus, LangError> {
-    let frame = frames.last_mut().unwrap();
-    if frame.load_local_cache_ip == Some(current_ip) && frame.load_local_cache_slot == Some(index) {
-        if let Some(tv) = frame.load_local_cache_tagged {
-            stack::push(stack, tv);
-            return Ok(VMStatus::Continue);
-        }
-    }
+    // No per-IP value cache: reading the slot is as cheap as checking a cache, and a cache
+    // goes stale whenever a slot is written by anything other than `StoreLocal`.
+    let _ = current_ip;
     let frame = frames.last_mut().unwrap();
     if index >= frame.slots.len() {
         frame.ensure_slot(index);
     }
     let tv = frame.slots[index];
     stack::push(stack, tv);
-    {
-        let frame = frames.last_mut().unwrap();
-        frame.load_local_cache_ip = Some(current_ip);
-        frame.load_local_cache_slot = Some(index);
-        frame.load_local_cache_tagged = Some(tv);
-    }
     Ok(VMStatus::Continue)
 }
 
@@ -126,6 +99,13 @@ pub fn op_store_local(
     heavy_store: &mut HeavyStore,
 ) -> Result<VMStatus, LangError> {
     let tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+    // Statement `x = v` compiles without a trailing `Pop`: drop dead slots at the frame
+    // boundary here, as `Pop` would.
+    if let Some(frame) = frames.last() {
+        let stack_start = frame.stack_start;
+        let sp = stack::with_sp(stack, |sp| *sp);
+        stack::truncate_if_at_frame(stack, sp, stack_start);
+    }
     let tv = crate::vm::array_view::materialize_tagged_if_array_view(tv, value_store, heavy_store);
     let tv = {
         let slots = frames.last().map(|f| f.slots.as_slice()).unwrap_or(&[]);
@@ -254,7 +234,7 @@ pub fn op_format_interp(
         Value::String(s) => s,
         _ => String::new(),
     };
-    let result = format_value_interp(&value, &format_spec);
+    let result = crate::common::format_spec::format_interpolated(&value, &format_spec);
     let result_id = store_value(Value::String(result), value_store, heavy_store);
     stack::push_id(stack, result_id);
     Ok(VMStatus::Continue)

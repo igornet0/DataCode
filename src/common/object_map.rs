@@ -1,14 +1,14 @@
 //! HashMap-backed object storage: `HashMap<KeyHash, Bucket>` with chaining by `(key_id, value_id)`.
 //!
-//! Finite mathematical integer keys (`int`, whole `number`/`float`) also live in
-//! [`ObjectMap::integral_index`] for O(1) lookup by canonical `i64` (Python `hash(1)==hash(1.0)`).
+//! Finite mathematical integer keys (`int`, whole `number`/`float`) live **only** in
+//! [`ObjectMap::integral_index`] (O(1) lookup by canonical `i64`, Python `hash(1)==hash(1.0)`);
+//! bucket chains hold every other key. Size and iteration are the union of both parts.
 
 use std::collections::HashMap;
 
 use crate::common::integral_map::{IntegralMap, IntegralSlot};
-use crate::common::numeric::hash_integral_key;
 use crate::common::tagged_value::TaggedValue;
-use crate::common::value_store::ValueId;
+use crate::common::value_store::{IdBuildHasher, ValueId};
 
 /// Stable bucket index derived from [`crate::common::type_model::object_key_hash64`].
 pub type KeyHash = u64;
@@ -22,7 +22,7 @@ pub struct ObjectEntry {
 /// Flat dictionary using bucket chaining (no string coercion).
 #[derive(Debug, Clone)]
 pub struct ObjectMap {
-    buckets: HashMap<KeyHash, Vec<ObjectEntry>>,
+    buckets: HashMap<KeyHash, Vec<ObjectEntry>, IdBuildHasher>,
     /// Canonical `i64` → value; authoritative for integral-only fast paths (see [`Self::len`]).
     integral_index: IntegralMap,
     /// When true: mutation APIs return errors at VM boundary.
@@ -40,7 +40,7 @@ impl Default for ObjectMap {
 impl ObjectMap {
     pub fn new() -> Self {
         Self {
-            buckets: HashMap::new(),
+            buckets: HashMap::default(),
             integral_index: IntegralMap::new(),
             frozen: false,
             plain: false,
@@ -49,7 +49,7 @@ impl ObjectMap {
 
     pub fn with_capacity(cap: usize) -> Self {
         Self {
-            buckets: HashMap::with_capacity(cap),
+            buckets: HashMap::with_capacity_and_hasher(cap, IdBuildHasher::default()),
             integral_index: IntegralMap::with_capacity(cap),
             frozen: false,
             plain: false,
@@ -59,7 +59,7 @@ impl ObjectMap {
     /// Plain dict literal / `{}` / reused A* score maps (no class visibility metadata).
     pub fn new_plain() -> Self {
         Self {
-            buckets: HashMap::new(),
+            buckets: HashMap::default(),
             integral_index: IntegralMap::new(),
             frozen: false,
             plain: true,
@@ -68,7 +68,7 @@ impl ObjectMap {
 
     pub fn with_capacity_plain(cap: usize) -> Self {
         Self {
-            buckets: HashMap::with_capacity(cap),
+            buckets: HashMap::with_capacity_and_hasher(cap, IdBuildHasher::default()),
             integral_index: IntegralMap::with_capacity(cap),
             frozen: false,
             plain: true,
@@ -90,20 +90,24 @@ impl ObjectMap {
         self.frozen
     }
 
-    /// Distinct keys count (same logical size as Python dict len).
-    /// When the integral side table is in use, it is authoritative (see fast upsert path).
+    /// Distinct keys count (same logical size as Python dict len): integral keys plus bucket keys.
     pub fn len(&self) -> usize {
-        if !self.integral_index.is_empty() {
-            return self.integral_index.len();
-        }
+        self.integral_index.len() + self.bucket_entry_count()
+    }
+
+    /// True when at least one non-integral key may be stored (O(1); empty chains are dropped).
+    #[inline]
+    pub fn has_bucket_entries(&self) -> bool {
+        !self.buckets.is_empty()
+    }
+
+    /// Keys stored in bucket chains (non-integral keys).
+    pub fn bucket_entry_count(&self) -> usize {
         self.buckets.values().map(|v| v.len()).sum()
     }
 
     pub fn is_empty(&self) -> bool {
-        if !self.integral_index.is_empty() {
-            return false;
-        }
-        self.buckets.values().all(|v| v.is_empty())
+        self.integral_index.is_empty() && self.buckets.values().all(|v| v.is_empty())
     }
 
     pub fn clear(&mut self) {
@@ -149,6 +153,11 @@ impl ObjectMap {
         self.integral_index.iter_canonicals()
     }
 
+    /// Integral keys with their stored slot (order unspecified).
+    pub fn iter_integral_entries(&self) -> impl Iterator<Item = (i64, IntegralSlot)> + '_ {
+        self.integral_index.iter_entries()
+    }
+
     /// Legacy: heap [`ValueId`] only (immediate slots → [`NULL_VALUE_ID`] sentinel for set compat).
     #[inline]
     pub fn find_integral(&self, canonical: i64) -> Option<ValueId> {
@@ -178,34 +187,6 @@ impl ObjectMap {
         self.integral_index.insert_tagged(canonical, value_tv);
     }
 
-    /// Integral upsert + bucket chain sync without [`ValueStore`] reads (safe alongside in-place mutation).
-    pub fn upsert_integral_with_bucket_sync(
-        &mut self,
-        canonical: i64,
-        key_id: ValueId,
-        value_id: ValueId,
-    ) {
-        let had = self.integral_index.contains_key(canonical);
-        self.upsert_integral(canonical, key_id, value_id);
-        let h = hash_integral_key(canonical);
-        let bucket = self.bucket_mut_or_insert(h);
-        if had {
-            if let Some(e) = bucket.iter_mut().find(|e| e.key_id == key_id) {
-                e.value_id = value_id;
-                return;
-            }
-            if bucket.len() == 1 {
-                bucket[0].key_id = key_id;
-                bucket[0].value_id = value_id;
-                return;
-            }
-        }
-        bucket.push(ObjectEntry {
-            key_id,
-            value_id,
-        });
-    }
-
     /// Remove integral slot; returns previous heap id if any (immediate → sentinel).
     pub fn remove_integral(&mut self, canonical: i64) -> Option<ValueId> {
         self.integral_index
@@ -213,10 +194,11 @@ impl ObjectMap {
             .map(IntegralSlot::heap_value_id)
     }
 
-    pub fn buckets_ref(&self) -> &HashMap<KeyHash, Vec<ObjectEntry>> {
+    pub fn buckets_ref(&self) -> &HashMap<KeyHash, Vec<ObjectEntry>, IdBuildHasher> {
         &self.buckets
     }
 
+    /// Bucket-chain entries only (non-integral keys). Integral keys: [`Self::iter_integral_entries`].
     pub fn iter_entries(&self) -> impl Iterator<Item = (KeyHash, ValueId, ValueId)> + '_ {
         self.buckets.iter().flat_map(|(&h, bucket)| {
             bucket
@@ -285,14 +267,16 @@ impl ObjectMap {
     where
         F: Fn(ValueId) -> bool,
     {
+        if let Some(c) = canonical {
+            if let Some(slot) = self.integral_index.remove(c) {
+                return Some(slot.heap_value_id());
+            }
+        }
         let bucket = self.buckets.get_mut(&hash)?;
         let pos = bucket.iter().position(|e| eq(e.key_id))?;
         let removed = bucket.remove(pos).value_id;
         if bucket.is_empty() {
             self.buckets.remove(&hash);
-        }
-        if let Some(c) = canonical {
-            self.integral_index.remove(c);
         }
         Some(removed)
     }
@@ -341,6 +325,7 @@ mod tests {
     fn integral_index_lookup_and_replace() {
         let mut m = ObjectMap::new();
         m.upsert_integral(42, 1, 100);
+        assert_eq!(m.len(), 1);
         assert_eq!(m.find_integral(42), Some(100));
         m.upsert_integral(42, 2, 200);
         assert_eq!(m.find_integral(42), Some(200));
@@ -372,6 +357,18 @@ mod tests {
         assert!(m.iter_entries().next().is_none());
         assert!(m.find_integral_slot(1).is_some());
         assert_eq!(m.find_integral(1), Some(200));
+    }
+
+    #[test]
+    fn len_counts_integral_and_bucket_keys() {
+        let mut m = ObjectMap::new();
+        m.upsert(99, 10, 11, |k| k == 10);
+        m.upsert_integral_tagged(1, 0, TaggedValue::from_i32(5));
+        m.upsert_integral_tagged(2, 0, TaggedValue::from_i32(6));
+        assert_eq!(m.len(), 3);
+        assert_eq!(m.iter_integral_entries().count(), 2);
+        assert_eq!(m.remove(0, |_| false, Some(1)), Some(crate::common::value_store::NULL_VALUE_ID));
+        assert_eq!(m.len(), 2);
     }
 
     /// Sparse high cell ids (grid 1000×5000 style) must stay on open-addressing map, not a 5M-slot `Vec`.

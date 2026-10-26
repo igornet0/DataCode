@@ -5,10 +5,30 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 
 /// Configuration set by `websocket.configure()` during ws_app.dc bootstrap.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct WsAppConfig {
     pub execute_permission_policy: PermissionPolicy,
     pub disabled_builtins: HashSet<String>,
+    /// Client code may write files into its session folder (`./…`).
+    pub allow_write: bool,
+    /// Size limit of one session folder.
+    pub write_quota_bytes: u64,
+}
+
+/// Default size limit of a session folder when writes are enabled.
+pub const DEFAULT_WRITE_QUOTA_MB: u64 = 50;
+
+impl Default for WsAppConfig {
+    /// Client code is sandboxed unless the developer opts in with
+    /// `configure({"execute_policy": "allow_all"})` in ws_app.dc.
+    fn default() -> Self {
+        Self {
+            execute_permission_policy: PermissionPolicy::Restricted,
+            disabled_builtins: HashSet::new(),
+            allow_write: false,
+            write_quota_bytes: DEFAULT_WRITE_QUOTA_MB * 1024 * 1024,
+        }
+    }
 }
 
 thread_local! {

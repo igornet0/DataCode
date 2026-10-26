@@ -102,6 +102,16 @@ pub fn bind_function_args(
         ));
     }
 
+    // Positional arguments take the leading fixed slots; one also named is a conflict (`f(1, a = 2)`).
+    for i in 0..fixed_n.min(positional.len()) {
+        if filled[i] {
+            return Err(format!(
+                "Function '{}' got multiple values for argument '{}'",
+                function.name, function.param_names[i]
+            ));
+        }
+    }
+
     // Positional → unfilled fixed slots
     let mut pos_idx = 0;
     for i in 0..fixed_n {

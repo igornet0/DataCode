@@ -43,16 +43,57 @@ pub(crate) fn execute_closure_call(
     }
     let function = functions[function_index].clone();
 
-    constructor_call::set_constructing_class_for_call(
-        &function,
-        constructing_class_opt.as_ref(),
-        &*frames,
-        globals,
-        global_names,
-        value_store,
-        heavy_store,
-        vm_ptr,
-    );
+    let caller_module = unsafe { (*vm_ptr).current_module };
+    if function.module_id != caller_module && function.name.contains("::new_") {
+        // Constructor of a class from another program module: `__constructing_class__` lives in
+        // the callee's table. For a `super(...)` call keep the leaf class the caller is building.
+        let inherited = if constructor_call::is_super_chain_call(
+            &function,
+            frames,
+            globals,
+            global_names,
+            value_store,
+            heavy_store,
+        ) {
+            crate::vm::global_utils::global_index_by_name(global_names, "__constructing_class__")
+                .filter(|i| *i < globals.len())
+                .map(|i| globals[i])
+        } else {
+            None
+        };
+        // Check out the callee's table into `globals` / `global_names` for the update.
+        unsafe { (*vm_ptr).switch_module_table(function.module_id) };
+        match inherited {
+            Some(slot) => crate::vm::program_modules::bind_current(
+                globals,
+                global_names,
+                "__constructing_class__",
+                slot,
+            ),
+            None => constructor_call::set_constructing_class_for_call(
+                &function,
+                constructing_class_opt.as_ref(),
+                &*frames,
+                globals,
+                global_names,
+                value_store,
+                heavy_store,
+                vm_ptr,
+            ),
+        }
+        unsafe { (*vm_ptr).switch_module_table(caller_module) };
+    } else {
+        constructor_call::set_constructing_class_for_call(
+            &function,
+            constructing_class_opt.as_ref(),
+            &*frames,
+            globals,
+            global_names,
+            value_store,
+            heavy_store,
+            vm_ptr,
+        );
+    }
 
     debug_println!(
         "[CALL] function_index={}, functions.len()={}, function.name={}",
@@ -114,9 +155,22 @@ pub(crate) fn execute_closure_call(
         }
         arg_tvs.reserve(arity);
         for _ in 0..arity {
-            let arg_tv = stack::pop_direct(stack).unwrap_or(TaggedValue::null());
-            arg_tvs.push(arg_tv);
-            args.push(slot_to_value(arg_tv, value_store, heavy_store));
+            arg_tvs.push(stack::pop_direct(stack).unwrap_or(TaggedValue::null()));
+        }
+        // `m.f(x)` on a program module: the deepest value is the module's namespace receiver.
+        // Module functions never take it; drop it before converting arguments (the namespace
+        // references all module data).
+        if function.module_id != 0
+            && arg_tvs.last().is_some_and(|tv| {
+                tv.is_heap()
+                    && crate::vm::program_modules::namespace_module(tv.get_heap_id(), vm_ptr)
+                        == Some(function.module_id)
+            })
+        {
+            arg_tvs.pop();
+        }
+        for tv in &arg_tvs {
+            args.push(slot_to_value(*tv, value_store, heavy_store));
         }
         // Stack convention from `compile_module_method`: callee is popped first elsewhere,then this
         // loop consumes `arity` values *below* it. Typical layout bottom→top is `[receiver,
@@ -129,18 +183,71 @@ pub(crate) fn execute_closure_call(
         // `this` already in left‑to‑right order → reversing wrongly swaps bindings (constructor
         // helpers like `_init(items)`). Detect the common arity‑2 `{this, array}` edge and skip.
         let skip_reverse_two_arg_this_receiver_on_top =
-            arity == 2
+            args.len() == 2
                 && function.param_names.first().map(|s| s.as_str()) == Some("this")
                 && function.param_names.len() >= 2
                 && crate::vm::calls::get_type_name_value(&args[0]) == "object"
                 && crate::vm::calls::get_type_name_value(&args[1]) == "array";
-        if !(arity == 2 && skip_reverse_two_arg_this_receiver_on_top) {
+        if !skip_reverse_two_arg_this_receiver_on_top {
             arg_tvs.reverse();
             args.reverse();
         }
     }
 
-    method_call::prepare_method_args(&function, &mut args, &mut arg_tvs, value_store, heavy_store);
+    method_call::prepare_method_args(
+        function_index,
+        &function,
+        &mut args,
+        &mut arg_tvs,
+        value_store,
+        heavy_store,
+        vm_ptr,
+    );
+
+    // `*args` / `**kwargs` functions reached by a plain Call: the compiler emits CallVariadic only
+    // when it knows the signature, so an imported or indirectly called variadic function gets its
+    // arguments packed here. Fixed parameters keep the caller's slots (heap identity preserved).
+    let prebound = std::mem::take(unsafe { &mut (*vm_ptr).prebound_call_args });
+    if !prebound && crate::vm::variadic_bind::function_accepts_variadic(&function) {
+        let fixed_n = crate::vm::variadic_bind::fixed_param_count(&function);
+        let passed = args.len();
+        match crate::vm::variadic_bind::bind_function_args(
+            &function,
+            std::mem::take(&mut args),
+            std::collections::HashMap::new(),
+            &[],
+            &[],
+        ) {
+            Ok(bound) => {
+                arg_tvs = bound
+                    .iter()
+                    .enumerate()
+                    .map(|(i, v)| {
+                        if i < fixed_n && i < passed {
+                            arg_tvs[i]
+                        } else {
+                            TaggedValue::from_heap(store_value(v.clone(), value_store, heavy_store))
+                        }
+                    })
+                    .collect();
+                args = bound;
+            }
+            Err(msg) => {
+                let error = ExceptionHandler::runtime_error(&frames, msg, line);
+                return match ExceptionHandler::handle_exception(
+                    stack,
+                    frames,
+                    exception_handlers,
+                    error,
+                    value_store,
+                    heavy_store,
+                ) {
+                    Ok(()) => Ok(VMStatus::Continue),
+                    Err(e) => Err(e),
+                };
+            }
+        }
+    }
 
     if args.len() < function.arity
         && crate::vm::call_defaults::trailing_defaults_available(&function, args.len())
@@ -178,43 +285,25 @@ pub(crate) fn execute_closure_call(
         }
     }
 
-    for (i, (arg, expected_types)) in args.iter().zip(&function.param_types).enumerate() {
-        if let Some(type_names) = expected_types {
-            if !crate::vm::calls::check_type_value_with_globals(
-                arg,
-                type_names,
-                globals,
-                global_names,
-                value_store,
-                heavy_store,
-            ) {
-                let param_name = function
-                    .param_names
-                    .get(i)
-                    .map(|s| s.as_str())
-                    .unwrap_or("unknown");
-                let error = LangError::runtime_error_with_type(
-                    format!(
-                        "Argument '{}' expected type '{}', got '{}'",
-                        param_name,
-                        crate::vm::calls::format_type_parts(type_names),
-                        crate::vm::type_compat::display_value_type(arg)
-                    ),
-                    line,
-                    ErrorType::TypeError,
-                );
-                match ExceptionHandler::handle_exception(
-                    stack,
-                    frames,
-                    exception_handlers,
-                    error,
-                    value_store,
-                    heavy_store,
-                ) {
-                    Ok(()) => return Ok(VMStatus::Continue),
-                    Err(e) => return Err(e),
-                }
-            }
+    if let Some(message) = crate::vm::calls::param_type_error(
+        &function,
+        &args,
+        globals,
+        global_names,
+        value_store,
+        heavy_store,
+    ) {
+        let error = LangError::runtime_error_with_type(message, line, ErrorType::TypeError);
+        match ExceptionHandler::handle_exception(
+            stack,
+            frames,
+            exception_handlers,
+            error,
+            value_store,
+            heavy_store,
+        ) {
+            Ok(()) => return Ok(VMStatus::Continue),
+            Err(e) => return Err(e),
         }
     }
 

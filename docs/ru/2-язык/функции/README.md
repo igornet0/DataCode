@@ -21,7 +21,7 @@
 | Строки | [строки.md](./строки.md) | `upper`, …, `starts_with`, `ends_with`, `ord` |
 | Массивы и коллекции | [массивы.md](./массивы.md) | `push`, …, `any`, `all`, `enum`, `set`, … |
 | Таблицы | [таблицы.md](./таблицы.md) | `table`, `read`/`read_file`, `table_*`, `archive`, `datasource`, … |
-| JOIN | [join.md](./join.md) | `inner_join`, `left_join`, … (13 функций) |
+| JOIN | [join.md](./join.md) | `inner_join`, `left_join`, … (12 функций) |
 | Криптография и RNG | [криптография-и-случайность.md](./криптография-и-случайность.md) | `sha256`, `random`, `random_int`, … |
 
 ## Полный список (из исходников)
@@ -34,19 +34,19 @@
 | Индексы | Группа | Ключевые имена |
 |---------|--------|----------------|
 | 0–11 | утилиты / типы | `print`, `len`, `range`, `int`…`money` |
-| 12–20 | пути | `path`, `path_exists`, … `path_len` |
-| 21–26 | математика | `abs`, `sqrt`, `pow`, `min`, `max`, `round`, `ceil`, `floor` |
-| 27–40 | строки | `upper`…`capitalize`, `starts_with`, `ends_with` |
+| 12–20 | пути | `path`, `path_name`, … `path_len` |
+| 21–28 | математика | `abs`, `sqrt`, `pow`, `min`, `max`, `round`, `ceil`, `floor` |
+| 29–40 | строки | `upper`…`capitalize`, `starts_with`, `ends_with` |
 | 41–50 | массивы | `push`…`all` |
-| 51–79 | таблицы | `table`, `read_file`, `table_*`, `merge_tables`, `show_table` |
-| 80–82 | дата / пути | `now`, `getcwd`, `list_files` |
-| 83–95 | JOIN | `inner_join`…`table_suffixes` |
-| 96–98 | связи | `relate`, `primary_key`, `enum` |
-| 99–103 | коллекции | `Table`, `array_with_capacity`, `map`, `filter`, `reduce` |
-| 104–111 | криптография / RNG | `sha256`…`random` |
-| 112–120 | дата / утилиты | `date_to_unix`, `parse_date`, `format_date`, `duration`, `set`, `divmod`, `isinf`, `copy`, `ord` |
-| 121–126 | таблицы (расшир.) | `table_row_number`, `table_distinct`, `table_value_map`, `table_aggregate`, `table_aggregate_group` |
-| 127–128 | файлы / API | `archive`, `datasource` |
+| 51–69 | таблицы | `table`, `read_file`, `read_file_bin`, `table_*`, `show_table`, `merge_tables` |
+| 70–72 | дата / пути | `now`, `getcwd`, `list_files` |
+| 73–84 | JOIN | `inner_join`…`table_suffixes` |
+| 85–87 | связи | `relate`, `primary_key`, `enum` |
+| 88–92 | коллекции | `Table`, `array_with_capacity`, `map`, `filter`, `reduce` |
+| 93–100 | криптография / RNG | `sha256`…`random` |
+| 101–109 | дата / утилиты | `date_to_unix`, `parse_date`, `format_date`, `duration`, `set`, `divmod`, `isinf`, `copy`, `ord` |
+| 110–114 | таблицы (расшир.) | `table_row_number`, `table_distinct`, `table_value_map`, `table_aggregate`, `table_aggregate_group` |
+| 115–116 | файлы / API | `archive`, `datasource` |
 
 Алиасы: `read` = `read_file`, `read_bin` = `read_file_bin`. Extended: `save`, `save_tables_sqlite`.
 

@@ -79,7 +79,7 @@ pub(crate) fn execute_instruction(
     #[cfg(feature = "threaded_dispatch")]
     {
         match instruction {
-            OpCode::LoadLocal(index) => {
+            OpCode::LoadLocal(index) | OpCode::LoadLocalPair(index, _) => {
                 return stack_ops::op_load_local(index, current_ip, stack, frames)
             }
             OpCode::StoreLocal(index) => {
@@ -447,10 +447,9 @@ pub(crate) fn execute_instruction(
         }
     }
 
-    // Логирование выполнения конструктора
-    let is_constructor = frame.function.name.contains("::new_");
-
-    if is_constructor && crate::common::debug::is_debug_enabled() {
+    // Логирование выполнения конструктора (флаг debug проверяется первым: `contains` по имени
+    // функции на каждой инструкции заметно стоит в горячих циклах).
+    if crate::common::debug::is_debug_enabled() && frame.function.name.contains("::new_") {
         let is_return = matches!(instruction, OpCode::Return);
         debug_println!(
             "[DEBUG executor constructor] '{}' IP {} line {}: {:?} (stack len {})",
@@ -754,7 +753,8 @@ pub(crate) fn execute_instruction(
                 heavy_store,
             )
         }
-        OpCode::LoadLocal(index) => {
+        // The pair's second load is the next instruction, so the general path runs one load.
+        OpCode::LoadLocal(index) | OpCode::LoadLocalPair(index, _) => {
             return stack_ops::op_load_local(index, current_ip, stack, frames)
         }
         OpCode::StoreLocal(index) => {
@@ -1587,7 +1587,14 @@ pub(crate) fn execute_instruction(
             )
         }
         OpCode::SetArrayElement => {
-            return element_ops::op_set_array_element(
+            let namespace_target = crate::vm::program_modules::namespace_store_target(
+                stack,
+                frames,
+                value_store,
+                heavy_store,
+                vm_ptr,
+            );
+            let status = element_ops::op_set_array_element(
                 line,
                 stack,
                 frames,
@@ -1598,7 +1605,18 @@ pub(crate) fn execute_instruction(
                 exception_handlers,
                 value_store,
                 heavy_store,
-            )
+            )?;
+            if let Some(target) = namespace_target {
+                crate::vm::program_modules::sync_namespace_store(
+                    target,
+                    globals,
+                    global_names,
+                    value_store,
+                    heavy_store,
+                    vm_ptr,
+                );
+            }
+            return Ok(status);
         }
         OpCode::SetArraySlice => {
             return element_ops::op_set_array_slice(

@@ -30,27 +30,18 @@ pub(crate) fn allocate_object_field_list(
     projection: ObjectProjectionKind,
     store: &mut ValueStore,
 ) -> ValueId {
-    let element_ids: Vec<ValueId> = if omap.integral_in_use() {
-        omap.iter_integral_canonicals()
-            .filter_map(|canonical| {
-                let slot = omap.find_integral_slot(canonical)?;
-                match projection {
-                    ObjectProjectionKind::Keys => Some(canonical_to_key_id(canonical, store)),
-                    ObjectProjectionKind::Values => Some(integral_slot_to_value_id_for_list(
-                        slot,
-                        store,
-                    )),
-                }
-            })
-            .collect()
-    } else {
-        omap.iter_entries()
-            .map(|(_, kid, vid)| match projection {
-                ObjectProjectionKind::Keys => kid,
-                ObjectProjectionKind::Values => vid,
-            })
-            .collect()
-    };
+    // Order: integral keys first, then bucket keys (same as `index_object_field_list`).
+    let mut element_ids: Vec<ValueId> = Vec::with_capacity(omap.len());
+    for (canonical, slot) in omap.iter_integral_entries() {
+        element_ids.push(match projection {
+            ObjectProjectionKind::Keys => canonical_to_key_id(canonical, store),
+            ObjectProjectionKind::Values => integral_slot_to_value_id_for_list(slot, store),
+        });
+    }
+    element_ids.extend(omap.iter_entries().map(|(_, kid, vid)| match projection {
+        ObjectProjectionKind::Keys => kid,
+        ObjectProjectionKind::Values => vid,
+    }));
     store.allocate(ValueCell::ObjectFieldList {
         source_object_id,
         projection,
@@ -105,10 +96,7 @@ fn push_object_projection_element_from_map(
     if index >= omap.len() {
         return false;
     }
-    if omap.integral_in_use() {
-        let Some(canonical) = omap.iter_integral_canonicals().nth(index) else {
-            return false;
-        };
+    if let Some((canonical, slot)) = omap.iter_integral_entries().nth(index) {
         return match projection {
             ObjectProjectionKind::Keys => {
                 let kid = canonical_to_key_id(canonical, store);
@@ -116,15 +104,13 @@ fn push_object_projection_element_from_map(
                 true
             }
             ObjectProjectionKind::Values => {
-                let Some(slot) = omap.find_integral_slot(canonical) else {
-                    return false;
-                };
                 push_integral_slot(stack, store, slot);
                 true
             }
         };
     }
-    let Some((_, kid, _)) = omap.iter_entries().nth(index) else {
+    let bucket_index = index - omap.iter_integral_entries().count();
+    let Some((_, kid, _)) = omap.iter_entries().nth(bucket_index) else {
         return false;
     };
     match projection {

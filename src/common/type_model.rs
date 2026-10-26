@@ -191,6 +191,15 @@ fn hash_object_map_entries(map: &ObjectMap) -> u64 {
         h = hash_mix(h, kid as u64);
         h = hash_mix(h, vid as u64);
     }
+    let mut integral: Vec<(i64, u64)> = map
+        .iter_integral_entries()
+        .map(|(c, slot)| (c, slot.as_tagged().0))
+        .collect();
+    integral.sort();
+    for (c, bits) in integral {
+        h = hash_mix(h, c as u64);
+        h = hash_mix(h, bits);
+    }
     h
 }
 

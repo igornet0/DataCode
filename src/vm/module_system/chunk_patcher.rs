@@ -45,9 +45,8 @@ pub fn update_chunk_indices_from_names(
         .collect();
     name_index_pairs.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
     let can_prefer_non_null = globals_for_verify.is_some() && store.is_some() && heap.is_some();
-    const UNDEFINED_GLOBAL_SENTINEL: usize = usize::MAX;
     for (old_idx, name) in &name_index_pairs {
-        if *old_idx == UNDEFINED_GLOBAL_SENTINEL && !resolve_undefined_sentinel {
+        if crate::bytecode::is_undefined_global_sentinel(*old_idx) && !resolve_undefined_sentinel {
             continue;
         }
         let real_idx: Option<usize> = if name == "argv" && argv_slot_index.is_some() {
@@ -172,17 +171,26 @@ pub fn update_chunk_indices_from_names(
         }
     }
     if resolve_undefined_sentinel {
-        if let Some(name) = chunk.global_names.get(&UNDEFINED_GLOBAL_SENTINEL) {
+        // Each undefined name has its own placeholder index (see is_undefined_global_sentinel).
+        for (&sentinel, name) in chunk
+            .global_names
+            .iter()
+            .filter(|(idx, _)| crate::bytecode::is_undefined_global_sentinel(**idx))
+        {
+            if old_to_real.contains_key(&sentinel) {
+                continue;
+            }
             let matching: Vec<usize> = global_names
                 .iter()
                 .filter(|(_, n)| *n == name)
                 .map(|(idx, _)| *idx)
                 .collect();
             if let Some(&real_idx) = matching.iter().min() {
-                old_to_real.insert(UNDEFINED_GLOBAL_SENTINEL, real_idx);
+                old_to_real.insert(sentinel, real_idx);
                 debug_println!(
-                    "[DEBUG update_chunk_indices] Маппинг sentinel '{}': MAX -> {}",
+                    "[DEBUG update_chunk_indices] Маппинг sentinel '{}': {} -> {}",
                     name,
+                    sentinel,
                     real_idx
                 );
             }

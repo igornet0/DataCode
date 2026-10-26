@@ -334,6 +334,71 @@ mod tests {
         );
     }
 
+    // Regression coverage for `KeyError: amount` (02-Report-Bug.md): a CSV header written as
+    // `week, amount` (comma followed by a space — a very common human-written CSV style) must
+    // not leave a leading space in the column name, and the value must still parse as a number.
+    #[test]
+    fn read_csv_trims_header_and_field_whitespace_by_default() {
+        let dir = TempDir::new().expect("tempdir");
+        let csv_path = dir.path().join("orders.csv");
+        fs::write(&csv_path, "week, amount\n3, -69\n").unwrap();
+        let src = format!(
+            r#"
+            t = read("{}")
+            result = null
+            for row in t["week" == 3] {{
+                result = row["amount"]
+            }}
+            result
+        "#,
+            escape_path(&csv_path)
+        );
+        assert_number(&run_ok(&src), -69.0);
+    }
+
+    #[test]
+    fn read_csv_trim_false_preserves_legacy_whitespace() {
+        let dir = TempDir::new().expect("tempdir");
+        let csv_path = dir.path().join("orders.csv");
+        fs::write(&csv_path, "week, amount\n3, -69\n").unwrap();
+        // Positional args: path, header_row, sheet_name, header, headerT, trim
+        let src = format!(
+            r#"
+            t = read("{}", null, null, null, null, false)
+            result = null
+            for row in t["week" == 3] {{
+                result = row[" amount"]
+            }}
+            result
+        "#,
+            escape_path(&csv_path)
+        );
+        assert_string(&run_ok(&src), " -69");
+    }
+
+    #[test]
+    fn read_csv_missing_column_keyerror_lists_available_keys() {
+        let dir = TempDir::new().expect("tempdir");
+        let csv_path = dir.path().join("orders.csv");
+        fs::write(&csv_path, "week, amount\n3, -69\n").unwrap();
+        let src = format!(
+            r#"
+            t = read("{}")
+            for row in t["week" == 3] {{
+                row["totally_missing"]
+            }}
+        "#,
+            escape_path(&csv_path)
+        );
+        let msg = run_err(&src);
+        assert!(msg.contains("KeyError"), "expected KeyError, got {}", msg);
+        assert!(
+            msg.contains("amount") && msg.contains("week"),
+            "expected available keys in message, got {}",
+            msg
+        );
+    }
+
     fn assert_string(v: &Value, expected: &str) {
         match v {
             Value::String(s) => assert_eq!(s.as_str(), expected),

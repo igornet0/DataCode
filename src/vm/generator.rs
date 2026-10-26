@@ -68,6 +68,18 @@ pub(crate) fn run_generator_resume(
     mode: GeneratorResumeMode,
     for_iterable: bool,
 ) -> Result<Option<Value>, LangError> {
+    let result = run_generator_resume_inner(vm, gen, mode, for_iterable);
+    // The nested run loop may leave another module's table checked out.
+    vm.sync_module_table();
+    result
+}
+
+fn run_generator_resume_inner(
+    vm: &mut Vm,
+    gen: &mut GeneratorState,
+    mode: GeneratorResumeMode,
+    for_iterable: bool,
+) -> Result<Option<Value>, LangError> {
     if gen.finished {
         return match mode {
             GeneratorResumeMode::Next | GeneratorResumeMode::NextFinalDrain => Ok(None),

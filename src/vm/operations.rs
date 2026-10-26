@@ -583,7 +583,12 @@ pub fn binary_div(
     if let (Some(x), Some(y)) = (a.as_ieee_f64(), b.as_ieee_f64()) {
         if y == 0.0 && divide_by_zero_raises(a, b) {
             let error =
-                ExceptionHandler::runtime_error(frames, "Division by zero".to_string(), line);
+                ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Division by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
             return ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
@@ -599,7 +604,12 @@ pub fn binary_div(
         (Value::Number(n1), Value::Number(n2)) => {
             if *n2 == 0.0 {
                 let error =
-                    ExceptionHandler::runtime_error(frames, "Division by zero".to_string(), line);
+                    ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Division by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
                 ExceptionHandler::handle_exception_null_value(
                     stack,
                     frames,
@@ -664,7 +674,12 @@ pub fn binary_int_div(
     if let (Some(x), Some(y)) = (a.as_ieee_f64(), b.as_ieee_f64()) {
         if y == 0.0 {
             let error =
-                ExceptionHandler::runtime_error(frames, "Division by zero".to_string(), line);
+                ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Division by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
             return ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
@@ -680,7 +695,12 @@ pub fn binary_int_div(
         (Value::Number(n1), Value::Number(n2)) => {
             if *n2 == 0.0 {
                 let error =
-                    ExceptionHandler::runtime_error(frames, "Division by zero".to_string(), line);
+                    ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Division by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
                 ExceptionHandler::handle_exception_null_value(
                     stack,
                     frames,
@@ -726,7 +746,12 @@ pub fn binary_mod(
     if let (Some(x), Some(y)) = (a.as_ieee_f64(), b.as_ieee_f64()) {
         if y == 0.0 {
             let error =
-                ExceptionHandler::runtime_error(frames, "Modulo by zero".to_string(), line);
+                ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Modulo by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
             return ExceptionHandler::handle_exception_null_value(
                 stack,
                 frames,
@@ -743,7 +768,12 @@ pub fn binary_mod(
         (Value::Number(n1), Value::Number(n2)) => {
             if *n2 == 0.0 {
                 let error =
-                    ExceptionHandler::runtime_error(frames, "Modulo by zero".to_string(), line);
+                    ExceptionHandler::runtime_error_with_type(
+                frames,
+                "Modulo by zero".to_string(),
+                line,
+                crate::common::error::ErrorType::ZeroDivisionError,
+            );
                 ExceptionHandler::handle_exception_null_value(
                     stack,
                     frames,

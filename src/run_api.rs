@@ -2,7 +2,6 @@
 
 use std::cell::RefCell;
 use std::collections::HashSet;
-use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::bytecode;
@@ -135,13 +134,6 @@ pub fn run_with_options(opts: RunOptions<'_>) -> Result<Value, LangError> {
         (Some(p), None) => run_with_base_path(source, p),
         (Some(p), Some(vm)) => run_with_vm_and_path(source, Some(p), Some(vm)).map(|(v, _)| v),
     }
-}
-
-/// Stable module UID from module path. Same path always yields same uid across VMs.
-pub(crate) fn module_uid(path: &str) -> u64 {
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    path.hash(&mut h);
-    h.finish()
 }
 
 pub fn run(source: &str) -> Result<Value, LangError> {
@@ -304,6 +296,24 @@ pub fn run_with_vm_with_args_and_lib(
     base_path: Option<&std::path::Path>,
     source_name: Option<&std::path::Path>,
 ) -> Result<(Value, Vm), LangError> {
+    run_with_vm_with_main_args_and_lib(
+        source,
+        args.map(|a| a.into_iter().map(Some).collect()),
+        lib_path,
+        base_path,
+        source_name,
+    )
+}
+
+/// Как `run_with_vm_with_args_and_lib`, но `None` в argv означает «аргумент не передан» —
+/// соответствующий параметр `fn __main__` получает значение по умолчанию из сигнатуры.
+pub fn run_with_vm_with_main_args_and_lib(
+    source: &str,
+    args: Option<Vec<Option<String>>>,
+    lib_path: Option<&std::path::Path>,
+    base_path: Option<&std::path::Path>,
+    source_name: Option<&std::path::Path>,
+) -> Result<(Value, Vm), LangError> {
     run_with_vm_internal_with_args(
         source,
         args,
@@ -340,20 +350,6 @@ pub fn extract_globals_from_vm(vm: &mut Vm) -> std::collections::HashMap<String,
     globals_map
 }
 
-/// Собирает имена модулей из `from X import ...` в AST (для поиска lib в папках при старте).
-fn import_module_names_from_ast(ast: &[parser::ast::Stmt]) -> Vec<String> {
-    use parser::ast::{ImportStmt, Stmt};
-    let mut names = Vec::new();
-    for stmt in ast {
-        if let Stmt::Import { import_stmt, .. } = stmt {
-            if let ImportStmt::From { module, .. } = import_stmt {
-                names.push(module.clone());
-            }
-        }
-    }
-    names
-}
-
 /// Извлекает литеральное значение по умолчанию из Expr (только Literal).
 fn expr_default_to_value(expr: &parser::ast::Expr) -> Option<Value> {
     if let parser::ast::Expr::Literal { value, .. } = expr {
@@ -361,6 +357,143 @@ fn expr_default_to_value(expr: &parser::ast::Expr) -> Option<Value> {
     } else {
         None
     }
+}
+
+/// Параметр `fn __main__` для CLI: имя, имена типов из аннотации и литеральный default.
+#[derive(Debug, Clone)]
+pub struct MainParam {
+    pub name: String,
+    pub type_names: Vec<String>,
+    pub default: Option<Value>,
+}
+
+impl MainParam {
+    /// Параметр объявлен как `bool` (в т.ч. в union) — допускает CLI-флаг без значения.
+    pub fn is_bool(&self) -> bool {
+        self.type_names.iter().any(|t| t == "bool" || t == "boolean")
+    }
+}
+
+/// Сигнатура `fn __main__(...)` с типами параметров (None, если `__main__` нет).
+pub fn get_main_entry_signature(source: &str) -> Option<Vec<MainParam>> {
+    use lexer::Lexer;
+    use parser::ast::{Stmt, TypePart};
+    use parser::Parser;
+    let mut lexer = Lexer::new(source);
+    let tokens = lexer.tokenize().ok()?;
+    let preload = PreloadContext::new_for_tokens(&tokens, None).ok()?;
+    let mut parser = Parser::new_with_source_name_and_registry(tokens, None, preload.operator_registry);
+    let ast = parser.parse().ok()?;
+    for stmt in &ast {
+        if let Stmt::Function { name, params, .. } = stmt {
+            if name == "__main__" {
+                return Some(
+                    params
+                        .iter()
+                        .map(|p| {
+                            let mut type_names = Vec::new();
+                            if let Some(parts) = &p.type_annotation {
+                                TypePart::slice_walk_type_names(parts, &mut |s| {
+                                    type_names.push(s.to_string());
+                                    false
+                                });
+                            }
+                            MainParam {
+                                name: p.name.clone(),
+                                type_names,
+                                default: p.default_value.as_ref().and_then(expr_default_to_value),
+                            }
+                        })
+                        .collect(),
+                );
+            }
+        }
+    }
+    None
+}
+
+/// Приводит строку из CLI к типу i-го параметра `fn __main__`.
+/// Нетипизированные параметры и параметры вне сигнатуры остаются строками (совместимость с `argv[i]`).
+fn coerce_main_arg(
+    main_fn: Option<&bytecode::Function>,
+    i: usize,
+    raw: Option<&str>,
+) -> Result<Value, LangError> {
+    use crate::common::error::ErrorType;
+    use parser::ast::TypePart;
+    let param = main_fn.filter(|f| i < f.arity);
+    let type_names: Vec<String> = param
+        .and_then(|f| f.param_types.get(i).cloned().flatten())
+        .map(|parts| {
+            let mut names = Vec::new();
+            TypePart::slice_walk_type_names(&parts, &mut |s| {
+                names.push(s.to_string());
+                false
+            });
+            names
+        })
+        .unwrap_or_default();
+    let has = |set: &[&str]| type_names.iter().any(|t| set.contains(&t.as_str()));
+
+    let Some(raw) = raw else {
+        // Аргумент не передан: default из сигнатуры, иначе «нулевое» значение по типу.
+        if let Some(Some(v)) = param.and_then(|f| f.default_values.get(i)) {
+            return Ok(v.clone());
+        }
+        return Ok(if has(&["int", "float", "num", "number"]) {
+            Value::Number(0.0)
+        } else if has(&["str", "string"]) {
+            Value::String(String::new())
+        } else if has(&["bool", "boolean"]) {
+            Value::Bool(false)
+        } else {
+            Value::Null
+        });
+    };
+    if type_names.is_empty() || has(&["str", "string", "any"]) {
+        return Ok(Value::String(raw.to_string()));
+    }
+    let s = raw.trim();
+    let lower = s.to_ascii_lowercase();
+    if has(&["bool", "boolean"]) {
+        match lower.as_str() {
+            "true" | "1" | "yes" | "y" | "on" => return Ok(Value::Bool(true)),
+            "false" | "0" | "no" | "n" | "off" => return Ok(Value::Bool(false)),
+            _ => {}
+        }
+    }
+    if has(&["int"]) {
+        if let Ok(n) = s.parse::<i64>() {
+            return Ok(Value::Number(n as f64));
+        }
+    }
+    if has(&["float", "num", "number"]) {
+        if let Ok(n) = s.parse::<f64>() {
+            return Ok(Value::Number(n));
+        }
+    }
+    if has(&["null"]) && matches!(lower.as_str(), "null" | "none" | "") {
+        return Ok(Value::Null);
+    }
+    let known = ["bool", "boolean", "int", "float", "num", "number", "null"];
+    if type_names.iter().all(|t| known.contains(&t.as_str())) {
+        let param_name = param
+            .and_then(|f| f.param_names.get(i))
+            .map(|s| s.as_str())
+            .unwrap_or("unknown");
+        return Err(LangError::runtime_error_with_type(
+            format!(
+                "Argument '{}': cannot convert '{}' to {}",
+                param_name,
+                raw,
+                type_names.join(" | ")
+            ),
+            0,
+            ErrorType::TypeError,
+        ));
+    }
+    // Прочие типы (литеральные union, классы, коллекции): оставляем строку, их проверит вызов __main__.
+    Ok(Value::String(raw.to_string()))
 }
 
 /// Параметры `fn __main__(...)` для CLI: имена и опциональные значения по умолчанию (только литералы).
@@ -439,68 +572,6 @@ pub(crate) fn remap_function_indices_in_exports(
     }
 }
 
-/// Replace Value::Function(local_index) with Value::ModuleFunction { module_uid, local_index } in an export map.
-/// Uses stable module_uid per namespace so shared cached objects work across VMs.
-/// submodule_keys: keys in exports that are submodules (e.g. {"config", "dev_config", "prod_config"} for core.config).
-pub(crate) fn replace_function_with_module_function_in_exports(
-    exports: &mut std::collections::HashMap<String, Value>,
-    module_name: &str,
-    submodule_keys: &std::collections::HashSet<String>,
-    root_rc: Option<&Rc<RefCell<ObjectKind>>>,
-) {
-    let mut seen = HashSet::new();
-    fn replace_value(
-        v: &mut Value,
-        module_path: &str,
-        root_rc: Option<&Rc<RefCell<ObjectKind>>>,
-        seen: &mut HashSet<*const ()>,
-    ) {
-        match v {
-            Value::Function(local_index) => {
-                *v = Value::ModuleFunction {
-                    module_uid: module_uid(module_path),
-                    local_index: *local_index,
-                };
-            }
-            Value::Object(rc) => {
-                if root_rc.is_some_and(|r| Rc::ptr_eq(rc, r)) {
-                    return;
-                }
-                let ptr = Rc::as_ptr(rc) as *const ();
-                if seen.contains(&ptr) {
-                    return;
-                }
-                seen.insert(ptr);
-                match &mut *rc.borrow_mut() {
-                    ObjectKind::Legacy(map) => {
-                        for (_, inner) in map.iter_mut() {
-                            replace_value(inner, module_path, root_rc, seen);
-                        }
-                    }
-                    ObjectKind::Inline(entries) => {
-                        for (_, inner) in entries.iter_mut() {
-                            replace_value(inner, module_path, root_rc, seen);
-                        }
-                    }
-                    ObjectKind::Bucket(_) => {}
-                }
-                seen.remove(&ptr);
-            }
-            _ => {}
-        }
-    }
-    for (k, v) in exports.iter_mut() {
-        let path = if submodule_keys.contains(k) {
-            format!("{}.{}", module_name, k)
-        } else {
-            module_name.to_string()
-        };
-        replace_value(v, &path, root_rc, &mut seen);
-    }
-}
-
-const BUILTIN_NATIVE_COUNT: usize = crate::vm::globals::BUILTIN_GLOBAL_COUNT;
-
 /// Remap Value::Function(local_i) in chunk constants of merged module functions to global indices.
 /// After extending VM's function array with a module's functions, instances created by that module's
 /// code (e.g. Security with method get_code) would otherwise store Value::Function(local_index);
@@ -521,57 +592,6 @@ pub(crate) fn remap_function_constants_in_chunks(
     }
 }
 
-/// Remap NativeFunction indices in an export map so they refer to caller VM's native table.
-/// Caller must have already extended its natives with module_natives[BUILTIN_NATIVE_COUNT..].
-/// For NativeFunction(i) with i >= BUILTIN_NATIVE_COUNT: new_idx = native_start + (i - BUILTIN_NATIVE_COUNT).
-pub(crate) fn remap_native_indices_in_exports(
-    exports: &mut std::collections::HashMap<String, Value>,
-    native_start: usize,
-    root_rc: Option<&Rc<RefCell<ObjectKind>>>,
-) {
-    let mut seen = HashSet::new();
-    fn remap_value(
-        v: &mut Value,
-        native_start: usize,
-        root_rc: Option<&Rc<RefCell<ObjectKind>>>,
-        seen: &mut HashSet<*const ()>,
-    ) {
-        match v {
-            Value::NativeFunction(i) if *i >= BUILTIN_NATIVE_COUNT => {
-                *i = native_start + (*i - BUILTIN_NATIVE_COUNT);
-            }
-            Value::Object(rc) => {
-                if root_rc.is_some_and(|r| Rc::ptr_eq(rc, r)) {
-                    return;
-                }
-                let ptr = Rc::as_ptr(rc) as *const ();
-                if seen.contains(&ptr) {
-                    return;
-                }
-                seen.insert(ptr);
-                match &mut *rc.borrow_mut() {
-                    ObjectKind::Legacy(map) => {
-                        for (_, inner) in map.iter_mut() {
-                            remap_value(inner, native_start, root_rc, seen);
-                        }
-                    }
-                    ObjectKind::Inline(entries) => {
-                        for (_, inner) in entries.iter_mut() {
-                            remap_value(inner, native_start, root_rc, seen);
-                        }
-                    }
-                    ObjectKind::Bucket(_) => {}
-                }
-                seen.remove(&ptr);
-            }
-            _ => {}
-        }
-    }
-    for v in exports.values_mut() {
-        remap_value(v, native_start, root_rc, &mut seen);
-    }
-}
-
 /// Внутренняя функция выполнения кода (используется через run_with_vm_internal_with_args)
 #[allow(dead_code)]
 fn run_with_vm_internal(source: &str) -> Result<(Value, Vm), LangError> {
@@ -588,7 +608,7 @@ fn run_with_vm_internal(source: &str) -> Result<(Value, Vm), LangError> {
 /// * `source_name` - путь к исходному файлу для сообщений об ошибках.
 fn run_with_vm_internal_with_args(
     source: &str,
-    args: Option<Vec<String>>,
+    args: Option<Vec<Option<String>>>,
     lib_path: Option<&std::path::Path>,
     explicit_base_path: Option<std::path::PathBuf>,
     source_name: Option<std::path::PathBuf>,
@@ -641,67 +661,10 @@ fn run_with_vm_internal_with_args(
         debug_println!("[DEBUG run_with_vm_internal_with_args] lib_path указан явно: {:?}, загружаем __lib__.dc", lib_path_val);
         Some(run_lib_file(lib_path_val)?)
     } else {
-        // lib_path не указан - пытаемся автоматически найти __lib__.dc
-        if let Some(base_path) = base_for_lib {
-            // Сначала ищем __lib__.dc в папках по импортам (from X import ...), затем поднимаемся вверх по дереву
-            let module_names = import_module_names_from_ast(&ast);
-            // Ищем __lib__.dc только в директории скрипта или в папках импортов (base_path/<module>/__lib__.dc).
-            // Не поднимаемся вверх по дереву (find_nearest_lib), иначе при запуске из sandbox/web_api
-            // подхватывается __lib__.dc из корня репо, добавляются функции в VM до импорта core.config,
-            // и индексы конструкторов из модуля дают "Function index N out of bounds".
-            let potential_lib_path = if !module_names.is_empty() {
-                debug_println!(
-                    "[DEBUG run_with_vm_internal_with_args] Ищем __lib__.dc в папках по импортам: {:?}",
-                    module_names
-                );
-                file_import::find_lib_in_package_dirs(&base_path, &module_names)
-            } else {
-                None
-            }.or_else(|| {
-                let in_script_dir = base_path.join("__lib__.dc");
-                if in_script_dir.exists() {
-                    debug_println!(
-                        "[DEBUG run_with_vm_internal_with_args] Найден __lib__.dc в директории скрипта: {:?}",
-                        in_script_dir
-                    );
-                    Some(in_script_dir)
-                } else {
-                    None
-                }
-            });
-            if let Some(potential_lib_path) = potential_lib_path {
-                debug_println!(
-                    "[DEBUG run_with_vm_internal_with_args] Автоматически найден __lib__.dc: {:?}",
-                    potential_lib_path
-                );
-                // Передаем найденный путь в run_lib_file
-                // run_lib_file установит флаг is_executing_lib, чтобы предотвратить автоматический поиск
-                Some(run_lib_file(&potential_lib_path)?)
-            } else {
-                debug_println!(
-                    "[DEBUG run_with_vm_internal_with_args] __lib__.dc не найден ни в базовом пути, ни выше по дереву каталогов, ни в папках по импортам, начиная с: {:?}",
-                    base_path
-                );
-
-                // Специальное правило: для сценариев в директории `test_src`
-                // наличие __lib__.dc обязательно. Если базовый путь оканчивается
-                // на `test_src` и библиотека не найдена, возвращаем ошибку.
-                if base_path.ends_with("test_src") {
-                    return Err(LangError::runtime_error(
-                        format!(
-                            "Для файлов в директории '{}' требуется __lib__.dc (файл не найден ни в самой директории, ни выше по дереву каталогов)",
-                            base_path.display()
-                        ),
-                        0,
-                    ));
-                }
-
-                None
-            }
-        } else {
-            debug_println!("[DEBUG run_with_vm_internal_with_args] Базовый путь не установлен, не можем найти __lib__.dc");
-            None
-        }
+        // No implicit `__lib__.dc` preload: a package's `__lib__.dc` is the package module itself and
+        // runs once when imported (`from pkg import x`). Preloading it here ran package code twice
+        // and appended its functions ahead of the script's, shifting the script's function indices.
+        None
     };
 
     // 3. Семантический анализ
@@ -747,6 +710,8 @@ fn run_with_vm_internal_with_args(
     // Регистрируем встроенные модули (plot, settings_env, uuid) — они заполняют слоты по имени
     vm.register_all_builtin_modules()?;
     vm.ensure_builtin_globals_high_indices();
+    // `throw ValueError("...")` in the script (the other run paths do the same).
+    vm.ensure_exception_constructors();
 
     // Module isolation: register __lib__.dc as a module (no merge). Main must "from __lib__ import X" to use lib exports.
     if let Some(mut lib_vm) = lib_vm {
@@ -801,10 +766,14 @@ fn run_with_vm_internal_with_args(
     vm.ensure_globals_from_chunk(&chunk);
     // Единственный слот "argv": сохраняем индекс и пушим в конец; перед run пишем по этому индексу.
     let script_args = args.unwrap_or_default();
+    // Значения argv для параметров `fn __main__` приводятся к объявленным типам (bool/int/float/null),
+    // пропуски (None) заполняются значением по умолчанию из сигнатуры.
+    let main_fn = functions.iter().find(|f| f.name == "__main__");
     let argv: Vec<Value> = script_args
         .iter()
-        .map(|s| Value::String(s.clone()))
-        .collect();
+        .enumerate()
+        .map(|(i, s)| coerce_main_arg(main_fn, i, s.as_deref()))
+        .collect::<Result<_, _>>()?;
     let argv_array = Value::Array(Rc::new(RefCell::new(argv)));
     let argv_id = vm.with_stores_mut(|store, heap| {
         crate::vm::store_convert::store_value(argv_array, store, heap)

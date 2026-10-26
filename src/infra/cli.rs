@@ -113,7 +113,9 @@ pub fn print_help() {
     println!("  • App script (ws_app.dc): @ws_route(\"type\") handlers, websocket.configure()");
     println!("    - DCP assets are read from in-memory VFS (no temp_sessions folder)");
     println!("    - getcwd() returns empty string");
-    println!("    - Local save()/write is blocked in DCP WebSocket sessions");
+    println!("    - Local save()/write is blocked in DCP WebSocket sessions; configure({{\"allow_write\": true}}) gives each connection a session folder (./…, quota write_quota_mb)");
+    println!("    - execute_policy is \"restricted\" by default; opt in with configure({{\"execute_policy\": \"allow_all\"}})");
+    println!("    - Host details (home, temp, user, host, env, IP) are hidden from client code");
     println!("  • Send binary WebSocket frame with raw .dcp package bytes (magic DCPK)");
     println!(
         "  • Receive JSON: {{\"success\": true, \"output\": \"...\", \"error\": null}}"
@@ -178,6 +180,77 @@ pub fn extract_param_args(args: &[String], param_name: &str) -> Vec<String> {
         } else {
             i += 1;
         }
+    }
+    out
+}
+
+/// Параметр `fn __main__` для сопоставления CLI-аргументов.
+pub struct MainArgSpec<'a> {
+    pub name: &'a str,
+    /// Параметр типа `bool`: `--name` без значения → `true`, `--no-name` → `false`.
+    pub is_bool: bool,
+}
+
+/// Сопоставляет аргументы командной строки параметрам `fn __main__`.
+/// Именованные (`--name=value`, `--name value`, `--flag`, `--no-flag`) имеют приоритет;
+/// позиционные заполняют оставшиеся параметры по порядку. `None` — аргумент не передан
+/// (будет использовано значение по умолчанию). Хвостовые `None` отбрасываются.
+pub fn map_main_args(
+    raw_args: &[String],
+    script_args: &[String],
+    params: &[MainArgSpec],
+) -> Vec<Option<String>> {
+    let find = |key: &str| {
+        params
+            .iter()
+            .position(|p| p.name == key || p.name.replace('_', "-") == key)
+    };
+    let mut named: Vec<Option<String>> = vec![None; params.len()];
+    let mut consumed_values: Vec<&String> = Vec::new();
+    let mut i = 0;
+    while i < raw_args.len() {
+        let Some(opt) = raw_args[i].strip_prefix("--") else {
+            i += 1;
+            continue;
+        };
+        if let Some((key, value)) = opt.split_once('=') {
+            if let Some(idx) = find(key) {
+                named[idx] = Some(value.to_string());
+            }
+        } else if let Some(idx) = find(opt) {
+            if params[idx].is_bool {
+                named[idx] = Some("true".to_string());
+            } else if let Some(next) = raw_args.get(i + 1).filter(|n| !n.starts_with('-')) {
+                named[idx] = Some(next.clone());
+                consumed_values.push(next);
+                i += 1;
+            }
+        } else if let Some(idx) = opt
+            .strip_prefix("no-")
+            .and_then(|k| find(k))
+            .filter(|&idx| params[idx].is_bool)
+        {
+            named[idx] = Some("false".to_string());
+        }
+        i += 1;
+    }
+
+    // Значения, забранные `--name value`, не должны попасть в позиционные.
+    let mut positional: Vec<&String> = script_args.iter().collect();
+    for v in consumed_values {
+        if let Some(pos) = positional.iter().position(|p| *p == v) {
+            positional.remove(pos);
+        }
+    }
+    let mut positional = positional.into_iter();
+    let mut out: Vec<Option<String>> = named
+        .into_iter()
+        .map(|v| v.or_else(|| positional.next().cloned()))
+        .collect();
+    // Лишние позиционные (больше, чем параметров) остаются доступны через argv.
+    out.extend(positional.cloned().map(Some));
+    while matches!(out.last(), Some(None)) {
+        out.pop();
     }
     out
 }

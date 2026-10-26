@@ -1,0 +1,7 @@
+import cyc_a
+
+B = 2
+
+fn read_a() {
+    return cyc_a.A
+}

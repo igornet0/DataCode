@@ -207,6 +207,27 @@ If a `.dc` file declares `fn __main__()`, it runs **only when that file is expli
 
 Top-level code outside `fn __main__` still runs on first module load (global initialization). Put demos and module tests in `__main__` so they do not run on import.
 
+### Command-line arguments
+
+`fn __main__` parameters are filled from the run arguments: positional ones in order, named ones as `--name=value` or `--name value`; a `bool` parameter takes the flag `--name` (`true`) or `--no-name` (`false`). Underscores in a name may be written as hyphens (`max_rows` → `--max-rows`). Named arguments take priority; positional ones fill the remaining parameters.
+
+```datacode
+fn __main__(name, n: int = 2, verbose: bool = false) {
+    print(name, n, verbose)
+}
+```
+
+```bash
+datacode app.dc Bob               # Bob 2 false
+datacode app.dc Bob 5             # Bob 5 false
+datacode app.dc --n 3 Bob --verbose
+datacode app.dc Bob --n=4 --no-verbose
+```
+
+- The value is converted to the annotated type (`int`, `float`, `bool`, `null`); `bool` accepts `true/false`, `1/0`, `yes/no`, `on/off`. If conversion fails you get `Argument 'n': cannot convert 'abc' to int`. Unannotated and `str` parameters receive a string.
+- A missing argument takes the default from the signature, or without one the type's "zero" value (`0`, `""`, `false`, otherwise `null`).
+- All values are also available in the global `argv` (in parameter order); extra positional arguments go to the end of `argv`.
+
 ---
 
 ## Summary
@@ -214,7 +235,7 @@ Top-level code outside `fn __main__` still runs on first module load (global ini
 | Topic | Description |
 |-------|-------------|
 | **Syntax** | `import M` / `from M import X, Y as Z, *` |
-| **`fn __main__`** | Only when running the file as a script; not on `import` / `from … import`. |
+| **`fn __main__`** | Only when running the file as a script; not on `import` / `from … import`. Parameters are filled from CLI (`--name=value`, `--flag`). |
 | **Base path** | Set to the script directory when running from CLI; local modules resolve relative to it. |
 | **File module** | `<base_path>/<name>.dc` → module `name`. |
 | **Package** | `<base_path>/<name>/__lib__.dc` → module `name`; takes priority over a same-named file. |

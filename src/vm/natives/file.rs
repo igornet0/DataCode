@@ -28,9 +28,50 @@ pub fn native_getcwd(_args: &[Value]) -> Value {
     }
 }
 
+/// `(exists, is_file, is_dir)` for a `Path` property lookup.
+///
+/// Inside a WebSocket session the answer comes from the DCP package VFS only:
+/// the server disk is never probed, so `exists` cannot be used to explore it.
+pub fn path_status(path: &PathBuf) -> (bool, bool, bool) {
+    if let Some(vfs) = crate::dcp::get_dcp_vfs() {
+        let Ok(key) = crate::dcp::normalize_vfs_path(path) else {
+            return (false, false, false);
+        };
+        if key.is_empty() {
+            return (true, false, true);
+        }
+        let is_file = vfs.contains_file(&key);
+        let is_dir = !is_file && vfs.is_dir(&key);
+        if is_file || is_dir {
+            return (true, is_file, is_dir);
+        }
+        return session_folder_status(std::path::Path::new(&key));
+    }
+    if crate::websocket::client_sandbox_active() {
+        return session_folder_status(path);
+    }
+    (path.exists(), path.is_file(), path.is_dir())
+}
+
+/// Status of a path written earlier in this session (session folder only).
+fn session_folder_status(path: &std::path::Path) -> (bool, bool, bool) {
+    let Some(dir) = crate::websocket::session_ve::ve_dir() else {
+        return (false, false, false);
+    };
+    let raw = path.to_string_lossy();
+    if path.is_absolute() || raw.split(['/', '\\']).any(|part| part == "..") {
+        return (false, false, false);
+    }
+    let target = dir.join(raw.trim_start_matches("./"));
+    (target.exists(), target.is_file(), target.is_dir())
+}
+
 /// Безопасное форматирование пути для сообщений об ошибках
 /// В режиме --use-ve преобразует полный путь в относительный
 pub fn format_path_for_error(path: &PathBuf) -> String {
+    if let Some(shown) = crate::websocket::session_ve::display_if_inside(path) {
+        return shown;
+    }
     if crate::dcp::dcp_vfs_active() {
         if let Ok(key) = crate::dcp::normalize_vfs_path(path) {
             return crate::dcp::format_logical_path(&key);
@@ -430,15 +471,21 @@ fn list_files_vfs(dir: &PathBuf, regex: Option<&Regex>, vfs: &crate::dcp::DcpVfs
         Err(_) => return Vec::new(),
     };
 
+    let mut files = Vec::new();
     if !prefix.is_empty() && !vfs.is_dir(&prefix) {
         if vfs.contains_file(&prefix) {
             return vec![Value::Path(crate::dcp::logical_path_to_pathbuf(&prefix))];
         }
-        return Vec::new();
+    } else {
+        list_files_vfs_recursive(&prefix, regex, vfs, &mut files);
     }
-
-    let mut files = Vec::new();
-    list_files_vfs_recursive(&prefix, regex, vfs, &mut files);
+    // Files written earlier in this session, as logical `./…` paths.
+    for rel in crate::websocket::session_ve::list_written(&prefix) {
+        let name = rel.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if regex.as_ref().is_none_or(|re| re.is_match(name)) {
+            files.push(Value::Path(rel));
+        }
+    }
     files
 }
 

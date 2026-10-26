@@ -1,0 +1,8 @@
+# Циклический импорт: cyc_a -> cyc_b -> cyc_a.
+import cyc_b
+
+A = 1
+
+fn read_b() {
+    return cyc_b.B
+}

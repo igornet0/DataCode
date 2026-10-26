@@ -83,6 +83,52 @@ fn find_constructor_with_default_params(
 
 /// Under-arity ctor from class object keys `new_M` (M >= call_arity). Prefers smallest M.
 /// Returns `(callee, total_arity, host_function_index)` for padding defaults.
+/// Constructor with `*args` / `**kwargs` (`new_v<k>`) taking `call_arity` arguments: k regular
+/// parameters, k <= call_arity; the one with the most regular parameters wins. Class object keys
+/// first (the class's own functions), then functions named `Class::new_v<k>`.
+fn find_variadic_constructor(
+    class_obj: &crate::common::value::ObjectKind,
+    class_name: Option<&str>,
+    call_arity: usize,
+    functions: &[crate::bytecode::Function],
+    vm_ptr: *mut crate::vm::vm::Vm,
+) -> Option<usize> {
+    let fixed_of = |suffix: &str| suffix.strip_prefix('v').and_then(|k| k.parse::<usize>().ok());
+    let mut best: Option<(usize, usize)> = None;
+    let consider = |best: &mut Option<(usize, usize)>, fixed: usize, idx: usize| {
+        let takes = functions[idx].variadic_pos_index.is_some() || fixed == call_arity;
+        if fixed <= call_arity && takes && best.is_none_or(|(f, _)| fixed > f) {
+            *best = Some((fixed, idx));
+        }
+    };
+    for (key, val) in class_obj.str_key_pairs() {
+        let Some(fixed) = key.strip_prefix("new_").and_then(fixed_of) else {
+            continue;
+        };
+        let idx = match val {
+            Value::Function(i) if *i < functions.len() => *i,
+            Value::ModuleFunction {
+                module_uid,
+                local_index,
+            } => match unsafe { (*vm_ptr).get_module_function_index(*module_uid, *local_index) } {
+                Some(i) => i,
+                None => continue,
+            },
+            _ => continue,
+        };
+        consider(&mut best, fixed, idx);
+    }
+    if best.is_none() {
+        let prefix = format!("{}::new_", class_name?);
+        for (idx, f) in functions.iter().enumerate() {
+            if let Some(fixed) = f.name.strip_prefix(&prefix).and_then(fixed_of) {
+                consider(&mut best, fixed, idx);
+            }
+        }
+    }
+    best.map(|(_, idx)| idx)
+}
+
 fn find_constructor_with_defaults_from_class_keys(
     class_obj: &crate::common::value::ObjectKind,
     call_arity: usize,
@@ -942,6 +988,17 @@ pub(super) fn resolve_call_callee(
                         constructing_class_opt = Some(Value::Object(class_rc.clone()));
                         idx
                     })
+                })
+            })
+            .or_else(|| {
+                // `new Class(a, *rest)`: no exact overload for this many arguments.
+                let found = {
+                    let obj_ref = class_rc.borrow();
+                    find_variadic_constructor(&obj_ref, class_name.as_deref(), arity, functions, vm_ptr)
+                };
+                found.map(|idx| {
+                    constructing_class_opt = Some(Value::Object(class_rc.clone()));
+                    idx
                 })
             })
         }) {

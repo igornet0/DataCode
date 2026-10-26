@@ -1,0 +1,29 @@
+# Базовый модуль: функции с разным числом параметров.
+fn zero() {
+    return 5
+}
+
+fn inc(x) {
+    return x + 1
+}
+
+fn mul(a, b) {
+    return a * b
+}
+
+fn with_default(x, y = 2) {
+    return x * 10 + y
+}
+
+# Параметры не в алфавитном порядке: имена нельзя раскладывать сортировкой.
+fn sub(z, a) {
+    return z - a
+}
+
+fn count_all(*xs) {
+    return len(xs)
+}
+
+fn head_and_rest(first, *rest) {
+    return first * 100 + len(rest)
+}

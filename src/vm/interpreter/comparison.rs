@@ -64,7 +64,7 @@ fn try_special_compare(
     if let Some(result) =
         crate::vm::special_methods::try_dispatch_binary_compare(a, method, b)?
     {
-        stack::push_id(stack, store_value(result, value_store, heavy_store));
+        crate::vm::memory::push_result(stack, result, value_store, heavy_store);
         return Ok(Some(VMStatus::Continue));
     }
     Ok(None)
@@ -118,7 +118,7 @@ pub fn op_equal(
         )),
         _ => operations::binary_equal(&a, &b),
     };
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -170,7 +170,7 @@ pub fn op_not_equal(
         )),
         _ => operations::binary_not_equal(&a, &b),
     };
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -209,7 +209,7 @@ pub fn op_greater(
             heavy_store,
         )?,
     };
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -278,7 +278,7 @@ pub fn op_less(
             heavy_store,
         )?,
     };
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -317,7 +317,7 @@ pub fn op_greater_equal(
             heavy_store,
         )?,
     };
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -356,7 +356,7 @@ pub fn op_less_equal(
             heavy_store,
         )?,
     };
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 

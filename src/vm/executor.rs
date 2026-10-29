@@ -1260,7 +1260,15 @@ pub(crate) fn execute_instruction(
             // expression temps in [caller.stack_start .. callee.stack_start).
             let callee_stack_start = frame.stack_start;
             let return_tv = stack::pop_return_value(stack, callee_stack_start);
-            let return_value_id = tagged_to_value_id(return_tv, value_store);
+            // Immediates (small ints, floats, bools, null) go back to the caller as-is;
+            // only heap values, top-level returns and cached fns need a ValueId.
+            let keep_immediate =
+                !return_tv.is_heap() && frames.len() > 1 && !frame.function.is_cached;
+            let return_value_id = if keep_immediate {
+                NULL_VALUE_ID
+            } else {
+                tagged_to_value_id(return_tv, value_store)
+            };
             if cfg!(debug_assertions) {
                 if frame.function.name.contains("::new_") && return_tv.is_heap() {
                     let key_count = match value_store.get(return_tv.get_heap_id()) {
@@ -1311,7 +1319,9 @@ pub(crate) fn execute_instruction(
                 }
                 frames.pop();
                 let return_value_id = value_store.leave_ephemeral(return_value_id);
-                let promoted_tv = if return_value_id == NULL_VALUE_ID {
+                let promoted_tv = if keep_immediate {
+                    return_tv
+                } else if return_value_id == NULL_VALUE_ID {
                     TaggedValue::null()
                 } else {
                     TaggedValue::from_heap(return_value_id)

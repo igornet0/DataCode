@@ -100,6 +100,36 @@ fn resolve_array_index(
     }
 }
 
+/// Native index of an array method property (`arr.push`, `arr.pop`, ...).
+pub(crate) fn array_method_index(key: &str) -> Option<usize> {
+    use crate::vm::native_indices::builtin;
+    match key {
+        "push" => Some(builtin::PUSH),
+        "pop" => Some(builtin::POP),
+        "unique" => Some(builtin::UNIQUE),
+        "reverse" => Some(builtin::REVERSE),
+        "sort" => Some(builtin::SORT),
+        "sum" => Some(builtin::SUM),
+        "average" => Some(builtin::AVERAGE),
+        "count" => Some(builtin::COUNT),
+        "any" => Some(builtin::ANY),
+        "all" => Some(builtin::ALL),
+        "chunk" => Some(builtin::CHUNK),
+        _ => None,
+    }
+}
+
+/// [`array_method_index`] for a key stored as an interned string cell.
+pub(crate) fn array_method_index_for_key_id(
+    key_id: crate::common::value_store::ValueId,
+    value_store: &ValueStore,
+) -> Option<usize> {
+    let ValueCell::String(sid) = value_store.get(key_id)? else {
+        return None;
+    };
+    array_method_index(value_store.get_string(*sid)?)
+}
+
 /// Get element from Array. Called when container is Value::Array.
 #[allow(clippy::too_many_arguments)]
 pub fn get_array(
@@ -114,20 +144,7 @@ pub fn get_array(
     index_value: Value,
 ) -> Result<VMStatus, LangError> {
     if let Value::String(key) = &index_value {
-        let method_index = match key.as_str() {
-            "push" => Some(crate::vm::native_indices::builtin::PUSH),
-            "pop" => Some(crate::vm::native_indices::builtin::POP),
-            "unique" => Some(crate::vm::native_indices::builtin::UNIQUE),
-            "reverse" => Some(crate::vm::native_indices::builtin::REVERSE),
-            "sort" => Some(crate::vm::native_indices::builtin::SORT),
-            "sum" => Some(crate::vm::native_indices::builtin::SUM),
-            "average" => Some(crate::vm::native_indices::builtin::AVERAGE),
-            "count" => Some(crate::vm::native_indices::builtin::COUNT),
-            "any" => Some(crate::vm::native_indices::builtin::ANY),
-            "all" => Some(crate::vm::native_indices::builtin::ALL),
-            "chunk" => Some(crate::vm::native_indices::builtin::CHUNK),
-            _ => None,
-        };
+        let method_index = array_method_index(key);
         if let Some(idx) = method_index {
             stack::push_id(
                 stack,
@@ -276,20 +293,7 @@ pub fn get_array_view(
     index_value: Value,
 ) -> Result<VMStatus, LangError> {
     if let Value::String(key) = &index_value {
-        let method_index = match key.as_str() {
-            "push" => Some(crate::vm::native_indices::builtin::PUSH),
-            "pop" => Some(crate::vm::native_indices::builtin::POP),
-            "unique" => Some(crate::vm::native_indices::builtin::UNIQUE),
-            "reverse" => Some(crate::vm::native_indices::builtin::REVERSE),
-            "sort" => Some(crate::vm::native_indices::builtin::SORT),
-            "sum" => Some(crate::vm::native_indices::builtin::SUM),
-            "average" => Some(crate::vm::native_indices::builtin::AVERAGE),
-            "count" => Some(crate::vm::native_indices::builtin::COUNT),
-            "any" => Some(crate::vm::native_indices::builtin::ANY),
-            "all" => Some(crate::vm::native_indices::builtin::ALL),
-            "chunk" => Some(crate::vm::native_indices::builtin::CHUNK),
-            _ => None,
-        };
+        let method_index = array_method_index(key);
         if let Some(idx) = method_index {
             stack::push_id(
                 stack,

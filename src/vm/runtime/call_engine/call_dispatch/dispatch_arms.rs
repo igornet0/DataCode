@@ -13,7 +13,7 @@ use crate::vm::heavy_store::HeavyStore;
 use crate::vm::host::HostEntry;
 use crate::vm::interpreter::helpers::pop_to_value_id;
 use crate::vm::stack;
-use crate::vm::store_convert::{load_value, store_value};
+use crate::vm::store_convert::load_value;
 use crate::vm::types::VMStatus;
 use crate::vm::types::{ExplicitPrimaryKey, ExplicitRelation};
 
@@ -163,7 +163,7 @@ pub(super) fn dispatch_call_arms(
                     Err(e) => return Err(e),
                 }
             }
-            stack::push_id(stack, store_value(result, value_store, heavy_store));
+            crate::vm::memory::push_result(stack, result, value_store, heavy_store);
             Ok(VMStatus::Continue)
         }
         _ => {

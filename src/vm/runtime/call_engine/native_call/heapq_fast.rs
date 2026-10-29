@@ -274,12 +274,12 @@ fn compact_heap_push_item(tv: TaggedValue, store: &mut ValueStore) -> TaggedValu
 
 #[inline]
 fn try_tagged_partial_cmp(a: TaggedValue, b: TaggedValue) -> Option<Ordering> {
-    if a.is_number() && b.is_number() {
-        return a.get_f64().partial_cmp(&b.get_f64());
-    }
     // A* priorities are mostly `int` immediates: compare without building `Value`s.
     if a.is_int() && b.is_int() {
         return Some(a.get_i32().cmp(&b.get_i32()));
+    }
+    if a.is_number() && b.is_number() {
+        return a.get_f64().partial_cmp(&b.get_f64());
     }
     // NaN keeps the numeric sort-class ordering below.
     if a.is_int() && b.is_number() && !b.get_f64().is_nan() {

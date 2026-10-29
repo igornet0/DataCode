@@ -141,7 +141,7 @@ fn stress_test(num_runs: int = 100) {
     for _ in range(1000): blocked_cells.add((random_int(0, rows - 1), random_int(0, cols - 1)))
 
     start = (0, 0)
-    goal = (559, 1234)
+    goal = (50, 234)  # внутри сетки 100x500
     blocked_cells.discard(start)
     blocked_cells.discard(goal)
 

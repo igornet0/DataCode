@@ -1289,3 +1289,21 @@ fn value_to_slot_arena(v: &Value, store: &mut ValueStore, heap: &mut HeavyStore)
         _ => TaggedValue::from_heap(store_value_arena(v.clone(), store, heap)),
     }
 }
+
+/// Push an operation result: an `int` that fits i32 goes on the stack as an immediate,
+/// everything else is stored on the heap (as `push_id(store_value(..))`).
+#[inline]
+pub fn push_result(
+    stack: &mut Vec<TaggedValue>,
+    v: Value,
+    store: &mut ValueStore,
+    heap: &mut HeavyStore,
+) {
+    if let Value::Int(iv) = v {
+        if let Some(tv) = TaggedValue::try_from_int_iv(iv) {
+            stack::push(stack, tv);
+            return;
+        }
+    }
+    stack::push_id(stack, store_value(v, store, heap));
+}

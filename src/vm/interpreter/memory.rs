@@ -22,6 +22,7 @@ use std::rc::Rc;
 
 /// Execute LoadGlobal(index).
 #[allow(clippy::too_many_arguments)]
+#[inline]
 pub(crate) fn op_load_global(
     index: usize,
     line: usize,
@@ -37,8 +38,62 @@ pub(crate) fn op_load_global(
     vm_ptr: *mut crate::vm::vm::Vm,
 ) -> Result<VMStatus, LangError> {
     let frame = frames.last().unwrap();
-    let mut effective_index = index;
     let argv_slot_for_resolve = unsafe { (*vm_ptr).get_argv_slot_index() };
+    // Fast path: an in-range global that is not argv. Inline slots push as-is; heap slots push
+    // their id unless the cell needs the legacy fixups in the slow path (unset, Null, constructor
+    // arrays).
+    if index < globals.len()
+        && Some(index) != argv_slot_for_resolve
+        && frame.function.chunk.global_names.get(&index).map_or(true, |n| n != "argv")
+        && global_names.get(&index).map_or(true, |n| n != "argv")
+    {
+        match globals[index] {
+            GlobalSlot::Inline(tv) => {
+                stack::push(stack, tv);
+                return Ok(VMStatus::Continue);
+            }
+            GlobalSlot::Heap(id) => {
+                if id != crate::common::value_store::UNSET_GLOBAL_ID
+                    && !crate::common::debug::is_debug_enabled()
+                    && matches!(
+                        value_store.get(id),
+                        Some(c) if !matches!(c, ValueCell::Null | ValueCell::Array(_))
+                    )
+                {
+                    stack::push_id(stack, id);
+                    return Ok(VMStatus::Continue);
+                }
+            }
+        }
+    }
+    op_load_global_slow(
+        index, line, stack, frames, globals, global_names, functions, exception_handlers,
+        loaded_modules, value_store, heavy_store, vm_ptr, argv_slot_for_resolve,
+    )
+}
+
+/// Everything `op_load_global`'s fast path does not cover: out-of-range indices, argv, unset
+/// slots and the Null / constructor-array fixups.
+#[allow(clippy::too_many_arguments)]
+#[cold]
+#[inline(never)]
+fn op_load_global_slow(
+    index: usize,
+    line: usize,
+    stack: &mut Vec<TaggedValue>,
+    frames: &mut Vec<CallFrame>,
+    globals: &mut Vec<GlobalSlot>,
+    global_names: &mut std::collections::BTreeMap<usize, String>,
+    functions: &mut Vec<crate::bytecode::Function>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    loaded_modules: &mut std::collections::HashSet<String>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+    vm_ptr: *mut crate::vm::vm::Vm,
+    argv_slot_for_resolve: Option<usize>,
+) -> Result<VMStatus, LangError> {
+    let frame = frames.last().unwrap();
+    let mut effective_index = index;
     if index >= globals.len() {
         // Main chunk: never resolve undefined sentinel after ImportFrom — internal module
         // names (e.g. `settings`) may exist in caller global_names for patched module functions

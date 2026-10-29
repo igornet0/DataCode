@@ -42,7 +42,7 @@ fn try_special_binary_op(
     if let Some(result) =
         crate::vm::special_methods::try_dispatch_binary_arithmetic(a, method, b)?
     {
-        stack::push_id(stack, store_value(result, value_store, heavy_store));
+        crate::vm::memory::push_result(stack, result, value_store, heavy_store);
         return Ok(Some(VMStatus::Continue));
     }
     Ok(None)
@@ -235,7 +235,7 @@ pub fn op_add(
         return Ok(status);
     }
     if let Some(v) = try_int_binop_values(&a, &b, |x, y| x.wrapping_add(y)) {
-        stack::push_id(stack, store_value(v, value_store, heavy_store));
+        crate::vm::memory::push_result(stack, v, value_store, heavy_store);
         return Ok(VMStatus::Continue);
     }
     let mixed_float_int = (matches!(a, Value::Number(_)) && matches!(b, Value::Int(_)))
@@ -257,7 +257,7 @@ pub fn op_add(
         }
     }
     if let Some(v) = ieee_binop_f64_null_zero(&a, &b, |x, y| x + y) {
-        stack::push_id(stack, store_value(v, value_store, heavy_store));
+        crate::vm::memory::push_result(stack, v, value_store, heavy_store);
         return Ok(VMStatus::Continue);
     }
     let result = operations::binary_add(
@@ -269,7 +269,7 @@ pub fn op_add(
         value_store,
         heavy_store,
     )?;
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -340,7 +340,7 @@ pub fn op_sub(
         return Ok(status);
     }
     if let Some(v) = try_int_binop_values(&a, &b, |x, y| x.wrapping_sub(y)) {
-        stack::push_id(stack, store_value(v, value_store, heavy_store));
+        crate::vm::memory::push_result(stack, v, value_store, heavy_store);
         return Ok(VMStatus::Continue);
     }
     let result = if let Some(v) = ieee_binop_f64_null_zero(&a, &b, |x, y| x - y) {
@@ -356,7 +356,7 @@ pub fn op_sub(
             heavy_store,
         )?
     };
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -407,11 +407,11 @@ pub fn op_mul(
         return Ok(status);
     }
     if let Some(v) = try_int_binop_values(&a, &b, |x, y| x.wrapping_mul(y)) {
-        stack::push_id(stack, store_value(v, value_store, heavy_store));
+        crate::vm::memory::push_result(stack, v, value_store, heavy_store);
         return Ok(VMStatus::Continue);
     }
     if let Some(v) = ieee_binop_f64(&a, &b, |x, y| x * y) {
-        stack::push_id(stack, store_value(v, value_store, heavy_store));
+        crate::vm::memory::push_result(stack, v, value_store, heavy_store);
         return Ok(VMStatus::Continue);
     }
     let result = operations::binary_mul(
@@ -423,7 +423,7 @@ pub fn op_mul(
             value_store,
             heavy_store,
         )?;
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -471,7 +471,7 @@ pub fn op_binary_op(
         value_store,
         heavy_store,
     )?;
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -503,7 +503,7 @@ pub fn op_matmul(
     let a = load_value(a_id, value_store, heavy_store);
     let b = load_value(b_id, value_store, heavy_store);
     if let Some(v) = ieee_binop_f64(&a, &b, |x, y| x * y) {
-        stack::push_id(stack, store_value(v, value_store, heavy_store));
+        crate::vm::memory::push_result(stack, v, value_store, heavy_store);
         return Ok(VMStatus::Continue);
     }
     let result = operations::binary_matmul(
@@ -515,7 +515,7 @@ pub fn op_matmul(
         value_store,
         heavy_store,
     )?;
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -622,7 +622,7 @@ pub fn op_div(
             value_store,
             heavy_store,
         )?;
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -695,7 +695,7 @@ pub fn op_int_div(
         value_store,
         heavy_store,
     )?;
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -850,7 +850,7 @@ pub fn op_mod(
         value_store,
         heavy_store,
     )?;
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -878,7 +878,7 @@ pub fn op_pow(
         return Ok(status);
     }
     if let Some(v) = ieee_binop_f64(&a, &b, |x, y| x.powf(y)) {
-        stack::push_id(stack, store_value(v, value_store, heavy_store));
+        crate::vm::memory::push_result(stack, v, value_store, heavy_store);
         return Ok(VMStatus::Continue);
     }
     let result = operations::binary_pow(
@@ -890,7 +890,7 @@ pub fn op_pow(
         value_store,
         heavy_store,
     )?;
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -951,7 +951,7 @@ pub fn op_negate(
         value_store,
         heavy_store,
     )?;
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -970,7 +970,7 @@ pub fn op_not(
     let val_id = tagged_to_value_id(val_tv, value_store);
     let value = load_value(val_id, value_store, heavy_store);
     let result = operations::unary_not(&value);
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -994,7 +994,7 @@ pub fn op_or(
     let a = load_value(a_id, value_store, heavy_store);
     let b = load_value(b_id, value_store, heavy_store);
     let result = operations::binary_or(&a, &b);
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }
 
@@ -1018,6 +1018,6 @@ pub fn op_and(
     let a = load_value(a_id, value_store, heavy_store);
     let b = load_value(b_id, value_store, heavy_store);
     let result = operations::binary_and(&a, &b);
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    crate::vm::memory::push_result(stack, result, value_store, heavy_store);
     Ok(VMStatus::Continue)
 }

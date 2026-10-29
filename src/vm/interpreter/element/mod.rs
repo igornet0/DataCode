@@ -1355,6 +1355,20 @@ pub(crate) fn op_get_array_element(
         }
     }
 
+    // `arr.push(...)` etc.: resolve the array method by name without materializing the array.
+    if matches!(
+        value_store.get(container_id),
+        Some(ValueCell::Array(_)) | Some(ValueCell::ArrayView { .. })
+    ) {
+        if let Some(idx) = array_ops::array_method_index_for_key_id(index_value_id, value_store) {
+            stack::push_id(
+                stack,
+                store_value(Value::NativeFunction(idx), value_store, heavy_store),
+            );
+            return Ok(VMStatus::Continue);
+        }
+    }
+
     let index_value = load_value(index_value_id, value_store, heavy_store);
     let container = load_value(container_id, value_store, heavy_store);
     if crate::common::debug::is_debug_enabled() {
@@ -1886,7 +1900,7 @@ pub(crate) fn op_get_array_element(
                     Err(e) => Err(e),
                 };
             }
-            stack::push_id(stack, store_value(result, value_store, heavy_store));
+            crate::vm::memory::push_result(stack, result, value_store, heavy_store);
             return Ok(VMStatus::Continue);
         }
         Value::DatabaseEngine(_engine_rc) => {

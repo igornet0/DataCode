@@ -18,7 +18,7 @@ use crate::vm::host::HostEntry;
 use crate::vm::stack;
 use crate::vm::memory::{canonical_integral_from_key_id, push_stack_value_id, slot_to_value};
 use crate::vm::store_convert::{
-    load_value, store_value, tagged_to_value_id,
+    load_value, tagged_to_value_id,
     update_cell_if_mutable,
 };
 use crate::vm::types::VMStatus;
@@ -814,6 +814,12 @@ pub(crate) fn execute_native_call(
     // Drop argument clones before materializing the return value (smaller peak stack at return).
     native_args_buffer.clear();
 
-    stack::push_id(stack, store_value(result, value_store, heavy_store));
+    // Top-level results may leave the VM as-is: keep the Int cell there so the int type
+    // survives (an immediate would come back as Number); inside functions push immediates.
+    if frames.len() > 1 {
+        crate::vm::memory::push_result(stack, result, value_store, heavy_store);
+    } else {
+        stack::push_id(stack, crate::vm::memory::store_value(result, value_store, heavy_store));
+    }
     Ok(VMStatus::Continue)
 }

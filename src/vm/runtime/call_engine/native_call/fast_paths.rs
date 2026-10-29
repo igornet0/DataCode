@@ -394,8 +394,7 @@ pub(super) fn try_cast_typeof_fast_path(
         }
     });
     if let Some(v) = result_value {
-        let result_id = store_value(v, value_store, heavy_store);
-        stack::push_id(stack, result_id);
+        crate::vm::memory::push_result(stack, v, value_store, heavy_store);
         Some(VMStatus::Continue)
     } else {
         stack::push_id(stack, arg_id);

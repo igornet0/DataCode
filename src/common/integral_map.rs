@@ -182,6 +182,7 @@ impl IntegralMap {
         self.get(canonical).is_some()
     }
 
+    #[inline]
     pub fn get_mut(&mut self, canonical: i64) -> Option<&mut IntegralSlot> {
         if self.len == 0 {
             return None;
@@ -201,6 +202,7 @@ impl IntegralMap {
         None
     }
 
+    #[inline]
     pub fn get(&self, canonical: i64) -> Option<IntegralSlot> {
         if self.len == 0 {
             return None;
@@ -226,29 +228,28 @@ impl IntegralMap {
         self.get(canonical).map(IntegralSlot::heap_value_id)
     }
 
+    #[inline]
     pub fn insert(&mut self, canonical: i64, slot: IntegralSlot) {
-        if self.keys.is_empty() {
-            self.grow(8);
-        }
         if self.len * 10 >= self.keys.len() * 7 {
-            self.grow(self.keys.len() * 2);
+            self.grow((self.keys.len() * 2).max(8));
         }
-        let cap = self.keys.len();
-        let mut idx = hash_slot(canonical, cap);
-        for _ in 0..cap {
+        let mask = self.keys.len() - 1;
+        let mut idx = hash_slot(canonical, mask + 1);
+        // Load factor < 0.7 guarantees an empty slot, so the probe terminates.
+        loop {
             let k = self.keys[idx];
-            if k == EMPTY_KEY || k == canonical {
-                if k == EMPTY_KEY {
-                    self.len += 1;
-                }
+            if k == canonical {
+                self.slots[idx] = slot;
+                return;
+            }
+            if k == EMPTY_KEY {
+                self.len += 1;
                 self.keys[idx] = canonical;
                 self.slots[idx] = slot;
                 return;
             }
-            idx = (idx + 1) & (cap - 1);
+            idx = (idx + 1) & mask;
         }
-        self.grow(cap * 2);
-        self.insert(canonical, slot);
     }
 
     pub fn insert_heap(&mut self, canonical: i64, value_id: ValueId) {
@@ -259,6 +260,7 @@ impl IntegralMap {
         self.insert(canonical, IntegralSlot::from_tagged(tv));
     }
 
+    #[inline]
     pub fn remove(&mut self, canonical: i64) -> Option<IntegralSlot> {
         if self.len == 0 {
             return None;
@@ -322,6 +324,8 @@ fn hash_slot(key: i64, cap: usize) -> usize {
 }
 
 impl IntegralMap {
+    #[cold]
+    #[inline(never)]
     fn grow(&mut self, new_cap: usize) {
         let new_cap = new_cap.max(8).next_power_of_two();
         let old_keys = std::mem::replace(&mut self.keys, vec![EMPTY_KEY; new_cap]);
@@ -329,14 +333,18 @@ impl IntegralMap {
             &mut self.slots,
             vec![IntegralSlot::Immediate(TaggedValue::null()); new_cap],
         );
-        let old_len = self.len;
-        self.len = 0;
+        // Keys are unique, so each one goes to the first empty slot of its probe run.
+        let mask = new_cap - 1;
         for (k, slot) in old_keys.into_iter().zip(old_slots) {
             if k != EMPTY_KEY {
-                self.insert(k, slot);
+                let mut idx = hash_slot(k, new_cap);
+                while self.keys[idx] != EMPTY_KEY {
+                    idx = (idx + 1) & mask;
+                }
+                self.keys[idx] = k;
+                self.slots[idx] = slot;
             }
         }
-        debug_assert_eq!(self.len, old_len);
     }
 }
 

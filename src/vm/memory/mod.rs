@@ -12,7 +12,7 @@ pub use convert::{
     load_value, object_cell_try_lookup_by_key_id, object_map_lookup_value,
     object_map_lookup_by_key_id,
     object_map_find_integral_slot_by_key_id, object_map_try_lookup_by_key_id,
-    object_map_upsert, object_map_upsert_in_place, push_integral_slot,
+    object_map_upsert, object_map_upsert_in_place, push_integral_slot, push_result,
     push_stack_value_id, prepare_value_for_container_store, promote_value_id_if_escapes,
     slot_to_value,
     store_value,

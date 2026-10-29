@@ -1,0 +1,130 @@
+# Табличный бенчмарк — DataCode-половина сравнения DC vs pandas.
+# Сценарии и логика совпадают с bench.py; данные готовит gen.py до замеров.
+# Env: BENCH_DIR (каталог с fact.csv/dim.csv), BENCH_RUNS.
+#
+# Вывод: по строке на сценарий
+#   RESULT lang=dc scenario=<name> runs=N median= min= max= <проверочные поля>
+
+from system import time
+import system
+
+fn env_int(name: str, default: int) -> int {
+    v = system.env.get(name)
+    if v == null { return default }
+    return int(v)
+}
+
+fn report(name: str, times, check: str) {
+    times = sort(times)
+    n = len(times)
+    print("RESULT lang=dc scenario=${name} runs=${n} median=${times[n // 2]:.6f} min=${times[0]:.6f} max=${times[n - 1]:.6f} ${check}")
+}
+
+dir = system.env.get("BENCH_DIR")
+runs = env_int("BENCH_RUNS", 5)
+fact_path = dir + "/fact.csv"
+dim_path = dir + "/dim.csv"
+
+# --- load ---------------------------------------------------------------
+times = []
+for i in range(runs) {
+    t0 = time.perf_counter()
+    t = read(fact_path)
+    dim = read(dim_path)
+    times.push(time.perf_counter() - t0)
+}
+# Схема: имя:тип по первой строке без null (int/float/string), плюс число null.
+nn = t.drop_nulls("amount")
+schema = []
+for col in t.columns { schema.push(col + ":" + typeof(nn[col][0])) }
+sch = join(schema, ",")
+nulls = len(t) - len(nn)
+a = sum(nn["amount"])
+report("load", times, "rows=${len(t)} nulls=${nulls} schema=${sch} amount_sum=${a:.4f}")
+
+# --- filter: несколько условий -------------------------------------------
+times = []
+for i in range(runs) {
+    t0 = time.perf_counter()
+    f = t["amount" > 50 and ("region" == "north" or "qty" >= 5)]
+    times.push(time.perf_counter() - t0)
+}
+a = sum(f["amount"])
+report("filter", times, "rows=${len(f)} amount_sum=${a:.4f}")
+
+# --- nulls: drop + fill --------------------------------------------------
+times = []
+for i in range(runs) {
+    t0 = time.perf_counter()
+    c = t.drop_nulls("amount")
+    r = t.replace_nulls("amount", 0.0)
+    times.push(time.perf_counter() - t0)
+}
+a = sum(r["amount"])
+report("nulls", times, "rows=${len(c)} filled_sum=${a:.4f}")
+
+# --- newcol: вычисляемые колонки -----------------------------------------
+times = []
+for i in range(runs) {
+    n = t.drop_nulls("amount")
+    t0 = time.perf_counter()
+    n!["total"] = n["amount"] * n["qty"]
+    n!["net"] = n["total"] - n["qty"] * 0.5
+    times.push(time.perf_counter() - t0)
+}
+a = sum(n["total"])
+b = sum(n["net"])
+report("newcol", times, "rows=${len(n)} total_sum=${a:.4f} net_sum=${b:.4f}")
+
+# --- groupby: sum/mean/min/max/count -------------------------------------
+times = []
+for i in range(runs) {
+    t0 = time.perf_counter()
+    g = c.aggregate_group({"group": "cat", "n": "count", "s": {"op": "sum", "column": "amount"}, "m": {"op": "avg", "column": "amount"}, "mn": {"op": "min", "column": "amount"}, "mx": {"op": "max", "column": "amount"}})
+    times.push(time.perf_counter() - t0)
+}
+gn = sum(g["n"])
+gs = sum(g["s"])
+gm = sum(g["m"])
+gmn = sum(g["mn"])
+gmx = sum(g["mx"])
+report("groupby", times, "rows=${len(g)} n_sum=${gn} s_sum=${gs:.4f} m_sum=${gm:.4f} mn_sum=${gmn:.4f} mx_sum=${gmx:.4f}")
+
+# --- sort + top-N --------------------------------------------------------
+times = []
+for i in range(runs) {
+    t0 = time.perf_counter()
+    s = table_head(table_sort(c, "amount", false), 100)
+    times.push(time.perf_counter() - t0)
+}
+a = sum(s["amount"])
+b = s["amount"][0]
+report("sort_top", times, "rows=${len(s)} amount_sum=${a:.4f} first=${b:.4f}")
+
+# --- join ----------------------------------------------------------------
+times = []
+for i in range(runs) {
+    t0 = time.perf_counter()
+    j = inner_join(t, dim, "cat")
+    times.push(time.perf_counter() - t0)
+}
+a = sum(j["weight"])
+report("join", times, "rows=${len(j)} weight_sum=${a:.4f}")
+
+# --- pipeline: load → nulls → filter → колонки → join → groupby ----------
+times = []
+for i in range(runs) {
+    t0 = time.perf_counter()
+    pt = read(fact_path)
+    pd = read(dim_path)
+    pc = pt.drop_nulls("amount")
+    pf = pc["amount" > 20 and "qty" >= 3]
+    pf!["total"] = pf["amount"] * pf["qty"]
+    pj = inner_join(pf, pd, "cat")
+    pj!["wt"] = pj["total"] * pj["weight"]
+    pg = pj.aggregate_group({"group": "region", "n": "count", "s": {"op": "sum", "column": "wt"}})
+    times.push(time.perf_counter() - t0)
+}
+gn = sum(pg["n"])
+gs = sum(pg["s"])
+report("pipeline", times, "rows=${len(pg)} n_sum=${gn} s_sum=${gs:.4f}")

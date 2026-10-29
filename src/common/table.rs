@@ -792,6 +792,57 @@ impl Table {
         }
     }
 
+    /// Replace `Null` cells in the given columns with `replacement` on owned storage.
+    pub fn replace_nulls_owned(&self, col_indices: &[usize], replacement: &Value) -> Option<Self> {
+        match &self.data {
+            TableData::Owned { flat, num_cols, headers, .. } => {
+                let nc = *num_cols;
+                if col_indices.iter().any(|&c| c >= nc.max(1)) {
+                    return None;
+                }
+                let mut out = flat.clone();
+                if nc > 0 {
+                    for row in out.chunks_exact_mut(nc) {
+                        for &ci in col_indices {
+                            if matches!(row[ci], Value::Null) {
+                                row[ci] = replacement.clone();
+                            }
+                        }
+                    }
+                }
+                Some(Table::from_flat_owned(out, nc, headers.clone()))
+            }
+            TableData::View { .. } => None,
+        }
+    }
+
+    /// Append a column in place on owned storage, moving `values` into the buffer.
+    /// Returns `values` back if the table is a view or the length does not match.
+    pub fn push_column_owned(&mut self, name: &str, values: Vec<Value>) -> Result<(), Vec<Value>> {
+        match &mut self.data {
+            TableData::Owned { flat, num_cols, headers, column_cache } => {
+                let nc = *num_cols;
+                let n_rows = if nc == 0 { 0 } else { flat.len() / nc };
+                if values.len() != n_rows || nc == 0 {
+                    return Err(values);
+                }
+                let old = std::mem::take(flat);
+                let mut out = Vec::with_capacity(n_rows * (nc + 1));
+                let mut cells = old.into_iter();
+                for v in values {
+                    out.extend(cells.by_ref().take(nc));
+                    out.push(v);
+                }
+                *flat = out;
+                *num_cols = nc + 1;
+                headers.push(name.to_string());
+                column_cache.remove(name);
+                Ok(())
+            }
+            TableData::View { .. } => Err(values),
+        }
+    }
+
     /// Append multiple columns on owned storage in one pass.
     pub fn append_columns_owned(
         &self,

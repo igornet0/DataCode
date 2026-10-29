@@ -940,6 +940,27 @@ pub fn table_add_column_impl(
     }
 
     let n_rows = table.len();
+    // Массив на owned-таблице: клонируем значения прямо в новый буфер, без промежуточного Vec.
+    if let (Some(Value::Array(arr)), false) = (values_arg, table.is_view()) {
+        let arr = arr.borrow();
+        if arr.len() == n_rows {
+            if let Some(t) = table.append_column_owned(name, &arr) {
+                return Ok(t);
+            }
+        }
+    }
+    // Результат арифметики над колонками — owned-таблица из одной колонки: её буфер и есть колонка.
+    if let (Some(Value::ColumnReference { table: src, column_name }), false) = (values_arg, table.is_view()) {
+        if let Ok(src) = src.try_borrow() {
+            if let crate::common::table::TableData::Owned { flat, num_cols: 1, headers, .. } = &src.data {
+                if flat.len() == n_rows && headers[0] == *column_name {
+                    if let Some(t) = table.append_column_owned(name, flat) {
+                        return Ok(t);
+                    }
+                }
+            }
+        }
+    }
     let column_values: Vec<Value> = match values_arg {
         None => vec![Value::Null; n_rows],
         Some(Value::Array(arr)) => {
@@ -947,6 +968,39 @@ pub fn table_add_column_impl(
             if vals.len() != n_rows {
                 return Err(table_col_error(format!(
                     "ValueError: array length {} does not match table row count {}",
+                    vals.len(),
+                    n_rows
+                )));
+            }
+            vals
+        }
+        Some(Value::ColumnReference { table: src, column_name }) => {
+            let src = src.borrow();
+            let vals = if src.is_view() {
+                // Колонка отфильтрованной таблицы: ячейки живут в сторах VM.
+                src.headers()
+                    .iter()
+                    .position(|h| h == column_name)
+                    .map(|col| {
+                        crate::vm::vm::with_current_stores(|store, heap| {
+                            (0..src.len())
+                                .map(|i| {
+                                    crate::vm::table_ops::get_row(&src, i, store, heap)
+                                        .and_then(|mut row| {
+                                            (col < row.len()).then(|| row.swap_remove(col))
+                                        })
+                                        .unwrap_or(Value::Null)
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
+            } else {
+                src.column_values_owned(column_name)
+            }
+            .ok_or_else(|| table_col_error(format!("Column '{}' not found", column_name)))?;
+            if vals.len() != n_rows {
+                return Err(table_col_error(format!(
+                    "ValueError: column length {} does not match table row count {}",
                     vals.len(),
                     n_rows
                 )));
@@ -2932,10 +2986,6 @@ pub fn table_replace_nulls_impl(
     use std::collections::HashMap;
 
     let headers = table.borrow().headers().clone();
-    let rows = {
-        let table_ref = table.borrow();
-        materialize_table_rows(&table_ref)
-    };
     let target_columns: Vec<usize> = columns.unwrap_or_else(|| (0..headers.len()).collect());
     let callback_mode = matches!(
         replacement,
@@ -2945,28 +2995,43 @@ pub fn table_replace_nulls_impl(
         if let Err(v) = validate_replace_nulls_callback(replacement) {
             return v;
         }
+    } else if let Some(new_table) = table
+        .borrow()
+        .replace_nulls_owned(&target_columns, replacement)
+    {
+        // Scalar replacement on owned storage: one flat clone, no row objects.
+        return Value::Table(Rc::new(RefCell::new(new_table)));
     }
+    let rows = {
+        let table_ref = table.borrow();
+        materialize_table_rows(&table_ref)
+    };
 
     let vm_ptr = current_vm_ptr();
     let mut out_rows = Vec::with_capacity(rows.len());
     for mut row in rows {
-        let mut row_object = HashMap::with_capacity(headers.len());
-        for (idx, header) in headers.iter().enumerate() {
-            row_object.insert(
-                header.clone(),
-                row.get(idx).cloned().unwrap_or_else(|| Value::Null),
-            );
-        }
-        let row_value = Value::legacy_object(row_object);
+        // The callback sees the row as it was before any replacement; build it
+        // only for rows that actually have a null to replace.
+        let mut row_value: Option<Value> = None;
         for &col_idx in &target_columns {
             if row.get(col_idx).is_some_and(|v| matches!(v, Value::Null)) {
                 let new_value = if callback_mode {
+                    let row_value = row_value.get_or_insert_with(|| {
+                        let mut row_object = HashMap::with_capacity(headers.len());
+                        for (idx, header) in headers.iter().enumerate() {
+                            row_object.insert(
+                                header.clone(),
+                                row.get(idx).cloned().unwrap_or_else(|| Value::Null),
+                            );
+                        }
+                        Value::legacy_object(row_object)
+                    });
                     if let Some(vm_ptr) = vm_ptr {
                         VM_CALL_CONTEXT.with(|ctx| {
                             ctx.set(Some(VmExecutionContext { vm: vm_ptr }));
                         });
                     }
-                    match invoke_value_callable(replacement, std::slice::from_ref(&row_value)) {
+                    match invoke_value_callable(replacement, std::slice::from_ref(&*row_value)) {
                         Ok(v) => v,
                         Err(e) => {
                             let message = match e {

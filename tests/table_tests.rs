@@ -2717,6 +2717,83 @@ mod tests {
     }
 
     #[test]
+    fn test_inner_join_string_key() {
+        // Регрессия: одиночный строковый ключ раньше шёл в числовой индекс и терял все строки.
+        let source = r#"
+            let fact = table([["a", 1], ["b", 2], ["a", 3], ["z", 4]], ["cat", "v"])
+            let dim = table([["a", "Alpha"], ["b", "Beta"]], ["cat", "name"])
+            let result = inner_join(fact, dim, "cat")
+            len(result)
+        "#;
+        assert_number_result(source, 3.0);
+    }
+
+    #[test]
+    fn test_left_join_string_key_unmatched() {
+        let source = r#"
+            let fact = table([["a", 1], ["z", 4]], ["cat", "v"])
+            let dim = table([["a", "Alpha"]], ["cat", "name"])
+            let result = left_join(fact, dim, "cat")
+            len(result)
+        "#;
+        assert_number_result(source, 2.0);
+    }
+
+    #[test]
+    fn test_column_arith_scalar_and_column() {
+        let source = r#"
+            let t = table([[1, 2.5], [2, 3.5], [3, -1]], ["a", "b"])
+            let c = t["a"] * 2 + t["b"]
+            c[0] + c[1] + c[2]
+        "#;
+        // (2+2.5) + (4+3.5) + (6-1)
+        assert_number_result(source, 17.0);
+    }
+
+    #[test]
+    fn test_column_arith_null_propagates() {
+        let source = r#"
+            let t = table([[1, null], [2, 3]], ["a", "b"])
+            let c = t["a"] + t["b"]
+            c[0]
+        "#;
+        assert_null_result(source);
+    }
+
+    #[test]
+    fn test_column_arith_int_div_by_zero_errors() {
+        let source = r#"
+            let t = table([[1, 0]], ["a", "b"])
+            t["a"] / t["b"]
+        "#;
+        assert!(run_and_get_result(source).is_err());
+    }
+
+    #[test]
+    fn test_assign_column_expression() {
+        let source = r#"
+            let t = table([[1, 10], [2, 20]], ["a", "b"])
+            t!["c"] = t["b"] - t["a"]
+            t!["d"] = t["a"]
+            t["c"][1] + t["d"][1] + len(t.columns)
+        "#;
+        // 18 + 2 + 4 колонки
+        assert_number_result(source, 24.0);
+    }
+
+    #[test]
+    fn test_assign_column_expression_on_filtered_view() {
+        let source = r#"
+            let t = table([[1, 2.5], [2, 3.5], [3, 4.5]], ["a", "b"])
+            let f = t["a" > 1]
+            f!["z"] = f["a"] * 2 + f["b"]
+            f["z"][0] + f["z"][1]
+        "#;
+        // (4+3.5) + (6+4.5)
+        assert_number_result(source, 18.0);
+    }
+
+    #[test]
     fn test_left_join_basic() {
         let source = r#"
             let users = table([[1, "Alice"], [2, "Bob"], [3, "Charlie"]], ["id", "name"])

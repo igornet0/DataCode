@@ -144,8 +144,17 @@ fn build_join_index(
     key_indices: &[usize],
     nulls_equal: bool,
 ) -> JoinIndex {
-    let use_numeric = key_indices.len() == 1;
     let rows = table.rows_ref().unwrap();
+    // The numeric index only understands Null/Number/Int keys; any other key
+    // value (e.g. a string) would be silently dropped, so fall back to the
+    // general index whenever the key column holds something else.
+    let use_numeric = key_indices.len() == 1
+        && rows.iter().all(|row| {
+            matches!(
+                row.get(key_indices[0]).unwrap_or(&Value::Null),
+                Value::Null | Value::Number(_) | Value::Int(IntValue::Finite(_))
+            )
+        });
 
     if use_numeric {
         let col_idx = key_indices[0];

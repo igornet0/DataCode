@@ -73,6 +73,11 @@ pub fn binary_add(
     if let Some(v) = try_plugin_opaque_binop(a, b, "add") {
         return Ok(v);
     }
+    if let Some(r) = column_arith(a, b, ColumnOp::Add, value_store, heavy_store) {
+        return r.or_else(|e| {
+            raise_column_arith_error(e, line, frames, stack, exception_handlers, value_store, heavy_store)
+        });
+    }
     // Convert null to 0 for arithmetic operations (useful for class fields with default values)
     let a = if matches!(a, Value::Null) {
         &Value::Number(0.0)
@@ -275,6 +280,11 @@ pub fn binary_sub(
     if let Some(v) = try_plugin_opaque_binop(a, b, "sub") {
         return Ok(v);
     }
+    if let Some(r) = column_arith(a, b, ColumnOp::Sub, value_store, heavy_store) {
+        return r.or_else(|e| {
+            raise_column_arith_error(e, line, frames, stack, exception_handlers, value_store, heavy_store)
+        });
+    }
     // Convert null to 0 for arithmetic operations
     let a = if matches!(a, Value::Null) {
         &Value::Number(0.0)
@@ -339,6 +349,11 @@ pub fn binary_mul(
     let line = get_line(frames);
     if let Some(v) = try_plugin_opaque_binop(a, b, "mul") {
         return Ok(v);
+    }
+    if let Some(r) = column_arith(a, b, ColumnOp::Mul, value_store, heavy_store) {
+        return r.or_else(|e| {
+            raise_column_arith_error(e, line, frames, stack, exception_handlers, value_store, heavy_store)
+        });
     }
     match (a, b) {
         (Value::Number(n1), Value::Number(n2)) => Ok(Value::Number(n1 * n2)),
@@ -580,6 +595,11 @@ pub fn binary_div(
     heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let line = get_line(frames);
+    if let Some(r) = column_arith(a, b, ColumnOp::Div, value_store, heavy_store) {
+        return r.or_else(|e| {
+            raise_column_arith_error(e, line, frames, stack, exception_handlers, value_store, heavy_store)
+        });
+    }
     if let (Some(x), Some(y)) = (a.as_ieee_f64(), b.as_ieee_f64()) {
         if y == 0.0 && divide_by_zero_raises(a, b) {
             let error =
@@ -1035,4 +1055,221 @@ pub fn binary_and(a: &Value, b: &Value) -> Value {
     } else {
         b.clone()
     }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum ColumnOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+}
+
+enum ColumnOperand<'a> {
+    Values(Vec<Value>),
+    /// Column of an owned table read in place from its row-major buffer.
+    Strided {
+        flat: &'a [Value],
+        stride: usize,
+        offset: usize,
+        len: usize,
+    },
+    Slice(&'a [Value]),
+    Scalar(&'a Value),
+}
+
+impl ColumnOperand<'_> {
+    #[inline]
+    fn get(&self, i: usize) -> &Value {
+        match self {
+            ColumnOperand::Values(v) => &v[i],
+            ColumnOperand::Strided { flat, stride, offset, .. } => &flat[i * stride + offset],
+            ColumnOperand::Slice(v) => &v[i],
+            ColumnOperand::Scalar(s) => s,
+        }
+    }
+
+    #[inline]
+    fn len(&self) -> Option<usize> {
+        match self {
+            ColumnOperand::Values(v) => Some(v.len()),
+            ColumnOperand::Strided { len, .. } => Some(*len),
+            ColumnOperand::Slice(v) => Some(v.len()),
+            ColumnOperand::Scalar(_) => None,
+        }
+    }
+}
+
+/// Borrow held for the duration of an element-wise op so operands can be read without copying.
+enum OperandBorrow<'a> {
+    Table(std::cell::Ref<'a, crate::common::table::Table>),
+    Array(std::cell::Ref<'a, Vec<Value>>),
+    None,
+}
+
+fn borrow_operand(v: &Value) -> OperandBorrow<'_> {
+    match v {
+        // Views are materialized through get_column (needs borrow_mut), so only owned tables are held.
+        Value::ColumnReference { table, .. } if !table.borrow().is_view() => OperandBorrow::Table(table.borrow()),
+        Value::Array(arr) => OperandBorrow::Array(arr.borrow()),
+        _ => OperandBorrow::None,
+    }
+}
+
+fn column_operand<'a>(
+    v: &'a Value,
+    held: &'a OperandBorrow<'a>,
+    value_store: &ValueStore,
+    heavy_store: &HeavyStore,
+) -> Result<ColumnOperand<'a>, String> {
+    match (v, held) {
+        (Value::ColumnReference { column_name, .. }, OperandBorrow::Table(t)) => {
+            if let crate::common::table::TableData::Owned { flat, num_cols, headers, .. } = &t.data {
+                let offset = headers
+                    .iter()
+                    .position(|h| h == column_name)
+                    .ok_or_else(|| format!("Column '{}' not found", column_name))?;
+                return Ok(ColumnOperand::Strided {
+                    flat: flat.as_slice(),
+                    stride: *num_cols,
+                    offset,
+                    len: t.len(),
+                });
+            }
+            unreachable!("borrow_operand holds only owned tables")
+        }
+        (Value::ColumnReference { table, column_name }, _) => {
+            let mut t = table.borrow_mut();
+            crate::vm::table_ops::get_column(&mut t, column_name, value_store, heavy_store)
+                .map(ColumnOperand::Values)
+                .ok_or_else(|| format!("Column '{}' not found", column_name))
+        }
+        (_, OperandBorrow::Array(arr)) => Ok(ColumnOperand::Slice(arr.as_slice())),
+        (other, _) => Ok(ColumnOperand::Scalar(other)),
+    }
+}
+
+/// Element-wise `+ - * /` when either operand is a table column (`t["a"] * t["b"]`, `t["a"] * 2`).
+/// The other side is a column, a scalar or an equal-length array. Null in either operand gives
+/// null in that row (like a pandas NaN). Returns None when neither side is a column.
+/// Int ⊕ Int stays Int (falling back to float on overflow); `/` follows scalar division.
+fn column_arith(
+    a: &Value,
+    b: &Value,
+    op: ColumnOp,
+    value_store: &ValueStore,
+    heavy_store: &HeavyStore,
+) -> Option<Result<Value, (String, ErrorType)>> {
+    if !matches!(a, Value::ColumnReference { .. }) && !matches!(b, Value::ColumnReference { .. }) {
+        return None;
+    }
+    Some(column_arith_values(a, b, op, value_store, heavy_store))
+}
+
+fn column_arith_values(
+    a: &Value,
+    b: &Value,
+    op: ColumnOp,
+    value_store: &ValueStore,
+    heavy_store: &HeavyStore,
+) -> Result<Value, (String, ErrorType)> {
+    let runtime = |msg: String| (msg, ErrorType::RuntimeError);
+    let held_a = borrow_operand(a);
+    let held_b = borrow_operand(b);
+    let left = column_operand(a, &held_a, value_store, heavy_store).map_err(runtime)?;
+    let right = column_operand(b, &held_b, value_store, heavy_store).map_err(runtime)?;
+    let len = match (left.len(), right.len()) {
+        (Some(l), Some(r)) => {
+            if l != r {
+                return Err(runtime(format!(
+                    "Column operands must have equal length, got {} and {}",
+                    l, r
+                )));
+            }
+            l
+        }
+        (Some(n), None) | (None, Some(n)) => n,
+        _ => 0,
+    };
+    let mut out = Vec::with_capacity(len);
+    for i in 0..len {
+        out.push(column_elem(left.get(i), right.get(i), op)?);
+    }
+    // The result is itself a column (of a fresh one-column table) so expressions chain:
+    // `t["a"] * t["b"] + 1`, and `t!["c"] = ...` accepts it like any other column.
+    let column_name = match (a, b) {
+        (Value::ColumnReference { column_name, .. }, _) | (_, Value::ColumnReference { column_name, .. }) => {
+            column_name.clone()
+        }
+        _ => "value".to_string(),
+    };
+    let table = crate::common::table::Table::from_flat_owned(out, 1, vec![column_name.clone()]);
+    Ok(Value::ColumnReference {
+        table: Rc::new(RefCell::new(table)),
+        column_name,
+    })
+}
+
+#[inline]
+fn column_elem(x: &Value, y: &Value, op: ColumnOp) -> Result<Value, (String, ErrorType)> {
+    if matches!(x, Value::Null) || matches!(y, Value::Null) {
+        return Ok(Value::Null);
+    }
+    if let (Value::Int(IntValue::Finite(p)), Value::Int(IntValue::Finite(q))) = (x, y) {
+        let r = match op {
+            ColumnOp::Add => p.checked_add(*q),
+            ColumnOp::Sub => p.checked_sub(*q),
+            ColumnOp::Mul => p.checked_mul(*q),
+            ColumnOp::Div => None,
+        };
+        if let Some(r) = r {
+            return Ok(Value::Int(IntValue::Finite(r)));
+        }
+    }
+    let (Some(p), Some(q)) = (x.as_ieee_f64(), y.as_ieee_f64()) else {
+        return Err((
+            format!(
+                "Column arithmetic needs numeric values, got {} and {}",
+                crate::vm::calls::get_type_name_value(x),
+                crate::vm::calls::get_type_name_value(y)
+            ),
+            ErrorType::TypeError,
+        ));
+    };
+    let r = match op {
+        ColumnOp::Add => p + q,
+        ColumnOp::Sub => p - q,
+        ColumnOp::Mul => p * q,
+        ColumnOp::Div => {
+            if q == 0.0 && divide_by_zero_raises(x, y) {
+                return Err(("Division by zero".to_string(), ErrorType::ZeroDivisionError));
+            }
+            return Ok(ieee_div_quotient_value(x, y, p, q));
+        }
+    };
+    if matches!(x, Value::Float(_)) || matches!(y, Value::Float(_)) {
+        Ok(Value::Float(crate::common::numeric::FloatValue::classify_f64(r)))
+    } else {
+        Ok(Value::Number(r))
+    }
+}
+
+fn raise_column_arith_error(
+    (msg, ty): (String, ErrorType),
+    line: usize,
+    frames: &mut Vec<CallFrame>,
+    stack: &mut Vec<TaggedValue>,
+    exception_handlers: &mut Vec<ExceptionHandler>,
+    value_store: &mut ValueStore,
+    heavy_store: &mut HeavyStore,
+) -> Result<Value, LangError> {
+    let error = ExceptionHandler::runtime_error_with_type(frames, msg, line, ty);
+    ExceptionHandler::handle_exception_null_value(
+        stack,
+        frames,
+        exception_handlers,
+        error,
+        value_store,
+        heavy_store,
+    )
 }

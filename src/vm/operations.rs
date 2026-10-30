@@ -6,6 +6,7 @@ use crate::common::{
     value::Value,
     value_ord::value_partial_cmp,
     value_store::ValueStore,
+    typed_column::F64Kind,
     TaggedValue,
 };
 use crate::vm::exceptions::ExceptionHandler;
@@ -1075,17 +1076,52 @@ enum ColumnOperand<'a> {
         len: usize,
     },
     Slice(&'a [Value]),
+    /// Typed column read without building its `Value` cells.
+    F64(&'a [f64], Option<&'a [bool]>, F64Kind),
+    I64(&'a [i64], Option<&'a [bool]>),
     Scalar(&'a Value),
+}
+
+/// One operand cell: borrowed, or built on the fly from a typed column.
+enum Cell<'a> {
+    Ref(&'a Value),
+    Owned(Value),
+}
+
+impl std::ops::Deref for Cell<'_> {
+    type Target = Value;
+    #[inline]
+    fn deref(&self) -> &Value {
+        match self {
+            Cell::Ref(v) => v,
+            Cell::Owned(v) => v,
+        }
+    }
+}
+
+#[inline]
+fn is_null_at(nulls: Option<&[bool]>, i: usize) -> bool {
+    nulls.is_some_and(|n| n[i])
 }
 
 impl ColumnOperand<'_> {
     #[inline]
-    fn get(&self, i: usize) -> &Value {
+    fn get(&self, i: usize) -> Cell<'_> {
         match self {
-            ColumnOperand::Values(v) => &v[i],
-            ColumnOperand::Strided { flat, stride, offset, .. } => &flat[i * stride + offset],
-            ColumnOperand::Slice(v) => &v[i],
-            ColumnOperand::Scalar(s) => s,
+            ColumnOperand::Values(v) => Cell::Ref(&v[i]),
+            ColumnOperand::Strided { flat, stride, offset, .. } => Cell::Ref(&flat[i * stride + offset]),
+            ColumnOperand::Slice(v) => Cell::Ref(&v[i]),
+            ColumnOperand::F64(d, n, kind) => Cell::Owned(if is_null_at(*n, i) {
+                Value::Null
+            } else {
+                kind.cell(d[i])
+            }),
+            ColumnOperand::I64(d, n) => Cell::Owned(if is_null_at(*n, i) {
+                Value::Null
+            } else {
+                Value::Int(IntValue::Finite(d[i]))
+            }),
+            ColumnOperand::Scalar(s) => Cell::Ref(s),
         }
     }
 
@@ -1095,6 +1131,8 @@ impl ColumnOperand<'_> {
             ColumnOperand::Values(v) => Some(v.len()),
             ColumnOperand::Strided { len, .. } => Some(*len),
             ColumnOperand::Slice(v) => Some(v.len()),
+            ColumnOperand::F64(d, ..) => Some(d.len()),
+            ColumnOperand::I64(d, _) => Some(d.len()),
             ColumnOperand::Scalar(_) => None,
         }
     }
@@ -1124,19 +1162,24 @@ fn column_operand<'a>(
 ) -> Result<ColumnOperand<'a>, String> {
     match (v, held) {
         (Value::ColumnReference { column_name, .. }, OperandBorrow::Table(t)) => {
-            if let crate::common::table::TableData::Owned { flat, num_cols, headers, .. } = &t.data {
-                let offset = headers
-                    .iter()
-                    .position(|h| h == column_name)
-                    .ok_or_else(|| format!("Column '{}' not found", column_name))?;
-                return Ok(ColumnOperand::Strided {
-                    flat: flat.as_slice(),
-                    stride: *num_cols,
-                    offset,
-                    len: t.len(),
-                });
+            let t: &'a crate::common::table::Table = t;
+            if let Some(col) = t.typed_column(column_name) {
+                for kind in [F64Kind::Float, F64Kind::Number] {
+                    if let Some((d, n)) = col.as_f64_of(kind) {
+                        return Ok(ColumnOperand::F64(d, n, kind));
+                    }
+                }
+                if let Some((d, n)) = col.as_i64() {
+                    return Ok(ColumnOperand::I64(d, n));
+                }
             }
-            unreachable!("borrow_operand holds only owned tables")
+            match t.column_view(column_name) {
+                Some(crate::common::table::ColumnView::Owned { flat, num_cols, col_index, len }) => {
+                    Ok(ColumnOperand::Strided { flat, stride: num_cols, offset: col_index, len })
+                }
+                Some(_) => unreachable!("borrow_operand holds only owned tables"),
+                None => Err(format!("Column '{}' not found", column_name)),
+            }
         }
         (Value::ColumnReference { table, column_name }, _) => {
             let mut t = table.borrow_mut();
@@ -1191,10 +1234,32 @@ fn column_arith_values(
         (Some(n), None) | (None, Some(n)) => n,
         _ => 0,
     };
-    let mut out = Vec::with_capacity(len);
-    for i in 0..len {
-        out.push(column_elem(left.get(i), right.get(i), op)?);
-    }
+    // Rows run on f64 while every result is of one kind (all Float or all Number); the first
+    // other result (Int, the other kind, error) hands the rest to `column_elem`, so the output
+    // matches it cell for cell.
+    let (data, nulls, kind, start) = match op {
+        ColumnOp::Add => float_prefix(&left, &right, len, |p, q| p + q),
+        ColumnOp::Sub => float_prefix(&left, &right, len, |p, q| p - q),
+        ColumnOp::Mul => float_prefix(&left, &right, len, |p, q| p * q),
+        ColumnOp::Div => (Vec::new(), None, None, 0),
+    };
+    let column = if let (true, Some(kind)) = (start == len, kind) {
+        // Float cells are Float(classify(r)) and Number cells Number(r); both round-trip every f64.
+        crate::common::typed_column::TypedColumn::f64_of(kind, Rc::from(data), nulls.map(Rc::from))
+    } else {
+        let mut out = crate::common::typed_column::ColumnBuilder::with_capacity(len);
+        for (k, &d) in data.iter().enumerate().take(start) {
+            out.push(match kind {
+                Some(kind) if !is_null_at(nulls.as_deref(), k) => kind.cell(d),
+                _ => Value::Null,
+            });
+        }
+        drop(data);
+        for i in start..len {
+            out.push(column_elem(&left.get(i), &right.get(i), op)?);
+        }
+        out.finish()
+    };
     // The result is itself a column (of a fresh one-column table) so expressions chain:
     // `t["a"] * t["b"] + 1`, and `t!["c"] = ...` accepts it like any other column.
     let column_name = match (a, b) {
@@ -1203,11 +1268,163 @@ fn column_arith_values(
         }
         _ => "value".to_string(),
     };
-    let table = crate::common::table::Table::from_flat_owned(out, 1, vec![column_name.clone()]);
+    let table = crate::common::table::Table::from_typed_column(column_name.clone(), column);
     Ok(Value::ColumnReference {
         table: Rc::new(RefCell::new(table)),
         column_name,
     })
+}
+
+/// Numeric class of one operand cell, as `column_elem` sees it.
+#[derive(Clone, Copy)]
+enum Num {
+    Null,
+    Float(f64),
+    /// Finite Int: Int ⊕ Int takes the checked integer path.
+    Int(f64),
+    /// Number, or a non-finite Int: numeric, gives Number unless the other side is Float.
+    Number(f64),
+    Other,
+}
+
+#[inline]
+fn num_of(v: &Value) -> Num {
+    match v {
+        Value::Null => Num::Null,
+        Value::Float(f) => Num::Float(f.as_raw_f64()),
+        Value::Int(IntValue::Finite(_)) => v.as_ieee_f64().map_or(Num::Other, Num::Int),
+        Value::Number(_) | Value::Int(_) => v.as_ieee_f64().map_or(Num::Other, Num::Number),
+        _ => Num::Other,
+    }
+}
+
+/// Result kind and operands of a non-null `column_elem` result that is computed on f64;
+/// None for Int ⊕ Int, a null or a non-numeric operand.
+#[inline]
+fn f64_result(x: Num, y: Num) -> Option<(F64Kind, f64, f64)> {
+    match (x, y) {
+        (Num::Float(p), Num::Float(q) | Num::Int(q) | Num::Number(q)) | (Num::Int(p) | Num::Number(p), Num::Float(q)) => {
+            Some((F64Kind::Float, p, q))
+        }
+        (Num::Number(p), Num::Int(q) | Num::Number(q)) | (Num::Int(p), Num::Number(q)) => Some((F64Kind::Number, p, q)),
+        _ => None,
+    }
+}
+
+/// Kind of an F64 column ⊕ a non-null numeric value of class `other`.
+#[inline]
+fn f64_with(kind: F64Kind, other: Num) -> Option<(F64Kind, f64)> {
+    let x = match kind {
+        F64Kind::Float => Num::Float(0.0),
+        F64Kind::Number => Num::Number(0.0),
+    };
+    let q = match other {
+        Num::Float(q) | Num::Int(q) | Num::Number(q) => q,
+        _ => return None,
+    };
+    f64_result(x, other).map(|(k, ..)| (k, q))
+}
+
+impl ColumnOperand<'_> {
+    #[inline]
+    fn num_at(&self, i: usize) -> Num {
+        match self {
+            ColumnOperand::Values(v) => num_of(&v[i]),
+            ColumnOperand::Slice(v) => num_of(&v[i]),
+            ColumnOperand::Strided { flat, stride, offset, .. } => num_of(&flat[i * stride + offset]),
+            ColumnOperand::F64(d, n, kind) => {
+                if is_null_at(*n, i) {
+                    Num::Null
+                } else if *kind == F64Kind::Float {
+                    Num::Float(d[i])
+                } else {
+                    Num::Number(d[i])
+                }
+            }
+            ColumnOperand::I64(d, n) => {
+                if is_null_at(*n, i) {
+                    Num::Null
+                } else {
+                    Num::Int(d[i] as f64)
+                }
+            }
+            ColumnOperand::Scalar(s) => num_of(s),
+        }
+    }
+}
+
+/// Computes rows `0..start` on f64 while each result is null or of one kind: Float (a Float
+/// operand, the other numeric) or Number (Number with Int or Number). Returns (data, nulls,
+/// kind of the non-null results, start); `start < len` marks the first row the f64 path cannot
+/// represent.
+fn float_prefix<F: Fn(f64, f64) -> f64 + Copy>(
+    left: &ColumnOperand<'_>,
+    right: &ColumnOperand<'_>,
+    len: usize,
+    f: F,
+) -> (Vec<f64>, Option<Vec<bool>>, Option<F64Kind>, usize) {
+    let scalar = |o: &ColumnOperand<'_>| match o {
+        ColumnOperand::Scalar(s) => Some(num_of(s)),
+        _ => None,
+    };
+    let (ls, rs) = (scalar(left), scalar(right));
+    let some = |k: F64Kind| (len > 0).then_some(k);
+    // Null-free typed columns against a typed column or a numeric scalar: plain slice loops.
+    match (left, right, ls, rs) {
+        (ColumnOperand::F64(a, None, ka), ColumnOperand::F64(b, None, kb), ..) => {
+            let kind = if *ka == F64Kind::Float || *kb == F64Kind::Float { F64Kind::Float } else { F64Kind::Number };
+            let data: Vec<f64> = a.iter().zip(b.iter()).map(|(&p, &q)| f(p, q)).collect();
+            return (data, None, some(kind), len);
+        }
+        (ColumnOperand::F64(a, None, ka), _, _, Some(s)) => {
+            if let Some((kind, q)) = f64_with(*ka, s) {
+                let data: Vec<f64> = a.iter().map(|&p| f(p, q)).collect();
+                return (data, None, some(kind), len);
+            }
+        }
+        (_, ColumnOperand::F64(b, None, kb), Some(s), _) => {
+            if let Some((kind, p)) = f64_with(*kb, s) {
+                let data: Vec<f64> = b.iter().map(|&q| f(p, q)).collect();
+                return (data, None, some(kind), len);
+            }
+        }
+        (ColumnOperand::I64(a, None), _, _, Some(s)) => {
+            if let Some((kind, _, q)) = f64_result(Num::Int(0.0), s) {
+                let data: Vec<f64> = a.iter().map(|&p| f(p as f64, q)).collect();
+                return (data, None, some(kind), len);
+            }
+        }
+        (_, ColumnOperand::I64(b, None), Some(s), _) => {
+            if let Some((kind, p, _)) = f64_result(s, Num::Int(0.0)) {
+                let data: Vec<f64> = b.iter().map(|&q| f(p, q as f64)).collect();
+                return (data, None, some(kind), len);
+            }
+        }
+        _ => {}
+    }
+    let mut data = Vec::with_capacity(len);
+    let mut nulls: Option<Vec<bool>> = None;
+    let mut kind: Option<F64Kind> = None;
+    for i in 0..len {
+        let x = ls.unwrap_or_else(|| left.num_at(i));
+        let y = rs.unwrap_or_else(|| right.num_at(i));
+        if matches!(x, Num::Null) || matches!(y, Num::Null) {
+            nulls.get_or_insert_with(|| vec![false; i]).push(true);
+            data.push(0.0);
+            continue;
+        }
+        let Some((k, p, q)) = f64_result(x, y) else {
+            return (data, nulls, kind, i);
+        };
+        if *kind.get_or_insert(k) != k {
+            return (data, nulls, kind, i);
+        }
+        data.push(f(p, q));
+        if let Some(n) = &mut nulls {
+            n.push(false);
+        }
+    }
+    (data, nulls, kind, len)
 }
 
 #[inline]

@@ -37,6 +37,7 @@ pub fn get_cell_value(
             let idx = row_index * num_cols + col_idx;
             Some(flat.get(idx).cloned().unwrap_or(Value::Null))
         }
+        TableData::Columnar { .. } => table.cell_value(row_index, col_name),
     }
 }
 
@@ -106,6 +107,7 @@ pub fn get_row(
             let end = (index + 1) * num_cols;
             Some(flat[start..end].to_vec())
         }
+        TableData::Columnar { .. } => table.get_row(index).map(|r| r.to_vec()),
     }
 }
 
@@ -137,7 +139,7 @@ pub fn get_column(
                 .collect();
             Some(column)
         }
-        TableData::Owned { .. } => table.get_column(name).map(|c| c.clone()),
+        TableData::Owned { .. } | TableData::Columnar { .. } => table.get_column(name).map(|c| c.clone()),
     }
 }
 
@@ -163,7 +165,7 @@ pub fn get_column_cached(
     _heap: &HeavyStore,
 ) -> Option<Vec<Value>> {
     match &table.data {
-        TableData::View { .. } => None,
+        TableData::View { .. } | TableData::Columnar { .. } => None,
         TableData::Owned { column_cache, .. } => column_cache.get(name).cloned(),
     }
 }

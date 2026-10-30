@@ -286,6 +286,20 @@ pub fn cmp_numeric_values(a: &Value, b: &Value) -> Option<Ordering> {
     Some(numeric_sort_class(atom_a, atom_b))
 }
 
+/// Precomputed sort key with the same order as [`cmp_numeric_values`]:
+/// `(rank, finite value or 0.0)`. `None` for non-numeric values.
+#[inline]
+pub fn numeric_sort_key(v: &Value) -> Option<(u8, f64)> {
+    let atom = match v {
+        Value::Int(i) => i.into_sort_atom(),
+        Value::Float(f) => f.sort_atom(),
+        Value::Number(n) => FloatValue::from_f64_for_stack(*n).sort_atom(),
+        _ => return None,
+    };
+    let x = if let SortAtom::Finite(x) = atom { x } else { 0.0 };
+    Some((rank(atom), x))
+}
+
 pub(crate) fn numeric_sort_class(a: SortAtom, b: SortAtom) -> Ordering {
     rank(a).cmp(&rank(b)).then_with(|| match (a, b) {
         (SortAtom::Finite(x), SortAtom::Finite(y)) => {

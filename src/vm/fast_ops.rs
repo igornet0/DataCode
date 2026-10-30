@@ -335,6 +335,20 @@ pub(crate) fn run_fast_ops(
                 };
                 sp -= 1;
                 stack[sp - 1] = r;
+                // Fused `x = a op b`: the following `StoreLocal` under the same immediate rules.
+                if let Some(&OpCode::StoreLocal(index)) = code.get(next) {
+                    if let Some(slot) = slots.get_mut(index) {
+                        if !r.is_heap() && !slot.is_heap() {
+                            *slot = r;
+                            sp -= 1;
+                            if sp == stack_start && stack.len() > stack_start {
+                                stack.truncate(stack_start);
+                            }
+                            ip = next + 1;
+                            continue;
+                        }
+                    }
+                }
             }
             OpCode::AbsI32 => {
                 if sp <= stack_start {

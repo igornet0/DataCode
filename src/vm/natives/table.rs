@@ -1,6 +1,7 @@
 // Table manipulation native functions
 
 use crate::common::table::Table;
+use crate::common::typed_column::{ColumnBuilder, TypedColumn};
 use crate::common::range_args::range_len;
 use crate::common::value::{IterableInner, Value};
 use std::cell::RefCell;
@@ -925,6 +926,29 @@ pub fn table_drop_column_impl(table: &Table, drop_arg: &Value) -> Result<Table, 
     table_select_impl(table, remaining)
 }
 
+/// Columnar source: the new table shares its buffers and gets `column` as one more column.
+/// Owned source: falls back to the row-major copy.
+fn append_column_shared(table: &Table, name: &str, column: TypedColumn) -> Option<Table> {
+    table
+        .with_extra_typed(name, column.clone())
+        .or_else(|| table.append_column_owned(name, column.values()))
+}
+
+/// `table_add_column` on a heap table: the source's rows become an immutable shared base
+/// (same contents and headers), so the new table reuses them instead of copying every row.
+fn table_add_column_rc(
+    table: &Rc<RefCell<Table>>,
+    name: &str,
+    values_arg: Option<&Value>,
+) -> Result<Table, Value> {
+    if let Ok(mut t) = table.try_borrow_mut() {
+        if !t.is_view() && !t.headers().iter().any(|h| h == name) {
+            t.share_as_base();
+        }
+    }
+    table_add_column_impl(&table.borrow(), name, values_arg)
+}
+
 /// Append a column with a scalar value or per-row array.
 pub fn table_add_column_impl(
     table: &Table,
@@ -944,17 +968,18 @@ pub fn table_add_column_impl(
     if let (Some(Value::Array(arr)), false) = (values_arg, table.is_view()) {
         let arr = arr.borrow();
         if arr.len() == n_rows {
-            if let Some(t) = table.append_column_owned(name, &arr) {
+            let column = ColumnBuilder::from_values(arr.iter(), n_rows);
+            if let Some(t) = append_column_shared(table, name, column) {
                 return Ok(t);
             }
         }
     }
-    // Результат арифметики над колонками — owned-таблица из одной колонки: её буфер и есть колонка.
+    // Результат арифметики над колонками или дописанная колонка: её буфер разделяется без копии.
     if let (Some(Value::ColumnReference { table: src, column_name }), false) = (values_arg, table.is_view()) {
         if let Ok(src) = src.try_borrow() {
-            if let crate::common::table::TableData::Owned { flat, num_cols: 1, headers, .. } = &src.data {
-                if flat.len() == n_rows && headers[0] == *column_name {
-                    if let Some(t) = table.append_column_owned(name, flat) {
+            if let Some(col) = src.shared_typed_column(column_name) {
+                if col.len() == n_rows {
+                    if let Some(t) = append_column_shared(table, name, col) {
                         return Ok(t);
                     }
                 }
@@ -1011,7 +1036,8 @@ pub fn table_add_column_impl(
     };
 
     if !table.is_view() {
-        if let Some(t) = table.append_column_owned(name, &column_values) {
+        let column = ColumnBuilder::from_values(column_values.iter(), n_rows);
+        if let Some(t) = append_column_shared(table, name, column) {
             return Ok(t);
         }
     }
@@ -1737,7 +1763,7 @@ pub fn native_table_add_column(args: &[Value]) -> Value {
         return table_col_error("TypeError: table_add_column() column name must be a string");
     };
     let values_arg = args.get(2);
-    match table_add_column_impl(&table.borrow(), name, values_arg) {
+    match table_add_column_rc(table, name, values_arg) {
         Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
         Err(v) => v,
     }
@@ -1885,6 +1911,98 @@ pub fn native_table_join_columns(args: &[Value]) -> Value {
     }
 }
 
+/// Sort key of a null cell: below every number.
+const SORT_KEY_NULL: u64 = 0;
+
+/// One u64 per numeric cell, ordered like `compare_values`: Null < -inf < finite < +inf < NaN,
+/// finite by value (-0.0 == 0.0). `rank`/`x` are `numeric_sort_key`'s output.
+#[inline]
+fn rank_sort_key(rank: u8, x: f64) -> u64 {
+    match rank {
+        0 => f64_order_bits(f64::NEG_INFINITY),
+        1 => f64_order_bits(x),
+        2 => f64_order_bits(f64::INFINITY),
+        _ => u64::MAX,
+    }
+}
+
+/// Monotone map of a non-NaN f64 into u64; never 0 or u64::MAX (those are Null and NaN).
+#[inline]
+fn f64_order_bits(x: f64) -> u64 {
+    let x = if x == 0.0 { 0.0 } else { x };
+    let b = x.to_bits();
+    if b >> 63 == 1 {
+        !b
+    } else {
+        b | (1 << 63)
+    }
+}
+
+/// Raw typed buffer → sort keys; `to_f64` matches the cell's sort atom (Int compares as f64).
+fn typed_sort_keys<T: Copy>(data: &[T], nulls: Option<&[bool]>, to_f64: impl Fn(T) -> f64) -> Vec<u64> {
+    let key = |v: T| {
+        let x = to_f64(v);
+        if x.is_nan() {
+            u64::MAX
+        } else {
+            f64_order_bits(x)
+        }
+    };
+    match nulls {
+        None => data.iter().map(|&v| key(v)).collect(),
+        Some(n) => data
+            .iter()
+            .zip(n)
+            .map(|(&v, &null)| if null { SORT_KEY_NULL } else { key(v) })
+            .collect(),
+    }
+}
+
+/// Row order by key; ties keep row order in both directions (stable LSD radix sort).
+fn sorted_indices_by_key(keys: Vec<u64>, ascending: bool) -> Vec<usize> {
+    let n = keys.len();
+    let mut cur: Vec<(u64, u32)> = if n <= u32::MAX as usize {
+        keys.into_iter()
+            .zip(0u32..)
+            .map(|(k, i)| (if ascending { k } else { !k }, i))
+            .collect()
+    } else {
+        let mut keyed: Vec<(u64, usize)> =
+            keys.into_iter().enumerate().map(|(i, k)| (if ascending { k } else { !k }, i)).collect();
+        keyed.sort_unstable();
+        return keyed.into_iter().map(|(_, i)| i).collect();
+    };
+    const BITS: u32 = 11;
+    const BUCKETS: usize = 1 << BITS;
+    let mut tmp: Vec<(u64, u32)> = vec![(0, 0); n];
+    let mut shift = 0u32;
+    while shift < 64 {
+        let mut counts = vec![0usize; BUCKETS];
+        for &(k, _) in &cur {
+            counts[((k >> shift) as usize) & (BUCKETS - 1)] += 1;
+        }
+        // All keys share this digit: the pass would not move anything.
+        if counts.iter().any(|&c| c == n) {
+            shift += BITS;
+            continue;
+        }
+        let mut sum = 0;
+        for c in counts.iter_mut() {
+            let v = *c;
+            *c = sum;
+            sum += v;
+        }
+        for &e in &cur {
+            let d = ((e.0 >> shift) as usize) & (BUCKETS - 1);
+            tmp[counts[d]] = e;
+            counts[d] += 1;
+        }
+        std::mem::swap(&mut cur, &mut tmp);
+        shift += BITS;
+    }
+    cur.into_iter().map(|(_, i)| i as usize).collect()
+}
+
 pub fn native_table_sort(args: &[Value]) -> Value {
     if args.len() < 2 {
         return Value::Null;
@@ -1911,36 +2029,69 @@ pub fn native_table_sort(args: &[Value]) -> Value {
             let headers = table.borrow().headers().clone();
             let is_view = table.borrow().is_view();
 
-            let sort_column: Vec<Value> = if is_view {
-                crate::vm::vm::with_current_stores(|store, heap| {
-                    let mut t = table.borrow_mut();
-                    crate::vm::table_ops::get_column(&mut *t, &column_name, store, heap)
-                })
-                .unwrap_or_default()
-            } else if let Some(cv) = table.borrow().column_view(&column_name) {
-                (0..cv.len())
-                    .filter_map(|i| cv.get_owned(i))
-                    .collect()
+            // Typed column: keys straight from the raw buffer, no `Value` per cell.
+            let typed_keys: Option<Vec<u64>> = if is_view {
+                None
             } else {
-                table
-                    .borrow_mut()
-                    .get_column(&column_name)
-                    .map(|c| c.clone())
-                    .unwrap_or_default()
-            };
-            if sort_column.len() != n_rows {
-                return Value::Null;
-            }
-
-            let mut indices: Vec<usize> = (0..n_rows).collect();
-            indices.sort_by(|&a, &b| {
-                let cmp = compare_values(&sort_column[a], &sort_column[b]);
-                if ascending {
-                    cmp
-                } else {
-                    cmp.reverse()
+                let t = table.borrow();
+                match t.typed_column(&column_name) {
+                    Some(TypedColumn::F64 { data, nulls, .. }) => Some(typed_sort_keys(data, nulls.as_deref(), |x| x)),
+                    Some(TypedColumn::I64 { data, nulls, .. }) => {
+                        Some(typed_sort_keys(data, nulls.as_deref(), |n| n as f64))
+                    }
+                    _ => None,
                 }
-            });
+            };
+
+            let mut indices: Vec<usize>;
+            if let Some(keys) = typed_keys {
+                if keys.len() != n_rows {
+                    return Value::Null;
+                }
+                indices = sorted_indices_by_key(keys, ascending);
+            } else {
+                let sort_column: Vec<Value> = if is_view {
+                    crate::vm::vm::with_current_stores(|store, heap| {
+                        let mut t = table.borrow_mut();
+                        crate::vm::table_ops::get_column(&mut *t, &column_name, store, heap)
+                    })
+                    .unwrap_or_default()
+                } else if let Some(col) = table.borrow().column_values_owned(&column_name) {
+                    col
+                } else {
+                    table
+                        .borrow_mut()
+                        .get_column(&column_name)
+                        .map(|c| c.clone())
+                        .unwrap_or_default()
+                };
+                if sort_column.len() != n_rows {
+                    return Value::Null;
+                }
+
+                // Fast path: all numeric/null → sort precomputed keys (same order as compare_values:
+                // Null < numbers; numbers by rank then value). Ties keep row order, like the generic stable sort.
+                let numeric_keys: Option<Vec<u64>> = sort_column
+                    .iter()
+                    .map(|v| match v {
+                        Value::Null => Some(SORT_KEY_NULL),
+                        _ => crate::common::numeric::numeric_sort_key(v).map(|(r, x)| rank_sort_key(r, x)),
+                    })
+                    .collect();
+                if let Some(keys) = numeric_keys {
+                    indices = sorted_indices_by_key(keys, ascending);
+                } else {
+                    indices = (0..n_rows).collect();
+                    indices.sort_by(|&a, &b| {
+                        let cmp = compare_values(&sort_column[a], &sort_column[b]);
+                        if ascending {
+                            cmp
+                        } else {
+                            cmp.reverse()
+                        }
+                    });
+                }
+            }
 
             if !is_view {
                 let table_ref = table.borrow();
@@ -1988,10 +2139,8 @@ pub fn table_where_impl(
             crate::vm::table_ops::get_column(&mut *t, column_name, store, heap)
         })
         .unwrap_or_default()
-    } else if let Some(cv) = table.borrow().column_view(column_name) {
-        (0..cv.len())
-            .filter_map(|i| cv.get_owned(i))
-            .collect()
+    } else if let Some(col) = table.borrow().column_values_owned(column_name) {
+        col
     } else {
         table
             .borrow_mut()
@@ -2406,10 +2555,92 @@ fn aggregate_column_values_from_table(
                     .and_then(|r| r.get(col_idx).cloned())
             })
             .collect())
-    } else if let Some(cv) = table.column_view(column) {
-        Ok((0..cv.len()).filter_map(|i| cv.get_owned(i)).collect())
+    } else if let Some(col) = table.column_values_owned(column) {
+        Ok(col)
     } else {
         Ok(Vec::new())
+    }
+}
+
+/// Simple ops folded straight over the column, without cloning every cell into a Vec.
+/// Results match the Vec-based path; None means "use the generic path".
+fn aggregate_streaming(
+    op: &str,
+    table: &Table,
+    column: &str,
+    row_indices: Option<&[usize]>,
+    row_count: usize,
+) -> Option<Value> {
+    use std::borrow::Borrow;
+    fn fold<V: Borrow<Value>>(op: &str, mut it: impl Iterator<Item = V>, row_count: usize) -> Option<Value> {
+        let owned = |v: Option<V>| v.map(|v| v.borrow().clone()).unwrap_or(Value::Null);
+        Some(match op {
+            "count" => Value::Number(row_count as f64),
+            "sum" => Value::Number(it.filter_map(|v| v.borrow().as_ieee_f64()).sum::<f64>()),
+            "avg" => {
+                let mut n = 0usize;
+                let sum = it
+                    .filter_map(|v| v.borrow().as_ieee_f64())
+                    .inspect(|_| n += 1)
+                    .sum::<f64>();
+                Value::Number(if n == 0 { 0.0 } else { sum / n as f64 })
+            }
+            "min" => owned(it.min_by(|a, b| compare_values(a.borrow(), b.borrow()))),
+            "max" => owned(it.max_by(|a, b| compare_values(a.borrow(), b.borrow()))),
+            "first" => owned(it.next()),
+            "last" => owned(it.last()),
+            _ => return None,
+        })
+    }
+
+    if !matches!(op, "count" | "sum" | "avg" | "min" | "max" | "first" | "last") {
+        return None;
+    }
+    // Typed columns are read cell by cell: column_view would fill (and keep)
+    // the column's Vec<Value> cache, a full copy of the column.
+    if let Some(col) = table.typed_column(column).filter(|c| c.as_mixed().is_none()) {
+        // sum/avg of numeric columns straight from the data: as_ieee_f64 of a
+        // non-null cell is data[i] (F64) or data[i] as f64 (I64).
+        let num: Option<Box<dyn Fn(usize) -> Option<f64> + '_>> = match col {
+            TypedColumn::F64 { data, nulls, .. } => Some(Box::new(move |i| {
+                (!nulls.as_ref().is_some_and(|n| n[i])).then(|| data[i])
+            })),
+            TypedColumn::I64 { data, nulls, .. } => Some(Box::new(move |i| {
+                (!nulls.as_ref().is_some_and(|n| n[i])).then(|| data[i] as f64)
+            })),
+            _ => None,
+        };
+        if let (Some(num), "sum" | "avg") = (num, op) {
+            // -0.0 like Iterator::sum: an all-null group sums to -0.
+            let (mut sum, mut n) = (-0.0f64, 0usize);
+            let mut add = |i| {
+                if let Some(x) = num(i) {
+                    sum += x;
+                    n += 1;
+                }
+            };
+            match row_indices {
+                Some(idxs) => idxs.iter().for_each(|&i| add(i)),
+                None => (0..col.len()).for_each(add),
+            }
+            return Some(Value::Number(match op {
+                "avg" if n == 0 => 0.0,
+                "avg" => sum / n as f64,
+                _ => sum,
+            }));
+        }
+        return match row_indices {
+            Some(idxs) => fold(op, idxs.iter().map(|&i| col.cell(i)), row_count),
+            None => fold(op, (0..col.len()).map(|i| col.cell(i)), row_count),
+        };
+    }
+    let cv = table.column_view(column)?;
+    if !matches!(cv, crate::common::table::ColumnView::Owned { .. }) {
+        return None;
+    }
+    match row_indices {
+        Some(idxs) => fold(op, idxs.iter().filter_map(|&i| cv.get_ref(i)), row_count),
+        None => fold(op, (0..cv.len()).filter_map(|i| cv.get_ref(i)), row_count),
     }
 }
 
@@ -2424,6 +2655,11 @@ fn apply_aggregate_op_on_table(
     use crate::vm::vm::{VmExecutionContext, VM_CALL_CONTEXT};
 
     let row_count = row_indices.map(|i| i.len()).unwrap_or_else(|| table.len());
+    if let Some(col) = item.column.as_deref() {
+        if let Some(v) = aggregate_streaming(&item.op, table, col, row_indices, row_count) {
+            return Ok(v);
+        }
+    }
     let col_values = if let Some(col) = item.column.as_deref() {
         aggregate_column_values_from_table(table, col, row_indices)?
     } else {
@@ -2650,31 +2886,62 @@ pub fn table_aggregate_group_impl(table: &Table, spec: &Value) -> Result<Table, 
     let mut buckets: Vec<(Vec<Value>, Vec<usize>)> = Vec::new();
     let mut bucket_index: HashMap<String, usize> = HashMap::new();
 
-    if !table.is_view() {
+    let typed_key = table.typed_columns().and_then(|cols| {
+        let key_cols: Vec<&TypedColumn> = group_indices.iter().map(|&c| cols[c]).collect();
+        typed_group_buckets(&key_cols)
+    });
+    if let Some(typed) = typed_key {
+        buckets = typed;
+    } else if !table.is_view() {
+        // Read key cells through column views: no row materialization, and the
+        // lookup key (to_string of each value joined by \x1f) is only allocated
+        // for single string keys when a new group appears.
+        let key_cols: Vec<_> = group_columns
+            .iter()
+            .map(|name| table.column_view(name).expect("group column validated"))
+            .collect();
+        let null = Value::Null;
+        let mut key_buf = String::new();
         for row_idx in 0..table.len() {
-            let key_values: Vec<Value> = group_indices
-                .iter()
-                .map(|&idx| {
-                    table
-                        .get_row(row_idx)
-                        .and_then(|r| r.get(idx).cloned())
-                        .unwrap_or(Value::Null)
-                })
-                .collect();
-            let key = key_values
-                .iter()
-                .map(|v| v.to_string())
-                .collect::<Vec<_>>()
-                .join("\x1f");
-            if let Some(&bucket_idx) = bucket_index.get(&key) {
+            fn cell_at<'v>(
+                cv: &crate::common::table::ColumnView<'v>,
+                row: usize,
+                null: &'v Value,
+            ) -> &'v Value {
+                cv.get_ref(row).unwrap_or(null)
+            }
+            let cell = |cv| cell_at(cv, row_idx, &null);
+            let key: &str = match key_cols.as_slice() {
+                [cv] => match cell(cv) {
+                    Value::String(s) => s.as_str(),
+                    v => {
+                        key_buf = v.to_string();
+                        &key_buf
+                    }
+                },
+                cols => {
+                    key_buf.clear();
+                    for (i, cv) in cols.iter().enumerate() {
+                        if i > 0 {
+                            key_buf.push('\x1f');
+                        }
+                        key_buf.push_str(&cell(cv).to_string());
+                    }
+                    &key_buf
+                }
+            };
+            if let Some(&bucket_idx) = bucket_index.get(key) {
                 buckets[bucket_idx].1.push(row_idx);
             } else {
                 let bucket_idx = buckets.len();
-                bucket_index.insert(key, bucket_idx);
+                bucket_index.insert(key.to_string(), bucket_idx);
+                let key_values = key_cols.iter().map(|cv| cell(cv).clone()).collect();
                 buckets.push((key_values, vec![row_idx]));
             }
         }
+    }
 
+    if !table.is_view() {
         let mut out_headers = group_columns.clone();
         out_headers.extend(agg_items.iter().map(|item| item.output.clone()));
         let mut out_rows: Vec<Vec<Value>> = Vec::with_capacity(buckets.len());
@@ -2733,6 +3000,110 @@ pub fn table_aggregate_group_impl(table: &Table, spec: &Value) -> Result<Table, 
     }
 
     Ok(Table::from_data(out_rows, Some(out_headers)))
+}
+
+/// Dense per-row group ids of a typed key column: equal ids exactly when the
+/// cells' `to_string` is equal (as the string-key path groups). A string is
+/// built once per distinct Dict entry or F64 value, never per row. None for Mixed.
+fn typed_key_ids(col: &TypedColumn) -> Option<(Vec<u32>, usize)> {
+    use std::collections::HashMap;
+
+    let mut by_text: HashMap<String, u32> = HashMap::new();
+    let mut text_id = |v: &Value| {
+        let n = by_text.len() as u32;
+        *by_text.entry(v.to_string()).or_insert(n)
+    };
+    let ids: Vec<u32> = if let Some((codes, dict, _)) = col.as_dict() {
+        // Dict entries with the same to_string (null and "null") share a group.
+        let entry: Vec<u32> = dict.iter().map(&mut text_id).collect();
+        codes.iter().map(|&c| entry[c as usize]).collect()
+    } else {
+        match col {
+            TypedColumn::I64 { data, nulls, .. } => {
+                // Distinct i64 values never share a to_string; null gets its own id.
+                let mut by_int: HashMap<i64, u32> = HashMap::new();
+                let mut null_id = None;
+                let mut next = 0u32;
+                let mut fresh = || {
+                    next += 1;
+                    next - 1
+                };
+                let ids = (0..data.len())
+                    .map(|row| {
+                        if nulls.as_ref().is_some_and(|n| n[row]) {
+                            *null_id.get_or_insert_with(&mut fresh)
+                        } else {
+                            *by_int.entry(data[row]).or_insert_with(&mut fresh)
+                        }
+                    })
+                    .collect();
+                return Some((ids, next as usize));
+            }
+            TypedColumn::F64 { data, nulls, .. } => {
+                // Bits first; texts merge equal-printing values (e.g. NaN payloads).
+                let mut by_bits: HashMap<u64, u32> = HashMap::new();
+                let mut null_id = None;
+                (0..data.len())
+                    .map(|row| {
+                        if nulls.as_ref().is_some_and(|n| n[row]) {
+                            *null_id.get_or_insert_with(|| text_id(&Value::Null))
+                        } else {
+                            *by_bits
+                                .entry(data[row].to_bits())
+                                .or_insert_with(|| text_id(&col.cell(row)))
+                        }
+                    })
+                    .collect()
+            }
+            _ => return None,
+        }
+    };
+    Some((ids, by_text.len()))
+}
+
+/// Buckets for typed key columns (Dict, I64, F64) without per-row key strings.
+/// Composite keys combine per-column ids pairwise. Groups keep first-appearance
+/// order and the key is the first row's values, as in the string-key path.
+fn typed_group_buckets(cols: &[&TypedColumn]) -> Option<Vec<(Vec<Value>, Vec<usize>)>> {
+    use std::collections::HashMap;
+
+    let (mut ids, mut n) = typed_key_ids(cols.first()?)?;
+    for col in &cols[1..] {
+        let (col_ids, col_n) = typed_key_ids(col)?;
+        if n.checked_mul(col_n).is_some_and(|m| m <= ids.len().max(1 << 16)) {
+            // Small product space: direct index, no hashing.
+            let mut slot: Vec<u32> = vec![u32::MAX; n * col_n];
+            let mut next = 0u32;
+            for (id, &c) in ids.iter_mut().zip(&col_ids) {
+                let s = &mut slot[*id as usize * col_n + c as usize];
+                if *s == u32::MAX {
+                    *s = next;
+                    next += 1;
+                }
+                *id = *s;
+            }
+            n = next as usize;
+        } else {
+            let mut map: HashMap<u64, u32> = HashMap::new();
+            for (id, &c) in ids.iter_mut().zip(&col_ids) {
+                let len = map.len() as u32;
+                *id = *map.entry(((*id as u64) << 32) | c as u64).or_insert(len);
+            }
+            n = map.len();
+        }
+    }
+
+    let mut slots: Vec<u32> = vec![u32::MAX; n];
+    let mut buckets: Vec<(Vec<Value>, Vec<usize>)> = Vec::new();
+    for (row, &id) in ids.iter().enumerate() {
+        let s = &mut slots[id as usize];
+        if *s == u32::MAX {
+            *s = buckets.len() as u32;
+            buckets.push((cols.iter().map(|c| c.cell(row)).collect(), Vec::new()));
+        }
+        buckets[*s as usize].1.push(row);
+    }
+    Some(buckets)
 }
 
 /// `table_aggregate(table, spec)` / `table.aggregate(spec)`
@@ -2900,6 +3271,43 @@ pub fn table_drop_nulls_impl(
     let headers = table.borrow().headers().clone();
     let n_rows = table.borrow().len();
     let is_view = table.borrow().is_view();
+
+    // Типизированные колонки: маска null по битмапам, строки не материализуются.
+    if !is_view {
+        let t = table.borrow();
+        if let Some(cols) = t.typed_columns() {
+            let mut keep = vec![true; n_rows];
+            let all: Vec<usize>;
+            let selected = match columns.as_deref() {
+                Some(c) => c,
+                None => {
+                    all = (0..cols.len()).collect();
+                    &all
+                }
+            };
+            for col in selected.iter().filter_map(|&c| cols.get(c)) {
+                if let Some((codes, _, null_code)) = col.as_dict() {
+                    if let Some(nc) = null_code {
+                        for (k, &c) in keep.iter_mut().zip(codes) {
+                            *k = *k && c != nc;
+                        }
+                    }
+                } else if let Some(mask) = col.null_mask() {
+                    for (k, &n) in keep.iter_mut().zip(mask) {
+                        *k = *k && !n;
+                    }
+                } else if col.may_have_nulls() {
+                    for (i, k) in keep.iter_mut().enumerate() {
+                        *k = *k && !col.is_null(i);
+                    }
+                }
+            }
+            let indices: Vec<usize> = (0..n_rows).filter(|&i| keep[i]).collect();
+            if let Some(out) = t.gather_rows_owned(&indices) {
+                return Value::Table(Rc::new(RefCell::new(out)));
+            }
+        }
+    }
 
     let matching_indices: Vec<usize> = if is_view {
         crate::vm::vm::with_current_stores(|store, heap| {
@@ -3133,7 +3541,7 @@ pub fn native_table_row_number(args: &[Value]) -> Value {
         .map(|i| Value::Number(start_from + i as f64))
         .collect();
     let values = Value::Array(Rc::new(RefCell::new(numbers)));
-    match table_add_column_impl(&table.borrow(), column_name, Some(&values)) {
+    match table_add_column_rc(table, column_name, Some(&values)) {
         Ok(t) => Value::Table(Rc::new(RefCell::new(t))),
         Err(v) => v,
     }

@@ -19,4 +19,5 @@ pub mod array_slice;
 pub mod astar_grid_core;
 pub mod debug;
 pub mod table;
+pub mod typed_column;
 pub mod table_csv_export;

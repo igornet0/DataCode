@@ -6,7 +6,7 @@ pub mod type_map;
 pub use apply_sql::{apply_sql_table_soft, apply_sql_transaction, resync_datacode_schema};
 pub use crate::dcp::FkCheckMode;
 
-use crate::common::table::{Table, TableData};
+use crate::common::table::Table;
 use crate::common::value::Value;
 use crate::dcp::ContentAssetStore;
 use self::type_map::{
@@ -747,12 +747,8 @@ fn is_integer_column_for_header(table: &Table, header: &str) -> bool {
     let Some(col_idx) = table.headers().iter().position(|h| h == header) else {
         return false;
     };
-    match &table.data {
-        TableData::Owned {
-            flat,
-            num_cols,
-            ..
-        } => {
+    match table.owned_parts() {
+        Some((flat, ref num_cols, _)) => {
             if *num_cols == 0 {
                 return false;
             }
@@ -767,7 +763,7 @@ fn is_integer_column_for_header(table: &Table, header: &str) -> bool {
             }
             true
         }
-        TableData::View { .. } => false,
+        None => false,
     }
 }
 
@@ -775,12 +771,8 @@ fn is_unique_column_for_header(table: &Table, header: &str) -> bool {
     let Some(col_idx) = table.headers().iter().position(|h| h == header) else {
         return false;
     };
-    match &table.data {
-        TableData::Owned {
-            flat,
-            num_cols,
-            ..
-        } => {
+    match table.owned_parts() {
+        Some((flat, ref num_cols, _)) => {
             if *num_cols == 0 {
                 return true;
             }
@@ -803,7 +795,7 @@ fn is_unique_column_for_header(table: &Table, header: &str) -> bool {
             }
             true
         }
-        TableData::View { .. } => false,
+        None => false,
     }
 }
 
@@ -1370,12 +1362,8 @@ fn column_has_null(table: &Table, header: &str) -> bool {
     let Some(col_idx) = table.headers().iter().position(|h| h == header) else {
         return true;
     };
-    match &table.data {
-        TableData::Owned {
-            flat,
-            num_cols,
-            ..
-        } => {
+    match table.owned_parts() {
+        Some((flat, ref num_cols, _)) => {
             if *num_cols == 0 {
                 return true;
             }
@@ -1390,7 +1378,7 @@ fn column_has_null(table: &Table, header: &str) -> bool {
             }
             false
         }
-        TableData::View { .. } => true,
+        None => true,
     }
 }
 

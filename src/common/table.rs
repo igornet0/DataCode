@@ -1,8 +1,9 @@
 // Структура данных для таблиц: flat storage (row-major), ColumnView для итерации без материализации.
 
+use crate::common::typed_column::TypedColumn;
 use crate::common::value::Value;
 use crate::common::value_store::ValueId;
-use std::cell::RefCell;
+use std::cell::{OnceCell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -35,6 +36,22 @@ pub enum TableData {
         /// Lazy column cache for get_column(); built from flat on first access.
         column_cache: HashMap<String, Vec<Value>>,
     },
+    /// Columnar: immutable shared row-major `base` plus appended column buffers.
+    /// Adding a column shares every buffer by `Rc` instead of copying rows.
+    /// Row readers build a row-major flat once via `materialized`.
+    Columnar {
+        base: Rc<SharedRows>,
+        extra: Vec<TypedColumn>,
+        headers: Vec<String>,
+        materialized: Rc<OnceCell<Vec<Value>>>,
+    },
+}
+
+/// Immutable row-major block shared between Columnar tables.
+#[derive(Debug)]
+pub struct SharedRows {
+    pub flat: Vec<Value>,
+    pub num_cols: usize,
 }
 
 /// Reference to owned rows as a view over flat storage (no copy).
@@ -147,6 +164,25 @@ impl<'a> ColumnView<'a> {
                 }
                 let idx = row * num_cols + col_index;
                 flat.get(idx).cloned()
+            }
+            ColumnView::View { .. } => None,
+        }
+    }
+
+    /// Borrow cell at row index (Owned only; View returns None).
+    #[inline]
+    pub fn get_ref(&self, row: usize) -> Option<&'a Value> {
+        match self {
+            ColumnView::Owned {
+                flat,
+                num_cols,
+                col_index,
+                len,
+            } => {
+                if row >= *len {
+                    return None;
+                }
+                flat.get(row * num_cols + col_index)
             }
             ColumnView::View { .. } => None,
         }
@@ -337,6 +373,173 @@ impl Table {
         match &mut self.data {
             TableData::View { headers: h, .. } => *h = headers,
             TableData::Owned { headers: h, .. } => *h = headers,
+            TableData::Columnar { headers: h, .. } => *h = headers,
+        }
+    }
+
+    /// Row-major cells of an Owned or Columnar table (Columnar materializes once).
+    /// None for View tables.
+    pub fn owned_parts(&self) -> Option<(&Vec<Value>, usize, &Vec<String>)> {
+        match &self.data {
+            TableData::Owned {
+                flat,
+                num_cols,
+                headers,
+                ..
+            } => Some((flat, *num_cols, headers)),
+            TableData::Columnar {
+                base,
+                extra,
+                headers,
+                materialized,
+            } => {
+                let flat = materialized.get_or_init(|| interleave(base, extra));
+                Some((flat, headers.len(), headers))
+            }
+            TableData::View { .. } => None,
+        }
+    }
+
+    /// Turn a Columnar table into Owned so mutators can work in place.
+    /// Takes the materialized buffer when unique, otherwise builds a fresh one.
+    pub(crate) fn columnar_to_owned(&mut self) {
+        if !matches!(self.data, TableData::Columnar { .. }) {
+            return;
+        }
+        let data = std::mem::replace(
+            &mut self.data,
+            TableData::Owned {
+                flat: Vec::new(),
+                num_cols: 0,
+                headers: Vec::new(),
+                column_cache: HashMap::new(),
+            },
+        );
+        if let TableData::Columnar {
+            base,
+            extra,
+            headers,
+            materialized,
+        } = data
+        {
+            let flat = match Rc::try_unwrap(materialized).ok().and_then(|c| c.into_inner()) {
+                Some(flat) => flat,
+                None => interleave(&base, &extra),
+            };
+            self.data = TableData::Owned {
+                flat,
+                num_cols: headers.len(),
+                headers,
+                column_cache: HashMap::new(),
+            };
+        }
+    }
+
+    /// Share this table's rows as an immutable base without copying them.
+    /// Owned becomes Columnar with no extra columns; contents and headers stay the same.
+    pub fn share_as_base(&mut self) -> Option<(Rc<SharedRows>, Vec<TypedColumn>)> {
+        if let TableData::Owned { num_cols, headers, .. } = &self.data {
+            if *num_cols != headers.len() || *num_cols == 0 {
+                return None;
+            }
+            let data = std::mem::replace(
+                &mut self.data,
+                TableData::Owned {
+                    flat: Vec::new(),
+                    num_cols: 0,
+                    headers: Vec::new(),
+                    column_cache: HashMap::new(),
+                },
+            );
+            if let TableData::Owned {
+                flat,
+                num_cols,
+                headers,
+                ..
+            } = data
+            {
+                self.data = TableData::Columnar {
+                    base: Rc::new(SharedRows { flat, num_cols }),
+                    extra: Vec::new(),
+                    headers,
+                    materialized: Rc::new(OnceCell::new()),
+                };
+            }
+        }
+        match &self.data {
+            TableData::Columnar { base, extra, .. } => Some((base.clone(), extra.clone())),
+            _ => None,
+        }
+    }
+
+    /// New table sharing this Columnar table's buffers plus one appended column.
+    /// The caller checks the name and length.
+    pub fn with_extra_column(&self, name: &str, values: Rc<Vec<Value>>) -> Option<Table> {
+        self.with_extra_typed(name, TypedColumn::mixed(values))
+    }
+
+    /// Like [`Table::with_extra_column`] for an already built column.
+    pub fn with_extra_typed(&self, name: &str, column: TypedColumn) -> Option<Table> {
+        match &self.data {
+            TableData::Columnar {
+                base,
+                extra,
+                headers,
+                ..
+            } => {
+                let mut extra = extra.clone();
+                extra.push(column);
+                let mut headers = headers.clone();
+                headers.push(name.to_string());
+                Some(Table {
+                    data: TableData::Columnar {
+                        base: base.clone(),
+                        extra,
+                        headers,
+                        materialized: Rc::new(OnceCell::new()),
+                    },
+                    name: None,
+                })
+            }
+            _ => None,
+        }
+    }
+
+    /// Single-column table whose column buffer is shared, not copied.
+    pub fn from_column(name: String, values: Rc<Vec<Value>>) -> Table {
+        Table::from_typed_column(name, TypedColumn::mixed(values))
+    }
+
+    /// Single-column table over an already built column.
+    pub fn from_typed_column(name: String, column: TypedColumn) -> Table {
+        Table {
+            data: TableData::Columnar {
+                base: Rc::new(SharedRows {
+                    flat: Vec::new(),
+                    num_cols: 0,
+                }),
+                extra: vec![column],
+                headers: vec![name],
+                materialized: Rc::new(OnceCell::new()),
+            },
+            name: None,
+        }
+    }
+
+    /// Table over already built columns, one per header, all of the same length.
+    pub fn from_typed_columns(headers: Vec<String>, columns: Vec<TypedColumn>) -> Table {
+        debug_assert_eq!(headers.len(), columns.len());
+        Table {
+            data: TableData::Columnar {
+                base: Rc::new(SharedRows {
+                    flat: Vec::new(),
+                    num_cols: 0,
+                }),
+                extra: columns,
+                headers,
+                materialized: Rc::new(OnceCell::new()),
+            },
+            name: None,
         }
     }
 
@@ -362,7 +565,11 @@ impl Table {
                     flat_cell_ids: b, ..
                 },
             ) => a == b,
-            _ => false,
+            (TableData::View { .. }, _) | (_, TableData::View { .. }) => false,
+            _ => match (self.owned_parts(), other.owned_parts()) {
+                (Some((a, _, _)), Some((b, _, _))) => a == b,
+                _ => false,
+            },
         }
     }
 
@@ -373,7 +580,7 @@ impl Table {
         F: Fn(ValueId) -> Value,
     {
         match &self.data {
-            TableData::Owned { .. } => self.clone(),
+            TableData::Owned { .. } | TableData::Columnar { .. } => self.clone(),
             TableData::View {
                 flat_cell_ids,
                 num_cols,
@@ -413,6 +620,7 @@ impl Table {
                     flat.len() / num_cols
                 }
             }
+            TableData::Columnar { base, extra, .. } => columnar_len(base, extra),
         }
     }
 
@@ -429,6 +637,7 @@ impl Table {
         match &self.data {
             TableData::View { headers, .. } => headers,
             TableData::Owned { headers, .. } => headers,
+            TableData::Columnar { headers, .. } => headers,
         }
     }
 
@@ -453,6 +662,15 @@ impl Table {
                 Some(RowsRef {
                     flat: flat.as_slice(),
                     num_cols: *num_cols,
+                    len,
+                })
+            }
+            TableData::Columnar { .. } => {
+                let len = self.len();
+                let (flat, num_cols, _) = self.owned_parts()?;
+                Some(RowsRef {
+                    flat: flat.as_slice(),
+                    num_cols,
                     len,
                 })
             }
@@ -481,6 +699,55 @@ impl Table {
                 col_index,
                 len,
             }),
+            TableData::Columnar { base, extra, .. } => Some(if col_index < base.num_cols {
+                ColumnView::Owned {
+                    flat: base.flat.as_slice(),
+                    num_cols: base.num_cols,
+                    col_index,
+                    len,
+                }
+            } else {
+                ColumnView::Owned {
+                    flat: extra[col_index - base.num_cols].values(),
+                    num_cols: 1,
+                    col_index: 0,
+                    len,
+                }
+            }),
+        }
+    }
+
+    /// Shared buffer of an appended Columnar column (no copy for Mixed). None otherwise.
+    pub fn shared_column(&self, name: &str) -> Option<Rc<Vec<Value>>> {
+        self.shared_typed_column(name).map(|c| c.to_shared_values())
+    }
+
+    /// Appended Columnar column as a cheap clone (buffers shared). None otherwise.
+    pub fn shared_typed_column(&self, name: &str) -> Option<TypedColumn> {
+        self.typed_column(name).cloned()
+    }
+
+    /// All columns by index when the table is fully typed (Columnar with an empty base).
+    pub fn typed_columns(&self) -> Option<Vec<&TypedColumn>> {
+        match &self.data {
+            TableData::Columnar { base, extra, .. } if base.num_cols == 0 => Some(extra.iter().collect()),
+            _ => None,
+        }
+    }
+
+    /// Appended Columnar column, borrowed. None otherwise.
+    pub fn typed_column(&self, name: &str) -> Option<&TypedColumn> {
+        match &self.data {
+            TableData::Columnar {
+                base,
+                extra,
+                headers,
+                ..
+            } => {
+                let i = headers.iter().position(|h| h == name)?;
+                i.checked_sub(base.num_cols).map(|j| &extra[j])
+            }
+            _ => None,
         }
     }
 
@@ -488,12 +755,13 @@ impl Table {
     pub fn get_column_cached(&self, name: &str) -> Option<&Vec<Value>> {
         match &self.data {
             TableData::Owned { column_cache, .. } => column_cache.get(name),
-            TableData::View { .. } => None,
+            TableData::View { .. } | TableData::Columnar { .. } => None,
         }
     }
 
     /// Returns column by name (Owned only). Builds and caches from flat on first access.
     pub fn get_column(&mut self, name: &str) -> Option<&Vec<Value>> {
+        self.columnar_to_owned();
         match &mut self.data {
             TableData::Owned {
                 flat,
@@ -520,7 +788,7 @@ impl Table {
                 column_cache.insert(name.to_string(), column);
                 column_cache.get(name)
             }
-            TableData::View { .. } => None,
+            TableData::View { .. } | TableData::Columnar { .. } => None,
         }
     }
 
@@ -536,6 +804,7 @@ impl Table {
                     None
                 }
             }
+            TableData::Columnar { headers, .. } => Some(headers.len()).filter(|&n| n > 0),
         }
     }
 
@@ -551,6 +820,7 @@ impl Table {
                 expected
             ));
         }
+        self.columnar_to_owned();
         match &mut self.data {
             TableData::Owned {
                 flat,
@@ -565,7 +835,7 @@ impl Table {
                 column_cache.clear();
                 Ok(())
             }
-            TableData::View { .. } => Err(
+            TableData::View { .. } | TableData::Columnar { .. } => Err(
                 "ReadOnlyError: cannot add_row on table view; materialize first".to_string(),
             ),
         }
@@ -591,6 +861,11 @@ impl Table {
                     None
                 }
             }
+            TableData::Columnar { .. } => {
+                let (flat, num_cols, _) = self.owned_parts()?;
+                flat.get(index * num_cols..(index + 1) * num_cols)
+                    .filter(|_| num_cols > 0)
+            }
             TableData::View { .. } => None,
         }
     }
@@ -600,6 +875,7 @@ impl Table {
     where
         F: Fn(ValueId) -> Value,
     {
+        self.columnar_to_owned();
         if let TableData::View {
             flat_cell_ids,
             num_cols,
@@ -626,6 +902,7 @@ impl Table {
     pub fn owned_flat(&self) -> Option<&[Value]> {
         match &self.data {
             TableData::Owned { flat, .. } => Some(flat.as_slice()),
+            TableData::Columnar { .. } => self.owned_parts().map(|(f, _, _)| f.as_slice()),
             TableData::View { .. } => None,
         }
     }
@@ -633,6 +910,7 @@ impl Table {
     pub fn owned_num_cols(&self) -> Option<usize> {
         match &self.data {
             TableData::Owned { num_cols, .. } => Some(*num_cols),
+            TableData::Columnar { headers, .. } => Some(headers.len()),
             TableData::View { .. } => None,
         }
     }
@@ -650,12 +928,41 @@ impl Table {
                         .collect(),
                 )
             }
+            TableData::Columnar { base, extra, .. } => {
+                let len = self.len();
+                Some(if col_idx < base.num_cols {
+                    (0..len)
+                        .map(|row| base.flat[row * base.num_cols + col_idx].clone())
+                        .collect()
+                } else {
+                    extra[col_idx - base.num_cols].to_values_vec()
+                })
+            }
+            TableData::View { .. } => None,
+        }
+    }
+
+    /// One cell by row and column name, without materializing the column.
+    /// None for a View table, an unknown column or a row out of range.
+    pub fn cell_value(&self, row: usize, name: &str) -> Option<Value> {
+        let col_idx = self.headers().iter().position(|h| h == name)?;
+        if row >= self.len() {
+            return None;
+        }
+        match &self.data {
+            TableData::Owned { flat, num_cols, .. } => flat.get(row * num_cols + col_idx).cloned(),
+            TableData::Columnar { base, extra, .. } => Some(if col_idx < base.num_cols {
+                base.flat[row * base.num_cols + col_idx].clone()
+            } else {
+                extra[col_idx - base.num_cols].cell(row)
+            }),
             TableData::View { .. } => None,
         }
     }
 
     /// Append new columns at the end; existing rows get `Null` in new columns.
     pub fn extend_columns(&mut self, names: &[String]) -> Result<(), String> {
+        self.columnar_to_owned();
         match &mut self.data {
             TableData::Owned {
                 flat,
@@ -694,12 +1001,13 @@ impl Table {
                 column_cache.clear();
                 Ok(())
             }
-            TableData::View { .. } => Err("table must be owned".to_string()),
+            TableData::View { .. } | TableData::Columnar { .. } => Err("table must be owned".to_string()),
         }
     }
 
     /// Append a contiguous row-major chunk; length must be a multiple of `num_cols`.
     pub fn append_flat_chunk(&mut self, chunk: &[Value]) -> Result<usize, String> {
+        self.columnar_to_owned();
         match &mut self.data {
             TableData::Owned {
                 flat,
@@ -725,12 +1033,13 @@ impl Table {
                 column_cache.clear();
                 Ok(rows)
             }
-            TableData::View { .. } => Err("table must be owned".to_string()),
+            TableData::View { .. } | TableData::Columnar { .. } => Err("table must be owned".to_string()),
         }
     }
 
     /// Append rows; each row length must equal `num_cols`.
     pub fn append_rows(&mut self, rows: &[Vec<Value>]) -> Result<usize, String> {
+        self.columnar_to_owned();
         match &mut self.data {
             TableData::Owned {
                 flat,
@@ -759,7 +1068,7 @@ impl Table {
                 column_cache.clear();
                 Ok(rows.len())
             }
-            TableData::View { .. } => Err("table must be owned".to_string()),
+            TableData::View { .. } | TableData::Columnar { .. } => Err("table must be owned".to_string()),
         }
     }
 
@@ -773,8 +1082,9 @@ impl Table {
     where
         F: FnMut(Value) -> Value,
     {
-        match &self.data {
-            TableData::Owned { flat, num_cols, headers, .. } => {
+        match self.owned_parts() {
+            Some((flat, num_cols, headers)) => {
+                let num_cols = &num_cols;
                 let nc = *num_cols;
                 if nc == 0 || col_idx >= nc {
                     return None;
@@ -788,14 +1098,27 @@ impl Table {
                 }
                 Some(Table::from_flat_owned(out, nc, headers.clone()))
             }
-            TableData::View { .. } => None,
+            None => None,
         }
     }
 
     /// Replace `Null` cells in the given columns with `replacement` on owned storage.
     pub fn replace_nulls_owned(&self, col_indices: &[usize], replacement: &Value) -> Option<Self> {
-        match &self.data {
-            TableData::Owned { flat, num_cols, headers, .. } => {
+        if let TableData::Columnar { base, extra, headers, .. } = &self.data {
+            if base.num_cols == 0 && !extra.is_empty() {
+                if col_indices.iter().any(|&c| c >= extra.len()) {
+                    return None;
+                }
+                let mut cols = extra.to_vec();
+                for &ci in col_indices {
+                    cols[ci] = cols[ci].replace_nulls(replacement);
+                }
+                return Some(Table::from_typed_columns(headers.clone(), cols));
+            }
+        }
+        match self.owned_parts() {
+            Some((flat, num_cols, headers)) => {
+                let num_cols = &num_cols;
                 let nc = *num_cols;
                 if col_indices.iter().any(|&c| c >= nc.max(1)) {
                     return None;
@@ -812,13 +1135,14 @@ impl Table {
                 }
                 Some(Table::from_flat_owned(out, nc, headers.clone()))
             }
-            TableData::View { .. } => None,
+            None => None,
         }
     }
 
     /// Append a column in place on owned storage, moving `values` into the buffer.
     /// Returns `values` back if the table is a view or the length does not match.
     pub fn push_column_owned(&mut self, name: &str, values: Vec<Value>) -> Result<(), Vec<Value>> {
+        self.columnar_to_owned();
         match &mut self.data {
             TableData::Owned { flat, num_cols, headers, column_cache } => {
                 let nc = *num_cols;
@@ -839,7 +1163,7 @@ impl Table {
                 column_cache.remove(name);
                 Ok(())
             }
-            TableData::View { .. } => Err(values),
+            TableData::View { .. } | TableData::Columnar { .. } => Err(values),
         }
     }
 
@@ -849,8 +1173,9 @@ impl Table {
         names: &[String],
         columns: &[Vec<Value>],
     ) -> Option<Self> {
-        match &self.data {
-            TableData::Owned { flat, num_cols, headers, .. } => {
+        match self.owned_parts() {
+            Some((flat, num_cols, headers)) => {
+                let num_cols = &num_cols;
                 let nc = *num_cols;
                 let n_rows = if nc == 0 { 0 } else { flat.len() / nc };
                 if names.len() != columns.len() {
@@ -881,24 +1206,47 @@ impl Table {
                 new_headers.extend(names.iter().cloned());
                 Some(Table::from_flat_owned(out, new_nc, new_headers))
             }
-            TableData::View { .. } => None,
+            None => None,
         }
     }
 
     /// Clone owned flat buffer with new headers (header-only transforms).
     pub fn clone_flat_with_headers(&self, headers: Vec<String>) -> Option<Self> {
-        match &self.data {
-            TableData::Owned { flat, num_cols, .. } => {
+        match self.owned_parts() {
+            Some((flat, num_cols, _)) => {
+                let num_cols = &num_cols;
                 Some(Table::from_flat_owned(flat.clone(), *num_cols, headers))
             }
-            TableData::View { .. } => None,
+            None => None,
         }
     }
 
     /// Contiguous row slice on owned storage.
     pub fn slice_rows_owned(&self, start_row: usize, row_count: usize) -> Option<Self> {
-        match &self.data {
-            TableData::Owned { flat, num_cols, headers, .. } => {
+        if let TableData::Columnar { base, extra, headers, .. } = &self.data {
+            if !extra.is_empty() {
+                let len = columnar_len(base, extra);
+                if start_row.saturating_add(row_count) > len {
+                    return None;
+                }
+                return Some(columnar_map(
+                    base,
+                    extra,
+                    headers,
+                    |b| {
+                        let nc = b.num_cols;
+                        Rc::new(SharedRows {
+                            flat: b.flat[start_row * nc..(start_row + row_count) * nc].to_vec(),
+                            num_cols: nc,
+                        })
+                    },
+                    |c| c.slice(start_row, row_count),
+                ));
+            }
+        }
+        match self.owned_parts() {
+            Some((flat, num_cols, headers)) => {
+                let num_cols = &num_cols;
                 let nc = *num_cols;
                 if nc == 0 {
                     return Some(Table::from_flat_owned(Vec::new(), 0, headers.clone()));
@@ -917,14 +1265,42 @@ impl Table {
                     headers.clone(),
                 ))
             }
-            TableData::View { .. } => None,
+            None => None,
         }
     }
 
     /// Gather rows by index list on owned storage.
     pub fn gather_rows_owned(&self, indices: &[usize]) -> Option<Self> {
-        match &self.data {
-            TableData::Owned { flat, num_cols, headers, .. } => {
+        if let TableData::Columnar { base, extra, headers, .. } = &self.data {
+            if !extra.is_empty() {
+                // Out-of-range indices are skipped, as on owned storage.
+                let len = columnar_len(base, extra);
+                let kept;
+                let indices = if indices.iter().all(|&r| r < len) {
+                    indices
+                } else {
+                    kept = indices.iter().copied().filter(|&r| r < len).collect::<Vec<_>>();
+                    &kept[..]
+                };
+                return Some(columnar_map(
+                    base,
+                    extra,
+                    headers,
+                    |b| {
+                        let nc = b.num_cols;
+                        let mut flat = Vec::with_capacity(indices.len() * nc);
+                        for &r in indices {
+                            flat.extend_from_slice(&b.flat[r * nc..(r + 1) * nc]);
+                        }
+                        Rc::new(SharedRows { flat, num_cols: nc })
+                    },
+                    |c| c.gather(indices),
+                ));
+            }
+        }
+        match self.owned_parts() {
+            Some((flat, num_cols, headers)) => {
+                let num_cols = &num_cols;
                 let nc = *num_cols;
                 if nc == 0 {
                     return Some(Table::from_flat_owned(Vec::new(), 0, headers.clone()));
@@ -939,7 +1315,7 @@ impl Table {
                 }
                 Some(Table::from_flat_owned(out, nc, headers.clone()))
             }
-            TableData::View { .. } => None,
+            None => None,
         }
     }
 
@@ -949,8 +1325,9 @@ impl Table {
         col_indices: &[usize],
         new_headers: Vec<String>,
     ) -> Option<Self> {
-        match &self.data {
-            TableData::Owned { flat, num_cols, .. } => {
+        match self.owned_parts() {
+            Some((flat, num_cols, _)) => {
+                let num_cols = &num_cols;
                 let nc = *num_cols;
                 if nc == 0 {
                     return Some(Table::from_flat_owned(Vec::new(), 0, new_headers));
@@ -969,14 +1346,15 @@ impl Table {
                 }
                 Some(Table::from_flat_owned(out, new_nc, new_headers))
             }
-            TableData::View { .. } => None,
+            None => None,
         }
     }
 
     /// Append a column on owned storage without row-major Vec allocation.
     pub fn append_column_owned(&self, name: &str, values: &[Value]) -> Option<Self> {
-        match &self.data {
-            TableData::Owned { flat, num_cols, headers, .. } => {
+        match self.owned_parts() {
+            Some((flat, num_cols, headers)) => {
+                let num_cols = &num_cols;
                 let nc = *num_cols;
                 let n_rows = if nc == 0 { 0 } else { flat.len() / nc };
                 if values.len() != n_rows {
@@ -999,7 +1377,7 @@ impl Table {
                 new_headers.push(name.to_string());
                 Some(Table::from_flat_owned(out, new_nc, new_headers))
             }
-            TableData::View { .. } => None,
+            None => None,
         }
     }
 }
@@ -1021,7 +1399,61 @@ impl PartialEq for Table {
                         ..
                     },
                 ) => nc_a == nc_b && a == b,
-                _ => false,
+                _ => match (self.owned_parts(), other.owned_parts()) {
+                    (Some((a, nc_a, _)), Some((b, nc_b, _))) => nc_a == nc_b && a == b,
+                    _ => false,
+                },
             }
+    }
+}
+
+/// Row count of a Columnar table.
+fn columnar_len(base: &SharedRows, extra: &[TypedColumn]) -> usize {
+    if base.num_cols > 0 {
+        base.flat.len() / base.num_cols
+    } else {
+        extra.first().map_or(0, |c| c.len())
+    }
+}
+
+/// Row-major flat of a Columnar table: base row followed by each extra cell.
+fn interleave(base: &SharedRows, extra: &[TypedColumn]) -> Vec<Value> {
+    let len = columnar_len(base, extra);
+    let width = base.num_cols + extra.len();
+    let mut flat = Vec::with_capacity(len * width);
+    for r in 0..len {
+        if base.num_cols > 0 {
+            flat.extend_from_slice(&base.flat[r * base.num_cols..(r + 1) * base.num_cols]);
+        }
+        // `cell` keeps typed columns from caching a second copy of their cells.
+        for col in extra {
+            flat.push(col.cell(r));
+        }
+    }
+    flat
+}
+
+/// Columnar table built from per-column parts of `table`, keeping its base rows
+/// through `base_rows` and transforming every appended column with `col`.
+fn columnar_map(
+    base: &Rc<SharedRows>,
+    extra: &[TypedColumn],
+    headers: &[String],
+    base_rows: impl FnOnce(&SharedRows) -> Rc<SharedRows>,
+    col: impl Fn(&TypedColumn) -> TypedColumn,
+) -> Table {
+    let base = if base.num_cols == 0 {
+        base.clone()
+    } else {
+        base_rows(base)
+    };
+    Table {
+        data: TableData::Columnar {
+            base,
+            extra: extra.iter().map(col).collect(),
+            headers: headers.to_vec(),
+            materialized: Rc::new(OnceCell::new()),
+        },
+        name: None,
     }
 }

@@ -171,17 +171,11 @@ impl AbiBridgeContext {
             }
             Value::Table(rc) => {
                 let t = rc.borrow();
-                match &t.data {
-                    TableData::View { .. } => Err(BridgeError::Unrepresentable(
+                match t.owned_parts() {
+                    None => Err(BridgeError::Unrepresentable(
                         "Table View must be materialized to Owned before ABI conversion",
                     )),
-                    TableData::Owned {
-                        flat,
-                        num_cols,
-                        headers,
-                        ..
-                    } => {
-                        let cols = *num_cols;
+                    Some((flat, cols, headers)) => {
                         let rows = if cols == 0 {
                             0
                         } else {

@@ -707,6 +707,7 @@ pub fn materialize_iterables_in_value(
         }
         Value::Table(rc) => {
             let mut table = rc.borrow().clone();
+            table.columnar_to_owned();
             if let TableData::Owned { ref mut flat, .. } = table.data {
                 for cell in flat.iter_mut() {
                     let c = std::mem::replace(cell, Value::Null);

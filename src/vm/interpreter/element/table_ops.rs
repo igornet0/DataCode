@@ -270,12 +270,9 @@ pub fn get_table(
                     ),
                 );
             } else {
-                let mut table_ref = table.borrow_mut();
-                let has_col = if table_ref.is_view() {
-                    table_ref.has_column(&property)
-                } else {
-                    table_ref.get_column(&property).is_some()
-                };
+                // Existence check only: building the column cache here copied the column
+                // and turned a Columnar table back into interleaved rows.
+                let has_col = table.borrow().has_column(&property);
                 if has_col {
                     stack::push_id(
                         stack,

@@ -2,6 +2,7 @@
 
 use crate::common::numeric::IntValue;
 use crate::common::table::Table;
+use crate::common::typed_column::{ColumnBuilder, TypedColumn};
 use crate::common::value::Value;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -85,12 +86,17 @@ fn value_to_join_bits(val: &Value, nulls_equal: bool) -> Option<u64> {
     }
 }
 
-enum JoinIndex {
+enum JoinIndex<'a> {
     Numeric(HashMap<u64, Vec<usize>>),
+    /// Single key column holding only strings (and nulls): keys borrow the indexed table.
+    Str {
+        map: HashMap<&'a str, Vec<usize>>,
+        nulls: Vec<usize>,
+    },
     General(HashMap<KeyHash, Vec<usize>>),
 }
 
-impl JoinIndex {
+impl<'a> JoinIndex<'a> {
     fn contains(
         &self,
         row: &[Value],
@@ -101,23 +107,31 @@ impl JoinIndex {
             JoinIndex::Numeric(map) => extract_numeric_key(row, key_indices, nulls_equal)
                 .map(|k| map.contains_key(&k))
                 .unwrap_or(false),
+            JoinIndex::Str { .. } => self.lookup(row, key_indices, nulls_equal).is_some(),
             JoinIndex::General(map) => extract_general_key(row, key_indices)
                 .map(|k| map.contains_key(&k))
                 .unwrap_or(false),
         }
     }
 
-    fn lookup<'a>(
-        &'a self,
+    fn lookup<'s>(
+        &'s self,
         row: &[Value],
         key_indices: &[usize],
         nulls_equal: bool,
-    ) -> Option<&'a Vec<usize>> {
+    ) -> Option<&'s Vec<usize>> {
         match self {
             JoinIndex::Numeric(map) => {
                 let key = extract_numeric_key(row, key_indices, nulls_equal)?;
                 map.get(&key)
             }
+            JoinIndex::Str { map, nulls } => match row.get(*key_indices.first()?)? {
+                Value::String(s) => map.get(s.as_str()),
+                // Same as the general index: only Null matches Null, and only when nulls_equal
+                // (otherwise `nulls` stays empty).
+                Value::Null if !nulls.is_empty() => Some(nulls),
+                _ => None,
+            },
             JoinIndex::General(map) => {
                 let key = extract_general_key(row, key_indices)?;
                 map.get(&key)
@@ -139,11 +153,11 @@ fn extract_general_key(row: &[Value], key_indices: &[usize]) -> Option<KeyHash> 
     Some(KeyHash { values: key_values })
 }
 
-fn build_join_index(
-    table: &Table,
+fn build_join_index<'a>(
+    table: &'a Table,
     key_indices: &[usize],
     nulls_equal: bool,
-) -> JoinIndex {
+) -> JoinIndex<'a> {
     let rows = table.rows_ref().unwrap();
     // The numeric index only understands Null/Number/Int keys; any other key
     // value (e.g. a string) would be silently dropped, so fall back to the
@@ -167,6 +181,27 @@ fn build_join_index(
             }
         }
         JoinIndex::Numeric(map)
+    } else if key_indices.len() == 1
+        && rows.iter().all(|row| {
+            matches!(
+                row.get(key_indices[0]).unwrap_or(&Value::Null),
+                Value::Null | Value::String(_)
+            )
+        })
+    {
+        let col_idx = key_indices[0];
+        let mut map: HashMap<&'a str, Vec<usize>> = HashMap::new();
+        let mut nulls = Vec::new();
+        for row_idx in 0..rows.len() {
+            // `row()` returns a slice borrowing the table ('a), unlike `iter()`.
+            let row = rows.row(row_idx).unwrap_or(&[]);
+            match row.get(col_idx).unwrap_or(&Value::Null) {
+                Value::String(s) => map.entry(s.as_str()).or_insert_with(Vec::new).push(row_idx),
+                _ if nulls_equal => nulls.push(row_idx),
+                _ => {}
+            }
+        }
+        JoinIndex::Str { map, nulls }
     } else {
         let mut map = HashMap::new();
         for (row_idx, row) in rows.iter().enumerate() {
@@ -431,6 +466,90 @@ fn apply_column_aliases(
         .collect()
 }
 
+/// Columns of `table` as `TypedColumn`s: shared buffers when the table is fully typed,
+/// otherwise built from its rows.
+fn join_typed_columns(table: &Table) -> Vec<TypedColumn> {
+    if let Some(cols) = table.typed_columns() {
+        return cols.into_iter().cloned().collect();
+    }
+    let rows = table.rows_ref().unwrap();
+    let n = table.headers().len();
+    let mut builders: Vec<ColumnBuilder> = (0..n).map(|_| ColumnBuilder::with_capacity(rows.len())).collect();
+    for row in rows.iter() {
+        for (b, v) in builders.iter_mut().zip(row) {
+            b.push(v.clone());
+        }
+    }
+    builders.into_iter().map(ColumnBuilder::finish).collect()
+}
+
+/// Inner/left join of a fully typed left table: match rows by index, then gather columns,
+/// so the result stays columnar instead of copying every cell into a row buffer.
+/// None when the left table is not fully typed.
+fn typed_join(
+    left_table: &Table,
+    right_table: &Table,
+    plan: &JoinKeyPlan,
+    right_index: &JoinIndex,
+    nulls_equal: bool,
+    keep_unmatched_left: bool,
+    headers: Vec<String>,
+) -> Option<Value> {
+    let left_cols = left_table.typed_columns()?;
+    let n = left_table.len();
+    let mut left_idx: Vec<usize> = Vec::with_capacity(n);
+    let mut right_idx: Vec<Option<usize>> = Vec::with_capacity(n);
+    let mut emit = |i: usize, matches: Option<&Vec<usize>>| match matches {
+        Some(m) => {
+            for &r in m {
+                left_idx.push(i);
+                right_idx.push(Some(r));
+            }
+        }
+        None if keep_unmatched_left => {
+            left_idx.push(i);
+            right_idx.push(None);
+        }
+        None => {}
+    };
+
+    let mut scratch: Vec<Value> = vec![Value::Null; left_cols.len()];
+    match (plan.left_indices.as_slice(), plan.left_indices.first().map(|&k| left_cols[k].as_dict())) {
+        // Single dictionary key: one index lookup per distinct code.
+        ([k], Some(Some((codes, dict, _)))) => {
+            let mut per_code: Vec<Option<Option<&Vec<usize>>>> = vec![None; dict.len()];
+            for (i, &c) in codes.iter().enumerate() {
+                let hit = *per_code[c as usize].get_or_insert_with(|| {
+                    scratch[*k] = dict[c as usize].clone();
+                    right_index.lookup(&scratch, &plan.left_indices, nulls_equal)
+                });
+                emit(i, hit);
+            }
+        }
+        _ => {
+            for i in 0..n {
+                for &k in &plan.left_indices {
+                    scratch[k] = left_cols[k].cell(i);
+                }
+                emit(i, right_index.lookup(&scratch, &plan.left_indices, nulls_equal));
+            }
+        }
+    }
+
+    let mut columns: Vec<TypedColumn> = left_cols.iter().map(|c| c.gather(&left_idx)).collect();
+    drop(left_idx);
+    let all_matched = right_idx.iter().all(Option::is_some);
+    for col in join_typed_columns(right_table) {
+        columns.push(if all_matched {
+            let idx: Vec<usize> = right_idx.iter().map(|r| r.unwrap()).collect();
+            col.gather(&idx)
+        } else {
+            col.gather_opt(&right_idx)
+        });
+    }
+    Some(Value::Table(Rc::new(RefCell::new(Table::from_typed_columns(headers, columns)))))
+}
+
 // Выполнение INNER JOIN
 fn perform_inner_join(
     left_table: &Table,
@@ -445,6 +564,9 @@ fn perform_inner_join(
     };
     let right_index = build_join_index(right_table, &plan.right_indices, nulls_equal);
     let result_headers = join_result_headers(left_table, right_table, left_alias, right_alias);
+    if let Some(v) = typed_join(left_table, right_table, &plan, &right_index, nulls_equal, false, result_headers.clone()) {
+        return v;
+    }
     let left_cols = left_table.headers().len();
     let right_cols = right_table.headers().len();
     let mut builder = FlatJoinBuilder::new(left_table.len(), left_cols, right_cols);
@@ -478,6 +600,9 @@ fn perform_left_join(
     };
     let right_index = build_join_index(right_table, &plan.right_indices, nulls_equal);
     let result_headers = join_result_headers(left_table, right_table, left_alias, right_alias);
+    if let Some(v) = typed_join(left_table, right_table, &plan, &right_index, nulls_equal, true, result_headers.clone()) {
+        return v;
+    }
     let left_cols = left_table.headers().len();
     let right_cols = right_table.headers().len();
     let null_right_row: Vec<Value> = vec![Value::Null; right_cols];

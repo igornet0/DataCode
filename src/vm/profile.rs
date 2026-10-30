@@ -33,6 +33,8 @@ pub struct ProfileStats {
     pub opcode_executed: [u64; PROFILE_HIST_BUCKETS],
     pub alloc_by_opcode: [u64; PROFILE_HIST_BUCKETS],
     pub get_by_opcode: [u64; PROFILE_HIST_BUCKETS],
+    /// Пары подряд выполненных opcodes (prev * BUCKETS + cur) — кандидаты на fusion.
+    pub opcode_pairs: Vec<u64>,
     pub native_calls: Vec<(String, u64)>,
 }
 
@@ -46,6 +48,7 @@ impl Default for ProfileStats {
             opcode_executed: [0; PROFILE_HIST_BUCKETS],
             alloc_by_opcode: [0; PROFILE_HIST_BUCKETS],
             get_by_opcode: [0; PROFILE_HIST_BUCKETS],
+            opcode_pairs: vec![0; PROFILE_HIST_BUCKETS * PROFILE_HIST_BUCKETS],
             native_calls: Vec::new(),
         }
     }
@@ -114,11 +117,15 @@ pub fn record_store_get() {
 #[cfg(feature = "profile")]
 pub fn set_current_opcode(op: &OpCode) {
     let idx = op.profile_index();
-    CURRENT_OPCODE.with(|c| *c.borrow_mut() = idx);
+    let prev = CURRENT_OPCODE.with(|c| std::mem::replace(&mut *c.borrow_mut(), idx));
     PROFILE.with(|p| {
         if let Some(ref mut s) = *p.borrow_mut() {
             s.opcodes_executed += 1;
             bump_slot(&mut s.opcode_executed, idx);
+            let (a, b) = (prev as usize, idx as usize);
+            if a < PROFILE_HIST_BUCKETS && b < PROFILE_HIST_BUCKETS {
+                s.opcode_pairs[a * PROFILE_HIST_BUCKETS + b] += 1;
+            }
         }
     });
 }
@@ -156,6 +163,30 @@ pub fn print_stats(stats: &ProfileStats) {
         "[profile] top {} opcodes executed: {:?}",
         TOP_N,
         &by_opcode[..TOP_N.min(by_opcode.len())]
+    );
+
+    let name = |i: usize| {
+        if i < PROFILE_OPCODE_SLOTS {
+            OpCode::profile_name(i as u8).to_string()
+        } else {
+            "?".to_string()
+        }
+    };
+    let mut pairs: Vec<(String, u64)> = stats
+        .opcode_pairs
+        .iter()
+        .enumerate()
+        .filter(|(_, &count)| count > 0)
+        .map(|(i, &count)| {
+            let (a, b) = (i / PROFILE_HIST_BUCKETS, i % PROFILE_HIST_BUCKETS);
+            (format!("{}>{}", name(a), name(b)), count)
+        })
+        .collect();
+    pairs.sort_by(|a, b| b.1.cmp(&a.1));
+    eprintln!(
+        "[profile] top {} opcode pairs: {:?}",
+        TOP_N,
+        &pairs[..TOP_N.min(pairs.len())]
     );
 
     let mut by_native = stats.native_calls.clone();

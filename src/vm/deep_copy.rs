@@ -119,13 +119,8 @@ fn deep_copy_impl(value: &Value, ctx: &mut DeepCopyCtx<'_>) -> Result<Value, Str
                 name: table_ref.name.clone(),
             }));
             ctx.seen.insert(ptr, Value::Table(Rc::clone(&shell)));
-            match &materialized.data {
-                TableData::Owned {
-                    flat,
-                    num_cols,
-                    headers,
-                    ..
-                } => {
+            match materialized.owned_parts() {
+                Some((flat, ref num_cols, headers)) => {
                     let new_flat: Result<Vec<Value>, String> = flat
                         .iter()
                         .map(|v| deep_copy_impl(v, ctx))
@@ -137,7 +132,7 @@ fn deep_copy_impl(value: &Value, ctx: &mut DeepCopyCtx<'_>) -> Result<Value, Str
                         column_cache: HashMap::new(),
                     };
                 }
-                TableData::View { .. } => {
+                None => {
                     return Err("copy() internal error: table materialization failed".to_string());
                 }
             }

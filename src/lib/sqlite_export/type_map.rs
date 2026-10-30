@@ -5,7 +5,7 @@
 //! still uses SQLite storage classes (often TEXT for dates).
 
 use crate::common::numeric::IntValue;
-use crate::common::table::{Table, TableData};
+use crate::common::table::Table;
 use crate::common::value::{ByteBuffer, Value};
 use chrono::{FixedOffset, NaiveDate, NaiveTime, TimeZone, Timelike, Utc};
 use rusqlite::types::{ToSqlOutput, Value as SqlValue, ValueRef};
@@ -418,12 +418,8 @@ pub fn infer_datacode_type_for_header(table: &Table, header: &str) -> &'static s
     let Some(col_idx) = table.headers().iter().position(|h| h == header) else {
         return "string";
     };
-    match &table.data {
-        TableData::Owned {
-            flat,
-            num_cols,
-            ..
-        } => {
+    match table.owned_parts() {
+        Some((flat, ref num_cols, _)) => {
             if *num_cols == 0 {
                 return "string";
             }
@@ -497,7 +493,7 @@ pub fn infer_datacode_type_for_header(table: &Table, header: &str) -> &'static s
 
             resolve_infer_flags(&flags)
         }
-        TableData::View { .. } => "string",
+        None => "string",
     }
 }
 

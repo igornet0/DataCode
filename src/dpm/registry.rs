@@ -27,6 +27,38 @@ pub struct RegistryPackage {
     pub description: Option<String>,
     #[serde(default)]
     pub min_datacode: Option<String>,
+    /// Prebuilt `.dcmodule` bundles per target triple; installed instead of building from source.
+    #[serde(default)]
+    pub artifacts: Vec<RegistryArtifact>,
+}
+
+/// Prebuilt native bundle for one target (`aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, ...).
+#[derive(Debug, Clone, Deserialize)]
+pub struct RegistryArtifact {
+    pub target: String,
+    pub url: String,
+    pub sha256: String,
+    #[serde(default)]
+    pub version: Option<String>,
+}
+
+/// Target triple of this dpm binary, in the form used by registry `artifacts[].target`.
+pub fn current_target() -> String {
+    let os = match std::env::consts::OS {
+        "macos" => "apple-darwin",
+        "linux" => "unknown-linux-gnu",
+        "windows" => "pc-windows-msvc",
+        other => other,
+    };
+    format!("{}-{}", std::env::consts::ARCH, os)
+}
+
+impl RegistryPackage {
+    /// Artifact matching [`current_target`], if the registry publishes one.
+    pub fn artifact_for_current_target(&self) -> Option<&RegistryArtifact> {
+        let target = current_target();
+        self.artifacts.iter().find(|a| a.target == target)
+    }
 }
 
 /// URL of `config.json` (GET). Override with `DATACODE_REGISTRY_URL`.
@@ -99,5 +131,24 @@ mod tests {
         let p = registry_cache_path().expect("cache dir");
         assert!(p.to_string_lossy().contains("datacode"));
         assert!(p.ends_with("config.json"));
+    }
+
+    #[test]
+    fn artifacts_are_optional_and_matched_by_target() {
+        let json = format!(
+            r#"{{"version":1,"packages":[
+                {{"name":"a","source":"git+https://x/a.git"}},
+                {{"name":"b","source":"git+https://x/b.git","artifacts":[
+                    {{"target":"none-none","url":"https://x/n","sha256":"00"}},
+                    {{"target":"{}","url":"https://x/b.dcmodule","sha256":"ab","version":"0.1.0"}}
+                ]}}
+            ]}}"#,
+            current_target()
+        );
+        let idx: RegistryIndex = serde_json::from_str(&json).unwrap();
+        assert!(idx.packages[0].artifact_for_current_target().is_none());
+        let art = idx.packages[1].artifact_for_current_target().unwrap();
+        assert_eq!(art.url, "https://x/b.dcmodule");
+        assert_eq!(art.version.as_deref(), Some("0.1.0"));
     }
 }

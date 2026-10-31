@@ -22,7 +22,7 @@ pub use dcmodule::{expected_dcmodule_path, path_in_packages_directory};
 pub use env::{env_base_from_manifest, env_root, package_paths, packages_dir, ENV_DPM_ENV_BASE};
 pub use init_database::run_init_database;
 pub use init_wizard::run_init_wizard;
-pub use install::install_package;
+pub use install::{install_artifact, install_package, prefer_source_build, ENV_DPM_FROM_SOURCE};
 pub use lock::{load_lock, lock_file_name, write_lock, DpmLock, LockPackage};
 pub use manifest::{
     clear_manifest_env_base, datacode_version_satisfies, env_base_value_for_storage,
@@ -30,7 +30,7 @@ pub use manifest::{
 };
 pub use registry::{
     fetch_registry_index, registry_cache_path, registry_index_url, resolve_package_source,
-    resolve_registry_package, RegistryIndex, RegistryPackage,
+    resolve_registry_package, current_target, RegistryArtifact, RegistryIndex, RegistryPackage,
 };
 pub use setup::{run_setup_for_package, run_setup_if_present, ENV_DPM_SETUP_AUTO};
 

@@ -167,6 +167,18 @@ pub fn coerce_to_iterable_value_from_id(
             };
             build_special_instance_iterable(receiver_id, &other)
         }
+        Value::PluginOpaque { .. }
+            if crate::vm::interpreter::object::plugin_opaque_len_via_plugin_call(&v).is_some() =>
+        {
+            match crate::vm::interpreter::object::plugin_opaque_items_via_plugin_call(&v) {
+                Some(Ok(items)) => Ok(Value::Iterable(Rc::new(RefCell::new(IterableInner::Array {
+                    array: Rc::new(RefCell::new(items)),
+                    index: 0,
+                })))),
+                Some(Err(e)) => Err(e),
+                None => Err(runtime(0, "for-in / iterable: plugin value is not indexable")),
+            }
+        }
         other => Err(runtime(
             0,
             format!(

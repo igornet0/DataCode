@@ -119,6 +119,7 @@ fn try_emit_grid_module_opcode(
 }
 use crate::debug_println;
 use crate::parser::ast::{Arg, Expr};
+use crate::vm::native_call_registry::NativeCallParamRegistry;
 
 /// Receiver is syntactically a plain `{...}` dict literal (bucket map), not an instance/custom object.
 fn expr_is_definitely_plain_dict_literal(e: &Expr) -> bool {
@@ -404,6 +405,26 @@ fn is_kwarg_name_for_export(ctx: &CompilationContext, export_key: &str, name: &s
         .unwrap_or(false)
 }
 
+/// Several exports may share a method name (e.g. dataset vs fold `split`): prefer the one whose
+/// params include a named argument of this call, else the first registered.
+fn pick_export_for_method<'r>(
+    reg: &'r NativeCallParamRegistry,
+    method: &str,
+    args: &[Arg],
+) -> Option<&'r str> {
+    let exports = reg.exports_for_method(method);
+    exports
+        .iter()
+        .find(|key| {
+            let params = reg.get(key).unwrap_or(&[]);
+            args.iter().any(|a| {
+                matches!(a, Arg::Named { name, .. } if params.iter().any(|p| p == name))
+            })
+        })
+        .or_else(|| exports.first())
+        .map(|s| s.as_str())
+}
+
 /// Heuristic: plugin/module method path vs builtin (e.g. `String.split` vs `dataset.split`) when the
 /// plugin registered `__method__` → export_key for this method name.
 fn ambiguous_plugin_method_use_module_path(
@@ -457,7 +478,7 @@ fn compile_generic_method(
     let result = if is_axis_method {
         compile_axis_method(ctx, method, args, temp_object_slot, line)
     } else if let Some(reg) = ctx.native_call_param_registry {
-        if let Some(export_key) = reg.export_for_method(method) {
+        if let Some(export_key) = pick_export_for_method(reg, method, args) {
             if ambiguous_plugin_method_use_module_path(ctx, args, export_key) {
                 let param_owned = reg.get(export_key).map(|s| s.to_vec());
                 let param_refs: Vec<&str> = param_owned

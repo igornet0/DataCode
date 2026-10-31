@@ -2,13 +2,46 @@
 
 use data_code::dcmodule::{default_output_path, pack_directory};
 use data_code::dpm::{
-    clear_manifest_env_base, datacode_version_satisfies, env_root, find_project_root,
-    install_package, load_lock, load_manifest, lock_file_name, packages_dir,
+    clear_manifest_env_base, current_target, datacode_version_satisfies, env_root,
+    fetch_registry_index, find_project_root, install_artifact, install_package,
+    path_in_packages_directory, prefer_source_build, RegistryPackage, load_lock, load_manifest, lock_file_name, packages_dir,
     resolve_registry_package, run_add_database, run_init_database, run_init_wizard,
     run_setup_for_package, run_setup_if_present, set_manifest_env_base, set_virtualenvs_in_project,
     virtualenvs_in_project, write_lock, LockPackage, ENV_DPM_ENV_BASE,
 };
 use std::path::{Path, PathBuf};
+
+/// Clone `source` into `dest`, then either install the registry's prebuilt `.dcmodule` for this
+/// target (verified by sha256) or fall back to building via `setup.dcmodule`.
+/// Returns `(revision, artifact_sha256)`.
+fn install_dependency(
+    name: &str,
+    source: &str,
+    dest: &Path,
+    registry_pkg: Option<&RegistryPackage>,
+) -> Result<(String, Option<String>), String> {
+    let revision = install_package(name, source, dest)?;
+    let artifact = registry_pkg
+        .filter(|p| p.source == source && !prefer_source_build())
+        .and_then(|p| p.artifact_for_current_target());
+    if let Some(art) = artifact {
+        // `<packages>/<name>/<name>.dcmodule`, where the VM looks for bundles.
+        let dest_file = path_in_packages_directory(dest.parent().unwrap_or(dest), name);
+        println!("Downloading prebuilt {} for {}...", name, art.target);
+        match install_artifact(&art.url, &art.sha256, &dest_file) {
+            Ok(()) => return Ok((revision, Some(art.sha256.to_ascii_lowercase()))),
+            Err(e) => eprintln!("Warning: {}; building {} from source", e, name),
+        }
+    } else if registry_pkg.is_some_and(|p| !p.artifacts.is_empty()) && !prefer_source_build() {
+        eprintln!(
+            "No prebuilt {} for {}; building from source",
+            name,
+            current_target()
+        );
+    }
+    run_setup_if_present(dest)?;
+    Ok((revision, None))
+}
 
 fn resolve_env_base_flag(path: &str) -> Result<PathBuf, String> {
     let p = Path::new(path);
@@ -171,15 +204,24 @@ fn cmd_init(args: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(packages_dir(&env_root_path)).map_err(|e| e.to_string())?;
     let mut lock = load_lock(&project_root, lock_file)?;
     lock.package.clear();
+    // Registry is optional here: offline installs still work by building from source.
+    let registry = if manifest.dependencies.is_empty() {
+        None
+    } else {
+        fetch_registry_index().ok()
+    };
     for (name, source) in &manifest.dependencies {
         let dest = packages_dir(&env_root_path).join(name);
         println!("Installing {} from {}...", name, source);
-        let revision = install_package(name, source, &dest)?;
-        run_setup_if_present(&dest)?;
+        let registry_pkg = registry
+            .as_ref()
+            .and_then(|r| r.packages.iter().find(|p| &p.name == name));
+        let (revision, artifact_sha256) = install_dependency(name, source, &dest, registry_pkg)?;
         lock.package.push(LockPackage {
             name: name.clone(),
             source: source.clone(),
             revision: Some(revision),
+            artifact_sha256,
         });
     }
     write_lock(&project_root, lock_file, &lock)?;
@@ -206,6 +248,7 @@ fn cmd_add(args: &[String]) -> Result<(), String> {
         let flags = args.get(2..).unwrap_or(&[]);
         return run_add_database(&project_root, flags);
     }
+    let mut registry_pkg: Option<RegistryPackage> = None;
     let (name, source_owned): (&str, String) = match args {
         [n, s, ..] => (n.as_str(), s.clone()),
         [n] => {
@@ -219,7 +262,9 @@ fn cmd_add(args: &[String]) -> Result<(), String> {
                     ));
                 }
             }
-            (n.as_str(), pkg.source)
+            let source = pkg.source.clone();
+            registry_pkg = Some(pkg);
+            (n.as_str(), source)
         }
         _ => return Err("Usage: dpm add <package_name> [<source>]".to_string()),
     };
@@ -262,17 +307,19 @@ fn cmd_add(args: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(packages_dir(&env_root_path)).map_err(|e| e.to_string())?;
     let dest = packages_dir(&env_root_path).join(name);
     println!("Installing {} from {}...", name, source);
-    let revision = install_package(name, source, &dest)?;
-    run_setup_if_present(&dest)?;
+    let (revision, artifact_sha256) =
+        install_dependency(name, source, &dest, registry_pkg.as_ref())?;
     let mut lock = load_lock(&project_root, lock_file)?;
     if let Some(p) = lock.package.iter_mut().find(|p| p.name == name) {
         p.source = source.to_string();
         p.revision = Some(revision);
+        p.artifact_sha256 = artifact_sha256;
     } else {
         lock.package.push(LockPackage {
             name: name.to_string(),
             source: source.to_string(),
             revision: Some(revision),
+            artifact_sha256,
         });
     }
     write_lock(&project_root, lock_file, &lock)?;

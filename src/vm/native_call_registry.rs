@@ -3,7 +3,8 @@
 //! Rows in the descriptor array:
 //! - `[export_key, param1, param2, ...]` — kwargs for the native export `export_key`.
 //! - `["__method__", method_name, export_key]` — ambiguous source method name (e.g. `split`) maps to
-//!   that export for compile-time plugin vs builtin disambiguation.
+//!   that export for compile-time plugin vs builtin disambiguation. A method may map to several
+//!   exports (e.g. dataset `split` and fold `split`); the compiler picks one by the call's kwargs.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -17,8 +18,8 @@ const METHOD_MAP_TAG: &str = "__method__";
 #[derive(Clone, Default, Debug)]
 pub struct NativeCallParamRegistry {
     pub by_key: HashMap<String, Vec<String>>,
-    /// Language method name → native export key (e.g. `split` → `native_dataset_split`).
-    pub method_to_export: HashMap<String, String>,
+    /// Language method name → native export keys in registration order (e.g. `split` → `native_dataset_split`).
+    pub method_to_export: HashMap<String, Vec<String>>,
 }
 
 impl NativeCallParamRegistry {
@@ -112,19 +113,9 @@ impl NativeCallParamRegistry {
                         });
                     }
                 };
-                if self
-                    .method_to_export
-                    .insert(method_name.clone(), export_key)
-                    .is_some()
-                {
-                    return Err(LangError::ParseError {
-                        message: format!(
-                            "native_call_descriptor: duplicate __method__ '{}' (module '{}')",
-                            method_name, source_module
-                        ),
-                        line: 0,
-                        file: None,
-                    });
+                let exports = self.method_to_export.entry(method_name.clone()).or_default();
+                if !exports.contains(&export_key) {
+                    exports.push(export_key);
                 }
                 continue;
             }
@@ -160,9 +151,17 @@ impl NativeCallParamRegistry {
         self.by_key.get(key).map(|v| v.as_slice())
     }
 
-    /// Native export key for an ambiguous method name (e.g. `split`), if the plugin registered a mapping.
+    /// First native export key for an ambiguous method name (e.g. `split`), if the plugin registered a mapping.
     pub fn export_for_method(&self, method: &str) -> Option<&str> {
-        self.method_to_export.get(method).map(|s| s.as_str())
+        self.exports_for_method(method).first().map(|s| s.as_str())
+    }
+
+    /// All native export keys registered for a method name, in registration order.
+    pub fn exports_for_method(&self, method: &str) -> &[String] {
+        self.method_to_export
+            .get(method)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 }
 
@@ -192,6 +191,27 @@ mod tests {
         assert_eq!(
             r.get("native_dataset_split").map(|x| x.to_vec()),
             Some(vec!["test_size".to_string()])
+        );
+        assert_eq!(r.export_for_method("split"), Some("native_dataset_split"));
+    }
+
+    #[test]
+    fn merge_allows_one_method_mapped_to_several_exports() {
+        let row = |cells: &[&str]| {
+            Value::Array(Rc::new(RefCell::new(
+                cells.iter().map(|s| Value::String(s.to_string())).collect(),
+            )))
+        };
+        let v = Value::Array(Rc::new(RefCell::new(vec![
+            row(&[METHOD_MAP_TAG, "split", "native_dataset_split"]),
+            row(&[METHOD_MAP_TAG, "split", "native_dataset_split_fold"]),
+            row(&[METHOD_MAP_TAG, "split", "native_dataset_split"]),
+        ])));
+        let mut r = NativeCallParamRegistry::new();
+        r.merge_from_descriptor_value(&v, "ml").expect("merge");
+        assert_eq!(
+            r.exports_for_method("split"),
+            &["native_dataset_split".to_string(), "native_dataset_split_fold".to_string()]
         );
         assert_eq!(r.export_for_method("split"), Some("native_dataset_split"));
     }

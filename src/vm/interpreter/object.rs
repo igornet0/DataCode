@@ -49,6 +49,44 @@ pub(crate) fn plugin_opaque_len_via_plugin_call(opaque: &Value) -> Option<Value>
     }
 }
 
+/// Materializes an indexable plugin opaque (e.g. an ML dataset) for `for ... in`:
+/// `native_plugin_call(opaque, "len")`, then `native_plugin_call(opaque, i)` for each index.
+/// `None` when the plugin does not report a length for this opaque.
+pub(crate) fn plugin_opaque_items_via_plugin_call(
+    opaque: &Value,
+) -> Option<Result<Vec<Value>, LangError>> {
+    let len = match plugin_opaque_len_via_plugin_call(opaque)? {
+        Value::Number(n) => n,
+        Value::Int(crate::common::numeric::IntValue::Finite(i)) => i as f64,
+        Value::Float(f) => f.as_f64()?,
+        _ => return None,
+    };
+    if !(len >= 0.0) {
+        return None;
+    }
+    let vm_ptr = current_vm_ptr()?;
+    unsafe {
+        let vm = &*vm_ptr;
+        let native_idx = vm.plugin_call_native?;
+        let builtin_count = vm.builtin_natives_count();
+        let abi = vm.get_abi_natives();
+        let native = *abi.get(native_idx.checked_sub(builtin_count)?)?;
+        let mut items = Vec::with_capacity(len as usize);
+        for i in 0..len as usize {
+            let v = call_abi_native(
+                native,
+                &[opaque.clone(), Value::Number(i as f64)],
+                Some((vm.value_store(), vm.heavy_store())),
+            );
+            if let Some(e) = crate::vm::native_loader::take_last_abi_error() {
+                return Some(Err(e));
+            }
+            items.push(v);
+        }
+        Some(Ok(items))
+    }
+}
+
 pub fn op_make_array(
     count: usize,
     stack: &mut Vec<crate::common::TaggedValue>,

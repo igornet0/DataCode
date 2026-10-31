@@ -13,8 +13,19 @@ use std::fmt::Write;
 use std::sync::Arc;
 
 use crate::common::error::LangError;
+use crate::common::numeric::{FloatValue, IntValue};
 use crate::common::value::Value;
 use crate::lexer::TokenKind;
+
+/// Числовое поле дескриптора: нативные модули отдают его через ABI как `Int`/`Float`, VM-код — как `Number`.
+fn descriptor_number(v: &Value) -> Option<f64> {
+    match v {
+        Value::Number(n) => Some(*n),
+        Value::Int(IntValue::Finite(n)) => Some(*n as f64),
+        Value::Float(FloatValue::Finite(n)) => Some(*n),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Associativity {
@@ -180,9 +191,9 @@ impl OperatorRegistry {
                     ))
                 }
             };
-            let prec = match &c[2] {
-                Value::Number(n) => *n as u8,
-                _ => {
+            let prec = match descriptor_number(&c[2]) {
+                Some(n) => n as u8,
+                None => {
                     return Err(LangError::runtime_error(
                         "operator_descriptor: precedence must be a number".to_string(),
                         0,
@@ -192,8 +203,8 @@ impl OperatorRegistry {
             let assoc = match &c[3] {
                 Value::String(s) if s.eq_ignore_ascii_case("left") => Associativity::Left,
                 Value::String(s) if s.eq_ignore_ascii_case("right") => Associativity::Right,
-                Value::Number(n) => {
-                    if *n == 0.0 {
+                v if descriptor_number(v).is_some() => {
+                    if descriptor_number(v) == Some(0.0) {
                         Associativity::Left
                     } else {
                         Associativity::Right
@@ -297,5 +308,49 @@ pub fn binding_power(info: &OperatorInfo) -> (u8, u8) {
     match info.associativity {
         Associativity::Left => (p, p.saturating_add(1)),
         Associativity::Right => (p.saturating_add(1), p),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn descriptor(prec: Value, assoc: Value) -> Value {
+        let row = vec![
+            Value::String("@".to_string()),
+            Value::String("matmul".to_string()),
+            prec,
+            assoc,
+        ];
+        Value::Array(Rc::new(RefCell::new(vec![Value::Array(Rc::new(
+            RefCell::new(row),
+        ))])))
+    }
+
+    /// Native modules' `Number(60.0)` crosses the ABI as `Float`/`Int`, not `Value::Number`.
+    #[test]
+    fn merge_accepts_abi_numeric_kinds() {
+        for (prec, assoc, want) in [
+            (Value::Number(60.0), Value::Number(0.0), Associativity::Left),
+            (
+                Value::Float(FloatValue::Finite(60.0)),
+                Value::Float(FloatValue::Finite(0.0)),
+                Associativity::Left,
+            ),
+            (
+                Value::Int(IntValue::Finite(60)),
+                Value::Int(IntValue::Finite(1)),
+                Associativity::Right,
+            ),
+        ] {
+            let mut r = OperatorRegistry::new();
+            r.merge_from_descriptor_value(&descriptor(prec, assoc), "ml")
+                .expect("merge");
+            let info = r.get("@").expect("@ registered");
+            assert_eq!(info.precedence, 60);
+            assert_eq!(info.associativity, want);
+        }
     }
 }

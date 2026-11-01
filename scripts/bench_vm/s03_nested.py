@@ -1,0 +1,11 @@
+import time
+def main():
+    t0 = time.perf_counter()
+    n = 2000; s = 0
+    for i in range(n):
+        for j in range(n):
+            if (i + j) % 3 == 0:
+                s += 1
+    t1 = time.perf_counter()
+    print(f"RESULT s03 {s} {t1-t0:.4f}")
+main()

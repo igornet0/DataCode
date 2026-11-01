@@ -321,6 +321,8 @@ pub struct ValueStore {
     whole_i64_cache: IdMap<i64, ValueId>,
     /// Non-whole `f64` bit patterns (`inf`, `nan`, …) → one cell each (A* `float(inf)` defaults).
     f64_bits_cache: IdMap<u64, ValueId>,
+    /// Function index → one immutable `Function` cell, shared by every call frame's constant table.
+    function_const_cache: IdMap<usize, ValueId>,
     /// Recycled 2-slot heap items (`Array` len 2 / compacted tuple pairs) for `heapq`.
     heap_pair_free_list: Vec<ValueId>,
     /// Single reused 2-slot cell for `heappop` → tuple-unpack (`current_f, current = …`) hot path.
@@ -354,6 +356,7 @@ impl ValueStore {
             ephemeral_depth: 0,
             whole_i64_cache: IdMap::default(),
             f64_bits_cache: IdMap::default(),
+            function_const_cache: IdMap::default(),
             heap_pair_free_list: Vec::new(),
             scratch_heap_pair: None,
             flat_heap_ids: IdSet::default(),
@@ -712,6 +715,7 @@ impl ValueStore {
         self.ephemeral_depth = 0;
         self.whole_i64_cache.clear();
         self.f64_bits_cache.clear();
+        self.function_const_cache.clear();
         self.heap_pair_free_list.clear();
         self.scratch_heap_pair = None;
         self.flat_heap_ids.clear();
@@ -792,6 +796,17 @@ impl ValueStore {
         }
         let id = self.allocate(ValueCell::Number(n));
         self.f64_bits_cache.insert(bits, id);
+        id
+    }
+
+    /// One main-store cell per function index for `Value::Function` chunk constants
+    /// (function cells are never mutated in place; main chunks live until [`Self::clear`]).
+    pub fn intern_function_constant(&mut self, fn_index: usize) -> ValueId {
+        if let Some(&id) = self.function_const_cache.get(&fn_index) {
+            return id;
+        }
+        let id = self.allocate(ValueCell::Function(fn_index));
+        self.function_const_cache.insert(fn_index, id);
         id
     }
 

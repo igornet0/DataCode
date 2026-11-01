@@ -1,0 +1,9 @@
+[profile] opcodes_executed   = 346109827
+[profile] store_allocations  = 300057
+[profile] store_get_count    = 86068701
+[profile] top 15 opcodes executed: [("Constant", 90244357), ("LoadLocal", 68230810), ("StoreLocal", 34265445), ("JumpIfFalse8", 33815368), ("Jump8", 27959479), ("Add", 22463618), ("NotEqual", 16907684), ("Mod", 16757685), ("Equal", 16757685), ("IntDiv", 11351757), ("Mul", 5555927), ("LoadLocalPair", 450000), ("LoadGlobal", 150004), ("Call", 150004), ("Return", 150000)]
+[profile] top 15 opcode pairs: [("LoadLocal>Constant", 61924812), ("JumpIfFalse8>LoadLocal", 28109478), ("StoreLocal>Jump8", 27959479), ("Jump8>LoadLocal", 27959443), ("Constant>Add", 22463614), ("Add>StoreLocal", 22313612), ("Constant>NotEqual", 16907684), ("NotEqual>JumpIfFalse8", 16907684), ("Constant>Mod", 16757685), ("Constant>Equal", 16757685), ("Mod>Constant", 16757685), ("Equal>JumpIfFalse8", 16757685), ("Constant>IntDiv", 11351757), ("IntDiv>StoreLocal", 11351757), ("StoreLocal>LoadLocal", 6005960)]
+[profile] top 15 native calls: [("native", 2), ("print", 1)]
+[profile] top 15 by alloc: [("Call", 150031), ("ObjectGetIntegral", 149999), ("ImportFrom", 11), ("Add", 7), ("FormatInterp", 4), ("StoreGlobal", 1)]
+[profile] top 15 by get:  [("StoreLocal", 23003550), ("IntDiv", 22403536), ("NotEqual", 22103546), ("Mod", 10901792), ("Mul", 5405946), ("ObjectGetIntegral", 1199991), ("Call", 450036), ("Greater", 299996), ("LoadGlobal", 150004), ("Return", 150000), ("ImportFrom", 159), ("Add", 59), ("ObjectSetIntegral", 37), ("GetArrayElement", 30), ("FormatInterp", 8)]
+[profile] top 15 by alloc+get: [("StoreLocal", 23003550), ("IntDiv", 22403536), ("NotEqual", 22103546), ("Mod", 10901792), ("Mul", 5405946), ("ObjectGetIntegral", 1349990), ("Call", 600067), ("Greater", 299996), ("LoadGlobal", 150004), ("Return", 150000), ("ImportFrom", 170), ("Add", 66), ("ObjectSetIntegral", 37), ("GetArrayElement", 30), ("FormatInterp", 12)]

@@ -1,0 +1,28 @@
+import time
+def pos(a, b, c): return a + b + c
+def dflt(a, b=2, c=3): return a + b + c
+def kw(a, b, c): return a + b + c
+def va(*xs): return len(xs)
+def kwa(a, **opts): return a + len(opts)
+def big(a, b):
+    x = a * 2; y = b * 3; z = x + y
+    if z > 100: z = z - 100
+    w = [x, y, z]; msg = "abc"; k = len(msg) + len(w)
+    return z + k
+def main():
+    n = 200000
+    t0 = time.perf_counter(); s = 0
+    for i in range(n): s += pos(i, 1, 2)
+    t1 = time.perf_counter()
+    for i in range(n): s += dflt(i)
+    t2 = time.perf_counter()
+    for i in range(n): s += kw(i, c=1, b=2)
+    t3 = time.perf_counter()
+    for i in range(n): s += va(i, 1, 2)
+    t4 = time.perf_counter()
+    for i in range(n): s += kwa(i, x=1)
+    t5 = time.perf_counter()
+    for i in range(n): s += big(i, 1)
+    t6 = time.perf_counter()
+    print(f"RESULT s05 {s} pos={t1-t0:.4f} dflt={t2-t1:.4f} kw={t3-t2:.4f} va={t4-t3:.4f} kwa={t5-t4:.4f} big={t6-t5:.4f} total={t6-t0:.4f}")
+main()

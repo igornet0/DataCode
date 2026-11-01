@@ -278,8 +278,7 @@ pub(super) fn try_len_fast_path(
             }
             _ => None,
         } {
-            let result_id = value_store.allocate(ValueCell::Number(len));
-            stack::push_id(stack, result_id);
+            stack::push(stack, TaggedValue::from_f64(len));
             return Some(VMStatus::Continue);
         }
     }

@@ -1066,8 +1066,8 @@ fn value_array_to_usize(v: &Value) -> Option<Vec<usize>> {
             let r = arr.borrow();
             let mut out = Vec::with_capacity(r.len());
             for x in r.iter() {
-                match x {
-                    Value::Number(n) if *n >= 0.0 && n.fract() == 0.0 => out.push(*n as usize),
+                match x.as_finite_f64() {
+                    Some(n) if n >= 0.0 && n.fract() == 0.0 => out.push(n as usize),
                     _ => return None,
                 }
             }
@@ -1083,9 +1083,9 @@ fn value_array_to_f32(v: &Value) -> Option<Vec<f32>> {
             let r = arr.borrow();
             let mut out = Vec::with_capacity(r.len());
             for x in r.iter() {
-                match x {
-                    Value::Number(n) => out.push(*n as f32),
-                    _ => return None,
+                match x.as_ieee_f64() {
+                    Some(n) => out.push(n as f32),
+                    None => return None,
                 }
             }
             Some(out)

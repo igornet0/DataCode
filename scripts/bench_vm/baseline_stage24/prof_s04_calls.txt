@@ -1,0 +1,9 @@
+[profile] opcodes_executed   = 13000040
+[profile] store_allocations  = 1934514
+[profile] store_get_count    = 9738131
+[profile] top 15 opcodes executed: [("StoreLocal", 2000006), ("LoadLocal", 2000004), ("LoadLocalPair", 2000003), ("Constant", 1000007), ("LoadGlobal", 1000004), ("Call", 1000004), ("Add", 1000003), ("Return", 1000001), ("ForRange", 1000000), ("ForRangeNext", 1000000), ("GetArrayElement", 2), ("FormatInterp", 2), ("StoreGlobal", 1), ("Sub", 1), ("Pop", 1)]
+[profile] top 15 opcode pairs: [("LoadLocalPair>LoadLocal", 2000003), ("Constant>StoreLocal", 1000002), ("StoreLocal>LoadLocalPair", 1000002), ("LoadGlobal>Call", 1000002), ("Call>Constant", 1000001), ("LoadLocal>LoadGlobal", 1000000), ("LoadLocal>Add", 1000000), ("StoreLocal>ForRangeNext", 1000000), ("Add>Return", 1000000), ("ForRange>LoadLocalPair", 1000000), ("Return>StoreLocal", 1000000), ("ForRangeNext>ForRange", 999999), ("Constant>GetArrayElement", 2), ("LoadLocal>Constant", 2), ("StoreLocal>Constant", 2)]
+[profile] top 15 native calls: [("native", 2), ("print", 1)]
+[profile] top 15 by alloc: [("Call", 1000029), ("Return", 934464), ("ImportFrom", 11), ("Add", 3), ("FormatInterp", 2), ("StoreGlobal", 1)]
+[profile] top 15 by get:  [("StoreLocal", 3868938), ("Call", 2934497), ("LoadGlobal", 1000004), ("Return", 1000001), ("Add", 934487), ("ImportFrom", 159), ("GetArrayElement", 30), ("StoreGlobal", 4), ("Sub", 4), ("FormatInterp", 4), ("ForRange", 3)]
+[profile] top 15 by alloc+get: [("Call", 3934526), ("StoreLocal", 3868938), ("Return", 1934465), ("LoadGlobal", 1000004), ("Add", 934490), ("ImportFrom", 170), ("GetArrayElement", 30), ("FormatInterp", 6), ("StoreGlobal", 5), ("Sub", 4), ("ForRange", 3)]

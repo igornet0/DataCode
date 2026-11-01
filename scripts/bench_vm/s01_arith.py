@@ -1,0 +1,11 @@
+import time
+def main():
+    t0 = time.perf_counter()
+    n = 3000000; a = 0; b = 1; x = 0.5
+    for i in range(n):
+        a = (a + i * 3 - b) % 1000003
+        b = b + 1
+        x = x * 0.999999 + 0.25
+    t1 = time.perf_counter()
+    print(f"RESULT s01 {a} {x:.4f} {t1-t0:.4f}")
+main()

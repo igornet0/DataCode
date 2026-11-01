@@ -154,6 +154,41 @@ fn try_int_binop_values(a: &Value, b: &Value, op: fn(i64, i64) -> i64) -> Option
     Some(Value::Int(IntValue::Finite(op(ai, bi))))
 }
 
+/// Operands of `int|number <op> float` (at least one heap finite `float`) as the `Value`s the
+/// slow path would load, without interning the immediates into the store.
+/// An immediate int maps to `Value::Number`, as main-scope interning does; for add/sub/mul
+/// the ephemeral `Value::Int` form gives the same result because no side is `Int` on both.
+#[inline]
+fn heap_float_operands(a_tv: TaggedValue, b_tv: TaggedValue, store: &ValueStore) -> Option<(Value, Value)> {
+    let fa = crate::vm::interpreter::comparison::tagged_heap_float(a_tv, store);
+    let fb = crate::vm::interpreter::comparison::tagged_heap_float(b_tv, store);
+    if fa.is_none() && fb.is_none() {
+        return None;
+    }
+    let side = |tv: TaggedValue, f: Option<f64>| -> Option<Value> {
+        if let Some(f) = f {
+            return Some(Value::Float(crate::common::numeric::FloatValue::Finite(f)));
+        }
+        if tv.is_number() {
+            return Some(Value::Number(tv.get_f64()));
+        }
+        int_i64_from_tv(tv).map(|n| Value::Number(n as f64))
+    };
+    Some((side(a_tv, fa)?, side(b_tv, fb)?))
+}
+
+/// Pushes a float result as an immediate when that is indistinguishable from the stored form.
+/// Non-finite and zero results go through the regular store path.
+#[inline]
+fn try_push_immediate_f64(stack: &mut Vec<TaggedValue>, r: f64) -> bool {
+    if r.is_finite() && r != 0.0 {
+        stack::push(stack, TaggedValue::from_f64(r));
+        true
+    } else {
+        false
+    }
+}
+
 pub fn op_add(
     current_ip: usize,
     stack: &mut Vec<TaggedValue>,
@@ -200,6 +235,20 @@ pub fn op_add(
             }
         }
         frame.add_cache_both_number = false;
+    }
+    if let Some((a, b)) = heap_float_operands(a_tv, b_tv, value_store) {
+        if let (Some(ai), Some(bi)) = (
+            integer_value_as_i64_if_whole(&a),
+            integer_value_as_i64_if_whole(&b),
+        ) {
+            push_int_i64_result(stack, ai.wrapping_add(bi), value_store, heavy_store);
+            return Ok(VMStatus::Continue);
+        }
+        if let (Some(x), Some(y)) = (a.as_ieee_f64(), b.as_ieee_f64()) {
+            if try_push_immediate_f64(stack, x + y) {
+                return Ok(VMStatus::Continue);
+            }
+        }
     }
     let a_id = tagged_to_value_id(a_tv, value_store);
     let b_id = tagged_to_value_id(b_tv, value_store);
@@ -332,6 +381,13 @@ pub fn op_sub(
             frame.sub_cache_both_number = false;
         }
     }
+    if let Some((a, b)) = heap_float_operands(a_tv, b_tv, value_store) {
+        if let (Some(x), Some(y)) = (a.as_ieee_f64(), b.as_ieee_f64()) {
+            if try_push_immediate_f64(stack, x - y) {
+                return Ok(VMStatus::Continue);
+            }
+        }
+    }
     let a_id = tagged_to_value_id(a_tv, value_store);
     let b_id = tagged_to_value_id(b_tv, value_store);
     let a = load_value(a_id, value_store, heavy_store);
@@ -397,6 +453,13 @@ pub fn op_mul(
         let frame = frames.last_mut().unwrap();
         if frame.mul_cache_ip == Some(current_ip) {
             frame.mul_cache_both_number = false;
+        }
+    }
+    if let Some((a, b)) = heap_float_operands(a_tv, b_tv, value_store) {
+        if let (Some(x), Some(y)) = (a.as_ieee_f64(), b.as_ieee_f64()) {
+            if try_push_immediate_f64(stack, x * y) {
+                return Ok(VMStatus::Continue);
+            }
         }
     }
     let a_id = tagged_to_value_id(a_tv, value_store);
@@ -519,6 +582,18 @@ pub fn op_matmul(
     Ok(VMStatus::Continue)
 }
 
+/// Inline `int` / `number` operand as f64 (no store access). `None` for heap / other immediates.
+#[inline]
+fn immediate_numeric_f64(tv: TaggedValue) -> Option<f64> {
+    if tv.is_int() {
+        Some(tv.get_i32() as f64)
+    } else if tv.is_number() {
+        Some(tv.get_f64())
+    } else {
+        None
+    }
+}
+
 pub fn op_div(
     current_ip: usize,
     stack: &mut Vec<TaggedValue>,
@@ -529,6 +604,16 @@ pub fn op_div(
 ) -> Result<VMStatus, LangError> {
     let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+    // Inline int / number operands with a non-zero divisor: the quotient is a plain `number`
+    // (same as `ieee_div_quotient_value` without float operands), so no store cells are needed.
+    if a_tv.is_int() || b_tv.is_int() {
+        if let (Some(x), Some(y)) = (immediate_numeric_f64(a_tv), immediate_numeric_f64(b_tv)) {
+            if y != 0.0 {
+                stack::push(stack, TaggedValue::from_f64(x / y));
+                return Ok(VMStatus::Continue);
+            }
+        }
+    }
     if a_tv.is_number() && b_tv.is_number() {
         let n1 = a_tv.get_f64();
         let n2 = b_tv.get_f64();
@@ -636,10 +721,9 @@ pub fn op_int_div(
 ) -> Result<VMStatus, LangError> {
     let b_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
     let a_tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
-    if a_tv.is_number() && b_tv.is_number() {
-        let n2 = b_tv.get_f64();
-        if n2 != 0.0 {
-            stack::push(stack, TaggedValue::from_f64((a_tv.get_f64() / n2).floor()));
+    if let (Some(x), Some(y)) = (immediate_numeric_f64(a_tv), immediate_numeric_f64(b_tv)) {
+        if y != 0.0 {
+            stack::push(stack, TaggedValue::from_f64((x / y).floor()));
             return Ok(VMStatus::Continue);
         }
     }

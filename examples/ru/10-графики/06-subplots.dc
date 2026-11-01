@@ -21,18 +21,17 @@ data = ml.load_mnist("test")
 # Собираем первые 9 изображений
 images = []
 labels = []
-count = 0
 
 for x, y in data {
     push(images, x)
     push(labels, y)
-    count += 1
-    if count >= 9 {
+    
+    if len(images) >= 9 {
         break
     }
 }
 
-print("Загружено " + str(count) + " изображений")
+print("Загружено " + len(images) + " изображений")
 print("")
 
 # Заполняем каждый subplot изображением
@@ -51,7 +50,7 @@ for i in range(9) {
     
     # Устанавливаем заголовок для каждого subplot
     # Заголовок может содержать информацию об изображении
-    axis.set_title("Label: " + str(labels[i]))
+    axis.set_title("Label: " + str(labels[i][0]))
     
     # Скрываем оси (убираем координатные линии)
     axis.axis('off')

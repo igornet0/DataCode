@@ -1,0 +1,6 @@
+[[package]]
+name = "ml"
+source = "git+https://github.com/igornet0/ML-Datacode-lib.git"
+revision = "f4f810ca5e83cee9a930c92296dc68df0d664dc7"
+artifact_sha256 = "dc1f4bf1b6b32bd1a7cf3727f628fc4c6683a472ddf9f4a22abff58530831640"
+version = "0.1.3"

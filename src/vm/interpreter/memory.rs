@@ -503,7 +503,14 @@ fn op_store_global_inner(
         .map(|f| f.constant_ids.contains(&value_id))
         .unwrap_or(false);
     // Fast path: types that need no metadata — just store the id, no load_value/store_value copy.
-    if !from_constant {
+    // Float/Bool/Null cells are never written in place (`try_write_cell_from_tagged` only touches
+    // Number/Int), so a constant-pool id of these kinds can be shared without a per-store copy.
+    let shareable_constant = from_constant
+        && matches!(
+            value_store.get(value_id),
+            Some(ValueCell::Float(_) | ValueCell::Bool(_) | ValueCell::Null)
+        );
+    if !from_constant || shareable_constant {
         if let Some(cell) = value_store.get(value_id) {
             let skip_full_path = match cell {
                 ValueCell::Array(_)

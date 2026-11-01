@@ -174,6 +174,31 @@ pub fn op_not_equal(
     Ok(VMStatus::Continue)
 }
 
+/// Heap finite `float` as `f64`. Kept out of [`tagged_as_f64`]: an extra arm there slows the
+/// `<` hot path (`op_less`) by ~12% instructions on s02.
+pub(crate) fn tagged_heap_float(tv: TaggedValue, store: &ValueStore) -> Option<f64> {
+    if !tv.is_heap() {
+        return None;
+    }
+    match store.get(tv.get_heap_id()) {
+        Some(ValueCell::Float(FloatValue::Finite(f))) => Some(*f),
+        _ => None,
+    }
+}
+
+/// Both operands as `f64` (immediates, heap int/number/finite float), without allocating.
+/// NaN returns `None`: the slow path orders it via `value_partial_cmp`
+/// (NaN ranks above `+inf`), which IEEE comparison would not reproduce.
+#[inline]
+fn tagged_numeric_pair(a: TaggedValue, b: TaggedValue, store: &ValueStore) -> Option<(f64, f64)> {
+    let x = tagged_as_f64(a, store).or_else(|| tagged_heap_float(a, store))?;
+    let y = tagged_as_f64(b, store).or_else(|| tagged_heap_float(b, store))?;
+    if x.is_nan() || y.is_nan() {
+        return None;
+    }
+    Some((x, y))
+}
+
 pub fn op_greater(
     stack: &mut Vec<TaggedValue>,
     frames: &mut Vec<CallFrame>,
@@ -188,6 +213,10 @@ pub fn op_greater(
             stack,
             TaggedValue::from_bool(a_tv.get_f64() > b_tv.get_f64()),
         );
+        return Ok(VMStatus::Continue);
+    }
+    if let Some((x, y)) = tagged_numeric_pair(a_tv, b_tv, value_store) {
+        stack::push(stack, TaggedValue::from_bool(x > y));
         return Ok(VMStatus::Continue);
     }
     let a_id = tagged_to_value_id(a_tv, value_store);
@@ -259,6 +288,10 @@ pub fn op_less(
         stack::push(stack, TaggedValue::from_bool(cmp));
         return Ok(VMStatus::Continue);
     }
+    if let Some((x, y)) = tagged_numeric_pair(a_tv, b_tv, value_store) {
+        stack::push(stack, TaggedValue::from_bool(x < y));
+        return Ok(VMStatus::Continue);
+    }
     let a_id = tagged_to_value_id(a_tv, value_store);
     let b_id = tagged_to_value_id(b_tv, value_store);
     let a = load_value(a_id, value_store, heavy_store);
@@ -298,6 +331,10 @@ pub fn op_greater_equal(
         );
         return Ok(VMStatus::Continue);
     }
+    if let Some((x, y)) = tagged_numeric_pair(a_tv, b_tv, value_store) {
+        stack::push(stack, TaggedValue::from_bool(x >= y));
+        return Ok(VMStatus::Continue);
+    }
     let a_id = tagged_to_value_id(a_tv, value_store);
     let b_id = tagged_to_value_id(b_tv, value_store);
     let a = load_value(a_id, value_store, heavy_store);
@@ -335,6 +372,10 @@ pub fn op_less_equal(
             stack,
             TaggedValue::from_bool(a_tv.get_f64() <= b_tv.get_f64()),
         );
+        return Ok(VMStatus::Continue);
+    }
+    if let Some((x, y)) = tagged_numeric_pair(a_tv, b_tv, value_store) {
+        stack::push(stack, TaggedValue::from_bool(x <= y));
         return Ok(VMStatus::Continue);
     }
     let a_id = tagged_to_value_id(a_tv, value_store);

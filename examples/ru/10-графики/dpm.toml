@@ -1,0 +1,18 @@
+[project]
+name = "10-графики"
+version = "0.1.0"
+authors = ["igornet0"]
+datacode = ">=2.0.0"
+
+[environment]
+python = false
+wasm = false
+target = "native"
+profile = "release"
+
+[dependencies]
+ml = "git+https://github.com/igornet0/ML-Datacode-lib.git"
+
+[lock]
+file = "dpm.lock"
+checksum = true

@@ -1,5 +1,6 @@
 //! Bitwise operators (`&`, `|`, `^`, `~`, `<<`, `>>`) — [`Value::Int`] finite operands only.
 
+use crate::bytecode::OpCode;
 use crate::common::error::ErrorType;
 use crate::common::error::LangError;
 use crate::common::numeric::{f64_trunc_to_i64_clamped, IntValue};
@@ -79,12 +80,30 @@ fn tagged_as_int_i64(
     None
 }
 
+/// True when the pushed value is immediately returned from the top-level frame, i.e. it becomes
+/// the `run()` result. The API boundary maps immediate ints to `Value::Number`, so such results
+/// stay boxed as `int` cells.
+fn is_top_level_result(frames: &[CallFrame]) -> bool {
+    frames.len() == 1
+        && frames.last().map_or(false, |f| {
+            matches!(f.function.chunk.code.get(f.ip), Some(OpCode::Return) | None)
+        })
+}
+
 fn push_int(
     stack: &mut Vec<TaggedValue>,
+    frames: &[CallFrame],
     n: i64,
     value_store: &mut ValueStore,
-    _heavy_store: &mut HeavyStore,
 ) {
+    // i32-range results stay immediate (as in arithmetic::push_int_i64_result);
+    // only wider i64 values and the top-level script result are boxed into the store.
+    if !is_top_level_result(frames) {
+        if let Some(tv) = TaggedValue::try_from_int_iv(IntValue::Finite(n)) {
+            stack::push(stack, tv);
+            return;
+        }
+    }
     let id = value_store.allocate_ephemeral(ValueCell::Int(IntValue::Finite(n)));
     stack::push_id(stack, id);
 }
@@ -118,7 +137,7 @@ where
         (Some(a), Some(b)) => (a, b),
         _ => return runtime_type_err(line, stack, frames, exception_handlers, value_store, heavy_store),
     };
-    push_int(stack, op(a, b), value_store, heavy_store);
+    push_int(stack, frames, op(a, b), value_store);
     Ok(VMStatus::Continue)
 }
 
@@ -149,7 +168,7 @@ where
         Some(s) => s,
         None => return runtime_type_err(line, stack, frames, exception_handlers, value_store, heavy_store),
     };
-    push_int(stack, op(a, shift), value_store, heavy_store);
+    push_int(stack, frames, op(a, shift), value_store);
     Ok(VMStatus::Continue)
 }
 
@@ -230,6 +249,6 @@ pub fn op_bit_not(
         Some(n) => n,
         None => return runtime_type_err(line, stack, frames, exception_handlers, value_store, heavy_store),
     };
-    push_int(stack, !a, value_store, heavy_store);
+    push_int(stack, frames, !a, value_store);
     Ok(VMStatus::Continue)
 }

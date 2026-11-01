@@ -1,0 +1,9 @@
+[profile] opcodes_executed   = 72000056
+[profile] store_allocations  = 58
+[profile] store_get_count    = 54000297
+[profile] top 15 opcodes executed: [("Constant", 15000010), ("StoreLocal", 12000010), ("LoadLocal", 12000006), ("Add", 9000005), ("Mul", 6000000), ("LoadLocalPair", 3000003), ("Sub", 3000001), ("ForIterableNext", 3000001), ("JumpIfFalse8", 3000001), ("Mod", 3000000), ("Jump8", 3000000), ("LoadGlobal", 5), ("Call", 5), ("FormatInterp", 3), ("GetArrayElement", 2)]
+[profile] top 15 opcode pairs: [("LoadLocal>Constant", 9000002), ("Constant>Add", 6000002), ("StoreLocal>LoadLocal", 6000001), ("Constant>Mul", 6000000), ("Add>StoreLocal", 6000000), ("LoadLocalPair>LoadLocal", 3000003), ("StoreLocal>LoadLocalPair", 3000002), ("LoadLocal>Sub", 3000001), ("Add>LoadLocal", 3000001), ("ForIterableNext>JumpIfFalse8", 3000001), ("Constant>Mod", 3000000), ("StoreLocal>Jump8", 3000000), ("Sub>Constant", 3000000), ("Mul>Constant", 3000000), ("Mul>Add", 3000000)]
+[profile] top 15 native calls: [("native", 2), ("print", 1)]
+[profile] top 15 by alloc: [("Call", 35), ("ImportFrom", 11), ("Add", 5), ("FormatInterp", 3), ("CoerceForInIterable", 1)]
+[profile] top 15 by get:  [("Add", 24000040), ("Mul", 15000000), ("StoreLocal", 12000014), ("ForIterableNext", 3000001), ("ImportFrom", 157), ("Call", 38), ("GetArrayElement", 30), ("FormatInterp", 6), ("LoadGlobal", 5), ("Sub", 4), ("CoerceForInIterable", 1), ("Return", 1)]
+[profile] top 15 by alloc+get: [("Add", 24000045), ("Mul", 15000000), ("StoreLocal", 12000014), ("ForIterableNext", 3000001), ("ImportFrom", 168), ("Call", 73), ("GetArrayElement", 30), ("FormatInterp", 9), ("LoadGlobal", 5), ("Sub", 4), ("CoerceForInIterable", 2), ("Return", 1)]

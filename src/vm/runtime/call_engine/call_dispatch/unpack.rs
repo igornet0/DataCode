@@ -74,6 +74,21 @@ fn pop_value(
     heavy_store: &mut HeavyStore,
 ) -> Result<Value, LangError> {
     let tv = stack::pop(stack, frames, exception_handlers, value_store, heavy_store)?;
+    // Immediates: build the Value that tagged_to_value_id + load_value would yield, without a cell.
+    if tv.is_number() {
+        return Ok(Value::Number(tv.get_f64()));
+    }
+    if tv.is_int() {
+        let n = tv.get_i32() as i64;
+        return Ok(if value_store.in_ephemeral_scope() {
+            Value::Int(crate::common::numeric::IntValue::Finite(n))
+        } else {
+            Value::Number(n as f64)
+        });
+    }
+    if tv.is_bool() {
+        return Ok(Value::Bool(tv.get_bool()));
+    }
     let id = tagged_to_value_id(tv, value_store);
     Ok(load_value(id, value_store, heavy_store))
 }

@@ -21,18 +21,17 @@ data = ml.load_mnist("test")
 # Collect the first 9 images
 images = []
 labels = []
-count = 0
 
 for x, y in data {
     push(images, x)
     push(labels, y)
-    count += 1
-    if count >= 9 {
+ 
+    if len(images) >= 9 {
         break
     }
 }
 
-print("Loaded " + str(count) + " images")
+print("Loaded " + len(images) + " images")
 print("")
 
 # Fill each subplot with an image
@@ -51,7 +50,7 @@ for i in range(9) {
     
     # Set the title for each subplot
     # The title can contain information about the image
-    axis.set_title("Label: " + str(labels[i]))
+    axis.set_title("Label: " + str(labels[i][0]))
     
     # Hide the axes (remove coordinate lines)
     axis.axis('off')

@@ -83,7 +83,10 @@ impl CallFrame {
         let constants = &function.chunk.constants;
         let constant_ids: Vec<ValueId> = constants
             .iter()
-            .map(|c| store_value(c.clone(), store, heap))
+            .map(|c| match c {
+                Value::Function(i) => store.intern_function_constant(*i),
+                _ => store_value(c.clone(), store, heap),
+            })
             .collect();
         let constant_tagged: Vec<Option<TaggedValue>> = constants
             .iter()

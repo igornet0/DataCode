@@ -13,13 +13,13 @@ use std::path::{Path, PathBuf};
 
 /// Clone `source` into `dest`, then either install the registry's prebuilt `.dcmodule` for this
 /// target (verified by sha256) or fall back to building via `setup.dcmodule`.
-/// Returns `(revision, artifact_sha256)`.
+/// Returns `(revision, artifact_sha256, artifact_version)`.
 fn install_dependency(
     name: &str,
     source: &str,
     dest: &Path,
     registry_pkg: Option<&RegistryPackage>,
-) -> Result<(String, Option<String>), String> {
+) -> Result<(String, Option<String>, Option<String>), String> {
     let revision = install_package(name, source, dest)?;
     let artifact = registry_pkg
         .filter(|p| p.source == source && !prefer_source_build())
@@ -29,7 +29,13 @@ fn install_dependency(
         let dest_file = path_in_packages_directory(dest.parent().unwrap_or(dest), name);
         println!("Downloading prebuilt {} for {}...", name, art.target);
         match install_artifact(&art.url, &art.sha256, &dest_file) {
-            Ok(()) => return Ok((revision, Some(art.sha256.to_ascii_lowercase()))),
+            Ok(()) => {
+                return Ok((
+                    revision,
+                    Some(art.sha256.to_ascii_lowercase()),
+                    art.version.clone(),
+                ))
+            }
             Err(e) => eprintln!("Warning: {}; building {} from source", e, name),
         }
     } else if registry_pkg.is_some_and(|p| !p.artifacts.is_empty()) && !prefer_source_build() {
@@ -40,7 +46,7 @@ fn install_dependency(
         );
     }
     run_setup_if_present(dest)?;
-    Ok((revision, None))
+    Ok((revision, None, None))
 }
 
 fn resolve_env_base_flag(path: &str) -> Result<PathBuf, String> {
@@ -96,6 +102,7 @@ fn main() {
     let result = match cmd {
         "init" => cmd_init(&args[2..]),
         "add" => cmd_add(&args[2..]),
+        "update" => cmd_update(&args[2..]),
         "setup" => cmd_setup(&args[2..]),
         "config" => cmd_config(&args[2..]),
         "pack" => cmd_pack(&args[2..]),
@@ -126,6 +133,7 @@ fn print_help() {
         "  dpm add database       Add another database connection (new folder under core/database)"
     );
     println!("  dpm add <name> [<source>]  Add dependency; source from registry if omitted, or git+https://...");
+    println!("  dpm update [<name>]    Update all dependencies (or one) that have a newer version");
     println!("  dpm setup <package_name>  Run setup.dcmodule in an installed package (see docs)");
     println!(
         "  dpm config virtualenvs.in-project <true|false>  Use .dpm in project (default: cache)"
@@ -216,12 +224,14 @@ fn cmd_init(args: &[String]) -> Result<(), String> {
         let registry_pkg = registry
             .as_ref()
             .and_then(|r| r.packages.iter().find(|p| &p.name == name));
-        let (revision, artifact_sha256) = install_dependency(name, source, &dest, registry_pkg)?;
+        let (revision, artifact_sha256, version) =
+            install_dependency(name, source, &dest, registry_pkg)?;
         lock.package.push(LockPackage {
             name: name.clone(),
             source: source.clone(),
             revision: Some(revision),
             artifact_sha256,
+            version,
         });
     }
     write_lock(&project_root, lock_file, &lock)?;
@@ -307,19 +317,21 @@ fn cmd_add(args: &[String]) -> Result<(), String> {
     std::fs::create_dir_all(packages_dir(&env_root_path)).map_err(|e| e.to_string())?;
     let dest = packages_dir(&env_root_path).join(name);
     println!("Installing {} from {}...", name, source);
-    let (revision, artifact_sha256) =
+    let (revision, artifact_sha256, version) =
         install_dependency(name, source, &dest, registry_pkg.as_ref())?;
     let mut lock = load_lock(&project_root, lock_file)?;
     if let Some(p) = lock.package.iter_mut().find(|p| p.name == name) {
         p.source = source.to_string();
         p.revision = Some(revision);
         p.artifact_sha256 = artifact_sha256;
+        p.version = version;
     } else {
         lock.package.push(LockPackage {
             name: name.to_string(),
             source: source.to_string(),
             revision: Some(revision),
             artifact_sha256,
+            version,
         });
     }
     write_lock(&project_root, lock_file, &lock)?;
@@ -332,6 +344,154 @@ fn cmd_add(args: &[String]) -> Result<(), String> {
         }
     }
     println!("Added {} and updated lock file.", name);
+    Ok(())
+}
+
+/// Commit hash `HEAD` points to in the remote repo of `source` (`git ls-remote`).
+fn remote_head_revision(source: &str) -> Result<String, String> {
+    let url = source.strip_prefix("git+").unwrap_or(source).trim();
+    let out = std::process::Command::new("git")
+        .args(["ls-remote", url, "HEAD"])
+        .output()
+        .map_err(|e| format!("Run git ls-remote: {}", e))?;
+    if !out.status.success() {
+        return Err(format!(
+            "git ls-remote {} failed: {}",
+            url,
+            String::from_utf8_lossy(&out.stderr).trim()
+        ));
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .map(str::to_string)
+        .ok_or_else(|| format!("git ls-remote {}: no HEAD", url))
+}
+
+/// Why `pkg` needs reinstalling, or `None` if it is current.
+/// Prebuilt installs compare the registry artifact sha256; source installs compare the git HEAD.
+fn update_reason(
+    pkg: &LockPackage,
+    registry_pkg: Option<&RegistryPackage>,
+    installed: bool,
+) -> Result<Option<String>, String> {
+    if !installed {
+        return Ok(Some("not installed".to_string()));
+    }
+    let artifact = registry_pkg
+        .filter(|p| p.source == pkg.source && !prefer_source_build())
+        .and_then(|p| p.artifact_for_current_target());
+    if let Some(art) = artifact {
+        let same = pkg
+            .artifact_sha256
+            .as_deref()
+            .is_some_and(|s| s.eq_ignore_ascii_case(art.sha256.trim()));
+        if same {
+            return Ok(None);
+        }
+        let from = pkg
+            .version
+            .as_deref()
+            .or(pkg.revision.as_deref().map(|r| &r[..r.len().min(12)]))
+            .unwrap_or("?");
+        let to = art.version.as_deref().unwrap_or("new build");
+        return Ok(Some(format!("{} -> {}", from, to)));
+    }
+    let remote = remote_head_revision(&pkg.source)?;
+    match pkg.revision.as_deref() {
+        Some(r) if r == remote && pkg.artifact_sha256.is_none() => Ok(None),
+        r => Ok(Some(format!(
+            "{} -> {}",
+            r.map(|r| &r[..r.len().min(12)]).unwrap_or("?"),
+            &remote[..remote.len().min(12)]
+        ))),
+    }
+}
+
+fn cmd_update(args: &[String]) -> Result<(), String> {
+    let only = match args {
+        [] => None,
+        [n] => Some(n.as_str()),
+        _ => return Err("Usage: dpm update [<package_name>]".to_string()),
+    };
+    let cwd = std::env::current_dir().map_err(|e| e.to_string())?;
+    let project_root =
+        find_project_root(&cwd).ok_or("No dpm.toml found (run from project with dpm.toml)")?;
+    let manifest = load_manifest(&project_root)?;
+    let lock_file = lock_file_name(&manifest);
+    let mut lock = load_lock(&project_root, lock_file)?;
+    // Dependencies added to dpm.toml by hand but never installed get a lock entry too.
+    for (name, source) in &manifest.dependencies {
+        if !lock.package.iter().any(|p| &p.name == name) {
+            lock.package.push(LockPackage {
+                name: name.clone(),
+                source: source.clone(),
+                revision: None,
+                artifact_sha256: None,
+                version: None,
+            });
+        }
+    }
+    if let Some(n) = only {
+        if !lock.package.iter().any(|p| p.name == n) {
+            return Err(format!(
+                "Package '{}' is not a dependency of this project (use dpm add {})",
+                n, n
+            ));
+        }
+    }
+    let env_root_path = env_root(&project_root, &manifest).ok_or("Could not determine env root")?;
+    std::fs::create_dir_all(packages_dir(&env_root_path)).map_err(|e| e.to_string())?;
+    let registry = match fetch_registry_index() {
+        Ok(r) => Some(r),
+        Err(e) => {
+            eprintln!("Warning: {}; checking git sources only", e);
+            None
+        }
+    };
+    let mut updated = 0usize;
+    for pkg in lock
+        .package
+        .iter_mut()
+        .filter(|p| only.map_or(true, |n| p.name == n))
+    {
+        let registry_pkg = registry
+            .as_ref()
+            .and_then(|r| r.packages.iter().find(|p| p.name == pkg.name));
+        if let Some(min) = registry_pkg.and_then(|p| p.min_datacode.as_deref()) {
+            let current = env!("CARGO_PKG_VERSION");
+            if !datacode_version_satisfies(min, current) {
+                eprintln!(
+                    "Skipping {}: latest version requires datacode {} but this binary is {}",
+                    pkg.name, min, current
+                );
+                continue;
+            }
+        }
+        let dest = packages_dir(&env_root_path).join(&pkg.name);
+        let reason = match update_reason(pkg, registry_pkg, dest.exists()) {
+            Ok(r) => r,
+            Err(e) => {
+                eprintln!("Warning: cannot check {}: {}", pkg.name, e);
+                continue;
+            }
+        };
+        let Some(reason) = reason else {
+            println!("{} is up to date.", pkg.name);
+            continue;
+        };
+        println!("Updating {} ({})...", pkg.name, reason);
+        let (revision, artifact_sha256, version) =
+            install_dependency(&pkg.name, &pkg.source, &dest, registry_pkg)?;
+        pkg.revision = Some(revision);
+        pkg.artifact_sha256 = artifact_sha256;
+        pkg.version = version;
+        updated += 1;
+    }
+    write_lock(&project_root, lock_file, &lock)?;
+    if updated > 0 {
+        println!("Updated {} package(s) and the lock file.", updated);
+    }
     Ok(())
 }
 

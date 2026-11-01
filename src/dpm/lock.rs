@@ -17,6 +17,9 @@ pub struct LockPackage {
     /// sha256 of the prebuilt `.dcmodule` installed from the registry (absent when built from source)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_sha256: Option<String>,
+    /// Version of the installed prebuilt bundle (registry `artifacts[].version`)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// Load dpm.lock from project root (path from manifest [lock] or default "dpm.lock").
